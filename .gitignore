@@ -1,6 +1,7 @@
 # Binaries
 /nexus
 /nexus-*
+/nexusd
 *.exe
 
 # Build artifacts
@@ -59,6 +60,7 @@ docs/superpowers/
 .agents/
 .agent-git-backup.sh
 skills/
+.playwright-mcp/
 
 # PRD specs (workflow: never commit)
 docs/prds/**
