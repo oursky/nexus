@@ -2,6 +2,7 @@
 /nexus
 /nexus-*
 /nexusd
+**/nexusd
 *.exe
 
 # Build artifacts
