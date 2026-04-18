@@ -79,6 +79,12 @@ func main() {
 	case "workspace", "ws":
 		runWorkspaceCommand(args)
 		return
+	case "spotlight", "spot":
+		runSpotlightCommand(args)
+		return
+	case "project", "proj":
+		runProjectCommand(args)
+		return
 	case "doctor":
 		// handled below
 	default:
@@ -131,6 +137,8 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  nexus init --project-root <abs-path> [--force]")
 	fmt.Fprintln(os.Stderr, "  nexus exec --project-root <abs-path> [--timeout 10m] -- <command> [args...]")
 	fmt.Fprintln(os.Stderr, "  nexus workspace <list|create|stop|remove|fork|portal>")
+	fmt.Fprintln(os.Stderr, "  nexus spotlight <start|list|stop|port>")
+	fmt.Fprintln(os.Stderr, "  nexus project <list|create|get|remove>")
 	fmt.Fprintln(os.Stderr, "  nexus daemon <start|stop|status|token|connect>")
 }
 

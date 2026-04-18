@@ -9,6 +9,80 @@ vars:
   REMOTE_PORT: '{{.REMOTE_PORT | default "7777"}}'
 
 tasks:
+  # ── Setup ────────────────────────────────────────────────────────────────
+  setup:
+    desc: "Check prerequisites and install dependencies for all packages"
+    cmds:
+      - |
+        fail=0
+
+        # Go ≥1.21
+        if ! command -v go >/dev/null 2>&1; then
+          echo "✗ go not found (need ≥1.21)" && fail=1
+        else
+          go_ver=$(go version | grep -oE '[0-9]+\.[0-9]+' | head -1)
+          go_major=$(echo "$go_ver" | cut -d. -f1)
+          go_minor=$(echo "$go_ver" | cut -d. -f2)
+          if [ "$go_major" -lt 1 ] || { [ "$go_major" -eq 1 ] && [ "$go_minor" -lt 21 ]; }; then
+            echo "✗ go $go_ver found but ≥1.21 required" && fail=1
+          else
+            echo "✓ go $go_ver"
+          fi
+        fi
+
+        # Node ≥20
+        if ! command -v node >/dev/null 2>&1; then
+          echo "✗ node not found (need ≥20)" && fail=1
+        else
+          node_ver=$(node --version | sed 's/v//')
+          node_major=$(echo "$node_ver" | cut -d. -f1)
+          if [ "$node_major" -lt 20 ]; then
+            echo "✗ node v$node_ver found but ≥20 required" && fail=1
+          else
+            echo "✓ node v$node_ver"
+          fi
+        fi
+
+        # pnpm
+        if ! command -v pnpm >/dev/null 2>&1; then
+          echo "✗ pnpm not found (install: npm install -g pnpm)" && fail=1
+        else
+          echo "✓ pnpm $(pnpm --version)"
+        fi
+
+        # task (go-task)
+        if ! command -v task >/dev/null 2>&1; then
+          echo "✗ task (go-task) not found (install: https://taskfile.dev/installation)" && fail=1
+        else
+          echo "✓ task $(task --version 2>/dev/null | head -1)"
+        fi
+
+        [ "$fail" -eq 0 ] || { echo ""; echo "Fix the issues above, then re-run: task setup"; exit 1; }
+      - echo ""
+      - echo "Installing Go dependencies..."
+      - task: setup:go
+      - echo "Installing JS dependencies..."
+      - task: setup:js
+      - echo ""
+      - echo "✓ Setup complete!"
+      - echo ""
+      - echo "Next steps:"
+      - echo "  task build        — build all packages"
+      - echo "  task test         — run the test suite"
+      - echo "  task dev:daemon   — start the daemon with hot-reload"
+
+  setup:go:
+    desc: "Download Go module dependencies"
+    dir: packages/nexus
+    cmds:
+      - go mod download
+
+  setup:js:
+    desc: "Install JS dependencies via pnpm"
+    dir: packages/sdk/js
+    cmds:
+      - pnpm install
+
   # ── Dev ─────────────────────────────────────────────────────────────────
   dev:
     desc: "Start daemon (air hot-reload) + Vite dev server concurrently"
