@@ -30,6 +30,18 @@ nexus start <workspace-id>
 
 `nexus create` prints the workspace id. Common: `tunnel`, `ssh`, `stop`, `remove`; `fork --id <id> --name <child>`. `tunnel` blocks until Ctrl-C.
 
+## Remote daemon
+
+The `nexus` binary is unified — it is both the client CLI and the daemon.
+To run a daemon on a remote Linux host:
+
+```bash
+nexus daemon start --network --bind 0.0.0.0 --port 7777 --tls auto
+nexus daemon token   # print the auto-generated bearer token
+```
+
+See [Remote Daemon runbook](docs/guides/operations.md#remote-daemon-nexus-daemon-start-on-linux) for systemd setup and full options.
+
 ## Docs
 
 | Topic | Path |

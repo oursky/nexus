@@ -20,15 +20,15 @@ Short reference for **latency**, **isolation concepts**, and **paths**.
 
 Worktrees do **not** replace Nexus workspaces for remote sandboxes; they solve different problems.
 
-## Remote Daemon (nexusd on Linux)
+## Remote Daemon (`nexus daemon start` on Linux)
 
-Run `nexusd` on a remote Linux host so that a local `nexus` client can connect to it over the network.
+Run the daemon on a remote Linux host so that a local `nexus` client can connect to it over the network.
+The `nexus` binary is unified — it serves both CLI and daemon roles.
 
 ### Prerequisites
 
 - Linux x86-64
-- Go 1.22+ (to build from source) **or** a pre-built `nexusd` binary
-- `openssl` (for token generation)
+- Go 1.22+ (to build from source) **or** a pre-built `nexus` binary
 - Port 7777 reachable from the client, or an SSH tunnel
 
 ### Build from source
@@ -36,32 +36,37 @@ Run `nexusd` on a remote Linux host so that a local `nexus` client can connect t
 ```bash
 git clone https://github.com/inizio/nexus ~/magic/nexus
 cd ~/magic/nexus/packages/nexus
-go build -o ~/magic/bin/nexusd ./cmd/nexusd
+go build -tags nodbus -o ~/magic/bin/nexus ./cmd/nexus
 export PATH="$HOME/magic/bin:$PATH"
 ```
 
-### Generate a bearer token
+### Bearer token
+
+The daemon auto-generates and persists a token on first start when `--network` is active and
+no `--token` flag is provided. To retrieve or regenerate it:
 
 ```bash
-openssl rand -hex 32
-# example output: a3f9c2e1b4d78f0a5c6e3b1d2a9f7e4c8b5d3a1e6c9f2b4d7a0e3c8f1b5d9a2e
+nexus daemon token
 ```
 
-Save this value — you will need it on both the server and the client.
+You can also pass a static token explicitly via `--token <value>` or the
+`NEXUS_DAEMON_TOKEN` environment variable.
 
-### Start nexusd with a network listener
+### Start the daemon with a network listener
 
-**Public / direct TCP (add firewall rule for port 7777):**
+**Direct TCP (Tailscale / VPN / firewall rule for port 7777):**
 
 ```bash
-nexusd --network --bind 0.0.0.0 --port 7777 --token <token>
+nexus daemon start --network --bind 0.0.0.0 --port 7777 --tls auto
 ```
+
+Token is auto-generated and stored; print it with `nexus daemon token`.
 
 **Loopback + SSH tunnel (no firewall change needed, no TLS required):**
 
 ```bash
 # On the Linux host:
-nexusd --network --bind 127.0.0.1 --port 7777 --token <token>
+nexus daemon start --network --bind 127.0.0.1 --port 7777
 
 # On the client machine, forward the remote port locally:
 ssh -N -L 7777:127.0.0.1:7777 user@remote-host
@@ -72,21 +77,21 @@ ssh -N -L 7777:127.0.0.1:7777 user@remote-host
 Use `--tls required` with a certificate and key for direct public exposure:
 
 ```bash
-nexusd --network --bind 0.0.0.0 --port 7777 --token <token> \
+nexus daemon start --network --bind 0.0.0.0 --port 7777 --token <token> \
   --tls required --tls-cert /etc/nexus/cert.pem --tls-key /etc/nexus/key.pem
 ```
 
 Use `--tls auto` for a self-signed certificate (clients must accept the cert):
 
 ```bash
-nexusd --network --bind 0.0.0.0 --port 7777 --token <token> --tls auto
+nexus daemon start --network --bind 0.0.0.0 --port 7777 --tls auto
 ```
 
 The default (`--tls off`) sends traffic in plaintext — safe only over loopback or SSH tunnels.
 
-### Systemd unit (persistent service)
+### Systemd user unit (persistent service)
 
-Create `/etc/systemd/system/nexusd.service` (or `~/.config/systemd/user/nexusd.service` for a user unit):
+Create `~/.config/systemd/user/nexusd.service`:
 
 ```ini
 [Unit]
@@ -94,25 +99,33 @@ Description=Nexus Daemon
 After=network.target
 
 [Service]
-ExecStart=/home/<user>/magic/bin/nexusd \
+ExecStart=/home/<user>/magic/bin/nexus daemon start \
   --network \
-  --bind 127.0.0.1 \
+  --bind 0.0.0.0 \
   --port 7777 \
-  --token <token>
+  --tls auto
 Restart=on-failure
 RestartSec=5s
 WorkingDirectory=/home/<user>/magic
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 ```
 
-Enable and start:
+Enable and start (user unit — no sudo required):
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now nexusd
-sudo systemctl status nexusd
+systemctl --user daemon-reload
+systemctl --user enable --now nexusd
+systemctl --user status nexusd
+```
+
+The bearer token is auto-generated on first start and persisted to
+`~/.config/nexus/daemon-token` (or the OS keyring on supported platforms).
+Print it with:
+
+```bash
+nexus daemon token
 ```
 
 ### Firewall
@@ -130,7 +143,7 @@ sudo firewall-cmd --permanent --add-port=7777/tcp && sudo firewall-cmd --reload
 sudo iptables -A INPUT -p tcp --dport 7777 -j ACCEPT
 ```
 
-If using loopback + SSH tunnel, no firewall change is required.
+If using Tailscale or loopback + SSH tunnel, no firewall change is required.
 
 ### Health and version checks
 
@@ -146,10 +159,10 @@ For TLS deployments, use `https://` and pass `-k` (or `--cacert`) as appropriate
 
 ### Validation checklist
 
-- [ ] `systemctl status nexusd` shows `active (running)`
+- [ ] `systemctl --user status nexusd` shows `active (running)`
 - [ ] `curl http://localhost:7777/healthz` returns `{"status":"ok"}`
 - [ ] `curl http://localhost:7777/version` returns a version object
-- [ ] Token is set in the client's `NEXUS_DAEMON_TOKEN` env var or profile config
+- [ ] `nexus daemon token` prints the bearer token
 - [ ] Client `nexus list` connects without authentication errors
 
 ## Related

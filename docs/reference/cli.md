@@ -1,102 +1,61 @@
 # CLI Reference
 
-Direct control for creating, starting, and accessing isolated workspaces.
+`nexus` is the unified binary for both the workspace client CLI and the remote workspace daemon.
 
-## Install and first run
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/inizio/nexus/main/install.sh | bash
-cd /path/to/project
-nexus init && nexus create && nexus shell <id>
-```
-
-`nexus create` prints the workspace id used by every subsequent command.
+> **Current scope:** The binary today implements the daemon subgroup only. Workspace lifecycle commands (`create`, `shell`, `exec`, etc.) are planned for a future release once the underlying workspace manager packages are rebuilt.
 
 ## Commands
 
-### Workspace lifecycle
+### Daemon management
 
 ```
-nexus create [--backend firecracker]
+nexus daemon start [flags]
 ```
-Creates a workspace from the current directory. Reads host credentials automatically (git config, SSH keys) and forwards them into the workspace. Optional `--backend` overrides runtime selection.
+Starts the Nexus daemon. All flags are optional; a bearer token is auto-generated and
+persisted when `--network` is active and no explicit `--token` is given.
 
 ```
-nexus list
+nexus daemon token
 ```
-Lists all workspaces with id, name, state, backend, and local worktree path.
+Prints the bearer token the daemon uses for network authentication. Generates and persists
+a new token if none exists yet. Reads from the OS keyring (D-Bus Secret Service on Linux)
+with a file fallback at `~/.config/nexus/daemon-token`.
 
 ```
-nexus start <id>
-nexus stop <id>
-nexus remove <id>
-nexus restore <id>
+nexus daemon stop
+nexus daemon status
 ```
-Start a stopped workspace, stop a running one, or permanently remove it. `restore` restores from the last snapshot.
-
-```
-nexus fork <id> <name> [--ref <ref>]
-```
-Forks a workspace into a new branch. `<name>` becomes the workspace name and, by default, the git ref. Use `--ref` to specify a different ref.
-
-### Execution
-
-```
-nexus shell <id> [--timeout <dur>]
-```
-Opens an interactive bash session in the workspace via PTY. Optional `--timeout` sets a max wall time (e.g. `90s`). Auth relay token read from `$NEXUS_AUTH_RELAY_TOKEN` when set.
-
-```
-nexus exec <id> [--timeout <dur>] -- <command> [args...]
-```
-Runs a single non-interactive command in the workspace and streams output. The `--` separator is required. Auth relay token read from `$NEXUS_AUTH_RELAY_TOKEN` when set.
-
-```
-nexus run [--backend <name>] [--timeout <dur>] -- <command> [args...]
-```
-Creates an ephemeral workspace from the current directory, runs the command, then removes the workspace. Exit code matches the command's. Useful for one-off jobs that should leave no state behind.
-
-### Port forwarding
-
-```
-nexus tunnel <id>
-```
-Applies compose-defined port forwards for the workspace and blocks until Ctrl-C, then closes them. Useful in CI pipelines where a compose project needs ports surfaced to the host.
-
-### Maintenance
-
-```
-nexus init [path] [--force]
-```
-Scaffolds `.nexus/workspace.json` and `lifecycles/` in the target directory (defaults to cwd). `--force` overwrites existing files.
-
-```
-nexus doctor [--report-json <path>]
-```
-Runs health checks on the local runtime environment and prints a report. Optional `--report-json` writes the full result as JSON.
-
-```
-nexus version [--json]
-```
-Prints current CLI version, running daemon version (if reachable), latest release version, and updater status.
-
-```
-nexus update [--check] [--force] [--rollback] [--json]
-```
-Checks latest release metadata and applies updates for both `nexus` and `nexus-daemon`. Use `--check` for read-only status and `--rollback` to revert to the previous installed binaries.
+Stop the running daemon or query its status. _(Not yet implemented.)_
 
 ## Environment variables
 
 | Variable | Description |
 |---|---|
-| `NEXUS_DAEMON_PORT` | Daemon port override (default `7874`) |
-| `NEXUS_DAEMON_TOKEN` | Auth token override (auto-managed when unset) |
-| `NEXUS_AUTH_RELAY_TOKEN` | Relay token for `shell` / `exec` commands |
-| `NEXUS_RELEASE_BASE_URL` | Release asset base URL override for updater |
-| `NEXUS_RELEASE_CHANNEL` | Release channel (`stable` default, `prerelease` to track latest prerelease tag) |
-| `NEXUS_RELEASE_REPO` | GitHub repo slug for release lookup (default `inizio/nexus`) |
+| `NEXUS_DAEMON_TOKEN` | Bearer token override for `nexus daemon start` (auto-managed when unset) |
 
-## nexusd flags
+## Planned commands (not yet implemented)
+
+The following commands are planned for future releases once the workspace manager and related packages are available. They are listed here for reference only — they do not exist in the current binary.
+
+| Command | Description |
+|---|---|
+| `nexus create` | Create a workspace from the current directory |
+| `nexus list` | List all workspaces |
+| `nexus start <id>` | Start a stopped workspace |
+| `nexus stop <id>` | Stop a running workspace |
+| `nexus remove <id>` | Permanently remove a workspace |
+| `nexus restore <id>` | Restore from last snapshot |
+| `nexus fork <id> <name>` | Fork a workspace into a new branch |
+| `nexus shell <id>` | Open an interactive shell in a workspace |
+| `nexus exec <id> -- <cmd>` | Run a single command in a workspace |
+| `nexus run -- <cmd>` | Ephemeral workspace; run and discard |
+| `nexus tunnel <id>` | Apply compose port forwards |
+| `nexus init [path]` | Scaffold `.nexus/` config in a project |
+| `nexus doctor` | Health-check the local runtime environment |
+| `nexus version` | Print CLI and daemon version info |
+| `nexus update` | Self-update the CLI binary |
+
+## `nexus daemon start` flags
 
 ### Core flags
 
@@ -118,7 +77,7 @@ Checks latest release metadata and applies updates for both `nexus` and `nexus-d
 | `--network` | bool | false | Enable TCP/WebSocket network listener |
 | `--bind` | string | `127.0.0.1` | Bind address for the network listener |
 | `--port` | int | `7777` | Port for the network listener |
-| `--token` | string | _(required when `--network`)_ | Static bearer token for authentication |
+| `--token` | string | _(auto-generated when `--network`)_ | Static bearer token for authentication |
 | `--tls` | string | `off` | TLS mode: `off` \| `auto` \| `required` |
 | `--tls-cert` | string | — | Path to TLS certificate PEM (`required` mode) |
 | `--tls-key` | string | — | Path to TLS key PEM (`required` mode) |
@@ -137,9 +96,9 @@ Checks latest release metadata and applies updates for both `nexus` and `nexus-d
 | `/version` | GET | none | Returns `{"version":"..."}` |
 | `/` | WebSocket | Bearer token | JSON-RPC 2.0 entry point |
 
-See [Remote Daemon runbook](../guides/operations.md#remote-daemon-nexusd-on-linux) for end-to-end setup.
+See [Remote Daemon runbook](../guides/operations.md#remote-daemon-nexus-daemon-start-on-linux) for end-to-end setup.
 
 ## Related
 
-- SDK: [`sdk.md`](sdk.md)
 - Workspace config: [`workspace-config.md`](workspace-config.md)
+- Operations guide: [`../guides/operations.md`](../guides/operations.md)

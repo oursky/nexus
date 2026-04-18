@@ -6,17 +6,15 @@ type Box = { label: string; color: string; x: number; y: number; w: number; h: n
 
 const BOXES: Box[] = [
   { label: "Mac\n(you)", color: "#89b4fa", x: 40, y: 220, w: 160, h: 80 },
-  { label: "SSH Tunnel", color: "#f9e2af", x: 280, y: 220, w: 160, h: 80 },
-  { label: "Linux Daemon\n(nexusd)", color: "#a6e3a1", x: 520, y: 220, w: 180, h: 80 },
-  { label: "Firecracker VM\n(workspace)", color: "#cba6f7", x: 780, y: 120, w: 180, h: 80 },
-  { label: "Firecracker VM\n(workspace)", color: "#cba6f7", x: 780, y: 320, w: 180, h: 80 },
+  { label: "nexus daemon\n(linuxbox)", color: "#a6e3a1", x: 320, y: 220, w: 200, h: 80 },
+  { label: "Firecracker VM\n(workspace)", color: "#cba6f7", x: 640, y: 120, w: 200, h: 80 },
+  { label: "Firecracker VM\n(workspace)", color: "#cba6f7", x: 640, y: 320, w: 200, h: 80 },
 ];
 
 const ARROWS = [
-  { x1: 200, y1: 260, x2: 280, y2: 260, startFrame: 30, endFrame: 80 },
-  { x1: 440, y1: 260, x2: 520, y2: 260, startFrame: 80, endFrame: 130 },
-  { x1: 700, y1: 230, x2: 780, y2: 185, startFrame: 130, endFrame: 180 },
-  { x1: 700, y1: 290, x2: 780, y2: 365, startFrame: 130, endFrame: 180 },
+  { x1: 200, y1: 260, x2: 320, y2: 260, startFrame: 30, endFrame: 80, label: "TCP/TLS :7777" },
+  { x1: 520, y1: 230, x2: 640, y2: 185, startFrame: 80, endFrame: 130, label: "" },
+  { x1: 520, y1: 290, x2: 640, y2: 365, startFrame: 80, endFrame: 130, label: "" },
 ];
 
 export const ArchitectureScene: React.FC = () => {
@@ -29,8 +27,7 @@ export const ArchitectureScene: React.FC = () => {
         How Nexus works
       </div>
 
-      <svg width={1000} height={520} style={{ overflow: "visible" }}>
-        {/* Arrows */}
+      <svg width={900} height={520} style={{ overflow: "visible" }}>
         {ARROWS.map((a, i) => {
           const progress = interpolate(f, [a.startFrame, a.endFrame], [0, 1], {
             extrapolateLeft: "clamp",
@@ -38,6 +35,12 @@ export const ArchitectureScene: React.FC = () => {
           });
           const x2 = a.x1 + (a.x2 - a.x1) * progress;
           const y2 = a.y1 + (a.y2 - a.y1) * progress;
+          const midX = (a.x1 + a.x2) / 2;
+          const midY = (a.y1 + a.y2) / 2;
+          const labelOpacity = interpolate(f, [a.endFrame, a.endFrame + 15], [0, 1], {
+            extrapolateLeft: "clamp",
+            extrapolateRight: "clamp",
+          });
           return (
             <g key={i}>
               <line x1={a.x1} y1={a.y1} x2={x2} y2={y2} stroke="#585b70" strokeWidth={2} strokeDasharray="6 4" />
@@ -48,11 +51,23 @@ export const ArchitectureScene: React.FC = () => {
                   transform={`rotate(${Math.atan2(a.y2 - a.y1, a.x2 - a.x1) * 180 / Math.PI}, ${a.x2}, ${a.y2})`}
                 />
               )}
+              {a.label && (
+                <text
+                  x={midX}
+                  y={midY - 12}
+                  textAnchor="middle"
+                  fill="#f9e2af"
+                  fontSize={16}
+                  fontFamily="'JetBrains Mono', monospace"
+                  opacity={labelOpacity}
+                >
+                  {a.label}
+                </text>
+              )}
             </g>
           );
         })}
 
-        {/* Boxes */}
         {BOXES.map((b, i) => {
           const boxFrame = i * 25;
           const opacity = interpolate(f, [boxFrame, boxFrame + 20], [0, 1], {
@@ -86,10 +101,9 @@ export const ArchitectureScene: React.FC = () => {
         })}
       </svg>
 
-      {/* Legend */}
       <div style={{ display: "flex", gap: 32, marginTop: 20 }}>
-        {[["#89b4fa", "Client"], ["#a6e3a1", "Daemon"], ["#cba6f7", "VM"]].map(([color, label]) => {
-          const legendOpacity = interpolate(f, [200, 220], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+        {[["#89b4fa", "Client"], ["#a6e3a1", "Daemon"], ["#cba6f7", "VM"], ["#f9e2af", "Direct TCP/TLS"]].map(([color, label]) => {
+          const legendOpacity = interpolate(f, [160, 180], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
           return (
             <div key={label} style={{ display: "flex", alignItems: "center", gap: 8, opacity: legendOpacity }}>
               <div style={{ width: 16, height: 16, borderRadius: 3, background: color }} />

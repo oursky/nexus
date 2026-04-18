@@ -6,10 +6,11 @@ import { IntroScene } from "./scenes/00-intro";
 import { ProblemScene } from "./scenes/01-problem";
 import { ArchitectureScene } from "./scenes/02-architecture";
 import { DeployScene } from "./scenes/03-deploy";
-import { CreateWorkspaceScene } from "./scenes/04-create-workspace";
-import { WorkspaceTypesScene } from "./scenes/05-workspace-types";
-import { LiveConnectScene } from "./scenes/06-live-connect";
-import { OutroScene } from "./scenes/07-outro";
+import { MacOSConnectScene } from "./scenes/04-macos-connect";
+import { CreateWorkspaceScene } from "./scenes/05-create-workspace";
+import { LivePreviewScene } from "./scenes/06-live-preview";
+import { WorkspaceTypesScene } from "./scenes/07-workspace-types";
+import { OutroScene } from "./scenes/08-outro";
 
 const NexusShowcase: React.FC = () => {
   return (
@@ -30,16 +31,20 @@ const NexusShowcase: React.FC = () => {
         <DeployScene />
       </Sequence>
 
+      <Sequence from={SCENES.macosConnect.start} durationInFrames={SCENES.macosConnect.duration}>
+        <MacOSConnectScene />
+      </Sequence>
+
       <Sequence from={SCENES.createWorkspace.start} durationInFrames={SCENES.createWorkspace.duration}>
         <CreateWorkspaceScene />
       </Sequence>
 
-      <Sequence from={SCENES.workspaceTypes.start} durationInFrames={SCENES.workspaceTypes.duration}>
-        <WorkspaceTypesScene />
+      <Sequence from={SCENES.livePreview.start} durationInFrames={SCENES.livePreview.duration}>
+        <LivePreviewScene />
       </Sequence>
 
-      <Sequence from={SCENES.liveConnect.start} durationInFrames={SCENES.liveConnect.duration}>
-        <LiveConnectScene />
+      <Sequence from={SCENES.workspaceTypes.start} durationInFrames={SCENES.workspaceTypes.duration}>
+        <WorkspaceTypesScene />
       </Sequence>
 
       <Sequence from={SCENES.outro.start} durationInFrames={SCENES.outro.duration}>
