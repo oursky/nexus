@@ -1,57 +1,5 @@
 import Foundation
 
-public enum ProfileMode: String, Codable, Equatable {
-    case local
-    case remote
-}
-
-public enum ConnectionScheme: String, Codable, Equatable {
-    case ws
-    case wss
-}
-
-public enum TokenRef: Codable, Equatable {
-    case keychain(service: String)
-    case env(variable: String)
-    case inline(token: String)
-
-    private enum CodingKeys: String, CodingKey {
-        case type, value
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let type_ = try container.decode(String.self, forKey: .type)
-        let value = try container.decode(String.self, forKey: .value)
-        switch type_ {
-        case "keychain": self = .keychain(service: value)
-        case "env": self = .env(variable: value)
-        case "inline": self = .inline(token: value)
-        default:
-            throw DecodingError.dataCorruptedError(
-                forKey: .type,
-                in: container,
-                debugDescription: "Unknown TokenRef type: \(type_)"
-            )
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .keychain(let service):
-            try container.encode("keychain", forKey: .type)
-            try container.encode(service, forKey: .value)
-        case .env(let variable):
-            try container.encode("env", forKey: .type)
-            try container.encode(variable, forKey: .value)
-        case .inline(let token):
-            try container.encode("inline", forKey: .type)
-            try container.encode(token, forKey: .value)
-        }
-    }
-}
-
 public enum ProfileStatus: String, Codable, Equatable {
     case unknown
     case connected
@@ -65,37 +13,31 @@ public struct DaemonProfile: Codable, Equatable, Identifiable {
     public var id: String { profileId }
     public var profileId: String
     public var name: String
-    public var mode: ProfileMode
-    public var host: String
     public var port: Int
-    public var scheme: ConnectionScheme
-    public var tokenRef: TokenRef
-    public var connectTimeoutSec: Int
     public var isDefault: Bool
     public var lastKnownStatus: ProfileStatus
+    public var sshTarget: String?
+    public var sshPort: Int?
+    public var sshIdentity: String?
 
     public init(
         profileId: String = UUID().uuidString,
         name: String,
-        mode: ProfileMode,
-        host: String = "",
         port: Int = 7777,
-        scheme: ConnectionScheme = .ws,
-        tokenRef: TokenRef = .env(variable: "NEXUS_TOKEN"),
-        connectTimeoutSec: Int = 10,
         isDefault: Bool = false,
-        lastKnownStatus: ProfileStatus = .unknown
+        lastKnownStatus: ProfileStatus = .unknown,
+        sshTarget: String? = nil,
+        sshPort: Int? = nil,
+        sshIdentity: String? = nil
     ) {
         self.profileId = profileId
         self.name = name
-        self.mode = mode
-        self.host = host
         self.port = port
-        self.scheme = scheme
-        self.tokenRef = tokenRef
-        self.connectTimeoutSec = connectTimeoutSec
         self.isDefault = isDefault
         self.lastKnownStatus = lastKnownStatus
+        self.sshTarget = sshTarget
+        self.sshPort = sshPort
+        self.sshIdentity = sshIdentity
     }
 }
 
@@ -123,16 +65,11 @@ public final class DaemonProfileStore {
         load().first { $0.isDefault }
     }
 
-    public static func localDefault() -> DaemonProfile {
+    public static func remoteDefault() -> DaemonProfile {
         DaemonProfile(
-            profileId: "local-default",
-            name: "Local",
-            mode: .local,
-            host: "",
+            profileId: "remote-default",
+            name: "Remote",
             port: 7777,
-            scheme: .ws,
-            tokenRef: .env(variable: "NEXUS_TOKEN"),
-            connectTimeoutSec: 10,
             isDefault: true,
             lastKnownStatus: .unknown
         )

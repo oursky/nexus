@@ -7,9 +7,6 @@ import Foundation
 ///   2. macOS Keychain generic password (service configurable via
 ///      NEXUS_DAEMON_TOKEN_KEYCHAIN_SERVICE)
 ///
-/// Port discovery: reads `daemon-PORT.pid` from the Nexus run dir to find the
-/// actual port the daemon is listening on.  Falls back to 63987 (n-e-x-u-s on a telephone keypad).
-///
 /// Auth: sends the token in the `Authorization: Bearer TOKEN` HTTP header on
 /// the WebSocket upgrade request.
 public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
@@ -41,67 +38,6 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         disconnect()
         // XCTest and rapid client churn otherwise retain URLSession delegate queues and buffers.
         webSocketSession.invalidateAndCancel()
-    }
-
-    // MARK: - Daemon URL discovery
-
-    /// Resolves the WebSocket URL for the daemon.
-    ///
-    /// Uses `NEXUS_DAEMON_URL` when set. Otherwise picks a port **without synchronous HTTP**:
-    /// 1) Port already owned by the current process-isolation worktree (`daemon-*.owner`), if any.
-    /// 2) Else the **newest** `daemon-*.pid` by mtime (typical “last started daemon”).
-    /// 3) Else `DaemonLauncher.preferredPort()` (launcher will bind next).
-    public static func discoverURL() -> URL {
-        if let env = ProcessInfo.processInfo.environment["NEXUS_DAEMON_URL"], !env.isEmpty,
-           let url = URL(string: env) {
-            return url
-        }
-        let port = resolveConnectionPortDiskOnly()
-        return loopbackWebSocketURL(port: port)
-    }
-
-    /// Picks localhost port using run-dir metadata only (no `/healthz` on the main thread).
-    private static func resolveConnectionPortDiskOnly() -> Int {
-        let env = ProcessInfo.processInfo.environment
-        // Explicit port must win before owner/mtime heuristics; otherwise the newest `daemon-*.pid`
-        // on disk overrides scheme/test env (e.g. NEXUS_DAEMON_PORT=19998).
-        if let raw = env["NEXUS_DAEMON_PORT"]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty,
-           let p = Int(raw), (1..<65536).contains(p) {
-            return p
-        }
-        let preferred = DaemonLauncher.preferredPort()
-        let runDir = DaemonLauncher.resolveRunDir()
-
-        if let owned = DaemonLauncher.existingPortForCurrentProcessWorktree(),
-           FileManager.default.fileExists(atPath: "\(runDir)/daemon-\(owned).pid") {
-            return owned
-        }
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: runDir) else {
-            return preferred
-        }
-        let fm = FileManager.default
-        var bestPort: Int?
-        var bestMtime = Date.distantPast
-        for entry in entries where entry.hasPrefix("daemon-") && entry.hasSuffix(".pid") {
-            let inner = String(entry.dropFirst("daemon-".count).dropLast(".pid".count))
-            guard let port = Int(inner) else { continue }
-            let path = "\(runDir)/\(entry)"
-            let mtime = (try? fm.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
-            if mtime >= bestMtime {
-                bestMtime = mtime
-                bestPort = port
-            }
-        }
-        if let bestPort { return bestPort }
-        return preferred
-    }
-
-    private static func loopbackWebSocketURL(port: Int) -> URL {
-        var components = URLComponents()
-        components.scheme = "ws"
-        components.host = "localhost"
-        components.port = max(1, min(port, 65535))
-        return components.url ?? URL(fileURLWithPath: "/")
     }
 
     // MARK: - Auth token
@@ -359,14 +295,14 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
 
     public func listWorkspaces() async throws -> [Workspace] {
         let result = try await call("workspace.list")
-        guard let dict = result as? [String: Any], let arr = dict["workspaces"] else { return [] }
+        guard let dict = result as? [String: Any], let arr = dict["workspaces"] as? [Any] else { return [] }
         return try JSONDecoder().decode([Workspace].self,
                                        from: JSONSerialization.data(withJSONObject: arr))
     }
 
     public func listProjects() async throws -> [Project] {
         let result = try await call("project.list")
-        guard let dict = result as? [String: Any], let arr = dict["projects"] else { return [] }
+        guard let dict = result as? [String: Any], let arr = dict["projects"] as? [Any] else { return [] }
         return try JSONDecoder().decode([Project].self,
                                         from: JSONSerialization.data(withJSONObject: arr))
     }
@@ -382,7 +318,7 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
 
     public func listRelations() async throws -> [RelationsGroup] {
         let result = try await call("workspace.relations.list")
-        guard let dict = result as? [String: Any], let arr = dict["relations"] else { return [] }
+        guard let dict = result as? [String: Any], let arr = dict["relations"] as? [Any] else { return [] }
         return try JSONDecoder().decode([RelationsGroup].self,
                                        from: JSONSerialization.data(withJSONObject: arr))
     }
@@ -793,6 +729,14 @@ public struct DaemonInfo: Decodable, Equatable {
     public let commit: String
     public let builtAt: String
     public let protocolVersion: Int
+
+    public init(name: String, version: String, commit: String, builtAt: String, protocolVersion: Int) {
+        self.name = name
+        self.version = version
+        self.commit = commit
+        self.builtAt = builtAt
+        self.protocolVersion = protocolVersion
+    }
 
     /// Protocol version this build of the Swift app requires.
     /// Must match `ProtocolVersion` in `packages/nexus/pkg/buildinfo/buildinfo.go`.

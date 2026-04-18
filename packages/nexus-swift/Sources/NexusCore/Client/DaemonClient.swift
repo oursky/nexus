@@ -2,8 +2,7 @@ import Foundation
 
 // MARK: - Protocol
 
-/// Abstraction over the Nexus daemon. Set NEXUS_DAEMON_URL to point at the daemon;
-/// defaults to ws://localhost:63987.
+/// Abstraction over the Nexus daemon RPC interface.
 public protocol DaemonClient: Sendable {
 
     // ── Projects ─────────────────────────────────────────────────────

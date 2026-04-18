@@ -31,12 +31,6 @@ private struct ProfileRow: View {
                     Text(profile.name)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.primary)
-                    Text(profile.mode == .remote ? "remote" : "local")
-                        .font(.system(size: 10))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(profile.mode == .remote ? Color.blue.opacity(0.15) : Color.secondary.opacity(0.15))
-                        .cornerRadius(3)
                     if profile.isDefault {
                         Text("default")
                             .font(.system(size: 10))
@@ -46,8 +40,8 @@ private struct ProfileRow: View {
                             .cornerRadius(3)
                     }
                 }
-                if profile.mode == .remote {
-                    Text("\(profile.scheme.rawValue)://\(profile.host):\(profile.port)")
+                if let sshTarget = profile.sshTarget, !sshTarget.isEmpty {
+                    Text("\(profile.name) · \(sshTarget)")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.secondary)
                 }
@@ -82,98 +76,95 @@ private struct ProfileEditSheet: View {
     let onCancel: () -> Void
     let onSave: (DaemonProfile) -> Void
 
-    @State private var tokenType: String = "env"
-    @State private var tokenValue: String = ""
+    @State private var sshTargetText: String = ""
+    @State private var sshPortText: String = ""
+    @State private var sshIdentityText: String = ""
 
-    private var wsWarning: Bool {
-        profile.scheme == .ws &&
-        profile.host != "localhost" &&
-        profile.host != "127.0.0.1" &&
-        !profile.host.isEmpty
+    private enum TestState: Equatable {
+        case idle, running, ok, failed(String)
+        static func == (lhs: TestState, rhs: TestState) -> Bool {
+            switch (lhs, rhs) {
+            case (.idle, .idle), (.running, .running), (.ok, .ok): return true
+            case (.failed(let a), .failed(let b)): return a == b
+            default: return false
+            }
+        }
     }
+    @State private var testState: TestState = .idle
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(isNew ? "Add Remote Profile" : "Edit Profile")
                 .font(.headline)
 
-            Group {
-                LabeledField("Name") {
-                    TextField("My Remote Daemon", text: $profile.name)
-                        .textFieldStyle(.roundedBorder)
-                }
-                LabeledField("Host") {
-                    TextField("hostname or IP", text: $profile.host)
-                        .textFieldStyle(.roundedBorder)
-                }
-                LabeledField("Port") {
-                    HStack {
-                        TextField("7777", value: $profile.port, formatter: NumberFormatter())
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 80)
-                        Stepper("", value: $profile.port, in: 1...65535)
-                            .labelsHidden()
-                    }
-                }
-                LabeledField("Scheme") {
-                    Picker("", selection: $profile.scheme) {
-                        Text("ws (plain)").tag(ConnectionScheme.ws)
-                        Text("wss (TLS)").tag(ConnectionScheme.wss)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 160)
-                    if wsWarning {
-                        Text("⚠️ ws (plain) on a non-localhost host is insecure. Use wss or SSH tunnel.")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                    }
-                }
-                LabeledField("Token") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Picker("", selection: $tokenType) {
-                                Text("Keychain").tag("keychain")
-                                Text("Env Var").tag("env")
-                                Text("Manual").tag("inline")
-                            }
-                            .pickerStyle(.menu)
-                            .frame(width: 110)
-                            if tokenType == "inline" {
-                                SecureField("paste token here", text: $tokenValue)
-                                    .textFieldStyle(.roundedBorder)
-                            } else {
-                                TextField(tokenType == "keychain" ? "service name" : "VAR_NAME",
-                                          text: $tokenValue)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                        }
-                        if tokenType == "keychain" {
-                            Text("Read from macOS Keychain generic password at this service name.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        } else if tokenType == "env" {
-                            Text("Read from this environment variable at connect time.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        } else {
-                            Text("Token stored in app settings. Use for quick setup or testing.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-                LabeledField("Timeout") {
-                    HStack {
-                        Text("\(profile.connectTimeoutSec)s")
-                            .font(.system(size: 12, design: .monospaced))
-                            .frame(width: 32, alignment: .trailing)
-                        Stepper("", value: $profile.connectTimeoutSec, in: 1...60)
-                            .labelsHidden()
-                    }
-                }
-                Toggle("Set as Default", isOn: $profile.isDefault)
-                    .font(.system(size: 12))
+            LabeledField("Name") {
+                TextField("My Remote Daemon", text: $profile.name)
+                    .textFieldStyle(.roundedBorder)
             }
+
+            LabeledField("SSH Host") {
+                TextField("user@linuxbox", text: $sshTargetText)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            LabeledField("SSH Port") {
+                TextField("22", text: $sshPortText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 80)
+            }
+
+            LabeledField("Remote Port") {
+                HStack {
+                    TextField("7777", value: $profile.port, formatter: NumberFormatter())
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                    Stepper("", value: $profile.port, in: 1...65535)
+                        .labelsHidden()
+                }
+            }
+
+            LabeledField("Identity") {
+                TextField("~/.ssh/id_ed25519 (optional)", text: $sshIdentityText)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            // Test Connection
+            LabeledField("") {
+                HStack(spacing: 8) {
+                    Button {
+                        testConnection()
+                    } label: {
+                        HStack(spacing: 4) {
+                            if testState == .running {
+                                ProgressView().scaleEffect(0.6).frame(width: 12, height: 12)
+                            }
+                            Text(testState == .running ? "Testing…" : "Test Connection")
+                        }
+                    }
+                    .disabled(testState == .running || sshTargetText.isEmpty)
+
+                    switch testState {
+                    case .ok:
+                        Label("OK", systemImage: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .font(.system(size: 11))
+                    case .failed(let msg):
+                        Label(msg, systemImage: "xmark.circle.fill")
+                            .foregroundColor(.red)
+                            .font(.system(size: 11))
+                            .lineLimit(2)
+                    default:
+                        EmptyView()
+                    }
+                }
+            }
+
+            Text("Token is fetched automatically from the remote host via SSH tunnel.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Toggle("Set as Default", isOn: $profile.isDefault)
+                .font(.system(size: 12))
 
             HStack {
                 Spacer()
@@ -181,30 +172,48 @@ private struct ProfileEditSheet: View {
                     .keyboardShortcut(.escape)
                 Button("Save") {
                     var p = profile
-                    p.tokenRef = resolvedTokenRef()
+                    p.sshTarget = sshTargetText
+                    p.sshPort = Int(sshPortText)
+                    p.sshIdentity = sshIdentityText.isEmpty ? nil : sshIdentityText
                     onSave(p)
                 }
                 .keyboardShortcut(.return)
                 .buttonStyle(.borderedProminent)
-                .disabled(profile.name.isEmpty || (profile.mode == .remote && profile.host.isEmpty) || (tokenType == "inline" && tokenValue.isEmpty))
+                .disabled(profile.name.isEmpty || sshTargetText.isEmpty)
             }
         }
         .padding(20)
         .frame(minWidth: 380)
         .onAppear {
-            switch profile.tokenRef {
-            case .keychain(let s): tokenType = "keychain"; tokenValue = s
-            case .env(let v): tokenType = "env"; tokenValue = v
-            case .inline(let t): tokenType = "inline"; tokenValue = t
-            }
+            sshTargetText = profile.sshTarget ?? ""
+            sshPortText = profile.sshPort.map { String($0) } ?? ""
+            sshIdentityText = profile.sshIdentity ?? ""
         }
+        .onChange(of: sshTargetText) { _ in testState = .idle }
+        .onChange(of: sshPortText) { _ in testState = .idle }
+        .onChange(of: sshIdentityText) { _ in testState = .idle }
     }
 
-    private func resolvedTokenRef() -> TokenRef {
-        switch tokenType {
-        case "keychain": return .keychain(service: tokenValue)
-        case "inline": return .inline(token: tokenValue)
-        default: return .env(variable: tokenValue)
+    private func testConnection() {
+        testState = .running
+        let testProfile = DaemonProfile(
+            name: profile.name,
+            port: profile.port,
+            sshTarget: sshTargetText.isEmpty ? nil : sshTargetText,
+            sshPort: Int(sshPortText),
+            sshIdentity: sshIdentityText.isEmpty ? nil : sshIdentityText
+        )
+        Task {
+            let mgr = SSHTunnelManager(profile: testProfile)
+            do {
+                let _ = try await mgr.start()
+                let _ = try await mgr.fetchRemoteToken()
+                await mgr.stop()
+                await MainActor.run { testState = .ok }
+            } catch {
+                await mgr.stop()
+                await MainActor.run { testState = .failed(error.localizedDescription) }
+            }
         }
     }
 }
@@ -234,7 +243,7 @@ private struct LabeledField<Content: View>: View {
 public struct RemoteProfileSettingsView: View {
     @State private var profiles: [DaemonProfile] = []
     @State private var showSheet = false
-    @State private var editingProfile: DaemonProfile = DaemonProfileStore.localDefault()
+    @State private var editingProfile: DaemonProfile = DaemonProfile(name: "")
     @State private var isNewProfile = true
 
     private let store = DaemonProfileStore()
@@ -249,7 +258,7 @@ public struct RemoteProfileSettingsView: View {
                     .foregroundColor(.secondary)
                 Spacer()
                 Button {
-                    editingProfile = DaemonProfile(name: "", mode: .remote)
+                    editingProfile = DaemonProfile(name: "")
                     isNewProfile = true
                     showSheet = true
                 } label: {
