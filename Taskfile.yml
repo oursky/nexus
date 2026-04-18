@@ -1,5 +1,13 @@
 version: "3"
 
+dotenv: [".env.local"]
+
+vars:
+  REMOTE_HOST: '{{.REMOTE_HOST | default ""}}'
+  REMOTE_DAEMON_BIN: '{{.REMOTE_DAEMON_BIN | default "/usr/local/bin/nexus-daemon"}}'
+  REMOTE_CLI_BIN: '{{.REMOTE_CLI_BIN | default "/usr/local/bin/nexus"}}'
+  REMOTE_PORT: '{{.REMOTE_PORT | default "7777"}}'
+
 tasks:
   # ── Dev ─────────────────────────────────────────────────────────────────
   dev:
@@ -133,14 +141,15 @@ tasks:
       - ./scripts/ci/sdk-runtime-e2e-setup.sh
       - bash -lc 'set -euo pipefail; set -a; source "$(git rev-parse --show-toplevel)/.nexus-e2e-env.sh"; set +a; pnpm --filter @nexus/e2e-sdk-runtime test:ci -- src/cases/runtime-selection.e2e.test.ts'
 
-  # ── Remote Linuxbox ──────────────────────────────────────────────────────
-  deploy:linuxbox:
-    desc: "Cross-compile nexus daemon and CLI for linux/amd64 and deploy to linuxbox"
+  # ── Remote ───────────────────────────────────────────────────────────────
+  # Set REMOTE_HOST=user@hostname in .env.local (see .env.local.example).
+  # Override per-run: task deploy:remote REMOTE_HOST=user@host
+  deploy:remote:
+    desc: "Cross-compile nexus daemon and CLI for linux/amd64 and deploy to remote host"
     dir: packages/nexus
-    vars:
-      REMOTE_HOST: newman@linuxbox
-      REMOTE_DAEMON_BIN: /home/newman/.local/bin/nexus-daemon
-      REMOTE_CLI_BIN: /home/newman/.local/bin/nexus
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
     cmds:
       - echo "Building nexus daemon for linux/amd64..."
       - GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o ./tmp/nexus-linux ./cmd/daemon
@@ -156,43 +165,44 @@ tasks:
       - echo "Deployed daemon and CLI successfully."
 
   daemon:restart:
-    desc: "Restart the daemon on linuxbox"
-    vars:
-      REMOTE_HOST: newman@linuxbox
-      REMOTE_CLI_BIN: /home/newman/.local/bin/nexus
+    desc: "Restart the nexus daemon on the remote host"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
     cmds:
       - |
         ssh {{.REMOTE_HOST}} 'bash -s' << 'ENDSSH'
         pkill -f 'nexus daemon start' || true
         sleep 1
         rm -f ~/.config/nexus/run/token
-        nohup {{.REMOTE_CLI_BIN}} daemon start --network --bind 127.0.0.1 --port 7777 > /tmp/nexus-daemon.log 2>&1 &
+        nohup {{.REMOTE_CLI_BIN}} daemon start --network --bind 127.0.0.1 --port {{.REMOTE_PORT}} > /tmp/nexus-daemon.log 2>&1 &
         sleep 5
-        curl -sf http://127.0.0.1:7777/healthz && echo ' ✓ daemon healthy' || echo ' ✗ daemon not healthy'
+        curl -sf http://127.0.0.1:{{.REMOTE_PORT}}/healthz && echo ' ✓ daemon healthy' || echo ' ✗ daemon not healthy'
         ENDSSH
 
   daemon:token:
-    desc: "Print the daemon token from linuxbox"
-    vars:
-      REMOTE_HOST: newman@linuxbox
-      REMOTE_CLI_BIN: /home/newman/.local/bin/nexus
+    desc: "Print the daemon token from the remote host"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
     cmds:
       - ssh {{.REMOTE_HOST}} "{{.REMOTE_CLI_BIN}} daemon token"
 
   daemon:logs:
-    desc: "Tail the daemon log on linuxbox"
-    vars:
-      REMOTE_HOST: newman@linuxbox
+    desc: "Tail the daemon log on the remote host"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
     cmds:
       - ssh {{.REMOTE_HOST}} "tail -100 /tmp/nexus-daemon.log"
 
   daemon:status:
-    desc: "Check daemon status on linuxbox"
-    vars:
-      REMOTE_HOST: newman@linuxbox
-      REMOTE_BIN: /home/newman/.local/bin/nexus
+    desc: "Check daemon status on the remote host"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
     cmds:
-      - ssh {{.REMOTE_HOST}} "{{.REMOTE_BIN}} daemon status 2>&1; echo '---'; curl -sf http://127.0.0.1:7777/healthz && echo ' (healthy)' || echo ' (unreachable)'"
+      - ssh {{.REMOTE_HOST}} "{{.REMOTE_CLI_BIN}} daemon status 2>&1; echo '---'; curl -sf http://127.0.0.1:{{.REMOTE_PORT}}/healthz && echo ' (healthy)' || echo ' (unreachable)'"
 
   # ── Clean ─────────────────────────────────────────────────────────────────
   clean:
