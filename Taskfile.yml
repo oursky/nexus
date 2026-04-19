@@ -29,26 +29,6 @@ tasks:
           fi
         fi
 
-        # Node ≥20
-        if ! command -v node >/dev/null 2>&1; then
-          echo "✗ node not found (need ≥20)" && fail=1
-        else
-          node_ver=$(node --version | sed 's/v//')
-          node_major=$(echo "$node_ver" | cut -d. -f1)
-          if [ "$node_major" -lt 20 ]; then
-            echo "✗ node v$node_ver found but ≥20 required" && fail=1
-          else
-            echo "✓ node v$node_ver"
-          fi
-        fi
-
-        # pnpm
-        if ! command -v pnpm >/dev/null 2>&1; then
-          echo "✗ pnpm not found (install: npm install -g pnpm)" && fail=1
-        else
-          echo "✓ pnpm $(pnpm --version)"
-        fi
-
         # task (go-task)
         if ! command -v task >/dev/null 2>&1; then
           echo "✗ task (go-task) not found (install: https://taskfile.dev/installation)" && fail=1
@@ -60,8 +40,6 @@ tasks:
       - echo ""
       - echo "Installing Go dependencies..."
       - task: setup:go
-      - echo "Installing JS dependencies..."
-      - task: setup:js
       - echo ""
       - echo "✓ Setup complete!"
       - echo ""
@@ -76,110 +54,49 @@ tasks:
     cmds:
       - go mod download
 
-  setup:js:
-    desc: "Install JS dependencies via pnpm"
-    dir: packages/sdk/js
-    cmds:
-      - pnpm install
-
   # ── Dev ─────────────────────────────────────────────────────────────────
-  dev:
-    desc: "Start daemon (air hot-reload) + Vite dev server concurrently"
-    deps: [dev:workspace-dir]
-    cmds:
-      - task --parallel dev:daemon dev:ui
-
   dev:daemon:
-    desc: "Hot-reload daemon with air (proxies /ui to Vite on :5173)"
+    desc: "Hot-reload daemon with air"
     dir: packages/nexus
     cmds:
       - >-
         air
         --build.cmd "go build -o ./tmp/main ./cmd/daemon"
         --build.entrypoint "./tmp/main"
-        --build.args_bin "--token dev-token --workspace-dir $(python3 -c 'import os,tempfile; print(os.path.join(tempfile.gettempdir(),"nexus-dev-workspace"))')"
-    env:
-      NEXUS_DEV_UI: "http://localhost:5173"
-
-  dev:ui:
-    desc: "Vite dev server for the admin UI"
-    dir: packages/nexus-ui
-    cmds:
-      - pnpm install
-      - pnpm dev
-
-  dev:workspace-dir:
-    desc: "Ensure dev workspace dir exists"
-    cmds:
-      - mkdir -p /tmp/nexus-dev-workspace
-    silent: true
+        --build.args_bin "--token dev-token --workspace-dir $(python3 -c 'import os,tempfile; print(os.path.join(tempfile.gettempdir(),\"nexus-dev-workspace\"))')"
 
   # ── Build ────────────────────────────────────────────────────────────────
   build:
     desc: Build core packages
     cmds:
       - task: build:workspace-daemon
-      - task: build:workspace-sdk
-      - task: build:nexus-ui
 
   build:workspace-daemon:
     dir: packages/nexus
     cmds:
       - go build ./...
 
-  build:workspace-sdk:
-    dir: packages/sdk/js
-    cmds:
-      - pnpm install
-      - pnpm build
-
-  build:nexus-ui:
-    desc: "Build UI and copy clean dist into Go embed directory"
-    dir: packages/nexus-ui
-    cmds:
-      - pnpm install
-      - pnpm build
-      - bash -c 'rm -rf ../nexus/pkg/server/portal/ui_dist && mkdir -p ../nexus/pkg/server/portal/ui_dist && cp -r dist/. ../nexus/pkg/server/portal/ui_dist/'
-
   # ── Test ─────────────────────────────────────────────────────────────────
   test:
     desc: Run core tests
     cmds:
       - task: test:workspace-daemon
-      - task: test:workspace-sdk
-      - task: test:nexus-ui
 
   test:workspace-daemon:
     dir: packages/nexus
     cmds:
       - go test ./...
 
-  test:workspace-sdk:
-    dir: packages/sdk/js
-    cmds:
-      - pnpm test
-
-  test:nexus-ui:
-    dir: packages/nexus-ui
-    cmds:
-      - pnpm check
-
   # ── Lint ─────────────────────────────────────────────────────────────────
   lint:
     desc: Run core lint checks
     cmds:
       - task: lint:workspace-daemon
-      - task: lint:workspace-sdk
 
   lint:workspace-daemon:
     dir: packages/nexus
     cmds:
       - go test ./... -run TestDoesNotExist
-
-  lint:workspace-sdk:
-    dir: packages/sdk/js
-    cmds:
-      - pnpm exec tsc --noEmit
 
   # ── CI ───────────────────────────────────────────────────────────────────
   ci:
@@ -188,7 +105,6 @@ tasks:
       - task: ci:go-fix
       - task: ci:coverage
       - task: ci:core
-      - task: ci:sdk-runtime-e2e
 
   ci:core:
     desc: Run Core CI (linux) equivalent
@@ -204,15 +120,6 @@ tasks:
     desc: Run Go Coverage (nexus) equivalent
     cmds:
       - ./scripts/ci/coverage.sh
-
-  ci:sdk-runtime-e2e:
-    desc: Run runtime backend selection E2E package (strict when CI=true; set NEXUS_E2E_STRICT_RUNTIME=0 to allow soft skips locally)
-    env:
-      CI: true
-    cmds:
-      - bash -lc 'set -euo pipefail; if [[ -e /dev/kvm ]]; then sudo chmod 666 /dev/kvm || true; fi'
-      - ./scripts/ci/sdk-runtime-e2e-setup.sh
-      - bash -lc 'set -euo pipefail; set -a; source "$(git rev-parse --show-toplevel)/.nexus-e2e-env.sh"; set +a; pnpm --filter @nexus/e2e-sdk-runtime test:ci -- src/cases/runtime-selection.e2e.test.ts'
 
   # ── Remote ───────────────────────────────────────────────────────────────
   # Set REMOTE_HOST=user@hostname in .env.local (see .env.local.example).
@@ -286,6 +193,3 @@ tasks:
     cmds:
       - rm -rf packages/nexus/nexus
       - rm -rf packages/nexus/.air-tmp
-      - rm -rf packages/sdk/js/dist
-      - rm -rf packages/nexus-ui/dist
-      - rm -rf packages/nexus/pkg/server/portal/ui_dist
