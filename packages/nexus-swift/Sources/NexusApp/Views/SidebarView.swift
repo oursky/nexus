@@ -53,7 +53,7 @@ private struct SidebarHeader: View {
             }
 
             SidebarHeaderBtn(icon: "plus") {
-                appState.newSandboxProjectID = "__new__"
+                appState.createIntent = .newProject
                 appState.showNewWorkspace = true
             }
                 .padding(.trailing, 6)
@@ -132,9 +132,10 @@ private struct RepoSection: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("project_header_\(repo.id)")
 
                 Button {
-                    appState.newSandboxProjectID = repo.id
+                    appState.createIntent = .newSandbox(projectID: repo.id)
                     appState.showNewWorkspace = true
                 } label: {
                     Image(systemName: "plus")
@@ -424,7 +425,7 @@ private struct FooterMenuBtn: View {
     var body: some View {
         Menu {
             Button("New Project…") {
-                appState.newSandboxProjectID = "__new__"
+                appState.createIntent = .newProject
                 appState.showNewWorkspace = true
             }
 

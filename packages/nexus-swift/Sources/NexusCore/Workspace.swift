@@ -1,6 +1,20 @@
 import Foundation
 import Combine
 
+// MARK: - Sheet intent
+
+public enum CreateIntent: Identifiable {
+    case newProject
+    case newSandbox(projectID: String?)
+
+    public var id: String {
+        switch self {
+        case .newProject: return "newProject"
+        case .newSandbox(let pid): return "newSandbox:\(pid ?? "")"
+        }
+    }
+}
+
 // MARK: - Status
 
 /// Maps workspacemgr.WorkspaceState values from the daemon.
@@ -168,7 +182,9 @@ public struct Project: Identifiable, Codable, Equatable, Sendable {
     public let rootPath: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, primaryRepo, rootPath
+        case id, name
+        case primaryRepo = "repoUrl"
+        case rootPath
     }
 }
 

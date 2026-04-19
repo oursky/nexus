@@ -7,12 +7,10 @@ import AppKit
 struct NewWorkspaceSheet: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
-    let fixedProjectID: String?
+    let intent: CreateIntent
 
     @State private var workspaceName = "main"
     @State private var localPath     = ""
-    @State private var useRemote     = false
-    @State private var remoteURL     = ""
     @State private var branch        = "main"
     @State private var selectedProjectID = ""
     @State private var createNewProject = false
@@ -24,8 +22,8 @@ struct NewWorkspaceSheet: View {
     @State private var isCreating    = false
     @State private var localError: String?
 
-    init(fixedProjectID: String? = nil) {
-        self.fixedProjectID = fixedProjectID
+    init(intent: CreateIntent) {
+        self.intent = intent
     }
 
     private enum SourceMode: String, CaseIterable, Identifiable {
@@ -53,9 +51,6 @@ struct NewWorkspaceSheet: View {
 
     private var isValid: Bool {
         if createNewProject {
-            if useRemote {
-                return !remoteURL.trimmingCharacters(in: .whitespaces).isEmpty
-            }
             return !localPath.trimmingCharacters(in: .whitespaces).isEmpty
         }
         let name = workspaceName.trimmingCharacters(in: .whitespaces)
@@ -66,11 +61,15 @@ struct NewWorkspaceSheet: View {
         return !selectedProjectID.isEmpty
     }
 
+    private var headerTitle: String {
+        createNewProject ? "New Project" : "New Sandbox"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // ── Header ────────────────────────────────────────────
             HStack {
-                Text("New Sandbox")
+                Text(headerTitle)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(Theme.label)
                 Spacer()
@@ -90,24 +89,20 @@ struct NewWorkspaceSheet: View {
             // ── Form ─────────────────────────────────────────────
             VStack(alignment: .leading, spacing: 18) {
 
-                if fixedProjectID == nil {
+                if case .newSandbox(let pid) = intent, pid == nil {
                     FormField(label: "Project", isRequired: true) {
                         VStack(alignment: .leading, spacing: 8) {
                             Picker("Project", selection: $selectedProjectID) {
                                 ForEach(appState.projects) { project in
                                     Text(project.name).tag(project.id)
                                 }
-                                Text("Create new project…").tag("__new__")
                             }
                             .labelsHidden()
                             .onChange(of: selectedProjectID) { _, value in
-                                createNewProject = (value == "__new__")
-                                if !createNewProject {
-                                    if let root = appState.repos.first(where: { $0.id == value })?.workspaces.first(where: { ($0.parentWorkspaceId ?? "").isEmpty }) {
-                                        selectedSourceWorkspaceID = root.id
-                                    } else {
-                                        selectedSourceWorkspaceID = ""
-                                    }
+                                if let root = appState.repos.first(where: { $0.id == value })?.workspaces.first(where: { ($0.parentWorkspaceId ?? "").isEmpty }) {
+                                    selectedSourceWorkspaceID = root.id
+                                } else {
+                                    selectedSourceWorkspaceID = ""
                                 }
                             }
                             .accessibilityIdentifier("sandbox_project_picker")
@@ -176,45 +171,29 @@ struct NewWorkspaceSheet: View {
                 }
 
                 if createNewProject {
-                    // Source toggle for project creation
-                    Picker("Repository source", selection: $useRemote) {
-                        Text("Local path").tag(false)
-                        Text("Remote URL").tag(true)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-
-                    if !useRemote {
-                        FormField(label: "Project directory",
-                                  hint: "Pick an existing local repository",
-                                  isRequired: true) {
-                            HStack(spacing: 8) {
-                                NexusTextField(
-                                    placeholder: "/Users/you/projects/my-app",
-                                    text: $localPath
-                                )
-                                Button {
-                                    pickDirectory()
-                                } label: {
-                                    Text("Browse…")
-                                        .font(.system(size: 12, weight: .medium))
-                                        .foregroundColor(Theme.accent)
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 7)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: 6)
-                                                .stroke(Theme.accent.opacity(0.5), lineWidth: 1)
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    } else {
-                        FormField(label: "Repository URL", isRequired: true) {
+                    FormField(label: "Project directory",
+                              hint: "Pick an existing local repository",
+                              isRequired: true) {
+                        HStack(spacing: 8) {
                             NexusTextField(
-                                placeholder: "git@github.com:org/repo.git",
-                                text: $remoteURL
+                                placeholder: "/Users/you/projects/my-app",
+                                text: $localPath,
+                                accessibilityID: "project_local_path_field"
                             )
+                            Button {
+                                pickDirectory()
+                            } label: {
+                                Text("Browse…")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(Theme.accent)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 7)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(Theme.accent.opacity(0.5), lineWidth: 1)
+                                    )
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -264,6 +243,7 @@ struct NewWorkspaceSheet: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!isValid || isCreating)
+                .accessibilityIdentifier(createNewProject ? "create_project_button" : "create_sandbox_button")
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
@@ -271,21 +251,21 @@ struct NewWorkspaceSheet: View {
         .frame(width: 520)
         .background(Theme.bgApp)
         .onAppear {
-            if let fixed = fixedProjectID, !fixed.isEmpty {
-                if fixed == "__new__" {
-                    selectedProjectID = "__new__"
-                    createNewProject = true
-                } else {
-                    selectedProjectID = fixed
-                    createNewProject = false
-                }
-            } else if selectedProjectID.isEmpty {
-                if let first = appState.projects.first {
+            switch intent {
+            case .newProject:
+                createNewProject = true
+                selectedProjectID = "__new__"
+            case .newSandbox(let projectID):
+                // Invariant: sandbox intent must never enter project-create mode.
+                createNewProject = false
+                if let pid = projectID, !pid.isEmpty {
+                    selectedProjectID = pid
+                } else if let first = appState.projects.first {
                     selectedProjectID = first.id
-                    createNewProject = false
                 } else {
-                    selectedProjectID = "__new__"
-                    createNewProject = true
+                    // No projects exist; leave selectedProjectID empty — the picker
+                    // will be empty and the user cannot submit until a project exists.
+                    selectedProjectID = ""
                 }
             }
             if selectedSourceWorkspaceID.isEmpty, let root = projectRootWorkspace {
@@ -317,9 +297,7 @@ struct NewWorkspaceSheet: View {
 
         var projectID = selectedProjectID
         if createNewProject {
-            let repo = useRemote
-                ? remoteURL.trimmingCharacters(in: .whitespaces)
-                : localPath.trimmingCharacters(in: .whitespaces)
+            let repo = localPath.trimmingCharacters(in: .whitespaces)
             if let project = await appState.createProject(repo: repo) {
                 projectID = project.id
                 dismiss()
@@ -329,8 +307,8 @@ struct NewWorkspaceSheet: View {
             }
             return
         }
-        if projectID == "__new__" || projectID.isEmpty {
-            localError = "Select an existing project or create a new one."
+        if projectID.isEmpty {
+            localError = "Select a project."
             return
         }
 

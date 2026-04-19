@@ -39,7 +39,7 @@ public final class AppState: ObservableObject {
     @Published public var connectionState: ConnectionState = .disconnected
     @Published public var daemonStatus: DaemonStatus = .unknown
     @Published public var showNewWorkspace = false
-    @Published public var newSandboxProjectID: String?
+    @Published public var createIntent: CreateIntent?
     @Published public var sidebarVisible = true
     @Published public var showInspector = true
     @Published public var error: String?
@@ -50,6 +50,7 @@ public final class AppState: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var cachedProfile: DaemonProfile?
     private var tunnelManager: SSHTunnelManager?
+    private var daemonLogStream: DaemonLogStream?
 
 
     public init() {
@@ -59,6 +60,36 @@ public final class AppState: ObservableObject {
         let procEnv = ProcessInfo.processInfo.environment
         if let rawURL = procEnv["NEXUS_DAEMON_URL"], !rawURL.isEmpty,
            let daemonURL = URL(string: rawURL) {
+            // When NEXUS_DAEMON_PORT is also set, use profile-based connection so the
+            // SSH tunnel manager forwards to the correct remote port. This lets tests use
+            // an isolated daemon on a non-default port (e.g. linuxbox:7778) while still
+            // getting the tunnel-managed connection.
+            if let portStr = procEnv["NEXUS_DAEMON_PORT"], !portStr.isEmpty,
+               let remotePort = Int32(portStr) {
+                // SSH target: from NEXUS_DAEMON_SSH_TARGET, daemonURL.host, or default.
+                // For tests: NEXUS_DAEMON_SSH_TARGET=newman@linuxbox,
+                //            NEXUS_DAEMON_URL=ws://localhost:<tunnelPort> (tunnel address).
+                let sshHost = procEnv["NEXUS_DAEMON_SSH_TARGET"]
+                    ?? daemonURL.host
+                    ?? "newman@linuxbox"
+                let profile = DaemonProfile(
+                    profileId: "env-override",
+                    name: "Test Profile",
+                    port: Int(remotePort),
+                    isDefault: true,
+                    sshTarget: sshHost,
+                    sshIdentity: nil
+                )
+                self.cachedProfile = profile
+                self.client = NullDaemonClient()
+                connectionState = .starting
+                StartupTrace.checkpoint("app.init", "env-var+tunnel; ssh=\(sshHost) port=\(remotePort)")
+                Task { await self.connectRemoteAndLoad() }
+                startRefreshLoop()
+                return
+            }
+
+            // Direct bypass: no SSH tunnel, connect straight to the URL.
             let token: String? = {
                 let t = procEnv["NEXUS_DAEMON_TOKEN"] ?? ""
                 return t.isEmpty ? nil : t
@@ -114,11 +145,38 @@ public final class AppState: ObservableObject {
         Self.logger.debug("load() started")
         StartupTrace.checkpoint("load.enter")
         do {
+            StartupTrace.checkpoint("load.rpc.listWorkspaces.start")
             async let wsFetch = client.listWorkspaces()
+            StartupTrace.checkpoint("load.rpc.listRelations.start")
             async let relationsFetch = client.listRelations()
-            var workspaces = try await wsFetch
-            let relations = try await relationsFetch
-            let projects = try await client.listProjects()
+            var workspaces: [Workspace]
+            do {
+                workspaces = try await wsFetch
+                StartupTrace.checkpoint("load.rpc.listWorkspaces.ok", "count=\(workspaces.count)")
+            } catch {
+                let nsErr = error as NSError
+                print("[AppState.load] listWorkspaces FAILED domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
+                throw error
+            }
+            let relations: [RelationsGroup]
+            do {
+                relations = try await relationsFetch
+                StartupTrace.checkpoint("load.rpc.listRelations.ok", "count=\(relations.count)")
+            } catch {
+                let nsErr = error as NSError
+                print("[AppState.load] listRelations FAILED domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
+                throw error
+            }
+            StartupTrace.checkpoint("load.rpc.listProjects.start")
+            let projects: [Project]
+            do {
+                projects = try await client.listProjects()
+                StartupTrace.checkpoint("load.rpc.listProjects.ok", "count=\(projects.count)")
+            } catch {
+                let nsErr = error as NSError
+                print("[AppState.load] listProjects FAILED domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
+                throw error
+            }
 
             // Phase 1 — connect the UI as soon as lists return (no per-workspace side effects yet).
             applyLoadedWorkspaces(workspaces, relations: relations, projects: projects)
@@ -255,6 +313,8 @@ public final class AppState: ObservableObject {
             connectionState = .disconnected
             self.error = "SSH tunnel failed: \(error.localizedDescription)"
             StartupTrace.checkpoint("remote.tunnel.failed", error.localizedDescription)
+            self.daemonLogStream?.stop()
+            self.daemonLogStream = nil
             self.tunnelManager = nil
             return
         }
@@ -265,6 +325,12 @@ public final class AppState: ObservableObject {
         do {
             try await AsyncDeadline.withSecondsOnMainActor(30) {
                 await self.load()
+            }
+            if let wsClient = self.client as? WebSocketDaemonClient {
+                let stream = DaemonLogStream(client: wsClient)
+                self.daemonLogStream = stream
+                stream.start()
+                Self.logger.info("DaemonLogStream started")
             }
             self.updateProfileStatus(profileId: profile.profileId, status: .connected)
         } catch {
@@ -294,6 +360,8 @@ public final class AppState: ObservableObject {
 
     /// Re-reads the default profile and reconnects (e.g. after the user changes the active profile).
     public func reconnect() async {
+        daemonLogStream?.stop()
+        daemonLogStream = nil
         await tunnelManager?.stop()
         tunnelManager = nil
         let profile = DaemonProfileStore().defaultProfile()
