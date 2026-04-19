@@ -15,6 +15,7 @@ func Command() *cobra.Command {
 		stopCommand(),
 		statusCommand(),
 		tokenCommand(),
+		connectCommand(),
 	)
 	return cmd
 }

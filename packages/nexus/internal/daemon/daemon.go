@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -157,7 +158,9 @@ func New(cfg Config) (*Daemon, error) {
 
 // Start begins accepting connections. It blocks until ctx is cancelled or an error occurs.
 func (d *Daemon) Start(ctx context.Context) error {
+	slog.Info("daemon.starting", "addr", d.cfg.SocketPath)
 	log.Printf("daemon: listening on %s", d.cfg.SocketPath)
+	slog.Info("daemon.ready", "addr", d.cfg.SocketPath)
 
 	if d.networkListener == nil {
 		return d.listener.Serve(ctx)

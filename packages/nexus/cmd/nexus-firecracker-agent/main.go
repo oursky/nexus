@@ -328,13 +328,6 @@ func handleShellRequest(req execRequest, encoder *json.Encoder) {
 		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 0})
 	case "shell.close":
 		handleShellClose(req, encoder)
-	case "disk.grow":
-		out, growErr := exec.Command("resize2fs", workspaceDevicePath).CombinedOutput()
-		if growErr != nil {
-			_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: string(out)})
-		} else {
-			_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 0})
-		}
 	default:
 		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: "unknown shell request type"})
 	}
@@ -557,16 +550,11 @@ func setupWorkspaceMountWithRequirement(required bool) error {
 
 	if err := workspaceMountFunc(workspaceDevicePath, workspaceMountPoint, "ext4", 0, ""); err != nil {
 		if errors.Is(err, unix.EBUSY) {
-			status, mErr := workspaceMountStatus()
+			mounted, mErr := workspaceMountIsActive(workspaceDevicePath)
 			if mErr != nil {
 				return fmt.Errorf("verify workspace mount after EBUSY: %w", mErr)
 			}
-			if status.deviceMatches(workspaceDevicePath) {
-				if status.readOnly {
-					if remountErr := remountWorkspaceReadWrite(); remountErr != nil {
-						return fmt.Errorf("workspace mounted read-only and remount failed: %w", remountErr)
-					}
-				}
+			if mounted {
 				return nil
 			}
 			if err := workspaceUnmountNonWorkspaceMounts(); err != nil {
@@ -577,16 +565,11 @@ func setupWorkspaceMountWithRequirement(required bool) error {
 			} else if !errors.Is(retryErr, unix.EBUSY) {
 				return fmt.Errorf("retry mount %s at %s after clearing conflicts: %w", workspaceDevicePath, workspaceMountPoint, retryErr)
 			}
-			status, mErr = workspaceMountStatus()
+			mounted, mErr = workspaceMountIsActive(workspaceDevicePath)
 			if mErr != nil {
 				return fmt.Errorf("verify workspace mount after retry EBUSY: %w", mErr)
 			}
-			if status.deviceMatches(workspaceDevicePath) {
-				if status.readOnly {
-					if remountErr := remountWorkspaceReadWrite(); remountErr != nil {
-						return fmt.Errorf("workspace mounted read-only and remount failed: %w", remountErr)
-					}
-				}
+			if mounted {
 				return nil
 			}
 			return fmt.Errorf("mount %s at %s returned EBUSY but workspace mount is not active", workspaceDevicePath, workspaceMountPoint)
@@ -594,76 +577,24 @@ func setupWorkspaceMountWithRequirement(required bool) error {
 		return fmt.Errorf("mount %s at %s: %w", workspaceDevicePath, workspaceMountPoint, err)
 	}
 
-	if err := ensureWorkspaceMountWritable(); err != nil {
-		return err
-	}
-
 	return nil
 }
 
-type workspaceMountInfo struct {
-	device   string
-	readOnly bool
-}
-
-func (m workspaceMountInfo) active() bool {
-	return strings.TrimSpace(m.device) != ""
-}
-
-func (m workspaceMountInfo) deviceMatches(devicePath string) bool {
-	return m.active() && strings.TrimSpace(m.device) == strings.TrimSpace(devicePath)
-}
-
-func workspaceMountStatus() (workspaceMountInfo, error) {
+func workspaceMountIsActive(devicePath string) (bool, error) {
 	raw, err := workspaceReadProcMounts("/proc/mounts")
 	if err != nil {
-		return workspaceMountInfo{}, err
+		return false, err
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 4 {
+		if len(fields) < 2 {
 			continue
 		}
 		if fields[1] == workspaceMountPoint {
-			opts := strings.Split(fields[3], ",")
-			readOnly := false
-			for _, opt := range opts {
-				if strings.TrimSpace(opt) == "ro" {
-					readOnly = true
-					break
-				}
-			}
-			return workspaceMountInfo{
-				device:   fields[0],
-				readOnly: readOnly,
-			}, nil
+			return fields[0] == devicePath, nil
 		}
 	}
-	return workspaceMountInfo{}, nil
-}
-
-func ensureWorkspaceMountWritable() error {
-	status, err := workspaceMountStatus()
-	if err != nil {
-		return fmt.Errorf("verify workspace mount writability: %w", err)
-	}
-	if !status.active() || !status.deviceMatches(workspaceDevicePath) || !status.readOnly {
-		return nil
-	}
-	if err := remountWorkspaceReadWrite(); err != nil {
-		return fmt.Errorf("remount workspace read-write: %w", err)
-	}
-	return nil
-}
-
-func remountWorkspaceReadWrite() error {
-	if err := workspaceMountFunc(workspaceDevicePath, workspaceMountPoint, "ext4", unix.MS_REMOUNT, "rw"); err == nil {
-		return nil
-	}
-	if err := workspaceMountFunc("", workspaceMountPoint, "", unix.MS_REMOUNT, "rw"); err == nil {
-		return nil
-	}
-	return fmt.Errorf("remount %s at %s read-write failed", workspaceDevicePath, workspaceMountPoint)
+	return false, nil
 }
 
 func workspaceUnmountNonWorkspaceMounts() error {

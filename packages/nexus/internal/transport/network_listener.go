@@ -98,7 +98,7 @@ func (nl *NetworkListener) Serve(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("network listener: tls auto: %w", err)
 		}
-		log.Printf("transport: TLS auto mode: using in-memory self-signed certificate")
+		log.Printf("transport: TLS auto mode: using self-signed certificate")
 		nl.server.TLSConfig = tlsCfg
 		ln = tls.NewListener(ln, tlsCfg)
 	case "required":
@@ -151,6 +151,7 @@ func buildSelfSignedTLS() (*tls.Config, error) {
 		Subject:      pkix.Name{CommonName: "nexusd-auto"},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
+		DNSNames:     []string{"localhost"},
 	}
 	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
