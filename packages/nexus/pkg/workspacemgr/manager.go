@@ -30,6 +30,13 @@ type workspaceStore interface {
 	store.SpotlightRepository
 }
 
+func (m *Manager) Close() error {
+	if c, ok := m.workspaceRepo.(interface{ Close() error }); ok {
+		return c.Close()
+	}
+	return nil
+}
+
 func NewManager(root string) *Manager {
 	m := &Manager{
 		root:       root,

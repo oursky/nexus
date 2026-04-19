@@ -25,7 +25,7 @@ jobs:
           limactl shell xcui-vm -- bash -c "
             export PATH=\$PATH:/usr/local/go/bin
             cd /Users/runner/work/nexus/nexus
-            go build -o /tmp/nexusd ./packages/nexus/cmd/nexusd
+            go build -o /tmp/nexusd ./packages/nexus/cmd/daemon
           "
 
       - name: Start Nexus daemon in VM

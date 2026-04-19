@@ -35,6 +35,7 @@ func TestNewServer_FallsBackToInMemorySpotlightManagerOnRepositoryInitError(t *t
 	if err != nil {
 		t.Fatalf("expected NewServer to succeed when spotlight repository hydration fails, got err: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	forwards := srv.spotlightMgr.List("")
 	if len(forwards) != 0 {
@@ -150,6 +151,7 @@ func TestPTYOpenFirecrackerAliasFallsBackToDriverReportedBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	connector := &serverTestConnectorDriver{
 		serverTestDriver: serverTestDriver{backend: "firecracker"},
@@ -205,6 +207,7 @@ func TestPTYOpenSeatbeltUsesSeatbeltDriver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	firecrackerDriver := &serverTestConnectorDriver{
 		serverTestDriver: serverTestDriver{backend: "firecracker"},
@@ -295,6 +298,7 @@ func testPTYOpenUsesRemoteConnectorForBackend(t *testing.T, backend string) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	driver := &serverTestConnectorDriver{
 		serverTestDriver: serverTestDriver{backend: backend},
@@ -400,6 +404,7 @@ func TestPTYOpenRejectsWorkspaceNotStarted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	ws := createWorkspaceForPTYTest(t, srv.workspaceMgr, "")
 	conn := &Connection{send: make(chan []byte, 16), clientID: "test", pty: map[string]*ptySession{}}
@@ -422,6 +427,7 @@ func TestWorkspaceReadyRejectsWorkspaceNotStarted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	ws := createWorkspaceForPTYTest(t, srv.workspaceMgr, "")
 	msg := &RPCMessage{
@@ -457,6 +463,7 @@ func TestWorkspaceReadyAllowsStartedWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	ws := createWorkspaceForPTYTest(t, srv.workspaceMgr, "")
 	if err := srv.workspaceMgr.Start(ws.ID); err != nil {
@@ -493,6 +500,7 @@ func TestPTYOpenAllowsStartedWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	ws := createWorkspaceForPTYTest(t, srv.workspaceMgr, "")
 	if err := srv.workspaceMgr.Start(ws.ID); err != nil {
@@ -521,6 +529,7 @@ func TestPTYOpenRejectsMissingWorkspaceID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	conn := &Connection{send: make(chan []byte, 16), clientID: "test", pty: map[string]*ptySession{}}
 	payload, _ := json.Marshal(map[string]any{"shell": "sh", "rows": 12, "cols": 40})
@@ -538,6 +547,7 @@ func TestWorkspaceReadyRejectsMissingWorkspaceID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	msg := &RPCMessage{
 		JSONRPC: "2.0",
@@ -573,6 +583,7 @@ func TestUIAPIEndpointsRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	paths := []string{
 		"/ui/api/summary",
@@ -596,6 +607,7 @@ func TestUIServesEmbeddedHTML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	req := httptest.NewRequest(http.MethodGet, "/ui", nil)
 	rr := httptest.NewRecorder()
@@ -615,6 +627,7 @@ func TestPortalSummaryEndpointRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	req := httptest.NewRequest(http.MethodGet, "/portal/api", nil)
 	rr := httptest.NewRecorder()
@@ -654,6 +667,7 @@ func TestServer_IgnoresLegacySpotlightJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	forwards := srv.spotlightMgr.List("ws-seed-1")
 	if len(forwards) != 0 {
@@ -667,6 +681,7 @@ func TestServer_ShutdownDoesNotWriteSpotlightJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 
 	_, exposeErr := srv.spotlightMgr.Expose(context.Background(), spotlight.ExposeSpec{
 		WorkspaceID: "ws-1",
@@ -690,6 +705,7 @@ func TestServer_ShutdownDoesNotWriteSpotlightJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new resumed server: %v", err)
 	}
+	t.Cleanup(func() { _ = resumed.Close() })
 
 	forwards := resumed.spotlightMgr.List("ws-1")
 	if len(forwards) != 1 {

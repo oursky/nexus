@@ -199,6 +199,10 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 	}, nil
 }
 
+func (s *Server) Close() error {
+	return s.workspaceMgr.Close()
+}
+
 func (s *Server) Start() error {
 	if s.lifecycle != nil {
 		if err := s.lifecycle.RunPostStart(); err != nil {

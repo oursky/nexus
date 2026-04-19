@@ -1000,11 +1000,11 @@ func TestHandleWorkspaceCreate_UnsupportedNestedVirtFallsBackToSeatbelt(t *testi
 
 	factory := runtime.NewFactory(
 		[]runtime.Capability{
-			{Name: "runtime.seatbelt", Available: true},
+			{Name: "runtime.process", Available: true},
 			{Name: "runtime.firecracker", Available: true},
 		},
 		map[string]runtime.Driver{
-			"seatbelt":    &mockDriver{backend: "seatbelt"},
+			"process":     &mockDriver{backend: "process"},
 			"firecracker": &mockDriver{backend: "firecracker"},
 		},
 	)
@@ -1014,8 +1014,8 @@ func TestHandleWorkspaceCreate_UnsupportedNestedVirtFallsBackToSeatbelt(t *testi
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}
-	if result.Workspace.Backend != "seatbelt" {
-		t.Fatalf("expected seatbelt backend, got %q", result.Workspace.Backend)
+	if result.Workspace.Backend != "process" {
+		t.Fatalf("expected process backend (seatbelt alias), got %q", result.Workspace.Backend)
 	}
 	if setupCalls != 0 {
 		t.Fatalf("expected zero setup attempts, got %d", setupCalls)
@@ -1062,11 +1062,11 @@ func TestHandleWorkspaceCreate_UsesInternalPreflightOverrideWhenEnabled(t *testi
 
 	factory := runtime.NewFactory(
 		[]runtime.Capability{
-			{Name: "runtime.seatbelt", Available: true},
+			{Name: "runtime.process", Available: true},
 			{Name: "runtime.firecracker", Available: true},
 		},
 		map[string]runtime.Driver{
-			"seatbelt":    &mockDriver{backend: "seatbelt"},
+			"process":     &mockDriver{backend: "process"},
 			"firecracker": &mockDriver{backend: "firecracker"},
 		},
 	)
@@ -1076,8 +1076,8 @@ func TestHandleWorkspaceCreate_UsesInternalPreflightOverrideWhenEnabled(t *testi
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}
-	if result.Workspace.Backend != "seatbelt" {
-		t.Fatalf("expected seatbelt backend from override, got %q", result.Workspace.Backend)
+	if result.Workspace.Backend != "process" {
+		t.Fatalf("expected process backend from override, got %q", result.Workspace.Backend)
 	}
 }
 
