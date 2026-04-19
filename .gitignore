@@ -116,3 +116,7 @@ nexus-firecracker-agent
 # CocoIndex Code (ccc)
 /.cocoindex_code/
 .opencode/background-tasks/
+
+# Fixture repos and generated env
+scripts/fixtures/repos/
+scripts/fixtures/.env

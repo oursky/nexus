@@ -1,0 +1,68 @@
+name: XCUITests
+
+on:
+  push:
+    branches: [xcui-fixture-rewrite, main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  xcuitests:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lima
+        run: brew install lima
+
+      - name: Start Lima VM
+        run: limactl start --name=xcui-vm scripts/lima/xcui-vm.yaml --tty=false
+
+      - name: Build Nexus daemon in VM
+        run: |
+          limactl shell xcui-vm -- bash -c "
+            export PATH=\$PATH:/usr/local/go/bin
+            cd /Users/runner/work/nexus/nexus
+            go build -o /tmp/nexusd ./packages/nexus/cmd/nexusd
+          "
+
+      - name: Start Nexus daemon in VM
+        run: |
+          limactl shell xcui-vm -- bash -c "
+            nohup /tmp/nexusd serve --port 7777 > /tmp/nexusd.log 2>&1 &
+            sleep 3
+            nc -z localhost 7777 || (cat /tmp/nexusd.log && exit 1)
+          "
+
+      - name: Clone fixture repos
+        run: bash scripts/fixtures/setup.sh
+
+      - name: Load fixture paths
+        run: |
+          if [ -f scripts/fixtures/.env ]; then
+            cat scripts/fixtures/.env >> "$GITHUB_ENV"
+          fi
+
+      - name: Run XCUITests
+        env:
+          NEXUS_UI_TEST_DAEMON_URL: ws://127.0.0.1:7777
+          NEXUS_UI_TEST_DAEMON_TOKEN: ${{ secrets.NEXUS_DAEMON_TOKEN }}
+        run: bash scripts/test-xcui.sh --no-tunnel
+
+      - name: Upload xcresult bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexusUITests-xcresult
+          path: packages/nexus-swift/.build/xcresults/*.xcresult
+          if-no-files-found: warn
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexusUITests-report
+          path: packages/nexus-swift/.build/xcresults/latest-report.md
+          if-no-files-found: warn
