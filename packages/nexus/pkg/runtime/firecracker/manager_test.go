@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -14,38 +13,13 @@ import (
 )
 
 type mockAPIClient struct {
-	putErr      error
-	putCalls    []string // recorded "<method> <path>" entries
-	pauseErr    error
-	resumeErr   error
-	snapshotErr error
-	snapCalls   []string
+	putErr   error
+	putCalls []string // recorded "<method> <path>" entries
 }
 
 func (m *mockAPIClient) put(ctx context.Context, path string, body any) error {
 	m.putCalls = append(m.putCalls, path)
 	return m.putErr
-}
-
-func (m *mockAPIClient) patch(ctx context.Context, path string, body any) error {
-	m.putCalls = append(m.putCalls, "PATCH:"+path)
-	return m.putErr
-}
-
-func (m *mockAPIClient) PauseVM(ctx context.Context) error {
-	m.putCalls = append(m.putCalls, "/vm:Paused")
-	return m.pauseErr
-}
-
-func (m *mockAPIClient) ResumeVM(ctx context.Context) error {
-	m.putCalls = append(m.putCalls, "/vm:Resumed")
-	return m.resumeErr
-}
-
-func (m *mockAPIClient) CreateSnapshot(ctx context.Context, vmstatePath, memFilePath string) error {
-	m.snapCalls = append(m.snapCalls, vmstatePath+"|"+memFilePath)
-	m.putCalls = append(m.putCalls, "/snapshot/create")
-	return m.snapshotErr
 }
 
 // testNetworkCommands records calls made to network commands and suppresses
@@ -287,12 +261,6 @@ func (c *captureBootArgsClient) put(ctx context.Context, path string, body any) 
 	return nil
 }
 
-func (c *captureBootArgsClient) patch(_ context.Context, _ string, _ any) error { return nil }
-
-func (c *captureBootArgsClient) PauseVM(_ context.Context) error                     { return nil }
-func (c *captureBootArgsClient) ResumeVM(_ context.Context) error                    { return nil }
-func (c *captureBootArgsClient) CreateSnapshot(_ context.Context, _, _ string) error { return nil }
-
 func TestManagerSpawnTAPCleanupOnAPIFailure(t *testing.T) {
 	nc := installTestNetworkRunner(t)
 	installWorkspaceImageBuilder(t)
@@ -379,49 +347,6 @@ func TestManagerStopTeardownsTAP(t *testing.T) {
 	}
 	if !hasTAPDel {
 		t.Errorf("expected ip tuntap del %s to be called on Stop; got calls: %v", tapName, nc.calls)
-	}
-}
-
-func TestManagerSpawnFromSnapshotRestoresWorkspaceImage(t *testing.T) {
-	installTestNetworkRunner(t)
-	cfg := testManagerConfig(t)
-	mgr := newManager(cfg)
-	mgr.apiClientFactory = func(sockPath string) apiClientInterface {
-		return &mockAPIClient{}
-	}
-
-	snapshotsDir := filepath.Join(cfg.WorkDirRoot, ".snapshots")
-	if err := os.MkdirAll(snapshotsDir, 0o755); err != nil {
-		t.Fatalf("mkdir snapshots dir: %v", err)
-	}
-	snapshotID := "snap-unit-test"
-	snapshotPath := filepath.Join(snapshotsDir, snapshotID+".ext4")
-	if err := os.WriteFile(snapshotPath, []byte("snapshot-image-bytes"), 0o600); err != nil {
-		t.Fatalf("write snapshot image: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	spec := SpawnSpec{
-		WorkspaceID: "ws-from-snapshot",
-		ProjectRoot: t.TempDir(),
-		SnapshotID:  snapshotID,
-		MemoryMiB:   512,
-		VCPUs:       1,
-	}
-
-	inst, err := mgr.Spawn(ctx, spec)
-	if err != nil {
-		t.Fatalf("spawn failed: %v", err)
-	}
-
-	got, err := os.ReadFile(inst.WorkspaceImage)
-	if err != nil {
-		t.Fatalf("read restored workspace image: %v", err)
-	}
-	if string(got) != "snapshot-image-bytes" {
-		t.Fatalf("expected restored image bytes %q, got %q", "snapshot-image-bytes", string(got))
 	}
 }
 
@@ -662,14 +587,12 @@ func TestManagerSpawnProcessOutlivesSpawnContext(t *testing.T) {
 		t.Fatalf("expected firecracker process to outlive spawn context, but it exited: %v", err)
 	}
 
-	if runtime.GOOS == "linux" {
-		state, err := processState(inst.Process.Pid)
-		if err != nil {
-			t.Fatalf("failed to read firecracker process state: %v", err)
-		}
-		if state == 'Z' {
-			t.Fatal("expected firecracker process to outlive spawn context, but it became a zombie")
-		}
+	state, err := processState(inst.Process.Pid)
+	if err != nil {
+		t.Fatalf("failed to read firecracker process state: %v", err)
+	}
+	if state == 'Z' {
+		t.Fatal("expected firecracker process to outlive spawn context, but it became a zombie")
 	}
 }
 
@@ -725,26 +648,18 @@ func TestManagerWaitForAPISocketCancellation(t *testing.T) {
 }
 
 func TestWorkspaceImageSizeBytes(t *testing.T) {
-	const (
-		miB        = int64(1024 * 1024)
-		giB        = 1024 * miB
-		minSize    = 2 * giB
-		maxInitial = 20 * giB
-	)
+	const miB = int64(1024 * 1024)
 
-	tiny := workspaceImageSizeBytes(1)
-	if tiny < minSize || tiny > minSize+miB {
-		t.Fatalf("expected tiny project to produce ~2GiB image, got %dMiB", tiny>>20)
+	if got := workspaceImageSizeBytes(1); got != 32768*miB {
+		t.Fatalf("expected minimum image size 32768MiB, got %d", got)
 	}
 
-	oneGiB := workspaceImageSizeBytes(1024 * miB)
-	if oneGiB != 4*giB {
-		t.Fatalf("expected 4GiB for 1GiB project (2*project+2GiB), got %dMiB", oneGiB>>20)
+	if got := workspaceImageSizeBytes(1024 * miB); got != 32768*miB {
+		t.Fatalf("expected minimum size 32768MiB for 1GiB project, got %d", got)
 	}
 
-	largeProject := workspaceImageSizeBytes(20 * 1024 * miB)
-	if largeProject != maxInitial {
-		t.Fatalf("expected maxInitial %dGiB for large project (capped), got %dMiB", maxInitial>>30, largeProject>>20)
+	if got := workspaceImageSizeBytes(20 * 1024 * miB); got != 36864*miB {
+		t.Fatalf("expected size 36864MiB for 20GiB project, got %d", got)
 	}
 
 	if got := workspaceImageSizeBytes(300*miB + 12345); got%miB != 0 {

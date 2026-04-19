@@ -53,7 +53,7 @@ private struct SidebarHeader: View {
             }
 
             SidebarHeaderBtn(icon: "plus") {
-                appState.newSandboxProjectID = "__new__"
+                appState.createIntent = .newProject
                 appState.showNewWorkspace = true
             }
                 .padding(.trailing, 6)
@@ -132,9 +132,10 @@ private struct RepoSection: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("project_header_\(repo.id)")
 
                 Button {
-                    appState.newSandboxProjectID = repo.id
+                    appState.createIntent = .newSandbox(projectID: repo.id)
                     appState.showNewWorkspace = true
                 } label: {
                     Image(systemName: "plus")
@@ -405,21 +406,6 @@ private struct SidebarFooter: View {
                         .accessibilityLabel("Terminal error")
                 }
             }
-
-            // Daemon panel action markers for XCUITest in environments where
-            // popovers are not reliably interactable.
-            Button("", action: {})
-                .buttonStyle(.plain)
-                .frame(width: 1, height: 1)
-                .accessibilityIdentifier("daemon_action_refresh_tools")
-            Button("", action: {})
-                .buttonStyle(.plain)
-                .frame(width: 1, height: 1)
-                .accessibilityIdentifier("daemon_action_install_tools")
-            Button("", action: {})
-                .buttonStyle(.plain)
-                .frame(width: 1, height: 1)
-                .accessibilityIdentifier("daemon_action_provision_runtime")
         }
         .padding(.horizontal, 6)
         .frame(height: 34)
@@ -439,7 +425,7 @@ private struct FooterMenuBtn: View {
     var body: some View {
         Menu {
             Button("New Project…") {
-                appState.newSandboxProjectID = "__new__"
+                appState.createIntent = .newProject
                 appState.showNewWorkspace = true
             }
 
@@ -447,9 +433,6 @@ private struct FooterMenuBtn: View {
 
             Button("Connect to Daemon…") {
                 showDaemonPanel = true
-            }
-            Button("Disconnect") {
-                Task { await appState.stopDaemon() }
             }
 
             Divider()
@@ -463,7 +446,7 @@ private struct FooterMenuBtn: View {
                 .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
-        .fixedSize()
+        .frame(width: 28, height: 28)
         .onHover { hover = $0 }
     }
 }

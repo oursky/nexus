@@ -13,22 +13,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/credsbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
 // fakeManager is a test double for the Manager
 type fakeManager struct {
-	spawnCalled      bool
-	spawnSpec        SpawnSpec
-	stopCalled       bool
-	stopID           string
-	checkpointCalled bool
-	checkpointParent string
-	checkpointChild  string
-	checkpointID     string
-	instance         *Instance
-	err              error
+	spawnCalled bool
+	spawnSpec   SpawnSpec
+	stopCalled  bool
+	stopID      string
+	instance    *Instance
+	err         error
 }
 
 func (f *fakeManager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) {
@@ -51,23 +46,6 @@ func (f *fakeManager) Get(workspaceID string) (*Instance, error) {
 		return f.instance, nil
 	}
 	return nil, errors.New("not found")
-}
-
-func (f *fakeManager) GrowWorkspace(_ context.Context, _ string, _ int64) error {
-	return f.err
-}
-
-func (f *fakeManager) CheckpointForkSnapshot(ctx context.Context, workspaceID string, childWorkspaceID string) (string, error) {
-	f.checkpointCalled = true
-	f.checkpointParent = workspaceID
-	f.checkpointChild = childWorkspaceID
-	if f.err != nil {
-		return "", f.err
-	}
-	if strings.TrimSpace(f.checkpointID) == "" {
-		f.checkpointID = "snap-1"
-	}
-	return f.checkpointID, nil
 }
 
 func TestFirecrackerDriver_Backend(t *testing.T) {
@@ -161,60 +139,6 @@ func TestDriverCreateWithMemMiBOption(t *testing.T) {
 	}
 }
 
-func TestDriverCreateWithVCPUsOption(t *testing.T) {
-	fakeMgr := &fakeManager{
-		instance: &Instance{
-			WorkspaceID: "ws-1",
-			WorkDir:     "/tmp/ws-1",
-			APISocket:   "/tmp/ws-1/firecracker.sock",
-			VSockPath:   "/tmp/ws-1/vsock.sock",
-			CID:         1000,
-		},
-	}
-
-	d := NewDriver(nil, WithManager(fakeMgr))
-	err := d.Create(context.Background(), runtime.CreateRequest{
-		WorkspaceID: "ws-1",
-		ProjectRoot: "/projects/ws-1",
-		Options: map[string]string{
-			"vcpus": "3",
-		},
-	})
-	if err != nil {
-		t.Fatalf("create failed: %v", err)
-	}
-	if fakeMgr.spawnSpec.VCPUs != 3 {
-		t.Fatalf("expected VCPUs 3, got %d", fakeMgr.spawnSpec.VCPUs)
-	}
-}
-
-func TestDriverCreatePassesLineageSnapshotToSpawnSpec(t *testing.T) {
-	fakeMgr := &fakeManager{
-		instance: &Instance{
-			WorkspaceID: "ws-1",
-			WorkDir:     "/tmp/ws-1",
-			APISocket:   "/tmp/ws-1/firecracker.sock",
-			VSockPath:   "/tmp/ws-1/vsock.sock",
-			CID:         1000,
-		},
-	}
-	d := NewDriver(nil, WithManager(fakeMgr))
-
-	err := d.Create(context.Background(), runtime.CreateRequest{
-		WorkspaceID: "ws-1",
-		ProjectRoot: "/projects/ws-1",
-		Options: map[string]string{
-			"lineage_snapshot_id": "snap-42",
-		},
-	})
-	if err != nil {
-		t.Fatalf("create failed: %v", err)
-	}
-	if fakeMgr.spawnSpec.SnapshotID != "snap-42" {
-		t.Fatalf("expected spawn snapshot id %q, got %q", "snap-42", fakeMgr.spawnSpec.SnapshotID)
-	}
-}
-
 // TestDriverCreatePassesSpawnError verifies errors from manager are propagated
 func TestDriverCreatePassesSpawnError(t *testing.T) {
 	fakeMgr := &fakeManager{
@@ -283,119 +207,43 @@ func TestFirecrackerDriver_StartIsNoOp(t *testing.T) {
 	}
 }
 
-func TestFirecrackerDriver_PauseDelegatesToStop(t *testing.T) {
+func TestFirecrackerDriver_PauseNotSupported(t *testing.T) {
 	fakeMgr := &fakeManager{}
 	d := NewDriver(nil, WithManager(fakeMgr))
-
-	d.mu.Lock()
-	d.projectRoots["ws-1"] = "/projects/ws-1"
-	d.mu.Unlock()
 
 	err := d.Pause(context.Background(), "ws-1")
-	if err != nil {
-		t.Fatalf("pause should delegate to stop: %v", err)
-	}
-	if !fakeMgr.stopCalled {
-		t.Fatal("expected manager.Stop to be called by pause")
+	if err == nil {
+		t.Fatal("expected error - pause not supported")
 	}
 }
 
-func TestFirecrackerDriver_ResumeCreatesVMFromProjectRoot(t *testing.T) {
-	fakeMgr := &fakeManager{
-		instance: &Instance{
-			WorkspaceID: "ws-1",
-			WorkDir:     "/tmp/ws-1",
-			APISocket:   "/tmp/ws-1/firecracker.sock",
-			VSockPath:   "/tmp/ws-1/vsock.sock",
-			CID:         1000,
-		},
-	}
-	d := NewDriver(nil, WithManager(fakeMgr))
-	d.mu.Lock()
-	d.projectRoots["ws-1"] = "/projects/ws-1"
-	d.mu.Unlock()
-
-	err := d.Resume(context.Background(), "ws-1")
-	if err != nil {
-		t.Fatalf("resume failed: %v", err)
-	}
-	if !fakeMgr.spawnCalled {
-		t.Fatal("expected manager.Spawn to be called by resume")
-	}
-	if fakeMgr.spawnSpec.ProjectRoot != "/projects/ws-1" {
-		t.Fatalf("expected resume to use saved project root, got %q", fakeMgr.spawnSpec.ProjectRoot)
-	}
-}
-
-func TestFirecrackerDriver_ForkCopiesParentProjectRoot(t *testing.T) {
+func TestFirecrackerDriver_ResumeNotSupported(t *testing.T) {
 	fakeMgr := &fakeManager{}
 	d := NewDriver(nil, WithManager(fakeMgr))
 
-	d.mu.Lock()
-	d.projectRoots["ws-1"] = "/projects/ws-1"
-	d.mu.Unlock()
-
-	if err := d.Fork(context.Background(), "ws-1", "ws-2"); err != nil {
-		t.Fatalf("fork failed: %v", err)
-	}
-
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	if got := d.projectRoots["ws-2"]; got != "/projects/ws-1" {
-		t.Fatalf("expected child project root to inherit parent root, got %q", got)
-	}
-}
-
-func TestFirecrackerDriver_CheckpointForkDelegatesToManager(t *testing.T) {
-	fakeMgr := &fakeManager{
-		checkpointID: "snap-fork-42",
-	}
-	d := NewDriver(nil, WithManager(fakeMgr))
-
-	snapID, err := d.CheckpointFork(context.Background(), "ws-1", "ws-2")
-	if err != nil {
-		t.Fatalf("CheckpointFork failed: %v", err)
-	}
-	if snapID != "snap-fork-42" {
-		t.Fatalf("expected snapshot ID %q, got %q", "snap-fork-42", snapID)
-	}
-	if !fakeMgr.checkpointCalled {
-		t.Fatal("expected manager.CheckpointForkImage to be called")
-	}
-	if fakeMgr.checkpointParent != "ws-1" {
-		t.Fatalf("expected parent ws-1, got %q", fakeMgr.checkpointParent)
-	}
-	if fakeMgr.checkpointChild != "ws-2" {
-		t.Fatalf("expected child ws-2, got %q", fakeMgr.checkpointChild)
-	}
-}
-
-func TestFirecrackerDriver_CheckpointForkRequiresManager(t *testing.T) {
-	d := NewDriver(nil)
-	_, err := d.CheckpointFork(context.Background(), "ws-1", "ws-2")
+	err := d.Resume(context.Background(), "ws-1")
 	if err == nil {
-		t.Fatal("expected error when manager is nil")
+		t.Fatal("expected error - resume not supported")
 	}
 }
 
-func TestFirecrackerDriver_RestoreDelegatesToResume(t *testing.T) {
-	fakeMgr := &fakeManager{
-		instance: &Instance{
-			WorkspaceID: "ws-1",
-			WorkDir:     "/tmp/ws-1",
-			APISocket:   "/tmp/ws-1/firecracker.sock",
-			VSockPath:   "/tmp/ws-1/vsock.sock",
-			CID:         1000,
-		},
-	}
+func TestFirecrackerDriver_ForkNotSupported(t *testing.T) {
+	fakeMgr := &fakeManager{}
 	d := NewDriver(nil, WithManager(fakeMgr))
-	d.mu.Lock()
-	d.projectRoots["ws-1"] = "/projects/ws-1"
-	d.mu.Unlock()
+
+	err := d.Fork(context.Background(), "ws-1", "ws-2")
+	if err == nil {
+		t.Fatal("expected error - fork not supported")
+	}
+}
+
+func TestFirecrackerDriver_RestoreNotSupported(t *testing.T) {
+	fakeMgr := &fakeManager{}
+	d := NewDriver(nil, WithManager(fakeMgr))
 
 	err := d.Restore(context.Background(), "ws-1")
-	if err != nil {
-		t.Fatalf("restore should delegate to resume: %v", err)
+	if err == nil {
+		t.Fatal("expected error - restore not supported")
 	}
 }
 
@@ -445,49 +293,79 @@ func TestFirecrackerDriver_DestroyWithoutManager(t *testing.T) {
 	}
 }
 
-func TestBuildHostAuthBundleIncludesRegistryPaths(t *testing.T) {
+func TestBuildGuestCLIBootstrapCommandInstallsOnlyHostAvailableCLIs(t *testing.T) {
+	cmd := buildGuestCLIBootstrapCommand(hostCLIAvailability{Opencode: true, Codex: false, Claude: true})
+	if !strings.Contains(cmd, "npm i -g opencode-ai @anthropic-ai/claude-code") {
+		t.Fatalf("expected selective install command, got %q", cmd)
+	}
+	if strings.Contains(cmd, "@openai/codex") {
+		t.Fatalf("did not expect codex package install when host codex unavailable, got %q", cmd)
+	}
+}
+
+func TestBuildHostAuthBundleIncludesKnownConfigPaths(t *testing.T) {
 	home := t.TempDir()
-
-	credFile := filepath.Join(home, ".claude", ".credentials.json")
-	if err := os.MkdirAll(filepath.Dir(credFile), 0o700); err != nil {
-		t.Fatal(err)
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
 	}
-	if err := os.WriteFile(credFile, []byte(`{"token":"test"}`), 0o600); err != nil {
-		t.Fatal(err)
+	t.Cleanup(func() { _ = os.Unsetenv("HOME") })
+
+	mkdir := func(path string) {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+	}
+	mkdir(filepath.Join(home, ".config", "opencode"))
+	mkdir(filepath.Join(home, ".config", "codex"))
+	mkdir(filepath.Join(home, ".codex"))
+	mkdir(filepath.Join(home, ".claude"))
+	if err := os.WriteFile(filepath.Join(home, ".config", "opencode", "session.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write opencode session: %v", err)
 	}
 
-	encoded, err := credsbundle.BuildFromHome(home)
+	bundle, err := buildHostAuthBundle()
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("buildHostAuthBundle: %v", err)
 	}
-	if encoded == "" {
-		t.Fatal("expected non-empty bundle when cred files exist")
-	}
-
-	raw, decErr := base64.StdEncoding.DecodeString(encoded)
-	if decErr != nil {
-		t.Fatalf("bundle is not valid base64: %v", decErr)
+	if strings.TrimSpace(bundle) == "" {
+		t.Fatal("expected non-empty auth bundle")
 	}
 
-	gr, err := gzip.NewReader(bytes.NewReader(raw))
+	raw, err := base64.StdEncoding.DecodeString(bundle)
 	if err != nil {
-		t.Fatalf("bundle is not gzip: %v", err)
+		t.Fatalf("decode bundle: %v", err)
 	}
-	tr := tar.NewReader(gr)
-	found := false
+
+	gz, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	names := make([]string, 0)
 	for {
 		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
 		if err != nil {
-			t.Fatalf("tar read error: %v", err)
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("read tar entry: %v", err)
 		}
-		if strings.HasSuffix(hdr.Name, ".credentials.json") {
-			found = true
-		}
+		names = append(names, hdr.Name)
 	}
-	if !found {
-		t.Fatal("bundle does not contain .credentials.json from registry")
+
+	joined := strings.Join(names, "\n")
+	if !strings.Contains(joined, ".config/opencode") {
+		t.Fatalf("expected opencode path in archive, got %q", joined)
+	}
+	if !strings.Contains(joined, ".config/codex") {
+		t.Fatalf("expected codex path in archive, got %q", joined)
+	}
+	if !strings.Contains(joined, ".codex") {
+		t.Fatalf("expected .codex path in archive, got %q", joined)
+	}
+	if !strings.Contains(joined, ".claude") {
+		t.Fatalf("expected claude path in archive, got %q", joined)
 	}
 }

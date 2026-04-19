@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -28,40 +29,51 @@ type AuthRelayRevokeResult struct {
 	Revoked bool `json:"revoked"`
 }
 
-func HandleAuthRelayMint(_ context.Context, req AuthRelayMintParams, mgr *workspacemgr.Manager, broker *authrelay.Broker) (*AuthRelayMintResult, *rpckit.RPCError) {
+func HandleAuthRelayMint(_ context.Context, params json.RawMessage, mgr *workspacemgr.Manager, broker *authrelay.Broker) (*AuthRelayMintResult, *rpckit.RPCError) {
 	if broker == nil || mgr == nil {
 		return nil, rpckit.ErrInternalError
 	}
 
-	if req.WorkspaceID == "" || req.Binding == "" {
+	var p AuthRelayMintParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+	if p.WorkspaceID == "" || p.Binding == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
 
-	ws, ok := mgr.Get(req.WorkspaceID)
+	ws, ok := mgr.Get(p.WorkspaceID)
 	if !ok {
 		return nil, rpckit.ErrWorkspaceNotFound
 	}
 
-	bindingValue, ok := ws.AuthBinding[req.Binding]
+	bindingValue, ok := ws.AuthBinding[p.Binding]
 	if !ok || bindingValue == "" {
-		return nil, &rpckit.RPCError{Code: rpckit.ErrAuthBindingAbsent.Code, Message: fmt.Sprintf("auth binding not found: %s", req.Binding)}
+		return nil, &rpckit.RPCError{Code: rpckit.ErrAuthBindingAbsent.Code, Message: fmt.Sprintf("auth binding not found: %s", p.Binding)}
 	}
 
-	ttl := time.Duration(req.TTLSeconds) * time.Second
-	token := broker.Mint(req.WorkspaceID, authrelay.RelayEnv(req.Binding, bindingValue), ttl)
+	ttl := time.Duration(p.TTLSeconds) * time.Second
+	token := broker.Mint(p.WorkspaceID, map[string]string{
+		"NEXUS_AUTH_BINDING": p.Binding,
+		"NEXUS_AUTH_VALUE":   bindingValue,
+	}, ttl)
 
 	return &AuthRelayMintResult{Token: token}, nil
 }
 
-func HandleAuthRelayRevoke(_ context.Context, req AuthRelayRevokeParams, broker *authrelay.Broker) (*AuthRelayRevokeResult, *rpckit.RPCError) {
+func HandleAuthRelayRevoke(_ context.Context, params json.RawMessage, broker *authrelay.Broker) (*AuthRelayRevokeResult, *rpckit.RPCError) {
 	if broker == nil {
 		return nil, rpckit.ErrInternalError
 	}
 
-	if req.Token == "" {
+	var p AuthRelayRevokeParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+	if p.Token == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
 
-	broker.Revoke(req.Token)
+	broker.Revoke(p.Token)
 	return &AuthRelayRevokeResult{Revoked: true}, nil
 }

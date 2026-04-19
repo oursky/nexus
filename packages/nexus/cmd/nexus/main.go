@@ -6,10 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,19 +20,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/buildinfo"
 	"github.com/inizio/nexus/packages/nexus/pkg/compose"
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
-	"github.com/inizio/nexus/packages/nexus/pkg/credsbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
-	"github.com/inizio/nexus/packages/nexus/pkg/update"
-	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
-	"github.com/spf13/cobra"
+
+	daemoncmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/daemon"
 )
 
 type options struct {
-	projectRoot string
-	reportJSON  string
+	projectRoot       string
+	suite             string
+	composeFile       string
+	requiredHostPorts []int
+	reportJSON        string
 }
 
 type execOptions struct {
@@ -49,415 +49,146 @@ type initOptions struct {
 
 const execKVMGroupReexecEnv = "NEXUS_EXEC_KVM_GROUP_REEXEC"
 
-var rootCmd = &cobra.Command{
-	Use:           "nexus",
-	SilenceUsage:  true,
-	SilenceErrors: true,
-}
-
-var doctorReportJSON string
-
-var doctorCmd = &cobra.Command{
-	Use:   "doctor",
-	Short: "Run workspace health checks",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		projectRoot, err := filepath.Abs(".")
-		if err != nil {
-			return fmt.Errorf("resolve project root: %w", err)
-		}
-		return run(options{
-			projectRoot: projectRoot,
-			reportJSON:  strings.TrimSpace(doctorReportJSON),
-		})
-	},
-}
-
-var initForce bool
-
-var initCmd = &cobra.Command{
-	Use:   "init [project-root]",
-	Short: "Scaffold .nexus in a git repository",
-	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		projectRoot := "."
-		if len(args) == 1 {
-			projectRoot = args[0]
-		}
-		abs, err := filepath.Abs(strings.TrimSpace(projectRoot))
-		if err != nil {
-			return fmt.Errorf("resolve project root: %w", err)
-		}
-		return runInit(initOptions{projectRoot: abs, force: initForce})
-	},
-}
-
-var runBackend string
-var runTimeout time.Duration
-var updateCheckOnly bool
-var updateForce bool
-var updateRollback bool
-var updateJSON bool
-var versionJSON bool
-var githubReleaseAPIBaseURL = "https://api.github.com"
-
-var runCmd = &cobra.Command{
-	Use:   "run [--backend name] [--timeout dur] -- <command> [args...]",
-	Short: "Run a command in a new ephemeral workspace",
-	Args:  cobra.ArbitraryArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if cmd.ArgsLenAtDash() == -1 {
-			return fmt.Errorf("usage: nexus run [--backend <name>] [--timeout <dur>] -- <command> [args...]")
-		}
-		if len(args) == 0 {
-			return fmt.Errorf("command required after --")
-		}
-		return runRun(strings.TrimSpace(runBackend), runTimeout, args)
-	},
-}
-
-var versionCmd = &cobra.Command{
-	Use:   "version",
-	Short: "Show CLI, daemon, and latest release version",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runVersion(versionJSON)
-	},
-}
-
-var updateCmd = &cobra.Command{
-	Use:   "update",
-	Short: "Check for updates and apply latest release",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runUpdate(updateCheckOnly, updateForce, updateRollback, updateJSON)
-	},
-}
-
-func init() {
-	doctorCmd.Flags().StringVar(&doctorReportJSON, "report-json", "", "optional path to write doctor probe results as JSON")
-	initCmd.Flags().BoolVar(&initForce, "force", false, "overwrite existing .nexus files")
-	runCmd.Flags().StringVar(&runBackend, "backend", "", "runtime backend override")
-	runCmd.Flags().DurationVar(&runTimeout, "timeout", 10*time.Minute, "max time for the workspace run")
-	versionCmd.Flags().BoolVar(&versionJSON, "json", false, "render machine-readable output")
-	updateCmd.Flags().BoolVar(&updateCheckOnly, "check", false, "check latest version without applying update")
-	updateCmd.Flags().BoolVar(&updateForce, "force", false, "ignore update check interval and re-evaluate latest release")
-	updateCmd.Flags().BoolVar(&updateRollback, "rollback", false, "rollback CLI and daemon binaries to previous version")
-	updateCmd.Flags().BoolVar(&updateJSON, "json", false, "render machine-readable output")
-	rootCmd.AddCommand(doctorCmd, initCmd, runCmd, versionCmd, updateCmd)
-}
-
 func main() {
-	tryBackgroundAutoUpdate()
-	args := os.Args[1:]
-	for len(args) > 0 && args[0] == "--" {
-		args = args[1:]
-	}
-	if len(args) == 0 {
+	if len(os.Args) == 1 {
 		printUsage()
 		os.Exit(2)
 	}
-	if len(args) > 0 && strings.HasPrefix(args[0], "-") && args[0] != "-h" && args[0] != "--help" {
-		rootCmd.SetArgs(append([]string{"doctor"}, args...))
-	} else {
-		rootCmd.SetArgs(args)
+
+	command := os.Args[1]
+	args := os.Args[2:]
+	if strings.HasPrefix(command, "-") {
+		command = "doctor"
+		args = os.Args[1:]
 	}
-	if err := rootCmd.Execute(); err != nil {
+
+	switch command {
+	case "init":
+		runInitCommand(args)
+		return
+	case "daemon":
+		cmd := daemoncmd.Command()
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			os.Exit(1)
+		}
+		return
+	case "exec":
+		runExecCommand(args)
+		return
+	case "workspace", "ws":
+		runWorkspaceCommand(args)
+		return
+	case "spotlight", "spot":
+		runSpotlightCommand(args)
+		return
+	case "project", "proj":
+		runProjectCommand(args)
+		return
+	case "doctor":
+		// handled below
+	default:
+		printUsage()
+		fmt.Fprintf(os.Stderr, "\nunknown subcommand: %s\n", command)
+		os.Exit(2)
+	}
+
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	projectRoot := fs.String("project-root", "", "absolute path to downstream project repository")
+	suite := fs.String("suite", "", "doctor suite name")
+	composeFile := fs.String("compose-file", "docker-compose.yml", "compose file path relative to project root")
+	requiredPorts := fs.String("required-host-ports", "", "comma-separated required published host ports (defaults to workspace config doctor.requiredHostPorts)")
+	reportJSON := fs.String("report-json", "", "optional path to write doctor probe results as JSON")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+
+	if *projectRoot == "" || *suite == "" {
+		fmt.Fprintln(os.Stderr, "--project-root and --suite are required")
+		os.Exit(2)
+	}
+
+	var ports []int
+	if strings.TrimSpace(*requiredPorts) != "" {
+		parsedPorts, err := parseRequiredPorts(*requiredPorts)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		ports = parsedPorts
+	}
+
+	if err := run(options{
+		projectRoot:       *projectRoot,
+		suite:             *suite,
+		composeFile:       *composeFile,
+		requiredHostPorts: ports,
+		reportJSON:        strings.TrimSpace(*reportJSON),
+	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func tryBackgroundAutoUpdate() {
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	_, _ = update.AutoUpdate(ctx, update.Options{
-		ReleaseBaseURL:     releaseBaseURL(),
-		PublicKeyBase64:    strings.TrimSpace(buildinfo.UpdatePublicKeyBase64),
-		CheckInterval:      4 * time.Hour,
-		BadVersionCooldown: 24 * time.Hour,
-		CurrentVersion:     buildinfo.CLI().Version,
-		CurrentUpdater:     buildinfo.CLI().Version,
-		AutoApply:          true,
-		Force:              false,
-	})
-}
-
-func runVersion(asJSON bool) error {
-	info := buildinfo.CLI()
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-	defer cancel()
-	status, _ := update.Check(ctx, update.Options{
-		ReleaseBaseURL:     releaseBaseURL(),
-		PublicKeyBase64:    strings.TrimSpace(buildinfo.UpdatePublicKeyBase64),
-		CheckInterval:      0,
-		BadVersionCooldown: 24 * time.Hour,
-		CurrentVersion:     info.Version,
-		CurrentUpdater:     info.Version,
-		AutoApply:          false,
-		Force:              true,
-	})
-	daemonVersion := fetchDaemonVersion()
-	payload := map[string]any{
-		"cli":    info,
-		"daemon": daemonVersion,
-		"update": status,
-		"channel": map[string]string{
-			"name": channelName(),
-			"repo": channelRepo(),
-		},
-	}
-	if asJSON {
-		return json.NewEncoder(os.Stdout).Encode(payload)
-	}
-	fmt.Printf("CLI:     %s\n", info.Version)
-	if daemonVersion != "" {
-		fmt.Printf("Daemon:  %s\n", daemonVersion)
-	} else {
-		fmt.Printf("Daemon:  unavailable\n")
-	}
-	if strings.TrimSpace(status.LatestVersion) != "" {
-		fmt.Printf("Latest:  %s\n", status.LatestVersion)
-	}
-	if strings.TrimSpace(status.LastFailure) != "" {
-		fmt.Printf("Update:  %s\n", status.LastFailure)
-	} else if status.UpdateReady {
-		fmt.Printf("Update:  available\n")
-	} else {
-		fmt.Printf("Update:  up to date\n")
-	}
-	fmt.Printf("Channel: %s (%s)\n", channelName(), channelRepo())
-	return nil
-}
-
-func runUpdate(checkOnly, force, rollback, asJSON bool) error {
-	if rollback {
-		err := update.Rollback(context.Background())
-		if asJSON {
-			return json.NewEncoder(os.Stdout).Encode(map[string]any{
-				"rolledBack": err == nil,
-				"error":      errString(err),
-			})
-		}
-		if err != nil {
-			return err
-		}
-		fmt.Println("rollback completed")
-		return nil
-	}
-	opts := update.Options{
-		ReleaseBaseURL:     releaseBaseURL(),
-		PublicKeyBase64:    strings.TrimSpace(buildinfo.UpdatePublicKeyBase64),
-		CheckInterval:      0,
-		BadVersionCooldown: 24 * time.Hour,
-		CurrentVersion:     buildinfo.CLI().Version,
-		CurrentUpdater:     buildinfo.CLI().Version,
-		AutoApply:          !checkOnly,
-		Force:              force,
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if checkOnly {
-		status, err := update.Check(ctx, opts)
-		if asJSON {
-			return json.NewEncoder(os.Stdout).Encode(map[string]any{"status": status, "error": errString(err)})
-		}
-		if err != nil {
-			return err
-		}
-		if status.UpdateReady {
-			fmt.Printf("update available: %s -> %s\n", status.CurrentVersion, status.LatestVersion)
-			return nil
-		}
-		fmt.Println("already up to date")
-		return nil
-	}
-	result, err := update.ForceUpdate(ctx, opts)
-	if asJSON {
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"result": result, "error": errString(err)})
-	}
-	if err != nil {
-		return err
-	}
-	if result.Updated {
-		fmt.Printf("updated: %s -> %s\n", result.FromVersion, result.ToVersion)
-		return nil
-	}
-	fmt.Println("already up to date")
-	return nil
-}
-
-func fetchDaemonVersion() string {
-	port := daemonPort()
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://localhost:%d/version", port), nil)
-	if err != nil {
-		return ""
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-	var body struct {
-		Version string `json:"version"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(body.Version)
-}
-
-func releaseBaseURL() string {
-	if value := strings.TrimSpace(os.Getenv("NEXUS_RELEASE_BASE_URL")); value != "" {
-		return value
-	}
-	channel := channelName()
-	repo := channelRepo()
-	if channel == "prerelease" {
-		if prereleaseURL, err := latestPrereleaseBaseURL(repo); err == nil && prereleaseURL != "" {
-			return prereleaseURL
-		}
-	}
-	return "https://github.com/inizio/nexus/releases/latest/download"
-}
-
-func channelName() string {
-	channel := strings.ToLower(strings.TrimSpace(os.Getenv("NEXUS_RELEASE_CHANNEL")))
-	if channel == "" {
-		return "stable"
-	}
-	return channel
-}
-
-func channelRepo() string {
-	repo := strings.TrimSpace(os.Getenv("NEXUS_RELEASE_REPO"))
-	if repo == "" {
-		return "inizio/nexus"
-	}
-	return repo
-}
-
-func latestPrereleaseBaseURL(repo string) (string, error) {
-	url := strings.TrimRight(githubReleaseAPIBaseURL, "/") + "/repos/" + repo + "/releases"
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("github release lookup failed with status %d", resp.StatusCode)
-	}
-	var releases []struct {
-		TagName    string `json:"tag_name"`
-		Prerelease bool   `json:"prerelease"`
-		Draft      bool   `json:"draft"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
-		return "", err
-	}
-	for _, release := range releases {
-		if release.Draft || !release.Prerelease {
-			continue
-		}
-		tag := strings.TrimSpace(release.TagName)
-		if tag == "" {
-			continue
-		}
-		return "https://github.com/" + repo + "/releases/download/" + tag, nil
-	}
-	return "", fmt.Errorf("no prerelease found")
-}
-
-func errString(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
-}
-
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  nexus doctor [--report-json path]")
-	fmt.Fprintln(os.Stderr, "  nexus init [project-root] [--force]")
-	fmt.Fprintln(os.Stderr, "  nexus run [--backend <name>] [--timeout <dur>] -- <command> [args...]")
-	fmt.Fprintln(os.Stderr, "  nexus fork <id> <name> [--ref <ref>]")
-	fmt.Fprintln(os.Stderr, "  nexus shell <id> [--timeout <dur>]")
-	fmt.Fprintln(os.Stderr, "  nexus exec <id> [--timeout <dur>] -- <command> [args...]")
-	fmt.Fprintln(os.Stderr, "  nexus <list|create|start|stop|remove|restore|shell|exec|tunnel>")
+	fmt.Fprintln(os.Stderr, "  nexus doctor --project-root <abs-path> --suite <name> [--compose-file docker-compose.yml] [--required-host-ports 5173,5174,8000] [--report-json path]")
+	fmt.Fprintln(os.Stderr, "  nexus init --project-root <abs-path> [--force]")
+	fmt.Fprintln(os.Stderr, "  nexus exec --project-root <abs-path> [--timeout 10m] -- <command> [args...]")
+	fmt.Fprintln(os.Stderr, "  nexus workspace <list|create|stop|remove|fork|portal>")
+	fmt.Fprintln(os.Stderr, "  nexus spotlight <start|list|stop|port>")
+	fmt.Fprintln(os.Stderr, "  nexus project <list|create|get|remove>")
+	fmt.Fprintln(os.Stderr, "  nexus daemon <start|stop|status|token|connect>")
 }
 
-func runRun(backend string, timeout time.Duration, cmdArgs []string) error {
-	repoPath, err := normalizeLocalRepoPath(".")
-	if err != nil {
-		return fmt.Errorf("nexus run: %w", err)
-	}
-	workspaceName := deriveWorkspaceName(repoPath)
-
-	conn, err := ensureDaemon()
-	if err != nil {
-		return fmt.Errorf("nexus run: %w", err)
-	}
-	defer conn.Close()
-
-	configBundle, err := credsbundle.Build()
-	if err != nil {
-		return fmt.Errorf("nexus run: %w", err)
+func runInitCommand(args []string) {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	projectRoot := fs.String("project-root", "", "absolute path to project repository")
+	force := fs.Bool("force", false, "overwrite existing .nexus files")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
 	}
 
-	spec := workspacemgr.CreateSpec{
-		Repo:          repoPath,
-		Ref:           "",
-		WorkspaceName: workspaceName,
-		AgentProfile:  "default",
-		Backend:       backend,
-		ConfigBundle:  configBundle,
-	}
-	var createResult struct {
-		Workspace workspacemgr.Workspace `json:"workspace"`
-	}
-	if err := daemonRPC(conn, "workspace.create", map[string]any{"spec": spec}, &createResult); err != nil {
-		if renderPreflightCreateError(err) {
-			os.Exit(1)
-		}
-		return fmt.Errorf("nexus run: create failed: %w", err)
-	}
-	wsID := createResult.Workspace.ID
-
-	defer func() {
-		if removeErr := daemonRPC(conn, "workspace.remove", map[string]any{"id": wsID}, nil); removeErr != nil {
-			fmt.Fprintf(os.Stderr, "nexus run: cleanup warning: %v\n", removeErr)
-		}
-	}()
-
-	deadline := time.Now().Add(timeout)
-	for {
-		if time.Now().After(deadline) {
-			return fmt.Errorf("nexus run: timed out waiting for workspace to become ready")
-		}
-		var readyResult struct {
-			Ready bool `json:"ready"`
-		}
-		if readyErr := daemonRPC(conn, "workspace.ready", map[string]any{
-			"workspaceId": wsID,
-			"profile":     "default",
-		}, &readyResult); readyErr == nil && readyResult.Ready {
-			break
-		}
-		time.Sleep(3 * time.Second)
+	if *projectRoot == "" {
+		fmt.Fprintln(os.Stderr, "--project-root is required")
+		os.Exit(2)
 	}
 
-	cmdLine := formatCommand(cmdArgs[0], cmdArgs[1:])
-	payload := "cd /workspace >/dev/null 2>&1 || true\n" + cmdLine + "\nexit\n"
-	token := strings.TrimSpace(os.Getenv("NEXUS_AUTH_RELAY_TOKEN"))
-	runWorkspacePTYSession("nexus run", wsID, token, "bash", payload, timeout, false)
-	return nil
+	if err := runInit(initOptions{
+		projectRoot: *projectRoot,
+		force:       *force,
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func runExecCommand(args []string) {
+	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	projectRoot := fs.String("project-root", "", "absolute path to downstream project repository")
+	timeout := fs.Duration("timeout", 10*time.Minute, "command timeout")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+
+	rest := fs.Args()
+	if *projectRoot == "" || len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "--project-root and command are required")
+		os.Exit(2)
+	}
+
+	if err := runExec(execOptions{
+		projectRoot: *projectRoot,
+		timeout:     *timeout,
+		command:     rest[0],
+		args:        rest[1:],
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 }
 
 func runInit(opts initOptions) error {
@@ -470,12 +201,29 @@ func runInit(opts initOptions) error {
 		return fmt.Errorf("create .nexus directory: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Join(nexusDir, "lifecycles"), 0o755); err != nil {
-		return fmt.Errorf("create .nexus/lifecycles directory: %w", err)
+	for _, dir := range []string{"lifecycles", "probe", "check", "e2e"} {
+		if err := os.MkdirAll(filepath.Join(nexusDir, dir), 0o755); err != nil {
+			return fmt.Errorf("create .nexus/%s directory: %w", dir, err)
+		}
 	}
 
 	workspaceCfg := config.WorkspaceConfig{
+		Schema:  "https://raw.githubusercontent.com/IniZio/nexus/main/schemas/workspace.v1.schema.json",
 		Version: 1,
+		Doctor: config.DoctorConfig{
+			Probes: []config.DoctorCommandProbe{{
+				Name:     "runtime-backend",
+				Command:  "bash",
+				Args:     []string{".nexus/probe/01-runtime-backend.sh"},
+				Required: true,
+			}},
+			Tests: []config.DoctorCommandCheck{{
+				Name:     "tooling-runtime",
+				Command:  "bash",
+				Args:     []string{".nexus/check/20-tooling-runtime.sh"},
+				Required: true,
+			}},
+		},
 	}
 
 	workspaceJSON, err := json.MarshalIndent(workspaceCfg, "", "  ")
@@ -485,10 +233,13 @@ func runInit(opts initOptions) error {
 	workspaceJSON = append(workspaceJSON, '\n')
 
 	files := map[string]string{
-		filepath.Join(nexusDir, "workspace.json"):            string(workspaceJSON),
-		filepath.Join(nexusDir, "lifecycles", "setup.sh"):    "#!/usr/bin/env bash\nset -euo pipefail\necho 'setup: no-op'\n",
-		filepath.Join(nexusDir, "lifecycles", "start.sh"):    "#!/usr/bin/env bash\nset -euo pipefail\necho 'start: no-op'\n",
-		filepath.Join(nexusDir, "lifecycles", "teardown.sh"): "#!/usr/bin/env bash\nset -euo pipefail\necho 'teardown: no-op'\n",
+		filepath.Join(nexusDir, "workspace.json"):                 string(workspaceJSON),
+		filepath.Join(nexusDir, "lifecycles", "setup.sh"):         "#!/usr/bin/env bash\nset -euo pipefail\necho 'setup: no-op'\n",
+		filepath.Join(nexusDir, "lifecycles", "start.sh"):         "#!/usr/bin/env bash\nset -euo pipefail\necho 'start: no-op'\n",
+		filepath.Join(nexusDir, "lifecycles", "teardown.sh"):      "#!/usr/bin/env bash\nset -euo pipefail\necho 'teardown: no-op'\n",
+		filepath.Join(nexusDir, "probe", "01-runtime-backend.sh"): "#!/usr/bin/env bash\nset -euo pipefail\necho \"runtime-backend probe: backend=${NEXUS_RUNTIME_BACKEND:-unknown}\"\n",
+		filepath.Join(nexusDir, "check", "20-tooling-runtime.sh"): "#!/usr/bin/env bash\nset -euo pipefail\ncommand -v bash >/dev/null 2>&1\ncommand -v curl >/dev/null 2>&1 || true\necho 'tooling-runtime check passed'\n",
+		filepath.Join(nexusDir, "e2e", "run.sh"):                  "#!/usr/bin/env bash\nset -euo pipefail\necho 'e2e: no-op'\n",
 	}
 
 	for path, content := range files {
@@ -519,7 +270,7 @@ func runInit(opts initOptions) error {
 
 func runExec(opts execOptions) error {
 	if !filepath.IsAbs(opts.projectRoot) {
-		return errNotAbsProjectRoot("project root", opts.projectRoot)
+		return fmt.Errorf("project root must be absolute: %s", opts.projectRoot)
 	}
 	if err := applyRuntimeBackendFromWorkspace(opts.projectRoot); err != nil {
 		return err
@@ -541,7 +292,7 @@ func runExec(opts execOptions) error {
 		if shouldReexecExecWithKVMGroup(execCtx.backend, err) {
 			cmdPath := setupCommandPath()
 			reexecArgs := make([]string, 0, len(opts.args)+8)
-			reexecArgs = append(reexecArgs, "run", opts.projectRoot, "--timeout", opts.timeout.String(), "--", opts.command)
+			reexecArgs = append(reexecArgs, "exec", "--project-root", opts.projectRoot, "--timeout", opts.timeout.String(), "--", opts.command)
 			reexecArgs = append(reexecArgs, opts.args...)
 			if reexecErr := execKVMGroupReexecRunner(cmdPath, reexecArgs); reexecErr == nil {
 				return nil
@@ -602,18 +353,21 @@ func runExecWithKVMGroupReexec(commandPath string, args []string) error {
 
 func run(opts options) error {
 	if !filepath.IsAbs(opts.projectRoot) {
-		return errNotAbsProjectRoot("project root", opts.projectRoot)
+		return fmt.Errorf("project root must be absolute: %s", opts.projectRoot)
 	}
 	if err := applyRuntimeBackendFromWorkspace(opts.projectRoot); err != nil {
 		return err
 	}
 
 	execCtx := loadDoctorExecContext()
-	fmt.Printf("doctor: runtime backend=%s (cold firecracker: first run may take several minutes before suite probes)\n", execCtx.backend)
 	if execCtx.backend == "firecracker" {
 		if err := config.ValidateFirecrackerEnv(); err != nil {
 			return fmt.Errorf("firecracker configuration error: %w", err)
 		}
+	}
+
+	if opts.composeFile == "" {
+		opts.composeFile = "docker-compose.yml"
 	}
 
 	requiredFiles := []string{
@@ -641,7 +395,12 @@ func run(opts options) error {
 		return err
 	}
 
-	probesToRun, testsToRun, warnings, err := resolveDoctorChecks(opts.projectRoot)
+	workspaceConfig, _, err := config.LoadWorkspaceConfig(opts.projectRoot)
+	if err != nil {
+		return fmt.Errorf("invalid workspace config: %w", err)
+	}
+
+	probesToRun, testsToRun, warnings, err := resolveDoctorChecks(opts.projectRoot, workspaceConfig.Doctor.Probes, workspaceConfig.Doctor.Tests)
 	if err != nil {
 		return err
 	}
@@ -682,11 +441,14 @@ func run(opts options) error {
 		return err
 	}
 
+	opts = applyDoctorConfigDefaults(opts, workspaceConfig.Doctor)
+
 	publishedPorts := make([]compose.PublishedPort, 0)
+	composePath := filepath.Join(opts.projectRoot, opts.composeFile)
 	discoverCtx, discoverCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer discoverCancel()
 	if ports, discoverErr := compose.DiscoverPublishedPorts(discoverCtx, opts.projectRoot); discoverErr != nil {
-		fmt.Printf("doctor warning: compose port discovery failed: %v\n", discoverErr)
+		fmt.Printf("doctor warning: compose port discovery failed for %s: %v\n", composePath, discoverErr)
 	} else {
 		publishedPorts = ports
 	}
@@ -721,7 +483,7 @@ func run(opts options) error {
 		return err
 	}
 
-	fmt.Printf("doctor passed (discovered %d compose ports)\n", len(publishedPorts))
+	fmt.Printf("doctor suite passed: %s (discovered %d compose ports)\n", opts.suite, len(publishedPorts))
 	return nil
 }
 
@@ -748,6 +510,13 @@ func verifyFirecrackerGuestDockerRuntime() error {
 	}
 
 	return fmt.Errorf("firecracker verification requires docker runtime inside guest workspace; host docker is not used. guest docker check failed: %s", detail)
+}
+
+func applyDoctorConfigDefaults(opts options, doctorCfg config.DoctorConfig) options {
+	if len(opts.requiredHostPorts) == 0 && len(doctorCfg.RequiredHostPorts) > 0 {
+		opts.requiredHostPorts = append([]int(nil), doctorCfg.RequiredHostPorts...)
+	}
+	return opts
 }
 
 type checkResult struct {
@@ -1020,7 +789,7 @@ func validateFirecrackerTapHelper() error {
 	path, err := firecrackerHostBinaryLookup(tapHelper)
 	if err != nil {
 		return fmt.Errorf(
-			"%s not found in PATH\n\nRun `nexus init --force` to provision host prerequisites",
+			"%s not found in PATH\n\nRun `nexus init --project-root <abs-path> --force` to provision host prerequisites",
 			tapHelper,
 		)
 	}
@@ -1033,7 +802,7 @@ func validateFirecrackerTapHelper() error {
 	}
 	if !strings.Contains(string(out), "cap_net_admin") {
 		return fmt.Errorf(
-			"%s at %s lacks cap_net_admin\n\nRun `nexus init --force` to refresh host prerequisites",
+			"%s at %s lacks cap_net_admin\n\nRun `nexus init --project-root <abs-path> --force` to refresh host prerequisites",
 			tapHelper, path,
 		)
 	}
@@ -1048,13 +817,13 @@ func validateFirecrackerBridge() error {
 	out, err := exec.Command("ip", "link", "show", bridge).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf(
-			"bridge %s not found\n\nRun `nexus init --force` to provision host prerequisites",
+			"bridge %s not found\n\nRun `nexus init --project-root <abs-path> --force` to provision host prerequisites",
 			bridge,
 		)
 	}
 	if !strings.Contains(string(out), "UP") {
 		return fmt.Errorf(
-			"bridge %s exists but is not UP\n\nRun `nexus init --force` to refresh host prerequisites",
+			"bridge %s exists but is not UP\n\nRun `nexus init --project-root <abs-path> --force` to refresh host prerequisites",
 			bridge,
 		)
 	}
@@ -1065,7 +834,7 @@ func validateFirecrackerBridge() error {
 	}
 	if !strings.Contains(string(addrOut), "172.26.0.1/") {
 		return fmt.Errorf(
-			"bridge %s is missing gateway IP %s\n\nRun `nexus init --force` to refresh host prerequisites",
+			"bridge %s is missing gateway IP %s\n\nRun `nexus init --project-root <abs-path> --force` to refresh host prerequisites",
 			bridge, gatewayCIDR,
 		)
 	}
@@ -1094,7 +863,7 @@ func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExe
 
 	workDirRoot := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_FIRECRACKER_WORKDIR_ROOT"))
 	if workDirRoot == "" {
-		workDirRoot = filepath.Join(os.TempDir(), "nexus-doctor")
+		workDirRoot = filepath.Join(os.TempDir(), "nexus-firecracker-doctor")
 	}
 	if err := os.MkdirAll(workDirRoot, 0o755); err != nil {
 		return fmt.Errorf("create firecracker workdir root: %w", err)
@@ -1180,7 +949,7 @@ func verifyFirecrackerWorkspaceReady() error {
 	}
 
 	if strings.Contains(detail, "chdir /workspace: no such file or directory") {
-		return fmt.Errorf("firecracker guest is missing /workspace; re-run `nexus init --force` to refresh the runtime and then retry")
+		return fmt.Errorf("firecracker guest is missing /workspace; re-run `nexus init --project-root <abs-path> --force` to refresh the runtime and then retry")
 	}
 
 	return fmt.Errorf("firecracker guest workspace verification failed: %s", detail)
@@ -1235,6 +1004,21 @@ func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string
 	}
 	if token := strings.TrimSpace(os.Getenv("NEXUS_DOCKERHUB_TOKEN")); token != "" {
 		env = append(env, "NEXUS_DOCKERHUB_TOKEN="+token)
+	}
+	if value := strings.TrimSpace(os.Getenv("NEXUS_API_BASE_URL")); value != "" {
+		env = append(env, "NEXUS_API_BASE_URL="+value)
+	} else {
+		env = append(env, "NEXUS_API_BASE_URL=http://127.0.0.1:8000")
+	}
+	if value := strings.TrimSpace(os.Getenv("NEXUS_AUTHGEAR_STUDENT_BASE_URL")); value != "" {
+		env = append(env, "NEXUS_AUTHGEAR_STUDENT_BASE_URL="+value)
+	} else {
+		env = append(env, "NEXUS_AUTHGEAR_STUDENT_BASE_URL=http://127.0.0.1:3001")
+	}
+	if value := strings.TrimSpace(os.Getenv("NEXUS_AUTHGEAR_ADMIN_BASE_URL")); value != "" {
+		env = append(env, "NEXUS_AUTHGEAR_ADMIN_BASE_URL="+value)
+	} else {
+		env = append(env, "NEXUS_AUTHGEAR_ADMIN_BASE_URL=http://127.0.0.1:4001")
 	}
 
 	request := firecracker.ExecRequest{
@@ -1748,10 +1532,10 @@ func runBuiltInRuntimeBackendCheck() (checkResult, error) {
 	}
 
 	backend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND"))
-	if backend != "firecracker" && backend != "process" {
+	if backend != "firecracker" && backend != "seatbelt" {
 		result.Status = "failed_required"
 		result.DurationMs = time.Since(start).Milliseconds()
-		result.Error = fmt.Sprintf("unsupported runtime backend %q: doctor command only supports firecracker or process", backend)
+		result.Error = fmt.Sprintf("unsupported runtime backend %q: doctor command only supports firecracker or seatbelt", backend)
 		return result, fmt.Errorf("required probes failed: %s", checkName)
 	}
 
@@ -1770,10 +1554,10 @@ func bootstrapDoctorExecContext(projectRoot string) error {
 			return err
 		}
 		return containerBootstrapRunner(projectRoot, execCtx, "firecracker", true)
-	case "process":
+	case "seatbelt":
 		return nil
 	default:
-		return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker or process", execCtx.backend)
+		return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker or seatbelt", execCtx.backend)
 	}
 }
 
@@ -1783,10 +1567,10 @@ func bootstrapExecCommandContext(projectRoot string) error {
 	switch execCtx.backend {
 	case "firecracker":
 		return bootstrapFirecrackerExecContext(projectRoot, execCtx)
-	case "process":
+	case "seatbelt":
 		return nil
 	default:
-		return fmt.Errorf("unsupported runtime backend %q: exec command only supports firecracker or process", execCtx.backend)
+		return fmt.Errorf("unsupported runtime backend %q: exec command only supports firecracker or seatbelt", execCtx.backend)
 	}
 }
 
@@ -1884,7 +1668,7 @@ func loadDoctorExecContext() doctorExecContext {
 	if backend == "" {
 		backend = selectRuntimeBackend(nil)
 		if backend == "" {
-			backend = "process"
+			backend = "seatbelt"
 		}
 	}
 	return doctorExecContext{
@@ -1896,7 +1680,7 @@ func applyRuntimeBackendFromWorkspace(projectRoot string) error {
 	if rawBackend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND")); rawBackend != "" {
 		backend, ok := normalizeRuntimeBackend(rawBackend)
 		if !ok {
-			return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker or process", rawBackend)
+			return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker or seatbelt", rawBackend)
 		}
 		if err := os.Setenv("NEXUS_RUNTIME_BACKEND", backend); err != nil {
 			return fmt.Errorf("set runtime backend env: %w", err)
@@ -1921,7 +1705,7 @@ func applyRuntimeBackendFromWorkspace(projectRoot string) error {
 
 	backend := selectRuntimeBackend(nil)
 	if backend == "" {
-		return fmt.Errorf("no supported runtime found; doctor/exec support firecracker or process")
+		return fmt.Errorf("no supported runtime found; doctor/exec support firecracker or seatbelt")
 	}
 
 	if err := os.Setenv("NEXUS_RUNTIME_BACKEND", backend); err != nil {
@@ -1980,7 +1764,7 @@ func selectRuntimeBackend(required []string) string {
 				if _, err := exec.LookPath("limactl"); err == nil {
 					return "firecracker"
 				}
-				return "process"
+				return "seatbelt"
 			}
 		case "linux":
 			if firecrackerHostGOOS == "linux" {
@@ -1997,7 +1781,7 @@ func selectRuntimeBackend(required []string) string {
 		if _, err := exec.LookPath("limactl"); err == nil {
 			return "firecracker"
 		}
-		return "process"
+		return "seatbelt"
 	}
 	if firecrackerHostGOOS == "linux" {
 		return "firecracker"
@@ -2010,8 +1794,8 @@ func normalizeRuntimeBackend(raw string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "firecracker":
 		return "firecracker", true
-	case "process":
-		return "process", true
+	case "seatbelt":
+		return "seatbelt", true
 	default:
 		return "", false
 	}
@@ -2085,6 +1869,34 @@ func writeReport(reportPath string, results []checkResult) error {
 	return nil
 }
 
+func parseRequiredPorts(raw string) ([]int, error) {
+	parts := strings.Split(raw, ",")
+	ports := make([]int, 0, len(parts))
+	seen := map[int]bool{}
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		port, err := strconv.Atoi(trimmed)
+		if err != nil {
+			return nil, fmt.Errorf("invalid required host port %q", trimmed)
+		}
+		if port <= 0 || port > 65535 {
+			return nil, fmt.Errorf("required host port out of range: %d", port)
+		}
+		if seen[port] {
+			continue
+		}
+		seen[port] = true
+		ports = append(ports, port)
+	}
+	if len(ports) == 0 {
+		return nil, fmt.Errorf("no required host ports provided")
+	}
+	return ports, nil
+}
+
 func assertNoManualACP(lifecycleDir string) error {
 	entries, err := os.ReadDir(lifecycleDir)
 	if err != nil {
@@ -2134,12 +1946,19 @@ func validateLifecycleEntrypoints(projectRoot string) error {
 	return nil
 }
 
-func resolveDoctorChecks(projectRoot string) ([]config.DoctorCommandProbe, []config.DoctorCommandCheck, []string, error) {
+func resolveDoctorChecks(projectRoot string, cfgProbes []config.DoctorCommandProbe, cfgTests []config.DoctorCommandCheck) ([]config.DoctorCommandProbe, []config.DoctorCommandCheck, []string, error) {
 	probes, tests, warnings, err := discoverDoctorScripts(projectRoot)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return probes, tests, warnings, nil
+	if len(probes) > 0 || len(tests) > 0 {
+		return probes, tests, warnings, nil
+	}
+
+	fallbackWarnings := append([]string{}, warnings...)
+	fallbackWarnings = append(fallbackWarnings, "no discovery scripts found under .nexus/probe or .nexus/check; falling back to workspace.json doctor.probes/tests")
+
+	return cfgProbes, cfgTests, fallbackWarnings, nil
 }
 
 func discoverDoctorScripts(projectRoot string) ([]config.DoctorCommandProbe, []config.DoctorCommandCheck, []string, error) {
@@ -2319,4 +2138,18 @@ func ensureDotEnv(projectRoot string) error {
 		return fmt.Errorf("write .env from .env.example: %w", err)
 	}
 	return nil
+}
+
+func missingRequiredPorts(required []int, discovered []compose.PublishedPort) []int {
+	found := map[int]bool{}
+	for _, p := range discovered {
+		found[p.HostPort] = true
+	}
+	missing := make([]int, 0)
+	for _, p := range required {
+		if !found[p] {
+			missing = append(missing, p)
+		}
+	}
+	return missing
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -142,11 +141,7 @@ func TestAPIClientGetSuccess(t *testing.T) {
 }
 
 func TestAPIClientContextCancellation(t *testing.T) {
-	tempDir, err := os.MkdirTemp("/tmp", "nexus-api-test-")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(tempDir) })
+	tempDir := t.TempDir()
 	sockPath := tempDir + "/test.sock"
 
 	listener, err := net.Listen("unix", sockPath)

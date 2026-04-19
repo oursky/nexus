@@ -2,11 +2,7 @@ package runtime
 
 import (
 	"context"
-	"errors"
 )
-
-var ErrWorkspaceMountFailed = errors.New("workspace mount not available")
-var ErrOperationNotSupported = errors.New("runtime operation not supported")
 
 type Driver interface {
 	Backend() string
@@ -20,15 +16,10 @@ type Driver interface {
 	Destroy(ctx context.Context, workspaceID string) error
 }
 
-type GuestWorkdirProvider interface {
-	GuestWorkdir(workspaceID string) string
-}
-
 type CreateRequest struct {
 	WorkspaceID   string
 	WorkspaceName string
 	ProjectRoot   string
-	ConfigBundle  string
 	Options       map[string]string
 }
 

@@ -1,28 +1,25 @@
 package main
 
 import (
-	"bufio"
+	"context"
 	"encoding/json"
-	"errors"
+	"flag"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/inizio/nexus/packages/nexus/pkg/credsbundle"
 	"github.com/inizio/nexus/packages/nexus/pkg/daemonclient"
-	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
+	"github.com/inizio/nexus/packages/nexus/pkg/localws"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
-	"github.com/spf13/cobra"
 )
 
 type preflightErrorEnvelope struct {
@@ -58,7 +55,7 @@ func renderPreflightCreateError(err error) bool {
 		return false
 	}
 
-	fmt.Fprintln(os.Stderr, "nexus create: runtime preflight failed")
+	fmt.Fprintln(os.Stderr, "nexus workspace create: runtime preflight failed")
 	fmt.Fprintf(os.Stderr, "status: %s\n", payload.Status)
 	if payload.SetupAttempted {
 		if strings.TrimSpace(payload.SetupOutcome) != "" {
@@ -87,290 +84,66 @@ func renderPreflightCreateError(err error) bool {
 	return true
 }
 
+// ── Daemon connection settings ────────────────────────────────────────────────
+
+const defaultDaemonPort = 7874
+
 func daemonPort() int {
-	return daemonclient.PreferredPort()
+	if v := os.Getenv("NEXUS_DAEMON_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			return p
+		}
+	}
+	return defaultDaemonPort
 }
 
 func daemonToken() (string, error) {
 	if t := os.Getenv("NEXUS_DAEMON_TOKEN"); t != "" {
 		return t, nil
 	}
-	return daemonclient.ReadDaemonToken()
+	return daemonclient.LoadOrCreateToken()
 }
 
+// ensureDaemon starts the daemon if it is not already running and returns
+// an authenticated WebSocket connection to it.
 func ensureDaemon() (*websocket.Conn, error) {
 	port := daemonPort()
-	tokenEnv := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_TOKEN"))
-	worktreeRoot, _ := daemonclient.ProcessWorktreeRoot(".")
-	if err := daemonclient.EnsureRunningForWorktree(port, "", tokenEnv, worktreeRoot); err != nil {
-		return nil, fmt.Errorf("start daemon: %w", err)
-	}
 	token, err := daemonToken()
 	if err != nil {
 		return nil, fmt.Errorf("daemon token: %w", err)
 	}
 
-	url := fmt.Sprintf("ws://localhost:%d/", port)
-	header := http.Header{"Authorization": {"Bearer " + token}}
-	conn, _, err := websocket.DefaultDialer.Dial(url, header)
+	if err := daemonclient.EnsureRunning(port, token, ""); err != nil {
+		return nil, fmt.Errorf("start daemon: %w", err)
+	}
+
+	url := fmt.Sprintf("ws://localhost:%d/?token=%s", port, token)
+	dialer := websocket.DefaultDialer
+	conn, _, err := dialer.Dial(url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("connect to daemon: %w", err)
 	}
 	return conn, nil
 }
 
-type rpcRequest struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      string      `json:"id"`
-	Method  string      `json:"method"`
-	Params  interface{} `json:"params"`
-}
-
-type rpcResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      string          `json:"id"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Method  string          `json:"method,omitempty"`
-	Params  json.RawMessage `json:"params,omitempty"`
-	Error   *struct {
-		Code    int             `json:"code"`
-		Message string          `json:"message"`
-		Data    json.RawMessage `json:"data,omitempty"`
-	} `json:"error,omitempty"`
-}
-
-type daemonRPCError struct {
-	Code    int
-	Message string
-	Data    json.RawMessage
-}
-
-func (e *daemonRPCError) Error() string {
-	if e == nil {
-		return ""
-	}
-	return fmt.Sprintf("rpc error %d: %s", e.Code, e.Message)
-}
-
-func daemonRPC(conn *websocket.Conn, method string, params interface{}, out interface{}) error {
-	req := rpcRequest{
-		JSONRPC: "2.0",
-		ID:      fmt.Sprintf("%d", time.Now().UnixNano()),
-		Method:  method,
-		Params:  params,
-	}
-	if err := conn.WriteJSON(req); err != nil {
-		return fmt.Errorf("rpc send: %w", err)
-	}
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Minute)); err != nil {
-		return fmt.Errorf("rpc set deadline: %w", err)
-	}
-	var resp rpcResponse
-	if err := conn.ReadJSON(&resp); err != nil {
-		return fmt.Errorf("rpc recv: %w", err)
-	}
-	conn.SetReadDeadline(time.Time{})
-	if resp.Error != nil {
-		return &daemonRPCError{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}
-	}
-	if out != nil && resp.Result != nil {
-		return json.Unmarshal(resp.Result, out)
-	}
-	return nil
-}
-
 var ensureDaemonFn = ensureDaemon
 var daemonRPCFn = daemonRPC
-var waitForInterruptFn = waitForInterrupt
 
-var listCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List workspaces",
-	Args:  cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
-		listWorkspaces()
-	},
-}
+// ── workspace list ────────────────────────────────────────────────────────────
 
-var createBackend string
-var createFresh bool
-var createProjectID string
-var createRepo string
-var createFrom string
-var listFlat bool
-
-var createCmd = &cobra.Command{
-	Use:   "create",
-	Short: "Create a new sandbox",
-	Args:  cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
-		createWorkspace(
-			strings.TrimSpace(createBackend),
-			strings.TrimSpace(createProjectID),
-			strings.TrimSpace(createRepo),
-			strings.TrimSpace(createFrom),
-		)
-	},
-}
-
-var startCmd = &cobra.Command{
-	Use:   "start <id>",
-	Short: "Start a stopped workspace",
-	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		startWorkspace(args[0])
-	},
-}
-
-var stopCmd = &cobra.Command{
-	Use:   "stop <id>",
-	Short: "Stop a workspace",
-	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		stopWorkspace(args[0])
-	},
-}
-
-var removeCmd = &cobra.Command{
-	Use:   "remove <id>",
-	Short: "Remove a workspace",
-	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		removeWorkspace(args[0], removeDeleteHostPath, removeYes)
-	},
-}
-
-var removeDeleteHostPath bool
-var removeYes bool
-
-var forkRef string
-var forkSourceWorkspaceID string
-
-var forkCmd = &cobra.Command{
-	Use:   "fork <id> <name>",
-	Short: "Fork a workspace into a new named worktree",
-	Args:  cobra.ExactArgs(2),
-	Run: func(cmd *cobra.Command, args []string) {
-		forkWorkspace(strings.TrimSpace(args[0]), strings.TrimSpace(args[1]), strings.TrimSpace(forkRef), strings.TrimSpace(forkSourceWorkspaceID))
-	},
-}
-
-var shellTimeout time.Duration
-
-var shellCmd = &cobra.Command{
-	Use:   "shell <id>",
-	Short: "Open an interactive shell in a workspace",
-	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		shellWorkspace(strings.TrimSpace(args[0]), shellTimeout)
-	},
-}
-
-var execTimeout time.Duration
-
-var execCmd = &cobra.Command{
-	Use:   "exec <id> -- <command> [args...]",
-	Short: "Run a non-interactive command in a workspace",
-	Args:  cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if cmd.ArgsLenAtDash() == -1 {
-			return fmt.Errorf("usage: nexus exec <id> [--timeout <dur>] -- <command> [args...]")
-		}
-		id := strings.TrimSpace(args[0])
-		rest := args[1:]
-		if len(rest) == 0 {
-			return fmt.Errorf("command required after --")
-		}
-		execWorkspace(id, execTimeout, rest)
-		return nil
-	},
-}
-
-var tunnelCmd = &cobra.Command{
-	Use:   "tunnel <id>",
-	Short: "Activate tunnels for a workspace",
-	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		tunnelWorkspace(strings.TrimSpace(args[0]))
-	},
-}
-
-var restoreCmd = &cobra.Command{
-	Use:   "restore <id>",
-	Short: "Restore a workspace",
-	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		restoreWorkspace(args[0])
-	},
-}
-
-var checkoutConflictMode string
-
-var checkoutCmd = &cobra.Command{
-	Use:   "checkout <id> <ref>",
-	Short: "Switch a workspace to another ref/branch",
-	Args:  cobra.ExactArgs(2),
-	Run: func(cmd *cobra.Command, args []string) {
-		checkoutWorkspace(strings.TrimSpace(args[0]), strings.TrimSpace(args[1]), strings.TrimSpace(checkoutConflictMode))
-	},
-}
-
-var sandboxCmd = &cobra.Command{
-	Use:   "sandbox",
-	Short: "Manage sandboxes",
-}
-
-func init() {
-	createCmd.Flags().StringVar(&createBackend, "backend", "", "runtime backend override (firecracker)")
-	createCmd.Flags().BoolVar(&createFresh, "fresh", false, "skip source workspace snapshot reuse and create from fresh base")
-	createCmd.Flags().StringVar(&createProjectID, "project", "", "target project id (required when creating outside current repo)")
-	createCmd.Flags().StringVar(&createRepo, "repo", "", "repo/path for project creation when --project is not provided")
-	createCmd.Flags().StringVar(&createFrom, "from", "auto", "source mode: auto|fresh|branch:<name>|workspace:<id>")
-	forkCmd.Flags().StringVar(&forkRef, "ref", "", "child workspace git ref (defaults to child name)")
-	forkCmd.Flags().StringVar(&forkSourceWorkspaceID, "source-workspace", "", "explicit source workspace id override (for nested forks)")
-	shellCmd.Flags().DurationVar(&shellTimeout, "timeout", 0, "max wall time waiting for PTY output and exit (e.g. 90s); 0 = no limit")
-	execCmd.Flags().DurationVar(&execTimeout, "timeout", 0, "max wall time for the command; 0 = no limit")
-	listCmd.Flags().BoolVar(&listFlat, "flat", false, "show flat list instead of hierarchical")
-	checkoutCmd.Flags().StringVar(&checkoutConflictMode, "on-conflict", "", "checkout conflict behavior: prompt|stash|discard|fail")
-	removeCmd.Flags().BoolVar(&removeDeleteHostPath, "delete-host-path", false, "delete the host local worktree directory too (disabled for project root sandbox)")
-	removeCmd.Flags().BoolVarP(&removeYes, "yes", "y", false, "skip confirmation prompt")
-	sandboxCmd.AddCommand(
-		listCmd,
-		createCmd,
-		startCmd,
-		stopCmd,
-		removeCmd,
-		forkCmd,
-		checkoutCmd,
-		shellCmd,
-		execCmd,
-		tunnelCmd,
-		restoreCmd,
-	)
-	rootCmd.AddCommand(sandboxCmd)
-}
-
-func listWorkspaces() {
+func runWorkspaceListCommand(_ []string) {
 	conn, err := ensureDaemon()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus list: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexus workspace list: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
-	if listFlat {
-		listWorkspacesFlat(conn)
-		return
-	}
-	listWorkspacesHierarchical(conn)
-}
-
-func listWorkspacesFlat(conn *websocket.Conn) {
 	var result struct {
 		Workspaces []workspacemgr.Workspace `json:"workspaces"`
 	}
 	if err := daemonRPC(conn, "workspace.list", map[string]any{}, &result); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus list: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexus workspace list: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -392,620 +165,433 @@ func listWorkspacesFlat(conn *websocket.Conn) {
 	}
 }
 
-func listWorkspacesHierarchical(conn *websocket.Conn) {
-	var projectsResult struct {
-		Projects []projectmgr.Project `json:"projects"`
-	}
-	if err := daemonRPC(conn, "project.list", map[string]any{}, &projectsResult); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus list: %v\n", err)
-		os.Exit(1)
+// ── workspace create ──────────────────────────────────────────────────────────
+
+func runWorkspaceCreateCommand(args []string) {
+	fs := flag.NewFlagSet("workspace create", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	repo := fs.String("repo", "", "repository URL (required)")
+	ref := fs.String("ref", "", "branch / ref (default: repo default branch)")
+	name := fs.String("name", "", "workspace name (required)")
+	profile := fs.String("profile", "default", "agent profile")
+	backend := fs.String("backend", "", "runtime backend override (firecracker)")
+	_ = fs.Parse(args)
+
+	if *repo == "" || *name == "" {
+		fmt.Fprintf(os.Stderr, "nexus workspace create: --repo and --name are required\n")
+		fs.Usage()
+		os.Exit(2)
 	}
 
-	var workspacesResult struct {
-		Workspaces []workspacemgr.Workspace `json:"workspaces"`
-	}
-	if err := daemonRPC(conn, "workspace.list", map[string]any{}, &workspacesResult); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus list: %v\n", err)
-		os.Exit(1)
-	}
-
-	if len(projectsResult.Projects) == 0 {
-		fmt.Println("no projects")
-		return
-	}
-
-	workspacesByProject := make(map[string][]workspacemgr.Workspace)
-	for _, ws := range workspacesResult.Workspaces {
-		pid := ws.ProjectID
-		if pid == "" {
-			pid = "orphan"
-		}
-		workspacesByProject[pid] = append(workspacesByProject[pid], ws)
-	}
-
-	for _, p := range projectsResult.Projects {
-		fmt.Printf("PROJECT: %s (%s)\n", p.Name, p.PrimaryRepo)
-		workspaces := workspacesByProject[p.ID]
-		if len(workspaces) == 0 {
-			fmt.Println("  (no workspaces)")
-			continue
-		}
-		for _, ws := range workspaces {
-			displayRef := ws.CurrentRef
-			if strings.TrimSpace(displayRef) == "" {
-				displayRef = ws.Ref
-			}
-			name := ws.WorkspaceName
-			if ws.ProjectID != "" && strings.TrimSpace(ws.ParentWorkspaceID) == "" {
-				name = name + " (root)"
-			}
-			fmt.Printf("  %-20s  %-10s  %-10s  %s\n",
-				name, ws.State, ws.Backend, displayRef)
-		}
-		fmt.Println()
-	}
-
-	if orphans, ok := workspacesByProject["orphan"]; ok && len(orphans) > 0 {
-		fmt.Println("PROJECT: (legacy workspaces)")
-		for _, ws := range orphans {
-			displayRef := ws.CurrentRef
-			if strings.TrimSpace(displayRef) == "" {
-				displayRef = ws.Ref
-			}
-			fmt.Printf("  %-20s  %-10s  %-10s  %s\n",
-				ws.WorkspaceName, ws.State, ws.Backend, displayRef)
-		}
-	}
-
-	totalWs := len(workspacesResult.Workspaces)
-	fmt.Printf("%d projects, %d workspaces total\n", len(projectsResult.Projects), totalWs)
-}
-
-func createWorkspace(backend string, projectID string, repoHint string, fromMode string) {
 	conn, err := ensureDaemon()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus sandbox create: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexus workspace create: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
-	project, resolvedRepo, err := resolveCreateProject(conn, projectID, repoHint)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus sandbox create: %v\n", err)
-		os.Exit(2)
-	}
-	workspaceName := deriveWorkspaceName(project.PrimaryRepo)
-
-	sourceBranch, sourceWorkspaceID, fresh, parseErr := resolveCreateFromMode(fromMode, createFresh, resolvedRepo)
-	if parseErr != nil {
-		fmt.Fprintf(os.Stderr, "nexus sandbox create: %v\n", parseErr)
-		os.Exit(2)
-	}
-
-	configBundle, err := credsbundle.Build()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus sandbox create: %v\n", err)
-		os.Exit(1)
-	}
+	repoValue := normalizeRepoForCreate(*repo)
 
 	spec := workspacemgr.CreateSpec{
-		Repo:          project.PrimaryRepo,
-		Ref:           "",
-		WorkspaceName: workspaceName,
-		AgentProfile:  "default",
-		Backend:       strings.TrimSpace(backend),
-		ConfigBundle:  configBundle,
+		Repo:          repoValue,
+		Ref:           *ref,
+		WorkspaceName: *name,
+		AgentProfile:  *profile,
+		Backend:       strings.TrimSpace(*backend),
 	}
 	var result struct {
-		Workspace             workspacemgr.Workspace `json:"workspace"`
-		EffectiveSourceBranch string                 `json:"effectiveSourceBranch"`
-		SourceWorkspaceID     string                 `json:"sourceWorkspaceId"`
-		UsedLineageSnapshotID string                 `json:"usedLineageSnapshotId"`
-		FreshApplied          bool                   `json:"freshApplied"`
+		Workspace workspacemgr.Workspace `json:"workspace"`
 	}
-	fmt.Println("Creating sandbox... (this may take a few minutes on first run)")
-	createParams := map[string]any{
-		"projectId":         project.ID,
-		"targetBranch":      spec.Ref,
-		"sourceBranch":      sourceBranch,
-		"sourceWorkspaceId": sourceWorkspaceID,
-		"fresh":             fresh,
-		"workspaceName":     spec.WorkspaceName,
-		"agentProfile":      spec.AgentProfile,
-		"backend":           spec.Backend,
-		"configBundle":      spec.ConfigBundle,
-		"authBinding":       spec.AuthBinding,
-		"policy":            spec.Policy,
-		"repo":              spec.Repo,
-	}
-	if err := daemonRPC(conn, "workspace.create", createParams, &result); err != nil {
+	if err := daemonRPC(conn, "workspace.create", map[string]any{"spec": spec}, &result); err != nil {
 		if renderPreflightCreateError(err) {
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "nexus sandbox create: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexus workspace create: %v\n", err)
 		os.Exit(1)
 	}
 
 	ws := result.Workspace
-	fmt.Printf("✓ Created workspace %s (id: %s)\n", ws.WorkspaceName, ws.ID)
-	if ws.ProjectID != "" && strings.TrimSpace(ws.ParentWorkspaceID) == "" {
-		fmt.Println("role: project root sandbox")
-	}
-	if result.FreshApplied {
-		fmt.Println("source: fresh workspace requested")
-	} else if strings.TrimSpace(result.EffectiveSourceBranch) != "" {
-		fmt.Printf("source branch: %s\n", result.EffectiveSourceBranch)
-	}
-	if strings.TrimSpace(result.SourceWorkspaceID) != "" {
-		fmt.Printf("source workspace: %s\n", result.SourceWorkspaceID)
-	}
-	if strings.TrimSpace(result.UsedLineageSnapshotID) != "" {
-		fmt.Printf("snapshot: %s\n", result.UsedLineageSnapshotID)
-	}
-	if localWorktreePath := createWorkspaceLocalWorktreePath(ws); localWorktreePath != "" {
-		fmt.Printf("local worktree:   %s\n", localWorktreePath)
-	}
-}
+	fmt.Printf("created workspace %s  (id: %s)\n", ws.WorkspaceName, ws.ID)
 
-func createWorkspaceLocalWorktreePath(ws workspacemgr.Workspace) string {
-	return strings.TrimSpace(ws.LocalWorktreePath)
-}
-
-func resolveCreateProject(conn *websocket.Conn, projectID string, repoHint string) (projectmgr.Project, string, error) {
-	if strings.TrimSpace(projectID) != "" {
-		var getResult struct {
-			Project projectmgr.Project `json:"project"`
+	// ── Set up local worktree + optional mutagen sync ─────────────────────
+	// A remote sandbox path is needed for the mutagen sync beta endpoint.
+	// If RootPath is empty (the daemon hasn't assigned one yet) we still set
+	// up the local worktree; we just skip the sync.
+	lwMgr, lwErr := localws.NewManager(localws.Config{})
+	if lwErr != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace create: warning: cannot init localws manager: %v\n", lwErr)
+	} else {
+		setupSpec := localws.SetupSpec{
+			WorkspaceID:   ws.ID,
+			WorkspaceName: ws.WorkspaceName,
+			Repo:          ws.Repo,
+			Ref:           ws.Ref,
+			RemotePath:    ws.RootPath, // empty → mutagen skipped gracefully
 		}
-		if err := daemonRPC(conn, "project.get", map[string]any{"id": strings.TrimSpace(projectID)}, &getResult); err != nil {
-			return projectmgr.Project{}, "", err
-		}
-		return getResult.Project, getResult.Project.PrimaryRepo, nil
-	}
-
-	repoPath := strings.TrimSpace(repoHint)
-	if repoPath == "" {
-		var err error
-		repoPath, err = normalizeLocalRepoPath(".")
-		if err != nil {
-			return projectmgr.Project{}, "", err
-		}
-	}
-
-	var createResult struct {
-		Project projectmgr.Project `json:"project"`
-	}
-	if err := daemonRPC(conn, "project.create", map[string]any{"repo": repoPath}, &createResult); err != nil {
-		return projectmgr.Project{}, "", err
-	}
-	return createResult.Project, repoPath, nil
-}
-
-func resolveCreateFromMode(fromMode string, freshFlag bool, repoPath string) (string, string, bool, error) {
-	mode := strings.TrimSpace(fromMode)
-	fresh := freshFlag
-	sourceBranch := ""
-	sourceWorkspaceID := ""
-	if mode == "" {
-		mode = "auto"
-	}
-	switch {
-	case mode == "auto":
-	case mode == "fresh":
-		fresh = true
-	case strings.HasPrefix(mode, "branch:"):
-		sourceBranch = strings.TrimSpace(strings.TrimPrefix(mode, "branch:"))
-		if sourceBranch == "" {
-			return "", "", false, fmt.Errorf("--from branch:<name> requires a branch name")
-		}
-	case strings.HasPrefix(mode, "workspace:"):
-		sourceWorkspaceID = strings.TrimSpace(strings.TrimPrefix(mode, "workspace:"))
-		if sourceWorkspaceID == "" {
-			return "", "", false, fmt.Errorf("--from workspace:<id> requires a workspace id")
-		}
-	default:
-		return "", "", false, fmt.Errorf("invalid --from value %q (expected auto|fresh|branch:<name>|workspace:<id>)", mode)
-	}
-
-	if fresh && sourceBranch != "" {
-		return "", "", false, fmt.Errorf("--fresh and --from branch:<name> are mutually exclusive")
-	}
-	if fresh && sourceWorkspaceID != "" {
-		return "", "", false, fmt.Errorf("--fresh and --from workspace:<id> are mutually exclusive")
-	}
-	if !fresh && sourceBranch == "" && sourceWorkspaceID == "" {
-		sourceBranch = currentLocalGitBranch(repoPath)
-	}
-	return sourceBranch, sourceWorkspaceID, fresh, nil
-}
-
-func currentLocalGitBranch(repoPath string) string {
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-	cmd.Dir = repoPath
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	branch := strings.TrimSpace(string(out))
-	if branch == "" || branch == "HEAD" {
-		return ""
-	}
-	return branch
-}
-
-func checkoutWorkspace(id string, ref string, onConflict string) {
-	conn, err := ensureDaemon()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus checkout: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-
-	params := map[string]any{
-		"workspaceId": id,
-		"targetRef":   ref,
-	}
-	if strings.TrimSpace(onConflict) != "" {
-		params["onConflict"] = strings.TrimSpace(onConflict)
-	}
-	var result struct {
-		CurrentRef    string `json:"currentRef"`
-		CurrentCommit string `json:"currentCommit"`
-	}
-	err = daemonRPC(conn, "workspace.checkout", params, &result)
-	if err != nil {
-		if rpcErr, ok := err.(*daemonRPCError); ok && rpcErr.Code == -32011 && strings.TrimSpace(onConflict) == "" {
-			selected := promptCheckoutConflictResolution()
-			if selected == "cancel" {
-				fmt.Fprintln(os.Stderr, "nexus checkout: cancelled")
-				os.Exit(1)
-			}
-			params["onConflict"] = selected
-			if retryErr := daemonRPC(conn, "workspace.checkout", params, &result); retryErr != nil {
-				fmt.Fprintf(os.Stderr, "nexus checkout: %v\n", retryErr)
-				os.Exit(1)
-			}
+		setupResult, setupErr := lwMgr.Setup(context.Background(), setupSpec)
+		if setupErr != nil {
+			fmt.Fprintf(os.Stderr, "nexus workspace create: warning: local worktree setup failed: %v\n", setupErr)
 		} else {
-			fmt.Fprintf(os.Stderr, "nexus checkout: %v\n", err)
-			os.Exit(1)
+			// Persist worktree info back on the daemon record.
+			setParams := map[string]any{
+				"id":                ws.ID,
+				"localWorktreePath": setupResult.WorktreePath,
+				"mutagenSessionId":  setupResult.MutagenSessionID,
+			}
+			if rpcErr := daemonRPC(conn, "workspace.setLocalWorktree", setParams, nil); rpcErr != nil {
+				fmt.Fprintf(os.Stderr, "nexus workspace create: warning: setLocalWorktree RPC failed: %v\n", rpcErr)
+			}
+			fmt.Printf("local worktree:   %s\n", setupResult.WorktreePath)
+			if setupResult.MutagenSessionID != "" {
+				fmt.Printf("mutagen session:  %s\n", setupResult.MutagenSessionID)
+			}
 		}
-	}
-	fmt.Printf("✓ Workspace %s checked out to %s\n", id, result.CurrentRef)
-	if strings.TrimSpace(result.CurrentCommit) != "" {
-		fmt.Printf("commit: %s\n", result.CurrentCommit)
 	}
 }
 
-func promptCheckoutConflictResolution() string {
-	reader := bufio.NewReader(os.Stdin)
-	for {
-		fmt.Println("Local changes detected before checkout.")
-		fmt.Println("Choose an action:")
-		fmt.Println("  1) stash changes and switch")
-		fmt.Println("  2) discard changes and switch")
-		fmt.Println("  3) cancel")
-		fmt.Print("Selection [1-3]: ")
-		raw, _ := reader.ReadString('\n')
-		switch strings.TrimSpace(raw) {
-		case "1":
-			return "stash"
-		case "2":
-			return "discard"
-		case "3":
-			return "cancel"
-		}
-		fmt.Println("Invalid selection.")
+func normalizeRepoForCreate(repo string) string {
+	repo = strings.TrimSpace(repo)
+	if repo == "" || looksLikeRemoteRepo(repo) {
+		return repo
 	}
-}
 
-func normalizeLocalRepoPath(pathValue string) (string, error) {
-	pathValue = strings.TrimSpace(pathValue)
-	if pathValue == "" {
-		pathValue = "."
+	if filepath.IsAbs(repo) {
+		return filepath.Clean(repo)
 	}
-	absolutePath, err := filepath.Abs(pathValue)
-	if err != nil {
-		return "", fmt.Errorf("resolve path %q: %w", pathValue, err)
-	}
-	info, err := os.Stat(absolutePath)
-	if err != nil {
-		return "", fmt.Errorf("invalid path %q: %w", absolutePath, err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("path %q is not a directory", absolutePath)
-	}
-	return absolutePath, nil
-}
 
-func deriveWorkspaceName(repoPath string) string {
-	base := filepath.Base(filepath.Clean(repoPath))
-	if base == "" || base == "." || base == string(filepath.Separator) {
-		base = "workspace"
-	}
-	base = strings.ToLower(base)
-	var b strings.Builder
-	lastDash := false
-	for _, r := range base {
-		isLetter := r >= 'a' && r <= 'z'
-		isNumber := r >= '0' && r <= '9'
-		if isLetter || isNumber {
-			b.WriteRune(r)
-			lastDash = false
-			continue
+	if strings.HasPrefix(repo, "./") || strings.HasPrefix(repo, "../") {
+		if abs, err := filepath.Abs(repo); err == nil {
+			return abs
 		}
-		if !lastDash {
-			b.WriteByte('-')
-			lastDash = true
+		return repo
+	}
+
+	if info, err := os.Stat(repo); err == nil && info.IsDir() {
+		if abs, absErr := filepath.Abs(repo); absErr == nil {
+			return abs
 		}
 	}
-	name := strings.Trim(b.String(), "-")
-	if name == "" {
-		return "workspace"
-	}
-	return name
+
+	return repo
 }
 
-func stopWorkspace(id string) {
+func looksLikeRemoteRepo(repo string) bool {
+	if strings.HasPrefix(repo, "git@") || strings.HasPrefix(repo, "ssh://") {
+		return true
+	}
+	u, err := url.Parse(repo)
+	return err == nil && u.Scheme != "" && u.Host != ""
+}
+
+// ── workspace stop ────────────────────────────────────────────────────────────
+
+func runWorkspaceStopCommand(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus workspace stop <id>")
+		os.Exit(2)
+	}
 	conn, err := ensureDaemon()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus stop: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexus workspace stop: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
-	if err := daemonRPC(conn, "workspace.stop", map[string]any{"id": id}, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus stop: %v\n", err)
+	if err := daemonRPC(conn, "workspace.stop", map[string]any{"id": args[0]}, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace stop: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("stopped workspace %s\n", id)
+	fmt.Printf("stopped workspace %s\n", args[0])
 }
 
-func startWorkspace(id string) {
+// ── workspace start ───────────────────────────────────────────────────────────
+
+func runWorkspaceStartCommand(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus workspace start <id>")
+		os.Exit(2)
+	}
 	conn, err := ensureDaemonFn()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus start: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexus workspace start: %v\n", err)
 		os.Exit(1)
 	}
 	if conn != nil {
 		defer conn.Close()
 	}
 
-	if err := daemonRPCFn(conn, "workspace.start", map[string]any{"id": id}, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus start: %v\n", err)
+	if err := daemonRPCFn(conn, "workspace.start", map[string]any{"id": args[0]}, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace start: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("started workspace %s\n", id)
+	fmt.Printf("started workspace %s\n", args[0])
 }
 
-func shellWorkspace(workspaceID string, ptyTimeout time.Duration) {
-	token := strings.TrimSpace(os.Getenv("NEXUS_AUTH_RELAY_TOKEN"))
-	runWorkspacePTYSession("nexus shell", workspaceID, token, "bash", "", ptyTimeout, true)
-}
+// ── workspace remove ──────────────────────────────────────────────────────────
 
-func execWorkspace(workspaceID string, ptyTimeout time.Duration, postDash []string) {
-	cmdLine := formatCommand(postDash[0], postDash[1:])
-	payload := "cd /workspace >/dev/null 2>&1 || true\n" + cmdLine + "\nexit\n"
-	token := strings.TrimSpace(os.Getenv("NEXUS_AUTH_RELAY_TOKEN"))
-	runWorkspacePTYSession("nexus exec", workspaceID, token, "bash", payload, ptyTimeout, false)
-}
+func runWorkspaceRemoveCommand(args []string) {
+	fs := flag.NewFlagSet("workspace remove", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	force := fs.Bool("force", false, "skip confirmation prompt")
+	_ = fs.Parse(args)
 
-func runWorkspacePTYSession(label, workspaceID, relayToken, shell, commandPayload string, ptyTimeout time.Duration, interactiveStdin bool) {
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus workspace remove <id> [--force]")
+		os.Exit(2)
+	}
+
 	conn, err := ensureDaemon()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", label, err)
+		fmt.Fprintf(os.Stderr, "nexus workspace remove: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
-	openParams := map[string]any{
-		"workspaceId": workspaceID,
-		"shell":       strings.TrimSpace(shell),
-		"workdir":     "/workspace",
-		"cols":        120,
-		"rows":        40,
-	}
-	if relayToken != "" {
-		openParams["authRelayToken"] = relayToken
+	if !*force {
+		fi, _ := os.Stdin.Stat()
+		isTTY := (fi.Mode() & os.ModeCharDevice) != 0
+		if isTTY {
+			if !confirmPrompt(fmt.Sprintf("remove workspace %s?", rest[0])) {
+				fmt.Println("aborted")
+				return
+			}
+		}
 	}
 
-	openID := fmt.Sprintf("open-%d", time.Now().UnixNano())
-	if err := conn.WriteJSON(rpcRequest{
-		JSONRPC: "2.0",
-		ID:      openID,
-		Method:  "pty.open",
-		Params:  openParams,
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: pty.open send failed: %v\n", label, err)
+	if err := daemonRPC(conn, "workspace.remove", map[string]any{"id": rest[0]}, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace remove: %v\n", err)
 		os.Exit(1)
 	}
-
-	var sessionID string
-	for {
-		var msg rpcResponse
-		if err := conn.ReadJSON(&msg); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: pty.open recv failed: %v\n", label, err)
-			os.Exit(1)
-		}
-		if msg.ID != openID {
-			continue
-		}
-		if msg.Error != nil {
-			fmt.Fprintf(os.Stderr, "%s: pty.open rpc error %d: %s\n", label, msg.Error.Code, msg.Error.Message)
-			os.Exit(1)
-		}
-		var open struct {
-			SessionID string `json:"sessionId"`
-		}
-		if err := json.Unmarshal(msg.Result, &open); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: invalid pty.open result: %v\n", label, err)
-			os.Exit(1)
-		}
-		sessionID = strings.TrimSpace(open.SessionID)
-		break
-	}
-
-	var writeMu sync.Mutex
-	send := func(method string, params map[string]any) error {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		return conn.WriteJSON(rpcRequest{
-			JSONRPC: "2.0",
-			Method:  method,
-			Params:  params,
-		})
-	}
-
-	if strings.TrimSpace(commandPayload) != "" {
-		if err := send("pty.write", map[string]any{"sessionId": sessionID, "data": commandPayload}); err != nil {
-			fmt.Fprintf(os.Stderr, "%s: command send failed: %v\n", label, err)
-			os.Exit(1)
-		}
-	} else if interactiveStdin {
-		go func() {
-			reader := bufio.NewReader(os.Stdin)
-			buf := make([]byte, 1024)
-			for {
-				n, readErr := reader.Read(buf)
-				if n > 0 {
-					_ = send("pty.write", map[string]any{
-						"sessionId": sessionID,
-						"data":      string(buf[:n]),
-					})
-				}
-				if readErr != nil {
-					if readErr == io.EOF {
-						_ = send("pty.close", map[string]any{"sessionId": sessionID})
-					}
-					return
-				}
-			}
-		}()
-	}
-
-	var sessionDeadline time.Time
-	if ptyTimeout > 0 {
-		sessionDeadline = time.Now().Add(ptyTimeout)
-	}
-
-	for {
-		if !sessionDeadline.IsZero() && time.Now().After(sessionDeadline) {
-			fmt.Fprintf(os.Stderr, "%s: timed out after %v (no pty.exit)\n", label, ptyTimeout)
-			_ = send("pty.close", map[string]any{"sessionId": sessionID})
-			os.Exit(124)
-		}
-		if !sessionDeadline.IsZero() {
-			_ = conn.SetReadDeadline(sessionDeadline)
-		} else {
-			_ = conn.SetReadDeadline(time.Time{})
-		}
-
-		var msg rpcResponse
-		if err := conn.ReadJSON(&msg); err != nil {
-			var netErr net.Error
-			if !sessionDeadline.IsZero() && errors.As(err, &netErr) && netErr.Timeout() {
-				fmt.Fprintf(os.Stderr, "%s: timed out after %v\n", label, ptyTimeout)
-				_ = send("pty.close", map[string]any{"sessionId": sessionID})
-				os.Exit(124)
-			}
-			if !sessionDeadline.IsZero() && time.Now().After(sessionDeadline) {
-				fmt.Fprintf(os.Stderr, "%s: timed out after %v\n", label, ptyTimeout)
-				_ = send("pty.close", map[string]any{"sessionId": sessionID})
-				os.Exit(124)
-			}
-			fmt.Fprintf(os.Stderr, "%s: read failed: %v\n", label, err)
-			os.Exit(1)
-		}
-
-		if msg.Method == "" && (msg.ID != "" || msg.Result != nil) {
-			continue
-		}
-
-		if msg.Method == "pty.data" {
-			var p struct {
-				SessionID string `json:"sessionId"`
-				Data      string `json:"data"`
-			}
-			_ = json.Unmarshal(msg.Params, &p)
-			if p.SessionID == sessionID && p.Data != "" {
-				fmt.Print(p.Data)
-			}
-			continue
-		}
-		if msg.Method == "pty.exit" {
-			var p struct {
-				SessionID string `json:"sessionId"`
-				ExitCode  int    `json:"exitCode"`
-			}
-			_ = json.Unmarshal(msg.Params, &p)
-			if p.SessionID != sessionID {
-				continue
-			}
-			if p.ExitCode != 0 {
-				os.Exit(p.ExitCode)
-			}
-			return
-		}
-	}
+	fmt.Printf("removed workspace %s\n", rest[0])
 }
 
-func removeWorkspace(id string, deleteHostPath bool, yes bool) {
+// ── workspace info ────────────────────────────────────────────────────────────
+
+func runWorkspaceInfoCommand(args []string) {
+	fs := flag.NewFlagSet("workspace info", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	jsonFlag := fs.Bool("json", false, "output as JSON")
+	_ = fs.Parse(args)
+
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus workspace info <id|name> [--json]")
+		os.Exit(2)
+	}
+	nameOrID := fs.Arg(0)
+
 	conn, err := ensureDaemon()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus remove: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexus workspace info: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
-	var opened struct {
-		Workspace workspacemgr.Workspace `json:"workspace"`
-	}
-	if err := daemonRPC(conn, "workspace.open", map[string]any{"id": id}, &opened); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus remove: %v\n", err)
+	wsID, err := resolveWorkspaceID(context.Background(), conn, nameOrID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace info: %v\n", err)
 		os.Exit(1)
 	}
-	ws := opened.Workspace
-	if !yes {
-		if !confirmWorkspaceRemoval(ws, deleteHostPath) {
-			fmt.Println("aborted")
-			return
+
+	var result struct {
+		Workspace struct {
+			ID                string `json:"id"`
+			WorkspaceName     string `json:"workspaceName"`
+			State             string `json:"state"`
+			Repo              string `json:"repo"`
+			Ref               string `json:"ref"`
+			Backend           string `json:"backend"`
+			RootPath          string `json:"rootPath"`
+			AgentProfile      string `json:"agentProfile"`
+			ParentWorkspaceID string `json:"parentWorkspaceId"`
+			LineageRootID     string `json:"lineageRootId"`
+			ProjectID         string `json:"projectId"`
+		} `json:"workspace"`
+	}
+	if err := daemonRPC(conn, "workspace.info", map[string]any{"id": wsID}, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace info: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *jsonFlag {
+		printJSON(result.Workspace)
+		return
+	}
+
+	ws := result.Workspace
+	fmt.Printf("id:                 %s\n", ws.ID)
+	fmt.Printf("name:               %s\n", ws.WorkspaceName)
+	fmt.Printf("state:              %s\n", ws.State)
+	fmt.Printf("repo:               %s\n", ws.Repo)
+	fmt.Printf("ref:                %s\n", ws.Ref)
+	fmt.Printf("backend:            %s\n", ws.Backend)
+	fmt.Printf("rootPath:           %s\n", ws.RootPath)
+	fmt.Printf("agentProfile:       %s\n", ws.AgentProfile)
+	if ws.ProjectID != "" {
+		fmt.Printf("projectId:          %s\n", ws.ProjectID)
+	}
+	if ws.ParentWorkspaceID != "" {
+		fmt.Printf("parentWorkspaceId:  %s\n", ws.ParentWorkspaceID)
+	}
+	if ws.LineageRootID != "" {
+		fmt.Printf("lineageRootId:      %s\n", ws.LineageRootID)
+	}
+}
+
+// ── workspace restore ─────────────────────────────────────────────────────────
+
+func runWorkspaceRestoreCommand(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus workspace restore <id|name>")
+		os.Exit(2)
+	}
+	nameOrID := args[0]
+
+	conn, err := ensureDaemon()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace restore: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	wsID, err := resolveWorkspaceID(context.Background(), conn, nameOrID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace restore: %v\n", err)
+		os.Exit(1)
+	}
+
+	var result struct {
+		Workspace struct {
+			WorkspaceName string `json:"workspaceName"`
+		} `json:"workspace"`
+	}
+	if err := daemonRPC(conn, "workspace.restore", map[string]any{"id": wsID}, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace restore: %v\n", err)
+		os.Exit(1)
+	}
+
+	name := result.Workspace.WorkspaceName
+	if name == "" {
+		name = nameOrID
+	}
+	fmt.Printf("Restored workspace %s\n", name)
+}
+
+// ── workspace checkout ────────────────────────────────────────────────────────
+
+func runWorkspaceCheckoutCommand(args []string) {
+	fs := flag.NewFlagSet("workspace checkout", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	ref := fs.String("ref", "", "branch or ref to check out (required)")
+	_ = fs.Parse(args)
+
+	if fs.NArg() == 0 || *ref == "" {
+		fmt.Fprintln(os.Stderr, "usage: nexus workspace checkout <id|name> --ref <branch>")
+		os.Exit(2)
+	}
+	nameOrID := fs.Arg(0)
+
+	conn, err := ensureDaemon()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace checkout: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	wsID, err := resolveWorkspaceID(context.Background(), conn, nameOrID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace checkout: %v\n", err)
+		os.Exit(1)
+	}
+
+	var result struct {
+		Workspace struct {
+			WorkspaceName string `json:"workspaceName"`
+		} `json:"workspace"`
+	}
+	if err := daemonRPC(conn, "workspace.checkout", map[string]any{
+		"id":        wsID,
+		"targetRef": *ref,
+	}, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace checkout: %v\n", err)
+		os.Exit(1)
+	}
+
+	name := result.Workspace.WorkspaceName
+	if name == "" {
+		name = nameOrID
+	}
+	fmt.Printf("Checked out %s in workspace %s\n", *ref, name)
+}
+
+// ── workspace ready ───────────────────────────────────────────────────────────
+
+func runWorkspaceReadyCommand(args []string) {
+	fs := flag.NewFlagSet("workspace ready", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	timeout := fs.Duration("timeout", 60*1e9, "timeout duration (e.g. 60s, 2m)")
+	_ = fs.Parse(args)
+
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus workspace ready <id|name> [--timeout 60s]")
+		os.Exit(2)
+	}
+	nameOrID := fs.Arg(0)
+
+	conn, err := ensureDaemon()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace ready: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	wsID, err := resolveWorkspaceID(ctx, conn, nameOrID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace ready: %v\n", err)
+		os.Exit(1)
+	}
+
+	var result struct {
+		Ready bool `json:"ready"`
+	}
+	if err := daemonRPC(conn, "workspace.ready", map[string]any{"id": wsID}, &result); err != nil {
+		if ctx.Err() != nil {
+			fmt.Fprintf(os.Stderr, "nexus workspace ready: timeout waiting for workspace %s\n", nameOrID)
+			os.Exit(1)
 		}
-	}
-
-	if err := daemonRPC(conn, "workspace.remove", map[string]any{
-		"id":             id,
-		"deleteHostPath": deleteHostPath,
-	}, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus remove: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexus workspace ready: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("removed workspace %s\n", id)
+
+	if !result.Ready {
+		fmt.Fprintf(os.Stderr, "nexus workspace ready: workspace %s is not ready\n", nameOrID)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Workspace %s is ready\n", nameOrID)
 }
 
-func confirmWorkspaceRemoval(ws workspacemgr.Workspace, deleteHostPath bool) bool {
-	if strings.TrimSpace(ws.Backend) != "" {
-		fmt.Fprintf(os.Stderr, "warning: remote runtime state for backend %q will be destroyed.\n", ws.Backend)
-	}
-	msg := fmt.Sprintf("Remove workspace %q (%s)? [y/N]: ", ws.WorkspaceName, ws.ID)
-	if deleteHostPath {
-		msg = fmt.Sprintf("Remove workspace %q (%s) and delete host path %q? [y/N]: ", ws.WorkspaceName, ws.ID, strings.TrimSpace(ws.LocalWorktreePath))
-	}
-	fmt.Fprint(os.Stderr, msg)
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return false
-	}
-	answer := strings.ToLower(strings.TrimSpace(line))
-	return answer == "y" || answer == "yes"
-}
+// ── workspace fork ────────────────────────────────────────────────────────────
 
-func forkWorkspace(id, childName, ref string, sourceWorkspaceID string) {
-	if ref == "" {
-		ref = childName
+func runWorkspaceForkCommand(args []string) {
+	fs := flag.NewFlagSet("workspace fork", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	id := fs.String("id", "", "source workspace ID (required)")
+	childName := fs.String("name", "", "child workspace name (required)")
+	_ = fs.Parse(args)
+
+	if *id == "" || *childName == "" {
+		fmt.Fprintf(os.Stderr, "nexus workspace fork: --id and --name are required\n")
+		fs.Usage()
+		os.Exit(2)
 	}
 
 	conn, err := ensureDaemon()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus fork: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexus workspace fork: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
@@ -1013,14 +599,10 @@ func forkWorkspace(id, childName, ref string, sourceWorkspaceID string) {
 	var result struct {
 		Workspace workspacemgr.Workspace `json:"workspace"`
 	}
-	params := map[string]any{
-		"id": id, "childWorkspaceName": childName, "childRef": ref,
-	}
-	if sourceWorkspaceID != "" {
-		params["sourceWorkspaceId"] = sourceWorkspaceID
-	}
-	if err := daemonRPC(conn, "workspace.fork", params, &result); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus fork: %v\n", err)
+	if err := daemonRPC(conn, "workspace.fork", map[string]any{
+		"id": *id, "childWorkspaceName": *childName,
+	}, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace fork: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -1032,65 +614,475 @@ func forkWorkspace(id, childName, ref string, sourceWorkspaceID string) {
 	}
 }
 
-func tunnelWorkspace(workspaceID string) {
-	if workspaceID == "" {
-		fmt.Fprintln(os.Stderr, "usage: nexus tunnel <workspace-id>")
+// ── workspace portal ─────────────────────────────────────────────────────────
+
+func runWorkspacePortalCommand(_ []string) {
+	port := daemonPort()
+	token, err := daemonToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace portal: %v\n", err)
+		os.Exit(1)
+	}
+	if err := daemonclient.EnsureRunning(port, token, ""); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace portal: %v\n", err)
+		os.Exit(1)
+	}
+	url := fmt.Sprintf("http://localhost:%d/portal", port)
+	fmt.Printf("portal: %s\n", url)
+	// Attempt to open in browser (best-effort).
+	_ = openBrowser(url)
+}
+
+// ── workspace shell ───────────────────────────────────────────────────────────
+
+func runShellCommand(args []string) {
+	fs := flag.NewFlagSet("workspace shell", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	shellFlag := fs.String("shell", "", "shell to use (default: $SHELL or /bin/bash)")
+	_ = fs.Parse(args)
+
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus workspace shell <id|name> [--shell /bin/bash]")
 		os.Exit(2)
 	}
-	conn, err := ensureDaemonFn()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus tunnel: %v\n", err)
-		os.Exit(1)
-	}
-	if conn != nil {
-		defer conn.Close()
-	}
-	var result struct {
-		Active            bool   `json:"active"`
-		ActiveWorkspaceID string `json:"activeWorkspaceId"`
-	}
-	if err := daemonRPCFn(conn, "workspace.tunnels.activate", map[string]any{"workspaceId": workspaceID}, &result); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus tunnel: %v\n", err)
-		os.Exit(1)
-	}
-	if !result.Active {
-		if result.ActiveWorkspaceID != "" {
-			fmt.Fprintf(os.Stderr, "nexus tunnel: another workspace already has active tunnels: %s\n", result.ActiveWorkspaceID)
-		} else {
-			fmt.Fprintln(os.Stderr, "nexus tunnel: failed to activate tunnels")
-		}
-		os.Exit(1)
-	}
-	fmt.Printf("tunnels active for workspace %s\n", workspaceID)
-	fmt.Fprintln(os.Stdout, "press Ctrl-C to deactivate tunnels")
-	waitForInterruptFn()
-	if err := daemonRPCFn(conn, "workspace.tunnels.deactivate", map[string]any{"workspaceId": workspaceID}, &result); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus tunnel: deactivate warning: %v\n", err)
-	} else {
-		fmt.Printf("tunnels deactivated for workspace %s\n", workspaceID)
-	}
-}
+	nameOrID := fs.Arg(0)
 
-func waitForInterrupt() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-	<-ch
-	signal.Stop(ch)
-}
-
-func restoreWorkspace(id string) {
 	conn, err := ensureDaemon()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus restore: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexus workspace shell: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
-	var result struct {
-		Workspace workspacemgr.Workspace `json:"workspace"`
-	}
-	if err := daemonRPC(conn, "workspace.restore", map[string]any{"id": id}, &result); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus restore: %v\n", err)
+
+	wsID, err := resolveWorkspaceID(context.Background(), conn, nameOrID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace shell: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("restored workspace %s  (id: %s)\n", result.Workspace.WorkspaceName, result.Workspace.ID)
+
+	cols, rows := termSize(os.Stdin.Fd())
+
+	shell := strings.TrimSpace(*shellFlag)
+	if shell == "" {
+		shell = os.Getenv("SHELL")
+	}
+	if shell == "" {
+		shell = "/bin/bash"
+	}
+
+	var openResult struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := daemonRPC(conn, "pty.open", map[string]any{
+		"workspaceId": wsID,
+		"shell":       shell,
+		"cols":        cols,
+		"rows":        rows,
+	}, &openResult); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace shell: pty.open: %v\n", err)
+		os.Exit(1)
+	}
+	sessionID := openResult.SessionID
+
+	oldTerm, rawErr := makeRaw(os.Stdin.Fd())
+	if rawErr != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace shell: raw mode: %v\n", rawErr)
+		_ = daemonRPC(conn, "pty.close", map[string]any{"sessionId": sessionID}, nil)
+		os.Exit(1)
+	}
+
+	exitCode := 0
+	exitCh := make(chan int, 1)
+
+	cleanup := func() {
+		restoreTerminal(os.Stdin.Fd(), oldTerm)
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		cleanup()
+		_ = daemonRPC(conn, "pty.close", map[string]any{"sessionId": sessionID}, nil)
+		os.Exit(1)
+	}()
+
+	winchCh := make(chan os.Signal, 1)
+	signal.Notify(winchCh, syscall.SIGWINCH)
+	go func() {
+		for range winchCh {
+			c, r := termSize(os.Stdin.Fd())
+			_ = daemonRPC(conn, "pty.resize", map[string]any{
+				"sessionId": sessionID,
+				"cols":      c,
+				"rows":      r,
+			}, nil)
+		}
+	}()
+
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if n > 0 {
+				_ = daemonRPC(conn, "pty.write", map[string]any{
+					"sessionId": sessionID,
+					"data":      string(buf[:n]),
+				}, nil)
+			}
+			if err != nil {
+				break
+			}
+		}
+	}()
+
+	type ptyNotification struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Method  string          `json:"method"`
+		ID      string          `json:"id,omitempty"`
+		Params  json.RawMessage `json:"params,omitempty"`
+		Result  json.RawMessage `json:"result,omitempty"`
+		Error   json.RawMessage `json:"error,omitempty"`
+	}
+
+	for {
+		var msg ptyNotification
+		if err := conn.ReadJSON(&msg); err != nil {
+			break
+		}
+
+		switch msg.Method {
+		case "pty.data":
+			var p struct {
+				SessionID string `json:"sessionId"`
+				Data      string `json:"data"`
+			}
+			if err := json.Unmarshal(msg.Params, &p); err == nil && p.SessionID == sessionID {
+				_, _ = os.Stdout.WriteString(p.Data)
+			}
+		case "pty.exit":
+			var p struct {
+				SessionID string `json:"sessionId"`
+				ExitCode  int    `json:"exitCode"`
+			}
+			if err := json.Unmarshal(msg.Params, &p); err == nil && p.SessionID == sessionID {
+				exitCh <- p.ExitCode
+			}
+		default:
+			if msg.ID != "" {
+			}
+		}
+
+		select {
+		case code := <-exitCh:
+			exitCode = code
+			goto done
+		default:
+		}
+	}
+
+done:
+	cleanup()
+	signal.Stop(sigCh)
+	signal.Stop(winchCh)
+	_ = daemonRPC(conn, "pty.close", map[string]any{"sessionId": sessionID}, nil)
+	os.Exit(exitCode)
+}
+
+// ── workspace run ─────────────────────────────────────────────────────────────
+
+func runRunCommand(args []string) {
+	fs := flag.NewFlagSet("workspace run", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	noCleanup := fs.Bool("no-cleanup", false, "do not remove fork after command exits")
+	timeout := fs.Duration("timeout", 0, "timeout for the command (e.g. 60s)")
+	_ = fs.Bool("json", false, "reserved for future use")
+
+	dashIdx := -1
+	for i, a := range args {
+		if a == "--" {
+			dashIdx = i
+			break
+		}
+	}
+
+	var flagArgs, cmdArgs []string
+	if dashIdx >= 0 {
+		flagArgs = args[:dashIdx]
+		cmdArgs = args[dashIdx+1:]
+	} else {
+		flagArgs = args
+	}
+
+	_ = fs.Parse(flagArgs)
+
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus workspace run <id|name> [--no-cleanup] [--timeout 60s] -- <command> [args...]")
+		os.Exit(2)
+	}
+	if len(cmdArgs) == 0 {
+		fmt.Fprintln(os.Stderr, "nexus workspace run: command required after --")
+		os.Exit(2)
+	}
+	nameOrID := fs.Arg(0)
+
+	shellCmd := strings.Join(cmdArgs, " ")
+
+	conn, err := ensureDaemon()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace run: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	ctx := context.Background()
+	if *timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, *timeout)
+		defer cancel()
+	}
+
+	wsID, err := resolveWorkspaceID(ctx, conn, nameOrID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace run: %v\n", err)
+		os.Exit(1)
+	}
+
+	forkName := fmt.Sprintf("run-fork-%d", time.Now().UnixNano())
+	var forkResult struct {
+		Workspace workspacemgr.Workspace `json:"workspace"`
+	}
+	if err := daemonRPC(conn, "workspace.fork", map[string]any{
+		"id":                 wsID,
+		"childWorkspaceName": forkName,
+	}, &forkResult); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace run: fork: %v\n", err)
+		os.Exit(1)
+	}
+	forkID := forkResult.Workspace.ID
+
+	cleanupFork := func() {
+		if !*noCleanup {
+			_ = daemonRPC(conn, "workspace.remove", map[string]any{"id": forkID}, nil)
+		}
+	}
+
+	if err := daemonRPC(conn, "workspace.start", map[string]any{"id": forkID}, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace run: start fork: %v\n", err)
+		cleanupFork()
+		os.Exit(1)
+	}
+
+	cols, rows := termSize(os.Stdin.Fd())
+
+	var openResult struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := daemonRPC(conn, "pty.open", map[string]any{
+		"workspaceId": forkID,
+		"shell":       "/bin/sh",
+		"cols":        cols,
+		"rows":        rows,
+	}, &openResult); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace run: pty.open: %v\n", err)
+		cleanupFork()
+		os.Exit(1)
+	}
+	sessionID := openResult.SessionID
+
+	// Write the command to the PTY's stdin immediately; /bin/sh will execute it and exit.
+	_ = daemonRPC(conn, "pty.write", map[string]any{
+		"sessionId": sessionID,
+		"data":      shellCmd + "\n",
+	}, nil)
+
+	oldTerm, rawErr := makeRaw(os.Stdin.Fd())
+	if rawErr != nil {
+		fmt.Fprintf(os.Stderr, "nexus workspace run: raw mode: %v\n", rawErr)
+		_ = daemonRPC(conn, "pty.close", map[string]any{"sessionId": sessionID}, nil)
+		cleanupFork()
+		os.Exit(1)
+	}
+
+	restoreTerm := func() {
+		restoreTerminal(os.Stdin.Fd(), oldTerm)
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		restoreTerm()
+		_ = daemonRPC(conn, "pty.close", map[string]any{"sessionId": sessionID}, nil)
+		cleanupFork()
+		os.Exit(1)
+	}()
+
+	winchCh := make(chan os.Signal, 1)
+	signal.Notify(winchCh, syscall.SIGWINCH)
+	go func() {
+		for range winchCh {
+			c, r := termSize(os.Stdin.Fd())
+			_ = daemonRPC(conn, "pty.resize", map[string]any{
+				"sessionId": sessionID,
+				"cols":      c,
+				"rows":      r,
+			}, nil)
+		}
+	}()
+
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, readErr := os.Stdin.Read(buf)
+			if n > 0 {
+				_ = daemonRPC(conn, "pty.write", map[string]any{
+					"sessionId": sessionID,
+					"data":      string(buf[:n]),
+				}, nil)
+			}
+			if readErr != nil {
+				break
+			}
+		}
+	}()
+
+	exitCode := 0
+	exitCh := make(chan int, 1)
+
+	type ptyNotification struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Method  string          `json:"method"`
+		ID      string          `json:"id,omitempty"`
+		Params  json.RawMessage `json:"params,omitempty"`
+		Result  json.RawMessage `json:"result,omitempty"`
+		Error   json.RawMessage `json:"error,omitempty"`
+	}
+
+	for {
+		var msg ptyNotification
+		if err := conn.ReadJSON(&msg); err != nil {
+			break
+		}
+
+		switch msg.Method {
+		case "pty.data":
+			var p struct {
+				SessionID string `json:"sessionId"`
+				Data      string `json:"data"`
+			}
+			if err := json.Unmarshal(msg.Params, &p); err == nil && p.SessionID == sessionID {
+				_, _ = os.Stdout.WriteString(p.Data)
+			}
+		case "pty.exit":
+			var p struct {
+				SessionID string `json:"sessionId"`
+				ExitCode  int    `json:"exitCode"`
+			}
+			if err := json.Unmarshal(msg.Params, &p); err == nil && p.SessionID == sessionID {
+				exitCh <- p.ExitCode
+			}
+		}
+
+		select {
+		case code := <-exitCh:
+			exitCode = code
+			goto runDone
+		default:
+		}
+	}
+
+runDone:
+	restoreTerm()
+	signal.Stop(sigCh)
+	signal.Stop(winchCh)
+	_ = daemonRPC(conn, "pty.close", map[string]any{"sessionId": sessionID}, nil)
+	cleanupFork()
+	os.Exit(exitCode)
+}
+
+// ── top-level workspace dispatcher ───────────────────────────────────────────
+
+// runWorkspaceCommand dispatches nexus workspace <sub> args.
+func runWorkspaceCommand(args []string) {
+	if len(args) == 0 {
+		printWorkspaceUsage()
+		os.Exit(2)
+	}
+	sub := args[0]
+	rest := args[1:]
+	switch sub {
+	case "list", "ls":
+		runWorkspaceListCommand(rest)
+	case "create":
+		runWorkspaceCreateCommand(rest)
+	case "start":
+		runWorkspaceStartCommand(rest)
+	case "stop":
+		runWorkspaceStopCommand(rest)
+	case "remove", "rm", "delete":
+		runWorkspaceRemoveCommand(rest)
+	case "fork":
+		runWorkspaceForkCommand(rest)
+	case "portal":
+		runWorkspacePortalCommand(rest)
+	case "shell":
+		runShellCommand(rest)
+	case "run":
+		runRunCommand(rest)
+	case "info":
+		runWorkspaceInfoCommand(rest)
+	case "restore":
+		runWorkspaceRestoreCommand(rest)
+	case "checkout":
+		runWorkspaceCheckoutCommand(rest)
+	case "ready":
+		runWorkspaceReadyCommand(rest)
+	default:
+		printWorkspaceUsage()
+		fmt.Fprintf(os.Stderr, "\nunknown workspace subcommand: %s\n", sub)
+		os.Exit(2)
+	}
+}
+
+func printWorkspaceUsage() {
+	fmt.Fprint(os.Stderr, `usage: nexus workspace <subcommand> [options]
+
+subcommands:
+  list                  list all workspaces
+  create --repo <url|path> --name <name> [--ref <ref>] [--profile <profile>] [--backend <backend>]
+  info <id|name> [--json]
+                        show workspace details
+  start <id>            start a workspace and make it accessible
+  stop <id>             stop a running workspace
+  restore <id|name>     restore a stopped or errored workspace
+  checkout <id|name> --ref <branch>
+                        check out a branch in a workspace
+  ready <id|name> [--timeout 60s]
+                        wait until the workspace is ready
+  remove <id> [--force]  remove a workspace
+  fork --id <id> --name <child-name>
+  portal                open the admin portal in your browser
+  shell <id|name> [--shell /bin/bash]
+                        open an interactive shell in a workspace
+  run <id|name> [--no-cleanup] [--timeout 60s] -- <command> [args...]
+                        fork workspace, run command, then remove fork
+
+`)
+}
+
+// openBrowser attempts to open url in the user's default browser.
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		return fmt.Errorf("unsupported platform %s", runtime.GOOS)
+	}
+	return cmd.Start()
 }

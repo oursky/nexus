@@ -1,62 +1,20 @@
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"os"
-	"strings"
-
-	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
-	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
-	"github.com/spf13/cobra"
 )
 
-var projectCmd = &cobra.Command{
-	Use:   "project",
-	Short: "Manage projects",
-}
+// ── project list ──────────────────────────────────────────────────────────────
 
-var projectListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all projects",
-	Args:  cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
-		listProjects()
-	},
-}
+func runProjectListCommand(args []string) {
+	fs := flag.NewFlagSet("project list", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	jsonOut := fs.Bool("json", false, "output JSON")
+	_ = fs.Parse(args)
 
-var projectCreateCmd = &cobra.Command{
-	Use:   "create <repo>",
-	Short: "Create or return a project for repo/path",
-	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		createProject(strings.TrimSpace(args[0]))
-	},
-}
-
-var projectShowCmd = &cobra.Command{
-	Use:   "show <id>",
-	Short: "Show project details and workspaces",
-	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		showProject(strings.TrimSpace(args[0]))
-	},
-}
-
-var projectRemoveCmd = &cobra.Command{
-	Use:   "remove <id>",
-	Short: "Remove a project and all its workspaces",
-	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		removeProject(strings.TrimSpace(args[0]))
-	},
-}
-
-func init() {
-	projectCmd.AddCommand(projectListCmd, projectCreateCmd, projectShowCmd, projectRemoveCmd)
-	rootCmd.AddCommand(projectCmd)
-}
-
-func listProjects() {
 	conn, err := ensureDaemon()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nexus project list: %v\n", err)
@@ -65,31 +23,48 @@ func listProjects() {
 	defer conn.Close()
 
 	var result struct {
-		Projects []projectmgr.Project `json:"projects"`
+		Projects []struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			RepoURL string `json:"repoUrl"`
+		} `json:"projects"`
 	}
 	if err := daemonRPC(conn, "project.list", map[string]any{}, &result); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus project list: %v\n", err)
 		os.Exit(1)
 	}
 
+	if *jsonOut {
+		printJSON(result.Projects)
+		return
+	}
+
 	if len(result.Projects) == 0 {
 		fmt.Println("no projects")
 		return
 	}
-
-	fmt.Printf("%-24s  %-20s  %s\n", "ID", "NAME", "PRIMARY REPO")
-	fmt.Printf("%-24s  %-20s  %s\n",
-		"------------------------", "--------------------", "------------------------------")
+	fmt.Printf("%-20s  %-20s  %s\n", "ID", "NAME", "REPO")
+	fmt.Printf("%-20s  %-20s  %s\n", "--------------------", "--------------------", "----")
 	for _, p := range result.Projects {
-		fmt.Printf("%-24s  %-20s  %s\n", p.ID, p.Name, p.PrimaryRepo)
+		fmt.Printf("%-20s  %-20s  %s\n", p.ID, p.Name, p.RepoURL)
 	}
 }
 
-func createProject(repo string) {
-	if strings.TrimSpace(repo) == "" {
-		fmt.Fprintln(os.Stderr, "nexus project create: repo is required")
+// ── project create ────────────────────────────────────────────────────────────
+
+func runProjectCreateCommand(args []string) {
+	fs := flag.NewFlagSet("project create", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	name := fs.String("name", "", "project name (required)")
+	repoURL := fs.String("repo", "", "repository URL")
+	_ = fs.Parse(args)
+
+	if *name == "" {
+		fmt.Fprintf(os.Stderr, "nexus project create: --name is required\n")
+		fs.Usage()
 		os.Exit(2)
 	}
+
 	conn, err := ensureDaemon()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nexus project create: %v\n", err)
@@ -98,61 +73,87 @@ func createProject(repo string) {
 	defer conn.Close()
 
 	var result struct {
-		Project projectmgr.Project `json:"project"`
+		Project struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			RepoURL string `json:"repoUrl"`
+		} `json:"project"`
 	}
-	if err := daemonRPC(conn, "project.create", map[string]any{"repo": repo}, &result); err != nil {
+	if err := daemonRPC(conn, "project.create", map[string]any{
+		"name":    *name,
+		"repoUrl": *repoURL,
+	}, &result); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus project create: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("project: %s (%s)\n", result.Project.ID, result.Project.PrimaryRepo)
+	fmt.Printf("created project %s (%s)\n", result.Project.Name, result.Project.ID)
 }
 
-func showProject(id string) {
+// ── project get ───────────────────────────────────────────────────────────────
+
+func runProjectGetCommand(args []string) {
+	fs := flag.NewFlagSet("project get", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	jsonOut := fs.Bool("json", false, "output JSON")
+	_ = fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus project get <id|name> [--json]")
+		os.Exit(2)
+	}
+
 	conn, err := ensureDaemon()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "nexus project show: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexus project get: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
-	var result struct {
-		Project    projectmgr.Project       `json:"project"`
-		Workspaces []workspacemgr.Workspace `json:"workspaces"`
-	}
-	if err := daemonRPC(conn, "project.get", map[string]any{"id": id}, &result); err != nil {
-		fmt.Fprintf(os.Stderr, "nexus project show: %v\n", err)
+	id, err := resolveProjectID(context.Background(), conn, rest[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus project get: %v\n", err)
 		os.Exit(1)
 	}
 
-	p := result.Project
-	fmt.Printf("ID:             %s\n", p.ID)
-	fmt.Printf("Name:           %s\n", p.Name)
-	fmt.Printf("Primary Repo:   %s\n", p.PrimaryRepo)
-	fmt.Printf("Root Path:      %s\n", p.RootPath)
-	fmt.Printf("Created:        %s\n", p.CreatedAt.Format("2006-01-02 15:04:05"))
-	fmt.Printf("\nWorkspaces (%d):\n", len(result.Workspaces))
+	var result struct {
+		Project struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			RepoURL string `json:"repoUrl"`
+		} `json:"project"`
+	}
+	if err := daemonRPC(conn, "project.get", map[string]any{"id": id}, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "nexus project get: %v\n", err)
+		os.Exit(1)
+	}
 
-	if len(result.Workspaces) == 0 {
-		fmt.Println("  (none)")
+	if *jsonOut {
+		printJSON(result.Project)
 		return
 	}
 
-	fmt.Printf("  %-36s  %-20s  %-10s  %s\n", "ID", "NAME", "STATE", "REF")
-	fmt.Printf("  %-36s  %-20s  %-10s  %s\n",
-		"------------------------------------", "--------------------",
-		"----------", "----------")
-	for _, ws := range result.Workspaces {
-		displayRef := ws.CurrentRef
-		if strings.TrimSpace(displayRef) == "" {
-			displayRef = ws.Ref
-		}
-		fmt.Printf("  %-36s  %-20s  %-10s  %s\n",
-			ws.ID, ws.WorkspaceName, ws.State, displayRef)
-	}
+	p := result.Project
+	fmt.Printf("id:      %s\n", p.ID)
+	fmt.Printf("name:    %s\n", p.Name)
+	fmt.Printf("repoUrl: %s\n", p.RepoURL)
 }
 
-func removeProject(id string) {
+// ── project remove ────────────────────────────────────────────────────────────
+
+func runProjectRemoveCommand(args []string) {
+	fs := flag.NewFlagSet("project remove", flag.ExitOnError)
+	fs.SetOutput(os.Stderr)
+	force := fs.Bool("force", false, "skip confirmation prompt")
+	_ = fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: nexus project remove <id|name> [--force]")
+		os.Exit(2)
+	}
+
 	conn, err := ensureDaemon()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "nexus project remove: %v\n", err)
@@ -160,13 +161,64 @@ func removeProject(id string) {
 	}
 	defer conn.Close()
 
-	var result struct {
-		Removed bool `json:"removed"`
+	id, err := resolveProjectID(context.Background(), conn, rest[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "nexus project remove: %v\n", err)
+		os.Exit(1)
 	}
-	if err := daemonRPC(conn, "project.remove", map[string]any{"id": id}, &result); err != nil {
+
+	if !*force {
+		fi, _ := os.Stdin.Stat()
+		isTTY := (fi.Mode() & os.ModeCharDevice) != 0
+		if isTTY {
+			if !confirmPrompt(fmt.Sprintf("remove project %s?", id)) {
+				fmt.Println("aborted")
+				return
+			}
+		}
+	}
+
+	if err := daemonRPC(conn, "project.remove", map[string]any{"id": id}, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "nexus project remove: %v\n", err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("removed project %s\n", id)
+}
+
+// ── top-level project dispatcher ──────────────────────────────────────────────
+
+func runProjectCommand(args []string) {
+	if len(args) == 0 {
+		printProjectUsage()
+		os.Exit(2)
+	}
+	sub := args[0]
+	rest := args[1:]
+	switch sub {
+	case "list", "ls":
+		runProjectListCommand(rest)
+	case "create":
+		runProjectCreateCommand(rest)
+	case "get":
+		runProjectGetCommand(rest)
+	case "remove", "rm", "delete":
+		runProjectRemoveCommand(rest)
+	default:
+		printProjectUsage()
+		fmt.Fprintf(os.Stderr, "\nunknown project subcommand: %s\n", sub)
+		os.Exit(2)
+	}
+}
+
+func printProjectUsage() {
+	fmt.Fprint(os.Stderr, `usage: nexus project <subcommand> [options]
+
+subcommands:
+  list [--json]                          list all projects
+  create --name <name> [--repo <url>]    create a project
+  get <id|name> [--json]                 show project details
+  remove <id|name> [--force]             remove a project
+
+`)
 }

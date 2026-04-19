@@ -17,7 +17,7 @@ func (d *stubDriver) Resume(_ context.Context, _ string) error        { return n
 func (d *stubDriver) Fork(_ context.Context, _, _ string) error       { return nil }
 func (d *stubDriver) Destroy(_ context.Context, _ string) error       { return nil }
 
-func TestSelectDriverLinuxDoesNotFallbackToProcessWhenFirecrackerUnavailable(t *testing.T) {
+func TestSelectDriverLinuxDoesNotFallbackToProcess(t *testing.T) {
 	f := NewFactory([]Capability{
 		{Name: "runtime.linux", Available: true},
 		{Name: "runtime.firecracker", Available: false},
@@ -31,13 +31,30 @@ func TestSelectDriverLinuxDoesNotFallbackToProcessWhenFirecrackerUnavailable(t *
 	}
 }
 
-func TestSelectDriverDarwinPrefersLimaWhenPreflightPasses(t *testing.T) {
+func TestSelectDriverDarwinPrefersFirecrackerWhenPreflightPasses(t *testing.T) {
 	f := NewFactory([]Capability{
 		{Name: "runtime.darwin", Available: true},
-		{Name: "runtime.lima", Available: true},
+		{Name: "runtime.firecracker", Available: true},
 		{Name: "runtime.process", Available: true},
 	}, map[string]Driver{
-		"lima":    &stubDriver{backend: "lima"},
+		"firecracker": &stubDriver{backend: "firecracker"},
+		"process":     &stubDriver{backend: "process"},
+	})
+
+	d, err := f.SelectDriver([]string{"darwin"}, nil)
+	if err != nil {
+		t.Fatalf("select darwin driver: %v", err)
+	}
+	if d.Backend() != "firecracker" {
+		t.Fatalf("expected firecracker backend, got %q", d.Backend())
+	}
+}
+
+func TestSelectDriverDarwinFallsBackToProcessWhenNoFirecracker(t *testing.T) {
+	f := NewFactory([]Capability{
+		{Name: "runtime.firecracker", Available: false},
+		{Name: "runtime.process", Available: true},
+	}, map[string]Driver{
 		"process": &stubDriver{backend: "process"},
 	})
 
@@ -45,7 +62,23 @@ func TestSelectDriverDarwinPrefersLimaWhenPreflightPasses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("select darwin driver: %v", err)
 	}
-	if d.Backend() != "lima" {
-		t.Fatalf("expected lima backend, got %q", d.Backend())
+	if d.Backend() != "process" {
+		t.Fatalf("expected process backend, got %q", d.Backend())
+	}
+}
+
+func TestSelectDriverSeatbeltAliasResolvesToProcess(t *testing.T) {
+	f := NewFactory([]Capability{
+		{Name: "runtime.process", Available: true},
+	}, map[string]Driver{
+		"process": &stubDriver{backend: "process"},
+	})
+
+	d, err := f.SelectDriver([]string{"seatbelt"}, nil)
+	if err != nil {
+		t.Fatalf("select seatbelt driver: %v", err)
+	}
+	if d.Backend() != "process" {
+		t.Fatalf("expected process backend for seatbelt alias, got %q", d.Backend())
 	}
 }

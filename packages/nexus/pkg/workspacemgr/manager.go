@@ -1,13 +1,10 @@
 package workspacemgr
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -17,9 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/auth"
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
-	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
 	"github.com/inizio/nexus/packages/nexus/pkg/store"
 )
 
@@ -28,14 +23,18 @@ type Manager struct {
 	workspaceRepo workspaceStore
 	mu            sync.RWMutex
 	workspaces    map[string]*Workspace
-	projectMgr    *projectmgr.Manager
 }
 
 type workspaceStore interface {
 	store.WorkspaceRepository
-	store.ProjectRepository
 	store.SpotlightRepository
-	store.SandboxResourceSettingsRepository
+}
+
+func (m *Manager) Close() error {
+	if c, ok := m.workspaceRepo.(interface{ Close() error }); ok {
+		return c.Close()
+	}
+	return nil
 }
 
 func NewManager(root string) *Manager {
@@ -77,10 +76,6 @@ func nodeStorePathForRoot(root string, defaultPath string) string {
 	return defaultPath
 }
 
-func (m *Manager) SetProjectManager(pm *projectmgr.Manager) {
-	m.projectMgr = pm
-}
-
 func (m *Manager) loadAll() error {
 	if m.workspaceRepo == nil {
 		return nil
@@ -104,24 +99,12 @@ func (m *Manager) loadAll() error {
 		if ws.RepoKind == "" {
 			ws.RepoKind = deriveRepoKind(ws.Repo)
 		}
-		if strings.TrimSpace(ws.TargetBranch) == "" {
-			ws.TargetBranch = normalizeWorkspaceRef(ws.Ref)
-		}
-		if strings.TrimSpace(ws.CurrentRef) == "" {
-			ws.CurrentRef = normalizeWorkspaceRef(ws.Ref)
-		}
-		if strings.TrimSpace(ws.HostWorkspacePath) == "" {
-			ws.HostWorkspacePath = strings.TrimSpace(ws.LocalWorktreePath)
-		}
 		if ws.LineageRootID == "" {
 			if ws.ParentWorkspaceID == "" {
 				ws.LineageRootID = ws.ID
 			} else {
 				ws.LineageRootID = ws.ParentWorkspaceID
 			}
-		}
-		if normalized := normalizeLegacyWorkspacePath(&ws); normalized {
-			_ = m.persistWorkspace(&ws)
 		}
 		copy := ws
 		m.workspaces[ws.ID] = &copy
@@ -156,7 +139,7 @@ func (m *Manager) deleteRecord(id string) {
 	}
 }
 
-func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*Workspace, error) {
+func (m *Manager) Create(_ context.Context, spec CreateSpec) (*Workspace, error) {
 	if spec.Repo == "" {
 		return nil, fmt.Errorf("repo is required")
 	}
@@ -167,61 +150,21 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*Workspace, erro
 		return nil, err
 	}
 
-	identity := auth.IdentityFromContext(ctx)
 	now := time.Now().UTC()
 	id := fmt.Sprintf("ws-%d", now.UnixNano())
-	repoID := deriveRepoID(spec.Repo)
-	targetRef := normalizeWorkspaceRef(spec.Ref)
-	projectID := ""
-	if m.projectMgr != nil {
-		project, err := m.projectMgr.GetOrCreateForRepo(spec.Repo, repoID)
-		if err != nil {
-			return nil, fmt.Errorf("get or create project: %w", err)
-		}
-		projectID = project.ID
-	}
-
-	if conflictID := m.branchConflictWorkspaceID(projectID, repoID, targetRef, ""); conflictID != "" {
-		return nil, fmt.Errorf("workspace already exists for branch %q (workspace %s)", targetRef, conflictID)
-	}
-
 	rootPath := filepath.Join(m.root, "instances", id)
 	if err := os.MkdirAll(rootPath, 0o755); err != nil {
 		return nil, fmt.Errorf("create workspace root: %w", err)
 	}
 
 	localWorktreePath := ""
-	createdDetachedWorktree := false
-	if hostWorkspaceRoot := resolveHostWorkspaceRoot(spec.Repo); hostWorkspaceRoot != "" {
-		if gitignoreErr := EnsureNexusGitignore(hostWorkspaceRoot); gitignoreErr != nil {
+	if isLikelyLocalPath(spec.Repo) {
+		worktreePath, wtErr := createWorktree(spec.Repo, spec.Ref, spec.WorkspaceName)
+		if wtErr != nil {
 			_ = os.RemoveAll(rootPath)
-			return nil, fmt.Errorf("ensure .nexus gitignore: %w", gitignoreErr)
+			return nil, wtErr
 		}
-		if spec.UseProjectRootPath {
-			localWorktreePath = strings.TrimSpace(spec.Repo)
-			if !filepath.IsAbs(localWorktreePath) {
-				if absRepoPath, absErr := filepath.Abs(localWorktreePath); absErr == nil {
-					localWorktreePath = absRepoPath
-				}
-			}
-		} else {
-			localWorktreePath = resolveHostWorkspacePath(hostWorkspaceRoot, targetRef, id)
-			if mkErr := os.MkdirAll(localWorktreePath, 0o755); mkErr != nil {
-				_ = os.RemoveAll(rootPath)
-				return nil, fmt.Errorf("create host workspace path: %w", mkErr)
-			}
-			if setupErr := setupLocalWorkspaceCheckout(spec.Repo, localWorktreePath, targetRef); setupErr != nil {
-				_ = os.RemoveAll(rootPath)
-				cleanupLocalWorkspaceCheckout(spec.Repo, localWorktreePath)
-				return nil, fmt.Errorf("setup host workspace checkout: %w", setupErr)
-			}
-			createdDetachedWorktree = true
-			if markerErr := WriteHostWorkspaceMarker(localWorktreePath, id); markerErr != nil {
-				_ = os.RemoveAll(rootPath)
-				cleanupLocalWorkspaceCheckout(spec.Repo, localWorktreePath)
-				return nil, fmt.Errorf("write workspace marker: %w", markerErr)
-			}
-		}
+		localWorktreePath = worktreePath
 	}
 
 	authBinding := spec.AuthBinding
@@ -230,13 +173,10 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*Workspace, erro
 	}
 	ws := &Workspace{
 		ID:                id,
-		ProjectID:         projectID,
-		RepoID:            repoID,
+		RepoID:            deriveRepoID(spec.Repo),
 		RepoKind:          deriveRepoKind(spec.Repo),
 		Repo:              spec.Repo,
-		Ref:               targetRef,
-		TargetBranch:      targetRef,
-		CurrentRef:        targetRef,
+		Ref:               spec.Ref,
 		WorkspaceName:     spec.WorkspaceName,
 		AgentProfile:      spec.AgentProfile,
 		Policy:            spec.Policy,
@@ -245,10 +185,6 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*Workspace, erro
 		Backend:           spec.Backend,
 		AuthBinding:       authBinding,
 		LocalWorktreePath: localWorktreePath,
-		HostWorkspacePath: localWorktreePath,
-		OwnerUserID:       identity.Subject,
-		TenantID:          identity.TenantID,
-		CreatedBy:         identity.Subject,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
@@ -263,9 +199,7 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*Workspace, erro
 		delete(m.workspaces, id)
 		m.mu.Unlock()
 		_ = os.RemoveAll(rootPath)
-		if createdDetachedWorktree && localWorktreePath != "" {
-			cleanupLocalWorkspaceCheckout(spec.Repo, localWorktreePath)
-		}
+		cleanupCreatedWorktree(spec.Repo, localWorktreePath)
 		return nil, fmt.Errorf("persist workspace: %w", err)
 	}
 
@@ -297,16 +231,7 @@ func (m *Manager) List() []*Workspace {
 	return all
 }
 
-type RemoveOptions struct {
-	DeleteHostPath bool
-}
-
 func (m *Manager) Remove(id string) bool {
-	removed, _ := m.RemoveWithOptions(id, RemoveOptions{DeleteHostPath: true})
-	return removed
-}
-
-func (m *Manager) RemoveWithOptions(id string, opts RemoveOptions) (bool, error) {
 	m.mu.Lock()
 	ws, ok := m.workspaces[id]
 	if ok {
@@ -315,21 +240,11 @@ func (m *Manager) RemoveWithOptions(id string, opts RemoveOptions) (bool, error)
 	m.mu.Unlock()
 
 	if ok {
-		if err := os.RemoveAll(ws.RootPath); err != nil {
-			log.Printf("workspace.remove: RemoveAll %s: %v", ws.RootPath, err)
-		}
-		if opts.DeleteHostPath && strings.TrimSpace(ws.LocalWorktreePath) != "" {
-			cleanupLocalWorkspaceCheckout(ws.Repo, ws.LocalWorktreePath)
-			if _, err := os.Stat(ws.LocalWorktreePath); err == nil {
-				if err := os.RemoveAll(ws.LocalWorktreePath); err != nil {
-					log.Printf("workspace.remove: RemoveAll %s: %v", ws.LocalWorktreePath, err)
-				}
-			}
-		}
+		_ = os.RemoveAll(ws.RootPath)
 		m.deleteRecord(id)
 	}
 
-	return ok, nil
+	return ok
 }
 
 func (m *Manager) Stop(id string) error {
@@ -396,28 +311,6 @@ func (m *Manager) SetBackend(id string, backend string) error {
 	return nil
 }
 
-func (m *Manager) SetLineageSnapshot(id string, snapshotID string) error {
-	m.mu.Lock()
-	ws, ok := m.workspaces[id]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("workspace not found: %s", id)
-	}
-	if ws.State == StateRemoved {
-		m.mu.Unlock()
-		return fmt.Errorf("cannot update snapshot for removed workspace: %s", id)
-	}
-	ws.LineageSnapshotID = strings.TrimSpace(snapshotID)
-	ws.UpdatedAt = time.Now().UTC()
-	m.mu.Unlock()
-
-	if err := m.persistWorkspace(ws); err != nil {
-		return fmt.Errorf("persist lineage snapshot: %w", err)
-	}
-
-	return nil
-}
-
 // SetLocalWorktree stores the host-side worktree path and mutagen session ID
 // on the workspace record. Both fields are optional; pass empty strings to clear them.
 func (m *Manager) SetLocalWorktree(id, worktreePath, mutagenSessionID string) error {
@@ -428,228 +321,12 @@ func (m *Manager) SetLocalWorktree(id, worktreePath, mutagenSessionID string) er
 		return fmt.Errorf("workspace not found: %s", id)
 	}
 	ws.LocalWorktreePath = worktreePath
-	ws.HostWorkspacePath = worktreePath
 	ws.MutagenSessionID = mutagenSessionID
 	ws.UpdatedAt = time.Now().UTC()
 	m.mu.Unlock()
 
 	if err := m.persistWorkspace(ws); err != nil {
 		return fmt.Errorf("persist local worktree: %w", err)
-	}
-	return nil
-}
-
-func (m *Manager) SetTunnelPorts(id string, ports []int) error {
-	m.mu.Lock()
-	ws, ok := m.workspaces[id]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("workspace not found: %s", id)
-	}
-	normalized := normalizeTunnelPorts(ports)
-	ws.TunnelPorts = normalized
-	ws.UpdatedAt = time.Now().UTC()
-	m.mu.Unlock()
-	if err := m.persistWorkspace(ws); err != nil {
-		return fmt.Errorf("persist tunnel ports: %w", err)
-	}
-	return nil
-}
-
-func (m *Manager) UpdateProjectID(id string, projectID string) error {
-	m.mu.Lock()
-	ws, ok := m.workspaces[id]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("workspace not found: %s", id)
-	}
-	ws.ProjectID = projectID
-	ws.UpdatedAt = time.Now().UTC()
-	m.mu.Unlock()
-
-	if err := m.persistWorkspace(ws); err != nil {
-		return fmt.Errorf("persist project id update: %w", err)
-	}
-	return nil
-}
-
-func (m *Manager) SetParentWorkspace(id string, parentWorkspaceID string) error {
-	parentWorkspaceID = strings.TrimSpace(parentWorkspaceID)
-
-	m.mu.Lock()
-	ws, ok := m.workspaces[id]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("workspace not found: %s", id)
-	}
-	if parentWorkspaceID != "" && parentWorkspaceID == ws.ID {
-		m.mu.Unlock()
-		return fmt.Errorf("workspace cannot be its own parent: %s", id)
-	}
-	ws.ParentWorkspaceID = parentWorkspaceID
-	if parentWorkspaceID == "" {
-		ws.LineageRootID = ws.ID
-	} else if parent, ok := m.workspaces[parentWorkspaceID]; ok && parent != nil {
-		if strings.TrimSpace(parent.LineageRootID) != "" {
-			ws.LineageRootID = strings.TrimSpace(parent.LineageRootID)
-		} else {
-			ws.LineageRootID = strings.TrimSpace(parent.ID)
-		}
-	} else {
-		ws.LineageRootID = parentWorkspaceID
-	}
-	ws.UpdatedAt = time.Now().UTC()
-	m.mu.Unlock()
-
-	if err := m.persistWorkspace(ws); err != nil {
-		return fmt.Errorf("persist parent workspace: %w", err)
-	}
-	return nil
-}
-
-// CopyDirtyStateFromWorkspace copies tracked dirty changes and untracked files
-// from source workspace into target workspace when both are local git worktrees.
-func (m *Manager) CopyDirtyStateFromWorkspace(sourceWorkspaceID string, targetWorkspaceID string) error {
-	sourceWorkspaceID = strings.TrimSpace(sourceWorkspaceID)
-	targetWorkspaceID = strings.TrimSpace(targetWorkspaceID)
-	if sourceWorkspaceID == "" || targetWorkspaceID == "" || sourceWorkspaceID == targetWorkspaceID {
-		return nil
-	}
-
-	m.mu.RLock()
-	source, sourceOK := m.workspaces[sourceWorkspaceID]
-	target, targetOK := m.workspaces[targetWorkspaceID]
-	m.mu.RUnlock()
-	if !sourceOK {
-		return fmt.Errorf("source workspace not found: %s", sourceWorkspaceID)
-	}
-	if !targetOK {
-		return fmt.Errorf("target workspace not found: %s", targetWorkspaceID)
-	}
-
-	sourcePath := strings.TrimSpace(source.LocalWorktreePath)
-	targetPath := strings.TrimSpace(target.LocalWorktreePath)
-	if sourcePath == "" || targetPath == "" || sourcePath == targetPath {
-		return nil
-	}
-	if strings.TrimSpace(source.RepoID) != "" && strings.TrimSpace(target.RepoID) != "" && strings.TrimSpace(source.RepoID) != strings.TrimSpace(target.RepoID) {
-		return fmt.Errorf("workspace repo mismatch: source %s target %s", source.RepoID, target.RepoID)
-	}
-	if !looksLikeGitRepo(sourcePath) || !looksLikeGitRepo(targetPath) {
-		return nil
-	}
-	if err := copyDirtyStateFromParent(sourcePath, targetPath); err != nil {
-		return fmt.Errorf("copy dirty state from %s to %s: %w", sourceWorkspaceID, targetWorkspaceID, err)
-	}
-
-	m.mu.Lock()
-	ws, ok := m.workspaces[targetWorkspaceID]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("target workspace not found: %s", targetWorkspaceID)
-	}
-	ws.UpdatedAt = time.Now().UTC()
-	m.mu.Unlock()
-	if err := m.persistWorkspace(ws); err != nil {
-		return fmt.Errorf("persist target workspace after dirty sync: %w", err)
-	}
-	return nil
-}
-
-func (m *Manager) Checkout(id string, targetRef string) (*Workspace, error) {
-	normalizedTarget := normalizeWorkspaceRef(targetRef)
-	if normalizedTarget == "" {
-		return nil, fmt.Errorf("target ref is required")
-	}
-
-	m.mu.RLock()
-	current, ok := m.workspaces[id]
-	m.mu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("workspace not found: %s", id)
-	}
-	if current.State == StateRemoved {
-		return nil, fmt.Errorf("cannot checkout removed workspace: %s", id)
-	}
-
-	if conflictID := m.branchConflictWorkspaceID(current.ProjectID, current.RepoID, normalizedTarget, id); conflictID != "" {
-		return nil, fmt.Errorf("workspace already exists for branch %q (workspace %s)", normalizedTarget, conflictID)
-	}
-
-	m.mu.Lock()
-	ws, ok := m.workspaces[id]
-	if !ok {
-		m.mu.Unlock()
-		return nil, fmt.Errorf("workspace not found: %s", id)
-	}
-	if ws.State == StateRemoved {
-		m.mu.Unlock()
-		return nil, fmt.Errorf("cannot checkout removed workspace: %s", id)
-	}
-	ws.Ref = normalizedTarget
-	ws.TargetBranch = normalizedTarget
-	ws.CurrentRef = normalizedTarget
-	ws.CurrentCommit = ""
-	ws.UpdatedAt = time.Now().UTC()
-	m.mu.Unlock()
-
-	if err := m.persistWorkspace(ws); err != nil {
-		return nil, fmt.Errorf("persist checkout: %w", err)
-	}
-	return cloneWorkspace(ws), nil
-}
-
-func (m *Manager) SetCurrentCommit(id string, commit string) error {
-	m.mu.Lock()
-	ws, ok := m.workspaces[id]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("workspace not found: %s", id)
-	}
-	ws.CurrentCommit = strings.TrimSpace(commit)
-	ws.UpdatedAt = time.Now().UTC()
-	m.mu.Unlock()
-
-	if err := m.persistWorkspace(ws); err != nil {
-		return fmt.Errorf("persist current commit: %w", err)
-	}
-	return nil
-}
-
-func (m *Manager) SetDerivedFromRef(id string, ref string) error {
-	m.mu.Lock()
-	ws, ok := m.workspaces[id]
-	if !ok {
-		m.mu.Unlock()
-		return fmt.Errorf("workspace not found: %s", id)
-	}
-	ws.DerivedFromRef = strings.TrimSpace(ref)
-	ws.UpdatedAt = time.Now().UTC()
-	m.mu.Unlock()
-
-	if err := m.persistWorkspace(ws); err != nil {
-		return fmt.Errorf("persist derived ref: %w", err)
-	}
-	return nil
-}
-
-func (m *Manager) CanCheckout(id string, targetRef string) error {
-	normalizedTarget := normalizeWorkspaceRef(targetRef)
-	if normalizedTarget == "" {
-		return fmt.Errorf("target ref is required")
-	}
-
-	m.mu.RLock()
-	current, ok := m.workspaces[id]
-	m.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("workspace not found: %s", id)
-	}
-	if current.State == StateRemoved {
-		return fmt.Errorf("cannot checkout removed workspace: %s", id)
-	}
-	if conflictID := m.branchConflictWorkspaceID(current.ProjectID, current.RepoID, normalizedTarget, id); conflictID != "" {
-		return fmt.Errorf("workspace already exists for branch %q (workspace %s)", normalizedTarget, conflictID)
 	}
 	return nil
 }
@@ -675,6 +352,48 @@ func (m *Manager) Start(id string) error {
 	return nil
 }
 
+func (m *Manager) Pause(id string) error {
+	m.mu.Lock()
+	ws, ok := m.workspaces[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("workspace not found: %s", id)
+	}
+	if ws.State == StateRemoved {
+		m.mu.Unlock()
+		return fmt.Errorf("cannot pause removed workspace: %s", id)
+	}
+	ws.State = StatePaused
+	ws.UpdatedAt = time.Now().UTC()
+	m.mu.Unlock()
+
+	if err := m.persistWorkspace(ws); err != nil {
+		return fmt.Errorf("persist pause: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) Resume(id string) error {
+	m.mu.Lock()
+	ws, ok := m.workspaces[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("workspace not found: %s", id)
+	}
+	if ws.State == StateRemoved {
+		m.mu.Unlock()
+		return fmt.Errorf("cannot resume removed workspace: %s", id)
+	}
+	ws.State = StateRunning
+	ws.UpdatedAt = time.Now().UTC()
+	m.mu.Unlock()
+
+	if err := m.persistWorkspace(ws); err != nil {
+		return fmt.Errorf("persist resume: %w", err)
+	}
+	return nil
+}
+
 func (m *Manager) Fork(parentID string, childWorkspaceName string, childRef string) (*Workspace, error) {
 	m.mu.RLock()
 	parent, ok := m.workspaces[parentID]
@@ -689,12 +408,8 @@ func (m *Manager) Fork(parentID string, childWorkspaceName string, childRef stri
 	if strings.TrimSpace(childWorkspaceName) == "" {
 		childWorkspaceName = parent.WorkspaceName + "-fork"
 	}
-	targetRef := normalizeWorkspaceRef(childRef)
-	if targetRef == "" {
+	if strings.TrimSpace(childRef) == "" {
 		return nil, fmt.Errorf("child ref is required")
-	}
-	if conflictID := m.branchConflictWorkspaceID(parent.ProjectID, parent.RepoID, targetRef, ""); conflictID != "" {
-		return nil, fmt.Errorf("workspace already exists for branch %q (workspace %s)", targetRef, conflictID)
 	}
 
 	now := time.Now().UTC()
@@ -705,37 +420,22 @@ func (m *Manager) Fork(parentID string, childWorkspaceName string, childRef stri
 	}
 
 	childLocalWorktreePath := ""
-	if hostWorkspaceRoot := resolveHostWorkspaceRoot(parent.Repo); hostWorkspaceRoot != "" {
-		if gitignoreErr := EnsureNexusGitignore(hostWorkspaceRoot); gitignoreErr != nil {
+	parentForkBase := resolveForkBasePath(parent)
+	if parentForkBase != "" {
+		worktreePath, wtErr := createForkWorktree(parentForkBase, childRef, childWorkspaceName)
+		if wtErr != nil {
 			_ = os.RemoveAll(childRootPath)
-			return nil, fmt.Errorf("ensure .nexus gitignore: %w", gitignoreErr)
+			return nil, wtErr
 		}
-		childLocalWorktreePath = resolveHostWorkspacePath(hostWorkspaceRoot, targetRef, childID)
-		if mkErr := os.MkdirAll(childLocalWorktreePath, 0o755); mkErr != nil {
-			_ = os.RemoveAll(childRootPath)
-			return nil, fmt.Errorf("create child host workspace path: %w", mkErr)
-		}
-		if setupErr := setupForkLocalWorkspaceCheckout(parent.Repo, parent.LocalWorktreePath, childLocalWorktreePath, targetRef); setupErr != nil {
-			_ = os.RemoveAll(childRootPath)
-			cleanupLocalWorkspaceCheckout(parent.Repo, childLocalWorktreePath)
-			return nil, fmt.Errorf("setup child host workspace checkout: %w", setupErr)
-		}
-		if markerErr := WriteHostWorkspaceMarker(childLocalWorktreePath, childID); markerErr != nil {
-			_ = os.RemoveAll(childRootPath)
-			cleanupLocalWorkspaceCheckout(parent.Repo, childLocalWorktreePath)
-			return nil, fmt.Errorf("write child workspace marker: %w", markerErr)
-		}
+		childLocalWorktreePath = worktreePath
 	}
 
 	child := &Workspace{
 		ID:                childID,
-		ProjectID:         parent.ProjectID,
 		RepoID:            parent.RepoID,
 		RepoKind:          parent.RepoKind,
 		Repo:              parent.Repo,
-		Ref:               targetRef,
-		TargetBranch:      targetRef,
-		CurrentRef:        targetRef,
+		Ref:               childRef,
 		WorkspaceName:     childWorkspaceName,
 		AgentProfile:      parent.AgentProfile,
 		Policy:            parent.Policy,
@@ -745,10 +445,8 @@ func (m *Manager) Fork(parentID string, childWorkspaceName string, childRef stri
 		LineageRootID:     parent.LineageRootID,
 		DerivedFromRef:    parent.Ref,
 		Backend:           parent.Backend,
-		LineageSnapshotID: parent.LineageSnapshotID,
 		AuthBinding:       make(map[string]string, len(parent.AuthBinding)),
 		LocalWorktreePath: childLocalWorktreePath,
-		HostWorkspacePath: childLocalWorktreePath,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
@@ -764,13 +462,6 @@ func (m *Manager) Fork(parentID string, childWorkspaceName string, childRef stri
 	m.mu.Unlock()
 
 	if err := m.persistWorkspace(child); err != nil {
-		m.mu.Lock()
-		delete(m.workspaces, childID)
-		m.mu.Unlock()
-		_ = os.RemoveAll(childRootPath)
-		if childLocalWorktreePath != "" {
-			cleanupLocalWorkspaceCheckout(parent.Repo, childLocalWorktreePath)
-		}
 		return nil, fmt.Errorf("persist child workspace: %w", err)
 	}
 
@@ -782,20 +473,6 @@ func (m *Manager) Root() string {
 }
 
 func (m *Manager) SpotlightRepository() store.SpotlightRepository {
-	if m == nil {
-		return nil
-	}
-	return m.workspaceRepo
-}
-
-func (m *Manager) ProjectRepository() store.ProjectRepository {
-	if m == nil {
-		return nil
-	}
-	return m.workspaceRepo
-}
-
-func (m *Manager) SandboxResourceSettingsRepository() store.SandboxResourceSettingsRepository {
 	if m == nil {
 		return nil
 	}
@@ -817,33 +494,7 @@ func cloneWorkspace(in *Workspace) *Workspace {
 		out.Policy.AuthProfiles = make([]AuthProfile, len(in.Policy.AuthProfiles))
 		copy(out.Policy.AuthProfiles, in.Policy.AuthProfiles)
 	}
-	if in.TunnelPorts != nil {
-		out.TunnelPorts = make([]int, len(in.TunnelPorts))
-		copy(out.TunnelPorts, in.TunnelPorts)
-	}
 	return &out
-}
-
-func normalizeTunnelPorts(ports []int) []int {
-	if len(ports) == 0 {
-		return nil
-	}
-	seen := make(map[int]struct{}, len(ports))
-	out := make([]int, 0, len(ports))
-	for _, p := range ports {
-		if p <= 0 || p > 65535 {
-			continue
-		}
-		if _, ok := seen[p]; ok {
-			continue
-		}
-		seen[p] = struct{}{}
-		out = append(out, p)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i] < out[j]
-	})
-	return out
 }
 
 func deriveRepoKind(repo string) string {
@@ -908,63 +559,6 @@ func isLikelyLocalPath(repo string) bool {
 	return false
 }
 
-func resolveHostWorkspaceRoot(repo string) string {
-	if !isLikelyLocalPath(repo) {
-		return ""
-	}
-	cleanRepo := strings.TrimSpace(repo)
-	if strings.HasPrefix(cleanRepo, "~/") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			cleanRepo = filepath.Join(home, strings.TrimPrefix(cleanRepo, "~/"))
-		}
-	}
-	absRepo, err := filepath.Abs(cleanRepo)
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(absRepo, ".worktrees")
-}
-
-func normalizeWorkspaceRef(ref string) string {
-	normalized := strings.TrimSpace(ref)
-	if normalized == "" {
-		return "main"
-	}
-	return normalized
-}
-
-func workspaceScopeKey(projectID, repoID string) string {
-	if strings.TrimSpace(projectID) != "" {
-		return "project:" + projectID
-	}
-	return "repo:" + repoID
-}
-
-func (m *Manager) branchConflictWorkspaceID(projectID, repoID, targetRef, excludeWorkspaceID string) string {
-	scopeKey := workspaceScopeKey(projectID, repoID)
-	normalizedTarget := normalizeWorkspaceRef(targetRef)
-
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for id, ws := range m.workspaces {
-		if id == excludeWorkspaceID {
-			continue
-		}
-		if ws.State == StateRemoved {
-			continue
-		}
-		if workspaceScopeKey(ws.ProjectID, ws.RepoID) != scopeKey {
-			continue
-		}
-		if normalizeWorkspaceRef(ws.Ref) != normalizedTarget {
-			continue
-		}
-		return id
-	}
-	return ""
-}
-
 func isLikelyRemoteRepo(repo string) bool {
 	repo = strings.TrimSpace(repo)
 	if repo == "" {
@@ -982,287 +576,225 @@ func isLikelyRemoteRepo(repo string) bool {
 	return false
 }
 
-func setupLocalWorkspaceCheckout(repoPath, workspacePath, targetRef string) error {
-	repoPath = strings.TrimSpace(repoPath)
-	workspacePath = strings.TrimSpace(workspacePath)
-	targetRef = normalizeWorkspaceRef(targetRef)
-	if repoPath == "" || workspacePath == "" {
-		return nil
+func createWorktree(repoPath, ref, workspaceName string) (string, error) {
+	base := filepath.Clean(repoPath)
+	if workspaceName == "" {
+		workspaceName = "workspace"
 	}
-	if !looksLikeGitRepo(repoPath) {
-		// Keep non-git local-path behavior unchanged for tests and custom directories.
-		return nil
+	safeName := sanitizeWorktreeName(workspaceName)
+	worktreesDir := filepath.Join(base, ".worktrees")
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		return "", fmt.Errorf("create .worktrees dir: %w", err)
 	}
-	if !isDirEmpty(workspacePath) {
-		return fmt.Errorf("workspace path must be empty before checkout: %s", workspacePath)
-	}
+	worktreePath := filepath.Join(worktreesDir, safeName)
+	worktreePath = uniqueWorktreePath(worktreePath)
 
-	startRef := targetRef
-	if !localBranchExists(repoPath, targetRef) {
-		startRef = "HEAD"
+	branch := strings.TrimSpace(ref)
+	if branch == "" {
+		branch = safeName
 	}
+	branch = uniqueBranchName(base, branch)
 
-	if _, err := runGit(repoPath, "worktree", "add", "--force", "--detach", workspacePath, startRef); err != nil {
-		return err
-	}
-	if localBranchExists(repoPath, targetRef) {
-		if _, err := runGit(workspacePath, "checkout", "--ignore-other-worktrees", targetRef); err != nil {
-			cleanupLocalWorkspaceCheckout(repoPath, workspacePath)
-			return err
-		}
-		return nil
-	}
-	if _, err := runGit(workspacePath, "checkout", "--ignore-other-worktrees", "-B", targetRef); err != nil {
-		cleanupLocalWorkspaceCheckout(repoPath, workspacePath)
-		return err
-	}
-	return nil
-}
-
-func setupForkLocalWorkspaceCheckout(repoPath, parentWorkspacePath, childWorkspacePath, targetRef string) error {
-	if err := setupLocalWorkspaceCheckout(repoPath, childWorkspacePath, targetRef); err != nil {
-		return err
-	}
-	parentWorkspacePath = strings.TrimSpace(parentWorkspacePath)
-	if parentWorkspacePath == "" || !looksLikeGitRepo(parentWorkspacePath) {
-		return nil
-	}
-	if err := copyDirtyStateFromParent(parentWorkspacePath, childWorkspacePath); err != nil {
-		cleanupLocalWorkspaceCheckout(repoPath, childWorkspacePath)
-		return err
-	}
-	return nil
-}
-
-func copyDirtyStateFromParent(parentWorkspacePath, childWorkspacePath string) error {
-	diffOut, err := runGitRaw(parentWorkspacePath, "diff", "--binary", "HEAD")
+	cmd := exec.Command("git", "-C", base, "worktree", "add", "-b", branch, worktreePath, "HEAD")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(diffOut) != "" {
-		if err := runGitWithInput(childWorkspacePath, diffOut, "apply", "--whitespace=nowarn", "--binary"); err != nil {
-			return err
+		for retry := 0; retry < 5 && err != nil; retry++ {
+			if strings.Contains(string(out), "already exists") {
+				worktreePath = uniqueWorktreePath(worktreePath)
+				branch = uniqueBranchName(base, branch)
+				cmd = exec.Command("git", "-C", base, "worktree", "add", "-b", branch, worktreePath, "HEAD")
+				out, err = cmd.CombinedOutput()
+				continue
+			}
+			break
 		}
-	}
-	return copyUntrackedFiles(parentWorkspacePath, childWorkspacePath)
-}
-
-func copyUntrackedFiles(parentWorkspacePath, childWorkspacePath string) error {
-	out, err := runGitRaw(parentWorkspacePath, "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return err
-	}
-	if out == "" {
-		return nil
-	}
-	paths := strings.Split(out, "\x00")
-	for _, rel := range paths {
-		rel = strings.TrimSpace(rel)
-		if rel == "" {
-			continue
-		}
-		src := filepath.Join(parentWorkspacePath, rel)
-		dst := filepath.Join(childWorkspacePath, rel)
-		if err := copyPath(src, dst); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func copyPath(src, dst string) error {
-	info, err := os.Lstat(src)
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		target, err := os.Readlink(src)
 		if err != nil {
-			return err
+			return "", fmt.Errorf("git worktree add failed: %s", strings.TrimSpace(string(out)))
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return err
-		}
-		_ = os.Remove(dst)
-		return os.Symlink(target, dst)
 	}
-	if info.IsDir() {
-		return os.MkdirAll(dst, info.Mode().Perm())
+	return worktreePath, nil
+}
+
+func createForkWorktree(parentWorktreePath, ref, childWorkspaceName string) (string, error) {
+	parentPath := filepath.Clean(parentWorktreePath)
+	worktreesDir := forkChildrenDir(parentPath)
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		return "", fmt.Errorf("create nested .worktrees dir: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
+	safeName := sanitizeWorktreeName(childWorkspaceName)
+	childPath := filepath.Join(worktreesDir, safeName)
+	childPath = uniqueWorktreePath(childPath)
+
+	branch := strings.TrimSpace(ref)
+	if branch == "" {
+		branch = safeName
 	}
-	in, err := os.Open(src)
+	branch = uniqueBranchName(parentPath, branch)
+
+	cmd := exec.Command("git", "-C", parentPath, "worktree", "add", "-b", branch, childPath, "HEAD")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return nil
-}
-
-func cleanupLocalWorkspaceCheckout(repoPath, workspacePath string) {
-	repoPath = strings.TrimSpace(repoPath)
-	workspacePath = strings.TrimSpace(workspacePath)
-	if repoPath == "" || workspacePath == "" {
-		return
-	}
-	if looksLikeGitRepo(repoPath) {
-		_, _ = runGit(repoPath, "worktree", "remove", "--force", workspacePath)
-		_, _ = runGit(repoPath, "worktree", "prune")
-	}
-	_ = os.RemoveAll(workspacePath)
-}
-
-func runGit(dir string, args ...string) (string, error) {
-	out, err := runGitRaw(dir, args...)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(out), nil
-}
-
-func runGitRaw(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
+		for retry := 0; retry < 5 && err != nil; retry++ {
+			if strings.Contains(string(out), "already exists") {
+				childPath = uniqueWorktreePath(childPath)
+				branch = uniqueBranchName(parentPath, branch)
+				cmd = exec.Command("git", "-C", parentPath, "worktree", "add", "-b", branch, childPath, "HEAD")
+				out, err = cmd.CombinedOutput()
+				continue
+			}
+			break
 		}
-		if msg == "" {
-			msg = err.Error()
+		if err != nil {
+			return "", fmt.Errorf("git nested worktree add failed: %s", strings.TrimSpace(string(out)))
 		}
-		return "", fmt.Errorf("git %s failed in %s: %s", strings.Join(args, " "), dir, msg)
 	}
-	return stdout.String(), nil
+	return childPath, nil
 }
 
-func runGitWithInput(dir string, stdin string, args ...string) error {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	cmd.Stdin = strings.NewReader(stdin)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return fmt.Errorf("git %s failed in %s: %s", strings.Join(args, " "), dir, msg)
+func forkChildrenDir(parentPath string) string {
+	marker := string(filepath.Separator) + ".worktrees" + string(filepath.Separator)
+	if idx := strings.Index(parentPath, marker); idx >= 0 {
+		repoRoot := parentPath[:idx]
+		return filepath.Join(repoRoot, ".worktrees")
 	}
-	return nil
+	return filepath.Join(parentPath, ".worktrees")
 }
 
-func looksLikeGitRepo(path string) bool {
-	if strings.TrimSpace(path) == "" {
+func resolveForkBasePath(parent *Workspace) string {
+	if parent == nil {
+		return ""
+	}
+
+	if localPath := strings.TrimSpace(parent.LocalWorktreePath); localPath != "" {
+		candidate := filepath.Clean(localPath)
+		if !looksLikeWorktree(candidate) {
+			candidate = ""
+		}
+		if candidate != "" {
+			if looksLikeRepoRoot(candidate) {
+				nested := filepath.Join(candidate, ".worktrees", sanitizeWorktreeName(parent.WorkspaceName))
+				if pathExists(nested) {
+					return nested
+				}
+			}
+			return candidate
+		}
+	}
+
+	if isLikelyLocalPath(parent.Repo) {
+		inferred := filepath.Join(filepath.Clean(parent.Repo), ".worktrees", sanitizeWorktreeName(parent.WorkspaceName))
+		if pathExists(inferred) {
+			return inferred
+		}
+	}
+
+	return ""
+}
+
+func looksLikeWorktree(path string) bool {
+	if path == "" {
 		return false
 	}
-	_, err := runGit(path, "rev-parse", "--is-inside-work-tree")
+	if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
+		return true
+	}
+	return false
+}
+
+func looksLikeRepoRoot(path string) bool {
+	if path == "" {
+		return false
+	}
+	gitDir := filepath.Join(path, ".git")
+	if _, err := os.Stat(gitDir); err == nil {
+		return true
+	}
+	return false
+}
+
+func pathExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
 	return err == nil
 }
 
-func localBranchExists(repoPath, branch string) bool {
-	if strings.TrimSpace(repoPath) == "" || strings.TrimSpace(branch) == "" {
-		return false
+func sanitizeWorktreeName(name string) string {
+	n := strings.TrimSpace(strings.ToLower(name))
+	if n == "" {
+		return "workspace"
 	}
-	_, err := runGit(repoPath, "show-ref", "--verify", "--quiet", "refs/heads/"+strings.TrimSpace(branch))
-	return err == nil
-}
-
-func isDirEmpty(path string) bool {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return false
-	}
-	return len(entries) == 0
-}
-
-func resolveHostWorkspacePath(hostWorkspaceRoot, ref, workspaceID string) string {
-	base := HostWorkspaceDirName(ref)
-	if strings.TrimSpace(base) == "" {
-		base = strings.TrimSpace(workspaceID)
-	}
-	candidate := filepath.Join(hostWorkspaceRoot, base)
-	if _, err := os.Stat(candidate); os.IsNotExist(err) {
-		return candidate
-	}
-	if HasValidHostWorkspaceMarker(candidate, workspaceID) {
-		return candidate
-	}
-	fallback := strings.TrimSpace(workspaceID)
-	if fallback == "" {
-		fallback = "workspace"
-	}
-	return filepath.Join(hostWorkspaceRoot, base+"-"+fallback)
-}
-
-func normalizeLegacyWorkspacePath(ws *Workspace) bool {
-	if ws == nil {
-		return false
-	}
-	current := strings.TrimSpace(ws.LocalWorktreePath)
-	if current == "" {
-		return false
-	}
-	legacyNeedle := string(filepath.Separator) + ".nexus" + string(filepath.Separator) + "workspaces" + string(filepath.Separator)
-	if !strings.Contains(current, legacyNeedle) {
-		return false
-	}
-	hostRoot := resolveHostWorkspaceRoot(ws.Repo)
-	if hostRoot == "" {
-		return false
-	}
-	ref := strings.TrimSpace(ws.CurrentRef)
-	if ref == "" {
-		ref = strings.TrimSpace(ws.TargetBranch)
-	}
-	if ref == "" {
-		ref = strings.TrimSpace(ws.Ref)
-	}
-	candidate := resolveHostWorkspacePath(hostRoot, ref, ws.ID)
-	info, err := os.Stat(candidate)
-	if err != nil || !info.IsDir() {
-		return false
-	}
-	ws.LocalWorktreePath = candidate
-	ws.HostWorkspacePath = candidate
-	ws.UpdatedAt = time.Now().UTC()
-	return true
-}
-
-func HostWorkspaceDirName(ref string) string {
-	ref = strings.TrimSpace(ref)
-	if ref == "" {
-		return "main"
-	}
+	n = strings.ReplaceAll(n, " ", "-")
 	var b strings.Builder
-	for _, r := range ref {
-		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
-		isNumber := r >= '0' && r <= '9'
-		switch {
-		case isLetter || isNumber || r == '-' || r == '_' || r == '.':
+	for _, r := range n {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
 			b.WriteRune(r)
-		case r == '/' || r == '\\' || r == ' ':
-			b.WriteByte('-')
-		default:
-			b.WriteByte('-')
+		} else {
+			b.WriteRune('-')
 		}
 	}
 	out := strings.Trim(b.String(), "-.")
 	if out == "" {
-		return "main"
+		return "workspace"
 	}
 	return out
+}
+
+func uniqueBranchName(repoPath, desired string) string {
+	branch := desired
+	if !branchExists(repoPath, branch) {
+		return branch
+	}
+	for i := 2; i < 500; i++ {
+		candidate := fmt.Sprintf("%s-%d", desired, i)
+		if !branchExists(repoPath, candidate) {
+			return candidate
+		}
+	}
+	return fmt.Sprintf("%s-%d", desired, time.Now().Unix())
+}
+
+func branchExists(repoPath, branch string) bool {
+	cmd := exec.Command("git", "-C", repoPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	return cmd.Run() == nil
+}
+
+func uniqueWorktreePath(desired string) string {
+	if _, err := os.Stat(desired); os.IsNotExist(err) {
+		return desired
+	}
+	for i := 2; i < 500; i++ {
+		candidate := fmt.Sprintf("%s-%d", desired, i)
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+	return fmt.Sprintf("%s-%d", desired, time.Now().Unix())
+}
+
+func cleanupCreatedWorktree(repoPath, worktreePath string) {
+	if !isSafeWorktreeCleanupPath(repoPath, worktreePath) {
+		return
+	}
+
+	cleanRepo := filepath.Clean(repoPath)
+	cleanWorktree := filepath.Clean(worktreePath)
+	cmd := exec.Command("git", "-C", cleanRepo, "worktree", "remove", "--force", cleanWorktree)
+	_ = cmd.Run()
+	_ = os.RemoveAll(cleanWorktree)
+}
+
+func isSafeWorktreeCleanupPath(repoPath, worktreePath string) bool {
+	if strings.TrimSpace(repoPath) == "" || strings.TrimSpace(worktreePath) == "" {
+		return false
+	}
+	cleanRepo := filepath.Clean(repoPath)
+	cleanWorktree := filepath.Clean(worktreePath)
+	worktreesRoot := filepath.Join(cleanRepo, ".worktrees")
+	prefix := worktreesRoot + string(filepath.Separator)
+	if cleanWorktree == worktreesRoot || !strings.HasPrefix(cleanWorktree+string(filepath.Separator), prefix) {
+		return false
+	}
+	return true
 }

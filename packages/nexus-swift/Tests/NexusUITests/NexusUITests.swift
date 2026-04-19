@@ -1,33 +1,23 @@
 import XCTest
-import Foundation
+import CoreGraphics
 
-// MARK: - Nexus UI Test Suite
+// MARK: - Nexus XCUITest Suite
 //
-// HOW TO RECORD A NEW TEST
-// ─────────────────────────
-// 1. Open NexusApp.xcodeproj in Xcode.
-// 2. Select the NexusUITests target.
-// 3. Place the cursor inside an empty test method body (any `func testXxx` below).
-// 4. Click the red ● Record button in the Debug bar (or Editor ▸ Start Recording UI Test).
-// 5. Interact with the app — Xcode types the XCUIElement calls for you.
-// 6. Stop recording, then run the test to verify.
+// Tests run against an isolated nexusd on linuxbox:7778.
 //
-// ACCESSIBILITY IDs ALREADY WIRED UP
-// ────────────────────────────────────
-//   startup_view          — spinner shown while daemon launches
-//   empty_state_view      — "Select a workspace" placeholder
-//   error_message         — error text when daemon unreachable
-//   connection_status     — footer pill ("Connected" / "Starting…" / "Offline")
-//   new_project_button    — (+) button in the sidebar header
-//   sandbox_project_picker — project picker in new sandbox sheet
-//   sandbox_name_field    — sandbox name input
-//   sandbox_branch_field  — target branch input
-//   sandbox_fork_source_picker — fork-source mode picker in new sandbox sheet
-//   sandbox_source_workspace_picker — source sandbox picker when mode = specific
-//   project_add_sandbox_<project-id> — per-project (+) create sandbox button
-//   workspace_row_<id>    — each row in the sidebar list
+// Isolation: the daemon on linuxbox:7778 is separate from the dev daemon on
+// linuxbox:7777. It is started by test-xcui.sh before running this suite and
+// stopped after. No shared state, no cleanup needed between test runs.
+//
+// Prerequisites:
+//   1. ssh newman@linuxbox is reachable (key in agent)
+//   2. Isolated test daemon must be running on linuxbox:7778
+//      (test-xcui.sh starts this)
+//   3. Env vars injected by test-xcui.sh:
+//        NEXUS_DAEMON_PORT  — remote port (7778)
+//        (token is fetched at runtime via `nexus daemon token` SSH call)
 
-final class NexusUITests: XCTestCase {
+final class NexusConnectedSmokeTest: XCTestCase {
 
     var app: XCUIApplication!
 
@@ -35,344 +25,249 @@ final class NexusUITests: XCTestCase {
         continueAfterFailure = false
         app = XCUIApplication(bundleIdentifier: "com.nexus.NexusApp")
         let env = ProcessInfo.processInfo.environment
-        // Point at the already-running daemon so tests don't need to cold-start one.
-        // Remove or adjust these env vars if you want to test the full auto-start path.
-        app.launchEnvironment["NEXUS_DAEMON_URL"] = env["NEXUS_UI_TEST_DAEMON_URL"] ?? "ws://localhost:63987"
-        app.launchEnvironment["NEXUS_DAEMON_TOKEN"] = env["NEXUS_UI_TEST_DAEMON_TOKEN"] ?? (resolveDaemonToken() ?? "")
-        app.launchEnvironment["NEXUS_UI_TEST_OPEN_DAEMON_PANEL"] = "1"
+
+        // Pass all tunnel-mode vars to the app so AppState enters tunnel mode
+        // and connects via SSH tunnel to the isolated test daemon on linuxbox:<port>.
+        // NEXUS_DAEMON_URL triggers tunnel mode in AppState.
+        // NEXUS_DAEMON_SSH_TARGET is the SSH host (newman@linuxbox).
+        // NEXUS_DAEMON_PORT is the remote daemon port on linuxbox.
+        // Token is fetched at runtime via `nexus daemon token` SSH call (no static override needed).
+        app.launchEnvironment["NEXUS_DAEMON_URL"]        = env["NEXUS_DAEMON_URL"]        ?? "ws://127.0.0.1/dummy"
+        app.launchEnvironment["NEXUS_DAEMON_SSH_TARGET"]  = env["NEXUS_DAEMON_SSH_TARGET"] ?? "newman@linuxbox"
+        app.launchEnvironment["NEXUS_DAEMON_PORT"]       = env["NEXUS_DAEMON_PORT"]       ?? "7778"
     }
 
-    // ── Smoke: app launches and reaches either connected or startup state ──
-
-    func testAppLaunches() throws {
-        app.launch()
-        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20), "App should reach foreground state")
-        XCTAssertTrue(waitForInitialSurface(timeout: 30), "App should show startup, sidebar, or error surface")
+    override func tearDownWithError() throws {
+        app.terminate()
     }
 
-    func testConnectsOrShowsStartup() throws {
-        app.launch()
-        guard waitForInitialSurface(timeout: 30) else {
-            XCTFail("App should show startup/sidebar/error surface within 30 s")
-            return
-        }
-        if app.staticTexts["error_message"].exists {
-            throw XCTSkip("Injected daemon is unreachable in this run; skipping connectivity assertions")
-        }
-        let appeared = app.otherElements["startup_view"].exists
-                    || app.staticTexts["Projects"].exists
-        XCTAssertTrue(appeared, "App should show startup view or sidebar")
+    // MARK: - Helpers
+
+    private func attachScreenshot(named name: String) {
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.exists, "attachScreenshot: no app window found — window-only capture is required")
+        guard window.exists else { return }
+        let attachment = XCTAttachment(screenshot: window.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
-    func testConnectionStatusIndicatorAppears() throws {
-        guard isConfiguredDaemonHealthzUp() else {
-            throw XCTSkip("Configured daemon health endpoint is unavailable")
+    /// Wait for the app to reach Connected state. Returns the button if label is
+    /// "Connected"; otherwise returns the button and the caller can decide what to assert.
+    @discardableResult
+    private func waitForConnected(timeout: TimeInterval = 90) -> XCUIElement {
+        let statusButton = app.buttons["connection_status"]
+        let existed = statusButton.waitForExistence(timeout: timeout)
+        if existed {
+            // Budget 85s for SSH tunnel cold-start (SSH handshake + healthz poll
+            // + token fetch + WebSocket connect + first RPC) before giving up.
+            // The outer waitForExistence timeout is 90s, so use 85s to leave a
+            // small margin and avoid the inner loop exiting before the outer one.
+            let deadline = Date().addingTimeInterval(85)
+            while Date() < deadline {
+                let label = statusButton.label.lowercased()
+                if label.contains("connected") {
+                    return statusButton
+                }
+                // "Starting", "Connecting", or "Offline" — keep waiting
+                RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            }
         }
-        app.launch()
-        guard waitForInitialSurface(timeout: 30) else {
-            throw XCTSkip("App did not reach an observable startup surface")
-        }
-        if app.staticTexts["error_message"].exists {
-            throw XCTSkip("Daemon rejected auth/connection in this environment")
-        }
-
-        // Wait up to 45 s for the daemon to connect (cold starts can be slow in CI).
-        let status = app.buttons["connection_status"]
-        XCTAssertTrue(status.waitForExistence(timeout: 45),
-                      "Connection status pill should be visible in the sidebar footer")
+        return statusButton
     }
 
-    func testConnectionEventuallyConnects() throws {
-        guard isConfiguredDaemonHealthzUp() else {
-            throw XCTSkip("Configured daemon health endpoint is unavailable")
-        }
-        app.launch()
-        guard waitForInitialSurface(timeout: 30) else {
-            throw XCTSkip("App did not reach an observable startup surface")
-        }
-        if app.staticTexts["error_message"].exists {
-            throw XCTSkip("Daemon rejected auth/connection in this environment")
-        }
+    // MARK: - Tests
 
-        // Poll until the status label shows "Connected" (auto-start may take a moment).
-        let connected = app.staticTexts["Connected"]
-        if !connected.waitForExistence(timeout: 60) {
-            throw XCTSkip("Daemon did not reach authenticated connected state within 30 s")
-        }
+    /// Smoke test: app launches, connects to isolated test daemon, screenshot attached.
+    func testConnectsToIsolatedDaemonAndScreenshot() throws {
+        app.launch()
+        XCTAssertTrue(
+            app.wait(for: .runningForeground, timeout: 20),
+            "App should reach foreground"
+        )
+
+        let statusButton = waitForConnected()
+        attachScreenshot(named: "01-after-connect")
+
+        XCTAssertTrue(
+            statusButton.exists,
+            "connection_status button should appear"
+        )
+        XCTAssertTrue(
+            statusButton.label.lowercased().contains("connected"),
+            "Expected 'Connected', got: '\(statusButton.label)'"
+        )
     }
 
-    // ── Sidebar interaction ───────────────────────────────────────────────
-
-    func testNewProjectButtonExists() throws {
-        guard isConfiguredDaemonHealthzUp() else {
-            throw XCTSkip("Configured daemon health endpoint is unavailable")
-        }
+    /// Real user flow: open the "New Project" sheet, fill fields, create a real project.
+    func testCreateProjectSheetFlow() throws {
         app.launch()
-        guard waitForInitialSurface(timeout: 30) else {
-            throw XCTSkip("App did not reach an observable startup surface")
-        }
-        if app.staticTexts["error_message"].exists {
-            throw XCTSkip("Daemon rejected auth/connection in this environment")
-        }
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
+        waitForConnected()
+        attachScreenshot(named: "02-connected-state")
 
-        // Wait for sidebar header to load.
-        guard app.staticTexts["Projects"].waitForExistence(timeout: 30) else {
-            throw XCTSkip("Sidebar did not render within timeout")
-        }
+        // Snapshot project header count before creating so we can assert a delta.
+        let headersBefore = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'project_header_'")
+        ).count
 
-        // The + button is a SidebarHeaderBtn (plain Button), so query as a button.
+        // Step 1: Click the (+) new project button in the sidebar header
+        let newProjectButton = app.buttons["new_project_button"]
+        XCTAssertTrue(
+            newProjectButton.waitForExistence(timeout: 10),
+            "new_project_button should be visible after connecting"
+        )
+        newProjectButton.click()
+        attachScreenshot(named: "03-new-project-sheet-opened")
+
+        // Step 2: Verify the sheet opened in project mode (create_project_button visible,
+        // title says "New Project", no sandbox button present).
+        let createButton = app.buttons["create_project_button"]
+        XCTAssertTrue(
+            createButton.waitForExistence(timeout: 5),
+            "Create Project button should appear in the sheet"
+        )
+        XCTAssertFalse(
+            app.buttons["create_sandbox_button"].exists,
+            "create_sandbox_button must NOT appear when intent is .newProject"
+        )
+
+        // Step 3: Fill in the local path field — use an existing git repo path so the
+        // daemon accepts it (a non-existent path triggers 'repo is required' error).
+        let localPathField = app.textFields["project_local_path_field"]
+        XCTAssertTrue(
+            localPathField.waitForExistence(timeout: 5),
+            "Local path field should be present in New Project sheet"
+        )
+
+        // Use a real repo path that exists on the test machine (this repo itself).
+        let repoPath = ProcessInfo.processInfo.environment["NEXUS_UI_TEST_PROJECT_PATH"]
+            ?? "/Users/newman/magic/nexus"
+        app.activate()
+        localPathField.click()
+        // Small settle after focus — avoids synthesize-event timeout caused by
+        // external window (e.g. Ghostty) that interrupted the prior button click.
+        Thread.sleep(forTimeInterval: 0.5)
+        localPathField.typeText(repoPath)
+        attachScreenshot(named: "04-sheet-fields-visible")
+
+        // Step 4: Submit and wait for sheet to dismiss.
+        createButton.click()
+
+        // Sheet must dismiss — if it stays open an error occurred.
+        let sheetDismissed = createButton.waitForNonExistence(timeout: 15)
+        attachScreenshot(named: "05-project-created")
+
+        // Fail if an error banner is visible (localError or appState.error text).
+        let errorText = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS 'error' OR label CONTAINS 'Error' OR label CONTAINS 'rpc'")
+        ).firstMatch
+        XCTAssertFalse(errorText.exists, "Error banner must not be visible after creation: '\(errorText.exists ? errorText.label : "")'")
+
+        XCTAssertTrue(sheetDismissed, "Sheet must dismiss after successful project creation — if it stays open, creation failed")
+
+        // A new project_header_ button must appear (concrete creation evidence).
+        let deadline = Date().addingTimeInterval(15)
+        var headersAfter = 0
+        repeat {
+            headersAfter = app.buttons.matching(
+                NSPredicate(format: "identifier BEGINSWITH 'project_header_'")
+            ).count
+            if headersAfter > headersBefore { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        } while Date() < deadline
+
+        XCTAssertGreaterThan(
+            headersAfter,
+            headersBefore,
+            "A new project_header_ row must appear in sidebar after creation (before: \(headersBefore), after: \(headersAfter))"
+        )
+    }
+
+    /// Verify the sidebar renders with project rows and their controls.
+    func testSidebarRendersAfterConnect() throws {
+        app.launch()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
+        waitForConnected()
+
+        let sidebarAppeared = app.staticTexts["Projects"].waitForExistence(timeout: 15)
+        attachScreenshot(named: "06-sidebar-state")
+
+        XCTAssertTrue(sidebarAppeared, "Sidebar should show 'Projects' heading after connection")
+
+        let newProjectButton = app.buttons["new_project_button"]
+        XCTAssertTrue(
+            newProjectButton.waitForExistence(timeout: 5),
+            "new_project_button should exist in sidebar"
+        )
+    }
+
+    /// Intent invariant: clicking new_project_button must open in project mode
+    /// (create_project_button visible, create_sandbox_button absent).
+    func testNewProjectIntentShowsProjectMode() throws {
+        app.launch()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
+        waitForConnected()
+
         let plusBtn = app.buttons["new_project_button"]
-        guard plusBtn.waitForExistence(timeout: 5) else {
-            throw XCTSkip("New project button not visible in this environment")
-        }
-    }
-
-    func testNewProjectSheetCanOpenFromHeader() throws {
-        guard isConfiguredDaemonHealthzUp() else {
-            throw XCTSkip("Configured daemon health endpoint is unavailable")
-        }
-        app.launch()
-        guard waitForInitialSurface(timeout: 30) else {
-            throw XCTSkip("App did not reach an observable startup surface")
-        }
-        if app.staticTexts["error_message"].exists {
-            throw XCTSkip("Daemon rejected auth/connection in this environment")
-        }
-        let plusBtn = app.buttons["new_project_button"]
-        guard plusBtn.waitForExistence(timeout: 5) else {
-            throw XCTSkip("New project button not visible in this environment")
-        }
+        XCTAssertTrue(plusBtn.waitForExistence(timeout: 10), "new_project_button must exist")
         plusBtn.click()
-        guard app.staticTexts["New Sandbox"].waitForExistence(timeout: 5) else {
-            throw XCTSkip("New sheet did not open")
-        }
-        XCTAssertTrue(app.buttons["Create Project"].waitForExistence(timeout: 5))
+
+        let createProjectBtn = app.buttons["create_project_button"]
+        XCTAssertTrue(
+            createProjectBtn.waitForExistence(timeout: 5),
+            "create_project_button must appear when intent is .newProject"
+        )
+        XCTAssertFalse(
+            app.buttons["create_sandbox_button"].exists,
+            "create_sandbox_button must NOT appear when intent is .newProject"
+        )
+        attachScreenshot(named: "07-project-intent-invariant")
+
+        app.buttons.matching(NSPredicate(format: "identifier == 'cancel_button' OR label == 'Cancel'")).firstMatch.click()
     }
 
-    func testNewSandboxSheetShowsProjectFirstFields() throws {
-        guard isConfiguredDaemonHealthzUp() else {
-            throw XCTSkip("Configured daemon health endpoint is unavailable")
-        }
+    /// Intent invariant: clicking a per-project (+) button must open in sandbox mode
+    /// (create_sandbox_button visible, create_project_button absent).
+    func testNewSandboxIntentShowsSandboxMode() throws {
         app.launch()
-        guard waitForInitialSurface(timeout: 30) else {
-            throw XCTSkip("App did not reach an observable startup surface")
-        }
-        if app.staticTexts["error_message"].exists {
-            throw XCTSkip("Daemon rejected auth/connection in this environment")
-        }
-        guard app.staticTexts["Projects"].waitForExistence(timeout: 30) else {
-            throw XCTSkip("Sidebar did not render within timeout")
-        }
-        let projectAddButtons = app.buttons.matching(
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
+        waitForConnected()
+
+        let addSandboxBtns = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'project_add_sandbox_'")
         )
-        let plusBtn = projectAddButtons.firstMatch
-        guard plusBtn.waitForExistence(timeout: 5) else {
-            throw XCTSkip("Per-project sandbox button not visible in this environment")
+        guard addSandboxBtns.firstMatch.waitForExistence(timeout: 15) else {
+            throw XCTSkip("No project_add_sandbox_ buttons — need at least one project")
         }
-        plusBtn.click()
+        addSandboxBtns.firstMatch.click()
 
-        guard app.staticTexts["New Sandbox"].waitForExistence(timeout: 5) else {
-            throw XCTSkip("New sandbox sheet did not open")
-        }
-        // Per-project create fixes the project id, so the picker can be hidden.
-        _ = app.popUpButtons["sandbox_project_picker"].waitForExistence(timeout: 2)
-        XCTAssertTrue(app.textFields["sandbox_name_field"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.textFields["sandbox_branch_field"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.popUpButtons["sandbox_fork_source_picker"].waitForExistence(timeout: 5))
-    }
-
-    func testProjectRowsExposeAddSandboxButtons() throws {
-        guard isConfiguredDaemonHealthzUp() else {
-            throw XCTSkip("Configured daemon health endpoint is unavailable")
-        }
-        app.launch()
-        guard waitForInitialSurface(timeout: 30) else {
-            throw XCTSkip("App did not reach an observable startup surface")
-        }
-        if app.staticTexts["error_message"].exists {
-            throw XCTSkip("Daemon rejected auth/connection in this environment")
-        }
-        guard app.staticTexts["Projects"].waitForExistence(timeout: 30) else {
-            throw XCTSkip("Sidebar did not render within timeout")
-        }
-
-        let projectAddButtons = app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'project_add_sandbox_'")
+        let createSandboxBtn = app.buttons["create_sandbox_button"]
+        XCTAssertTrue(
+            createSandboxBtn.waitForExistence(timeout: 5),
+            "create_sandbox_button must appear when intent is .newSandbox(projectID)"
         )
-        guard projectAddButtons.firstMatch.waitForExistence(timeout: 5) else {
-            throw XCTSkip("No per-project add-sandbox buttons in this environment")
-        }
-    }
-
-    func testDaemonPanelShowsHostToolsActions() throws {
-        guard isConfiguredDaemonHealthzUp() else {
-            throw XCTSkip("Configured daemon health endpoint is unavailable")
-        }
-        app.launch()
-        guard waitForInitialSurface(timeout: 30) else {
-            throw XCTSkip("App did not reach an observable startup surface")
-        }
-        guard app.staticTexts["Connected"].waitForExistence(timeout: 60) else {
-            throw XCTSkip("Daemon did not reach connected state; skipping daemon panel action checks")
-        }
-
-        XCTAssertTrue(app.buttons["daemon_action_refresh_tools"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["daemon_action_install_tools"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["daemon_action_provision_runtime"].waitForExistence(timeout: 10))
-    }
-
-    func testFixtureComposePortAppears() throws {
-        guard isHealthzUp("http://localhost:64001/healthz") else {
-            throw XCTSkip("Fixture daemon on :64001 is not available")
-        }
-        let fixtureWorkspaceID = ProcessInfo.processInfo.environment["NEXUS_UI_TEST_FIXTURE_WORKSPACE_ID"] ?? ""
-        let fixtureWorkspaceName = ProcessInfo.processInfo.environment["NEXUS_UI_TEST_FIXTURE_WORKSPACE_NAME"] ?? "xcui-compose"
-        app.launchEnvironment["NEXUS_DAEMON_URL"] = "ws://localhost:64001"
-        app.launchEnvironment["NEXUS_DAEMON_TOKEN"] = "xcui-token"
-
-        app.launch()
-        _ = app.staticTexts["Connected"].waitForExistence(timeout: 30)
-
-        let workspaceRow: XCUIElement
-        if !fixtureWorkspaceID.isEmpty {
-            workspaceRow = app.buttons["workspace_row_\(fixtureWorkspaceID)"]
-        } else {
-            workspaceRow = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", fixtureWorkspaceName)).firstMatch
-        }
-        guard workspaceRow.waitForExistence(timeout: 15) else {
-            throw XCTSkip("Fixture workspace row not found")
-        }
-        workspaceRow.click()
-        let portsTab = app.buttons["Ports"]
-        if portsTab.waitForExistence(timeout: 3) {
-            portsTab.click()
-        }
-
-        let composePortRow = app.descendants(matching: .any)["port_row_18080"]
-        XCTAssertTrue(composePortRow.waitForExistence(timeout: 20), "Expected compose forwarded port row to appear")
-    }
-
-    // ── Recording playground ─────────────────────────────────────────────
-    // Paste cursor here and press ● Record to capture any interaction.
-
-    func testRecordInteraction() throws {
-        app.launch()
-        _ = waitForInitialSurface(timeout: 30)
-        _ = app.staticTexts["Connected"].waitForExistence(timeout: 60)
-
-        // Select first workspace row if any exist (otherElements, not cells)
-        let rows = app.otherElements.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'workspace_row_'")
+        XCTAssertFalse(
+            app.buttons["create_project_button"].exists,
+            "create_project_button must NOT appear when intent is .newSandbox(projectID)"
         )
-        if rows.firstMatch.waitForExistence(timeout: 10) {
-            rows.firstMatch.click()
-        }
+        attachScreenshot(named: "08-sandbox-intent-invariant")
 
-        // ← Xcode will insert recorded steps below this line.
+        app.buttons.matching(NSPredicate(format: "identifier == 'cancel_button' OR label == 'Cancel'")).firstMatch.click()
     }
 }
 
-// MARK: - Launch performance
+// MARK: - XCUIElement helpers
 
-final class NexusUILaunchTests: XCTestCase {
-
-    func testLaunchPerformance() throws {
-        measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
-        }
-    }
-}
-
-// MARK: - Helpers
-
-private func resolveDaemonToken() -> String? {
-    if let env = ProcessInfo.processInfo.environment["NEXUS_DAEMON_TOKEN"]?
-        .trimmingCharacters(in: .whitespacesAndNewlines),
-       !env.isEmpty {
-        return env
-    }
-
-    let configuredService = ProcessInfo.processInfo.environment["NEXUS_DAEMON_TOKEN_KEYCHAIN_SERVICE"]?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-    let services = [
-        configuredService,
-        "nexus-daemon-token",
-        "nexus/token",
-        "nexus-daemon",
-        "nexus",
-    ]
-    for maybeService in services {
-        guard let service = maybeService, !service.isEmpty else { continue }
-        if let token = readMacKeychainPassword(service: service), !token.isEmpty {
-            return token
-        }
-    }
-    return nil
-}
-
-private func isHealthzUp(_ rawURL: String) -> Bool {
-    guard let url = URL(string: rawURL) else { return false }
-    var req = URLRequest(url: url)
-    req.timeoutInterval = 1.5
-    let sem = DispatchSemaphore(value: 0)
-    var ok = false
-    URLSession.shared.dataTask(with: req) { _, response, _ in
-        if let http = response as? HTTPURLResponse {
-            ok = http.statusCode == 200
-        }
-        sem.signal()
-    }.resume()
-    _ = sem.wait(timeout: .now() + 2)
-    return ok
-}
-
-private extension NexusUITests {
-    func waitForInitialSurface(timeout: TimeInterval) -> Bool {
-        let startupView = app.otherElements["startup_view"]
-        let sidebar = app.staticTexts["Projects"]
-        let error = app.staticTexts["error_message"]
-        let status = app.buttons["connection_status"]
+private extension XCUIElement {
+    func waitForNonExistence(timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if startupView.exists || sidebar.exists || error.exists || status.exists {
-                return true
-            }
+            if !exists { return true }
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         }
-        return false
-    }
-
-    func isConfiguredDaemonHealthzUp() -> Bool {
-        let wsURL = app.launchEnvironment["NEXUS_DAEMON_URL"] ?? "ws://localhost:63987"
-        guard var components = URLComponents(string: wsURL) else { return false }
-        components.scheme = (components.scheme == "wss") ? "https" : "http"
-        components.path = "/healthz"
-        components.query = nil
-        guard let healthURL = components.url else { return false }
-        return isHealthzUp(healthURL.absoluteString)
+        return !exists
     }
 }
 
-private func readMacKeychainPassword(service: String) -> String? {
-    let task = Process()
-    task.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-    task.arguments = ["find-generic-password", "-s", service, "-w"]
-
-    let out = Pipe()
-    task.standardOutput = out
-    task.standardError = Pipe()
-
-    do {
-        try task.run()
-    } catch {
-        return nil
-    }
-    task.waitUntilExit()
-    guard task.terminationStatus == 0 else { return nil }
-
-    let data = out.fileHandleForReading.readDataToEndOfFile()
-    guard let raw = String(data: data, encoding: .utf8) else { return nil }
-    let token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    return token.isEmpty ? nil : token
-}

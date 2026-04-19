@@ -4,56 +4,61 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
+	"log/slog"
+	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/creack/pty"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
-	"github.com/inizio/nexus/packages/nexus/pkg/auth"
 	"github.com/inizio/nexus/packages/nexus/pkg/authrelay"
-	"github.com/inizio/nexus/packages/nexus/pkg/compose"
 	"github.com/inizio/nexus/packages/nexus/pkg/config"
+	"github.com/inizio/nexus/packages/nexus/pkg/handlers"
 	"github.com/inizio/nexus/packages/nexus/pkg/lifecycle"
-	"github.com/inizio/nexus/packages/nexus/pkg/projectmgr"
+	"github.com/inizio/nexus/packages/nexus/pkg/logstream"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
-	"github.com/inizio/nexus/packages/nexus/pkg/server/pty"
-	"github.com/inizio/nexus/packages/nexus/pkg/server/rpc"
+	"github.com/inizio/nexus/packages/nexus/pkg/server/portal"
 	"github.com/inizio/nexus/packages/nexus/pkg/services"
 	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
 )
 
+type firecrackerAgentConnector interface {
+	AgentConn(ctx context.Context, workspaceID string) (net.Conn, error)
+}
+
 type Server struct {
-	port                  int
-	workspaceDir          string
-	authProvider          auth.Provider
-	upgrader              websocket.Upgrader
-	connections           map[string]*Connection
-	ws                    *workspace.Workspace
-	workspaceMgr          *workspacemgr.Manager
-	projectMgr            *projectmgr.Manager
-	serviceMgr            *services.Manager
-	spotlightMgr          *spotlight.Manager
-	portMonitor           *spotlight.PortMonitor
-	lifecycle             *lifecycle.Manager
-	runtimeFactory        *runtime.Factory
-	nodeCfg               *config.NodeConfig
-	authRelayBroker       *authrelay.Broker
-	autoComposeForwards   map[string]bool
-	composePortHints      map[string]map[int]int
-	activeTunnelWorkspace string
-	rpcReg                *rpc.Registry
-	ptyRegistry           *pty.Registry // Global PTY session registry for multi-tab support
-	ptyStore              *pty.Store
-	mu                    sync.RWMutex
-	shutdownCh            chan struct{}
+	port                int
+	workspaceDir        string
+	tokenSecret         string
+	upgrader            websocket.Upgrader
+	connections         map[string]*Connection
+	ws                  *workspace.Workspace
+	workspaceMgr        *workspacemgr.Manager
+	serviceMgr          *services.Manager
+	spotlightMgr        *spotlight.Manager
+	lifecycle           *lifecycle.Manager
+	runtimeFactory      *runtime.Factory
+	nodeCfg             *config.NodeConfig
+	authRelayBroker     *authrelay.Broker
+	autoComposeForwards map[string]bool
+	logRing             *logstream.Ring
+	mu                  sync.RWMutex
+	shutdownCh          chan struct{}
 }
 
 type Connection struct {
@@ -61,9 +66,8 @@ type Connection struct {
 	send     chan []byte
 	closed   bool
 	clientID string
-	identity *auth.Identity
 	ptyMu    sync.Mutex
-	pty      map[string]*pty.Session
+	pty      map[string]*ptySession
 }
 
 type RPCMessage struct {
@@ -80,6 +84,65 @@ type RPCResponse struct {
 	Error   *rpckit.RPCError `json:"error,omitempty"`
 }
 
+type ptySession struct {
+	id      string
+	cmd     *exec.Cmd
+	file    *os.File
+	conn    net.Conn
+	mu      sync.Mutex
+	closing atomic.Bool
+	enc     *json.Encoder
+	dec     *json.Decoder
+	remote  bool
+	done    chan struct{}
+}
+
+type ptyOpenParams struct {
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	Shell       string `json:"shell,omitempty"`
+	Cols        int    `json:"cols,omitempty"`
+	Rows        int    `json:"rows,omitempty"`
+}
+
+type ptyOpenResult struct {
+	SessionID string `json:"sessionId"`
+}
+
+type ptyWriteParams struct {
+	SessionID string `json:"sessionId"`
+	Data      string `json:"data"`
+}
+
+type ptyResizeParams struct {
+	SessionID string `json:"sessionId"`
+	Cols      int    `json:"cols"`
+	Rows      int    `json:"rows"`
+}
+
+type ptyCloseParams struct {
+	SessionID string `json:"sessionId"`
+}
+
+var daemonLog = slog.Default()
+
+type multiHandler struct{ a, b slog.Handler }
+
+func newMultiHandler(a, b slog.Handler) *multiHandler { return &multiHandler{a, b} }
+func (m *multiHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return m.a.Enabled(ctx, l) || m.b.Enabled(ctx, l)
+}
+func (m *multiHandler) Handle(ctx context.Context, r slog.Record) error {
+	_ = m.a.Handle(ctx, r)
+	_ = m.b.Handle(ctx, r)
+	return nil
+}
+func (m *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return newMultiHandler(m.a.WithAttrs(attrs), m.b.WithAttrs(attrs))
+}
+func (m *multiHandler) WithGroup(name string) slog.Handler {
+	return newMultiHandler(m.a.WithGroup(name), m.b.WithGroup(name))
+}
+
 var newSpotlightManagerForServer = func(workspaceMgr *workspacemgr.Manager) (*spotlight.Manager, error) {
 	return spotlight.NewManagerWithRepository(workspaceMgr.SpotlightRepository())
 }
@@ -91,18 +154,11 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 	}
 
 	workspaceMgr := workspacemgr.NewManager(workspaceDir)
-	projectMgr := projectmgr.NewManager(workspaceDir, workspaceMgr.ProjectRepository())
-	workspaceMgr.SetProjectManager(projectMgr)
 
 	spotlightMgr, err := newSpotlightManagerForServer(workspaceMgr)
 	if err != nil {
 		log.Printf("[spotlight] Warning: failed to initialize sqlite-backed spotlight manager, falling back to in-memory manager: %v", err)
 		spotlightMgr = spotlight.NewManager()
-	}
-	// Tunnels are now runtime-only and require explicit activation.
-	// Clear any legacy persisted forwards so defaults are detect-only.
-	for _, fwd := range spotlightMgr.List("") {
-		_ = spotlightMgr.Close(fwd.ID)
 	}
 
 	lifecycleMgr, err := lifecycle.NewManager(workspaceDir)
@@ -114,10 +170,14 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		}
 	}
 
-	srv := &Server{
+	ring := logstream.NewRing(500)
+	ringHandler := logstream.NewHandler(ring)
+	daemonLog = slog.New(newMultiHandler(slog.Default().Handler(), ringHandler))
+
+	return &Server{
 		port:         port,
 		workspaceDir: workspaceDir,
-		authProvider: auth.NewLocalTokenProvider(tokenSecret),
+		tokenSecret:  tokenSecret,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
@@ -128,19 +188,132 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		connections:         make(map[string]*Connection),
 		ws:                  ws,
 		workspaceMgr:        workspaceMgr,
-		projectMgr:          projectMgr,
 		serviceMgr:          services.NewManager(),
 		spotlightMgr:        spotlightMgr,
 		lifecycle:           lifecycleMgr,
 		authRelayBroker:     authrelay.NewBroker(),
 		autoComposeForwards: make(map[string]bool),
-		composePortHints:    make(map[string]map[int]int),
-		ptyRegistry:         pty.NewRegistry(), // Initialize global PTY session registry
-		ptyStore:            pty.NewStore(workspaceDir),
+		logRing:             ring,
 		shutdownCh:          make(chan struct{}),
+	}, nil
+}
+
+// SetAsDefaultLogger redirects the global slog/log output through this
+// server's ring handler. Call once from main; do not call in tests.
+func (s *Server) SetAsDefaultLogger() {
+	slog.SetDefault(daemonLog)
+}
+
+func (s *Server) Close() error {
+	return s.workspaceMgr.Close()
+}
+
+func (s *Server) Start() error {
+	if s.lifecycle != nil {
+		if err := s.lifecycle.RunPostStart(); err != nil {
+			log.Printf("[lifecycle] Post-start hook error: %v", err)
+		}
 	}
-	srv.rpcReg = srv.newRPCRegistry()
-	return srv, nil
+
+	mux := s.routes()
+	addr := fmt.Sprintf(":%d", s.port)
+	return http.ListenAndServe(addr, mux)
+}
+
+func (s *Server) routes() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.handleHealthz)
+
+	// Dev mode: reverse-proxy all UI and Vite HMR paths to the Vite dev server.
+	// This makes http://localhost:8080/ui serve the live Vite dev server transparently.
+	if devUI := os.Getenv("NEXUS_DEV_UI"); devUI != "" {
+		target, err := url.Parse(strings.TrimRight(devUI, "/"))
+		if err != nil {
+			log.Printf("[portal] invalid NEXUS_DEV_UI %q: %v", devUI, err)
+		} else {
+			proxy := httputil.NewSingleHostReverseProxy(target)
+			// Preserve the original Host so Vite doesn't reject the request.
+			origDirector := proxy.Director
+			proxy.Director = func(req *http.Request) {
+				origDirector(req)
+				req.Host = target.Host
+			}
+			proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+				log.Printf("[portal-dev] proxy error for %s: %v", r.URL.Path, err)
+				http.Error(w, "Vite dev server unavailable — is `task dev:ui` running?", http.StatusBadGateway)
+			}
+			mux.Handle("/ui/static/", proxy)
+			mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
+				r2 := r.Clone(r.Context())
+				r2.URL.Path = "/ui/static/"
+				proxy.ServeHTTP(w, r2)
+			})
+			mux.HandleFunc("/ui/", func(w http.ResponseWriter, r *http.Request) {
+				r2 := r.Clone(r.Context())
+				r2.URL.Path = "/ui/static/"
+				proxy.ServeHTTP(w, r2)
+			})
+			// Vite HMR / internal paths
+			mux.Handle("/@vite/", proxy)
+			mux.Handle("/@fs/", proxy)
+			mux.Handle("/node_modules/", proxy)
+			mux.HandleFunc("/portal/", s.handlePortalUI)
+			mux.HandleFunc("/portal", s.handlePortalUI)
+			mux.HandleFunc("/", s.handleWebSocket)
+			return mux
+		}
+	}
+
+	if os.Getenv("NEXUS_DEV_UI") == "" {
+		log.Printf("[portal] NEXUS_DEV_UI not set; serving embedded UI assets. For hot reload, run daemon with NEXUS_DEV_UI=http://localhost:5173")
+	}
+
+	mux.Handle("/portal/static/", http.StripPrefix("/portal/", http.FileServer(http.FS(portal.FS))))
+	if uiDist, err := fs.Sub(portal.FS, "ui_dist"); err == nil {
+		mux.Handle("/ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(uiDist))))
+	} else if staticDist, staticErr := fs.Sub(portal.FS, "static"); staticErr == nil {
+		mux.Handle("/ui/static/", http.StripPrefix("/ui/static/", http.FileServer(http.FS(staticDist))))
+	}
+	mux.HandleFunc("/portal/", s.handlePortalUI)
+	mux.HandleFunc("/portal", s.handlePortalUI)
+	mux.HandleFunc("/ui/", s.handlePortalUI)
+	mux.HandleFunc("/ui", s.handlePortalUI)
+
+	mux.HandleFunc("/", s.handleWebSocket)
+	return mux
+}
+
+func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
+	daemonLog.Debug("healthz.ping")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"ok":true,"service":"workspace-daemon"}`))
+}
+
+func (s *Server) handlePortalUI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/ui/api") {
+		http.NotFound(w, r)
+		return
+	}
+
+	f, err := portal.FS.Open("ui_dist/index.html")
+	if err != nil {
+		f, err = portal.FS.Open("static/index.html")
+	}
+	if err != nil {
+		http.Error(w, "portal unavailable", http.StatusInternalServerError)
+		log.Printf("[portal] failed to open ui_dist index: %v", err)
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if _, copyErr := io.Copy(w, f); copyErr != nil {
+		log.Printf("[portal] failed to serve ui_dist index: %v", copyErr)
+	}
 }
 
 func (s *Server) Shutdown() {
@@ -165,6 +338,282 @@ func (s *Server) Shutdown() {
 	}
 }
 
+func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if !s.validateToken(token) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	conn, err := s.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("Failed to upgrade connection: %v", err)
+		return
+	}
+
+	clientID := fmt.Sprintf("client-%d", time.Now().UnixNano())
+	clientConn := &Connection{
+		conn:     conn,
+		send:     make(chan []byte, 256),
+		clientID: clientID,
+		pty:      make(map[string]*ptySession),
+	}
+
+	s.mu.Lock()
+	s.connections[clientID] = clientConn
+	s.mu.Unlock()
+
+	daemonLog.Info("ws.accept", "clientID", clientID)
+
+	go clientConn.writePump()
+	clientConn.readPump(s)
+}
+
+func (s *Server) validateToken(token string) bool {
+	if token == "" {
+		return false
+	}
+
+	if token == s.tokenSecret {
+		return true
+	}
+
+	parsedToken, err := jwt.Parse(token, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(s.tokenSecret), nil
+	})
+
+	return err == nil && parsedToken.Valid
+}
+
+func (c *Connection) readPump(srv *Server) {
+	defer func() {
+		c.closeAllPTY()
+		c.conn.Close()
+		srv.mu.Lock()
+		delete(srv.connections, c.clientID)
+		srv.mu.Unlock()
+	}()
+
+	c.conn.SetReadLimit(512 * 1024)
+	c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	for {
+		_, message, err := c.conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("WebSocket error: %v", err)
+			}
+			break
+		}
+
+		var rpcMsg RPCMessage
+		if err := json.Unmarshal(message, &rpcMsg); err != nil {
+			response := srv.createErrorResponse("", rpckit.ErrInvalidParams)
+			responseJSON, _ := json.Marshal(response)
+			c.send <- responseJSON
+			continue
+		}
+
+		go srv.handleMessage(&rpcMsg, c)
+	}
+}
+
+func (c *Connection) writePump() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer func() {
+		ticker.Stop()
+		c.conn.Close()
+	}()
+
+	for {
+		select {
+		case message, ok := <-c.send:
+			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if !ok {
+				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+
+			w, err := c.conn.NextWriter(websocket.TextMessage)
+			if err != nil {
+				return
+			}
+			w.Write(message)
+
+			if err := w.Close(); err != nil {
+				return
+			}
+
+		case <-ticker.C:
+			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (s *Server) handleMessage(msg *RPCMessage, conn *Connection) {
+	response := s.processRPC(msg, conn)
+	responseJSON, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal response: %v", err)
+		return
+	}
+
+	select {
+	case conn.send <- responseJSON:
+	default:
+		log.Printf("Failed to send response to %s", conn.clientID)
+	}
+}
+
+func (s *Server) processRPC(msg *RPCMessage, conn *Connection) *RPCResponse {
+	ctx := context.Background()
+
+	var result interface{}
+	var err *rpckit.RPCError
+	workspace := s.resolveWorkspace(msg.Params)
+
+	switch msg.Method {
+	case "fs.readFile":
+		result, err = handlers.HandleReadFile(ctx, msg.Params, workspace)
+	case "fs.writeFile":
+		result, err = handlers.HandleWriteFile(ctx, msg.Params, workspace)
+	case "fs.exists":
+		result, err = handlers.HandleExists(ctx, msg.Params, workspace)
+	case "fs.readdir":
+		result, err = handlers.HandleReaddir(ctx, msg.Params, workspace)
+	case "fs.mkdir":
+		result, err = handlers.HandleMkdir(ctx, msg.Params, workspace)
+	case "fs.rm":
+		result, err = handlers.HandleRm(ctx, msg.Params, workspace)
+	case "fs.stat":
+		result, err = handlers.HandleStat(ctx, msg.Params, workspace)
+	case "exec":
+		result, err = handlers.HandleExecWithAuthRelay(ctx, msg.Params, workspace, s.authRelayBroker)
+	case "authrelay.mint":
+		result, err = handlers.HandleAuthRelayMint(ctx, msg.Params, s.workspaceMgr, s.authRelayBroker)
+	case "authrelay.revoke":
+		result, err = handlers.HandleAuthRelayRevoke(ctx, msg.Params, s.authRelayBroker)
+	case "workspace.info":
+		result = s.handleWorkspaceInfo(msg.Params)
+	case "workspace.create":
+		result, err = handlers.HandleWorkspaceCreate(ctx, msg.Params, s.workspaceMgr, s.runtimeFactory)
+	case "workspace.open":
+		result, err = handlers.HandleWorkspaceOpen(ctx, msg.Params, s.workspaceMgr)
+	case "workspace.list":
+		daemonLog.Debug("rpc.dispatch", "method", msg.Method)
+		result, err = handlers.HandleWorkspaceList(ctx, msg.Params, s.workspaceMgr)
+		daemonLog.Debug("rpc.done", "method", msg.Method)
+	case "workspace.relations.list":
+		result, err = handlers.HandleWorkspaceRelationsList(ctx, msg.Params, s.workspaceMgr)
+	case "workspace.remove":
+		result, err = handlers.HandleWorkspaceRemove(ctx, msg.Params, s.workspaceMgr)
+	case "workspace.stop":
+		result, err = handlers.HandleWorkspaceStop(ctx, msg.Params, s.workspaceMgr)
+	case "workspace.start":
+		result, err = handlers.HandleWorkspaceStart(ctx, msg.Params, s.workspaceMgr)
+	case "workspace.restore":
+		result, err = handlers.HandleWorkspaceRestore(ctx, msg.Params, s.workspaceMgr, s.runtimeFactory)
+	case "workspace.pause":
+		result, err = handlers.HandleWorkspacePause(ctx, msg.Params, s.workspaceMgr, s.runtimeFactory)
+	case "workspace.resume":
+		result, err = handlers.HandleWorkspaceResume(ctx, msg.Params, s.workspaceMgr, s.runtimeFactory)
+	case "workspace.fork":
+		result, err = handlers.HandleWorkspaceFork(ctx, msg.Params, s.workspaceMgr, s.runtimeFactory)
+	case "workspace.setLocalWorktree":
+		result, err = handlers.HandleWorkspaceSetLocalWorktree(ctx, msg.Params, s.workspaceMgr)
+	case "capabilities.list":
+		result, err = handlers.HandleCapabilitiesList(ctx, msg.Params, s.runtimeFactory)
+	case "node.info":
+		result, err = handlers.HandleNodeInfo(ctx, msg.Params, s.nodeCfg, s.runtimeFactory)
+	case "os.pickDirectory":
+		result, err = handlers.HandlePickDirectory(ctx, msg.Params)
+	case "workspace.ready":
+		workspaceID := extractWorkspaceID(msg.Params)
+		if workspaceID == "" {
+			err = rpckit.ErrInvalidParams
+			break
+		}
+		if accessErr := s.requireWorkspaceStarted(workspaceID); accessErr != nil {
+			err = accessErr
+			break
+		}
+		rootPath := workspace.Path()
+		if wsRecord, ok := s.workspaceMgr.Get(workspaceID); ok && strings.TrimSpace(wsRecord.RootPath) != "" {
+			rootPath = wsRecord.RootPath
+		}
+		s.ensureComposeForwards(ctx, workspaceID, rootPath)
+		result, err = handlers.HandleWorkspaceReady(ctx, msg.Params, workspace, s.serviceMgr)
+	case "git.command":
+		result, err = handlers.HandleGitCommand(ctx, msg.Params, workspace)
+	case "service.command":
+		result, err = handlers.HandleServiceCommand(ctx, msg.Params, workspace, s.serviceMgr)
+	case "spotlight.expose":
+		result, err = handlers.HandleSpotlightExpose(ctx, msg.Params, s.spotlightMgr)
+	case "spotlight.list":
+		result, err = handlers.HandleSpotlightList(ctx, msg.Params, s.spotlightMgr)
+	case "spotlight.close":
+		result, err = handlers.HandleSpotlightClose(ctx, msg.Params, s.spotlightMgr)
+	case "spotlight.applyDefaults":
+		rootPath := workspace.Path()
+		paramsMap := map[string]any{}
+		_ = json.Unmarshal(msg.Params, &paramsMap)
+		paramsMap["rootPath"] = rootPath
+		updated, _ := json.Marshal(paramsMap)
+		result, err = handlers.HandleSpotlightApplyDefaults(ctx, updated, s.spotlightMgr)
+	case "spotlight.applyComposePorts":
+		rootPath := workspace.Path()
+		paramsMap := map[string]any{}
+		_ = json.Unmarshal(msg.Params, &paramsMap)
+		paramsMap["rootPath"] = rootPath
+		updated, _ := json.Marshal(paramsMap)
+		result, err = handlers.HandleSpotlightApplyComposePorts(ctx, updated, s.spotlightMgr)
+	case "pty.open":
+		result, err = s.handlePTYOpen(msg.Params, conn, workspace)
+	case "pty.write":
+		result, err = s.handlePTYWrite(msg.Params, conn)
+	case "pty.resize":
+		result, err = s.handlePTYResize(msg.Params, conn)
+	case "pty.close":
+		result, err = s.handlePTYClose(msg.Params, conn)
+	case "daemon.logs.subscribe":
+		result, err = s.handleLogsSubscribe(conn)
+	default:
+		err = rpckit.ErrMethodNotFound
+	}
+
+	if err != nil {
+		return &RPCResponse{
+			JSONRPC: "2.0",
+			ID:      msg.ID,
+			Error:   err,
+		}
+	}
+
+	return &RPCResponse{
+		JSONRPC: "2.0",
+		ID:      msg.ID,
+		Result:  result,
+	}
+}
+
+func (s *Server) createErrorResponse(id string, rpcErr *rpckit.RPCError) *RPCResponse {
+	return &RPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error:   rpcErr,
+	}
+}
+
 func (s *Server) resolveWorkspace(params json.RawMessage) *workspace.Workspace {
 	workspaceID := extractWorkspaceID(params)
 	if workspaceID == "" {
@@ -176,96 +625,12 @@ func (s *Server) resolveWorkspace(params json.RawMessage) *workspace.Workspace {
 		return s.ws
 	}
 
-	resolvedPath := preferredWorkspaceRoot(wsRecord)
-	if resolvedPath == "" {
-		return s.ws
-	}
-
-	resolved, err := workspace.NewWorkspace(resolvedPath)
+	resolved, err := workspace.NewWorkspace(wsRecord.RootPath)
 	if err != nil {
 		return s.ws
 	}
 
 	return resolved
-}
-
-func preferredWorkspaceRoot(wsRecord *workspacemgr.Workspace) string {
-	if wsRecord == nil {
-		return ""
-	}
-
-	candidates := make([]string, 0, 4)
-	candidates = append(candidates, strings.TrimSpace(wsRecord.HostWorkspacePath))
-	candidates = append(candidates, strings.TrimSpace(wsRecord.LocalWorktreePath))
-	if inferred := inferredWorkspaceWorktree(wsRecord); inferred != "" {
-		candidates = append(candidates, inferred)
-	}
-	candidates = append(candidates,
-		strings.TrimSpace(wsRecord.Repo),
-		strings.TrimSpace(wsRecord.RootPath),
-	)
-	for _, candidate := range candidates {
-		if canonical := canonicalWorkspaceCandidate(wsRecord, candidate); canonical != "" {
-			return canonical
-		}
-	}
-	return ""
-}
-
-func inferredWorkspaceWorktree(wsRecord *workspacemgr.Workspace) string {
-	if wsRecord == nil {
-		return ""
-	}
-	repoPath := canonicalExistingDir(strings.TrimSpace(wsRecord.Repo))
-	if repoPath == "" {
-		return ""
-	}
-	ref := strings.TrimSpace(wsRecord.CurrentRef)
-	if ref == "" {
-		ref = strings.TrimSpace(wsRecord.TargetBranch)
-	}
-	if ref == "" {
-		ref = strings.TrimSpace(wsRecord.Ref)
-	}
-	return filepath.Join(repoPath, ".worktrees", workspacemgr.HostWorkspaceDirName(ref))
-}
-
-func canonicalExistingDir(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	info, err := os.Stat(path)
-	if err != nil || !info.IsDir() {
-		return ""
-	}
-	resolved := filepath.Clean(path)
-	if real, err := filepath.EvalSymlinks(resolved); err == nil && strings.TrimSpace(real) != "" {
-		resolved = filepath.Clean(real)
-	}
-	return resolved
-}
-
-func canonicalWorkspaceCandidate(wsRecord *workspacemgr.Workspace, candidate string) string {
-	canonical := canonicalExistingDir(candidate)
-	if canonical == "" {
-		return ""
-	}
-	if wsRecord == nil {
-		return canonical
-	}
-	if workspacemgr.IsManagedHostWorkspacePath(canonical) && !workspacemgr.HasValidHostWorkspaceMarker(canonical, wsRecord.ID) {
-		return ""
-	}
-	return canonical
-}
-
-func (s *Server) resolveWorkspaceTyped(v any) *workspace.Workspace {
-	raw, err := json.Marshal(v)
-	if err != nil || len(raw) == 0 {
-		return s.ws
-	}
-	return s.resolveWorkspace(raw)
 }
 
 func extractWorkspaceID(params json.RawMessage) string {
@@ -295,7 +660,7 @@ func extractWorkspaceID(params json.RawMessage) string {
 	return ""
 }
 
-func (s *Server) ensureComposeHints(ctx context.Context, workspaceID, rootPath string) {
+func (s *Server) ensureComposeForwards(ctx context.Context, workspaceID, rootPath string) {
 	if workspaceID == "" || rootPath == "" {
 		return
 	}
@@ -308,332 +673,46 @@ func (s *Server) ensureComposeHints(ctx context.Context, workspaceID, rootPath s
 	s.autoComposeForwards[workspaceID] = true
 	s.mu.Unlock()
 
-	published, err := compose.DiscoverPublishedPorts(ctx, rootPath)
-	if err != nil {
-		if err == compose.ErrComposeFileNotFound {
-			return
-		}
-		log.Printf("[ports] failed to inspect compose ports for %s: %v", workspaceID, err)
+	payload, _ := json.Marshal(map[string]any{
+		"workspaceId": workspaceID,
+		"rootPath":    rootPath,
+	})
+
+	if _, rpcErr := handlers.HandleSpotlightApplyComposePorts(ctx, payload, s.spotlightMgr); rpcErr != nil {
+		log.Printf("[spotlight] failed to auto-apply compose ports for %s: %+v", workspaceID, rpcErr)
 		s.mu.Lock()
 		s.autoComposeForwards[workspaceID] = false
 		s.mu.Unlock()
-		return
 	}
-	hints := make(map[int]int, len(published))
-	for _, p := range published {
-		if p.HostPort <= 0 || p.HostPort > 65535 || p.TargetPort <= 0 || p.TargetPort > 65535 {
-			continue
-		}
-		hints[p.HostPort] = p.TargetPort
-	}
-	s.mu.Lock()
-	if len(hints) > 0 {
-		s.composePortHints[workspaceID] = hints
-	}
-	s.mu.Unlock()
-}
-
-func (s *Server) composeTargetPort(workspaceID string, port int) int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if byWorkspace := s.composePortHints[workspaceID]; byWorkspace != nil {
-		if target, ok := byWorkspace[port]; ok && target > 0 {
-			return target
-		}
-	}
-	return port
 }
 
 func (s *Server) SetRuntimeFactory(factory *runtime.Factory) {
 	s.runtimeFactory = factory
 }
 
-func (s *Server) SetAuthProvider(provider auth.Provider) {
-	s.authProvider = provider
-}
-
-func (s *Server) WorkspaceIDs() []string {
-	all := s.workspaceMgr.List()
-	ids := make([]string, len(all))
-	for i, ws := range all {
-		ids[i] = ws.ID
-	}
-	return ids
-}
-
-// RunningWorkspaceIDs returns IDs of workspaces currently in the running state.
-func (s *Server) RunningWorkspaceIDs() []string {
-	all := s.workspaceMgr.List()
-	ids := make([]string, 0, len(all))
-	for _, ws := range all {
-		if ws.State == workspacemgr.StateRunning {
-			ids = append(ids, ws.ID)
-		}
-	}
-	return ids
-}
-
-// ResumeRunningWorkspaces restarts port monitoring and re-applies compose port
-// declarations for every workspace that is already in the running state.  Call
-// this once during daemon startup so clients reconnecting after a daemon
-// restart see ports without needing to trigger a workspace event first.
-func (s *Server) ResumeRunningWorkspaces(ctx context.Context) {
-	for _, ws := range s.workspaceMgr.List() {
-		if ws.State != workspacemgr.StateRunning {
-			continue
-		}
-		_ = s.StartPortMonitoring(ws.ID)
-		rootPath := preferredWorkspaceRoot(ws)
-		if rootPath != "" {
-			go s.ensureComposeHints(ctx, ws.ID, rootPath)
-		}
-	}
-}
-
-// PrunePersistedPTYSessions removes stale persisted tmux PTY records.
-func (s *Server) PrunePersistedPTYSessions(_ context.Context) int {
-	return pty.PruneStalePersistedSessions(s.ptyDeps())
-}
-
-// StartPTYMaintenance starts periodic cleanup for persisted PTY session metadata.
-func (s *Server) StartPTYMaintenance(ctx context.Context, interval time.Duration) {
-	if interval <= 0 {
-		interval = 2 * time.Minute
-	}
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-s.shutdownCh:
-				return
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				removed := s.PrunePersistedPTYSessions(context.Background())
-				if removed > 0 {
-					log.Printf("[pty] pruned %d stale persisted tmux session(s)", removed)
-				}
-			}
-		}
-	}()
-}
-
 func (s *Server) SetNodeConfig(cfg *config.NodeConfig) {
 	s.nodeCfg = cfg
 }
 
-// SetPortMonitor sets the port monitor for live port detection.
-func (s *Server) SetPortMonitor(pm *spotlight.PortMonitor) {
-	s.portMonitor = pm
-}
-
-// SpotlightManager returns the spotlight manager.
-func (s *Server) SpotlightManager() *spotlight.Manager {
-	return s.spotlightMgr
-}
-
-// StartPortMonitoring begins live port monitoring for a workspace.
-func (s *Server) StartPortMonitoring(workspaceID string) error {
-	if s.portMonitor == nil {
-		return nil
+func (s *Server) handleWorkspaceInfo(params json.RawMessage) map[string]interface{} {
+	workspaceID := extractWorkspaceID(params)
+	result := map[string]interface{}{
+		"workspace_id":   s.ws.ID(),
+		"workspace_path": s.ws.Path(),
+		"workspaces":     s.workspaceMgr.List(),
+		"spotlight":      s.spotlightMgr.List(""),
 	}
-	return s.portMonitor.StartWorkspace(workspaceID)
-}
 
-// StopPortMonitoring stops live port monitoring for a workspace.
-func (s *Server) StopPortMonitoring(workspaceID string) {
-	if s.portMonitor == nil {
-		return
-	}
-	s.portMonitor.StopWorkspace(workspaceID)
-}
-
-type WorkspacePortState struct {
-	Port       int    `json:"port"`
-	RemotePort int    `json:"remotePort"`
-	Process    string `json:"process,omitempty"`
-	Preferred  bool   `json:"preferred"`
-	Tunneled   bool   `json:"tunneled"`
-}
-
-func (s *Server) WorkspacePortStates(workspaceID string) ([]WorkspacePortState, string) {
-	stateByPort := map[int]*WorkspacePortState{}
-
-	if s.portMonitor != nil {
-		for _, p := range s.portMonitor.ListDiscovered(workspaceID) {
-			if p.Port <= 0 || p.Port > 65535 {
-				continue
-			}
-			stateByPort[p.Port] = &WorkspacePortState{
-				Port:       p.Port,
-				RemotePort: p.Port,
-				Process:    strings.TrimSpace(p.Process),
-			}
+	if workspaceID != "" {
+		if ws, ok := s.workspaceMgr.Get(workspaceID); ok {
+			result["workspace"] = ws
+			result["workspace_id"] = ws.ID
+			result["workspace_path"] = filepath.Clean(ws.RootPath)
+			result["spotlight"] = s.spotlightMgr.List(workspaceID)
 		}
 	}
 
-	s.mu.RLock()
-	for hostPort, targetPort := range s.composePortHints[workspaceID] {
-		if hostPort <= 0 || hostPort > 65535 || targetPort <= 0 || targetPort > 65535 {
-			continue
-		}
-		existing, ok := stateByPort[hostPort]
-		if !ok {
-			stateByPort[hostPort] = &WorkspacePortState{
-				Port:       hostPort,
-				RemotePort: targetPort,
-			}
-			continue
-		}
-		existing.RemotePort = targetPort
-	}
-	activeWorkspaceID := s.activeTunnelWorkspace
-	s.mu.RUnlock()
-
-	if ws, ok := s.workspaceMgr.Get(workspaceID); ok {
-		// First-time default: auto-add all detected ports as preferred so
-		// activation is ready without requiring manual Add clicks.
-		if len(ws.TunnelPorts) == 0 && len(stateByPort) > 0 {
-			defaultPorts := make([]int, 0, len(stateByPort))
-			for p := range stateByPort {
-				if p > 0 && p <= 65535 {
-					defaultPorts = append(defaultPorts, p)
-				}
-			}
-			sort.Slice(defaultPorts, func(i, j int) bool { return defaultPorts[i] < defaultPorts[j] })
-			if len(defaultPorts) > 0 {
-				if err := s.workspaceMgr.SetTunnelPorts(workspaceID, defaultPorts); err == nil {
-					ws.TunnelPorts = defaultPorts
-				}
-			}
-		}
-		for _, p := range ws.TunnelPorts {
-			if p <= 0 || p > 65535 {
-				continue
-			}
-			entry, ok := stateByPort[p]
-			if !ok {
-				entry = &WorkspacePortState{Port: p, RemotePort: s.composeTargetPort(workspaceID, p)}
-				stateByPort[p] = entry
-			}
-			entry.Preferred = true
-		}
-	}
-
-	for _, fwd := range s.spotlightMgr.List(workspaceID) {
-		entry, ok := stateByPort[fwd.LocalPort]
-		if !ok {
-			entry = &WorkspacePortState{Port: fwd.LocalPort, RemotePort: fwd.RemotePort}
-			stateByPort[fwd.LocalPort] = entry
-		}
-		entry.Tunneled = true
-		if entry.RemotePort == 0 {
-			entry.RemotePort = fwd.RemotePort
-		}
-	}
-
-	items := make([]WorkspacePortState, 0, len(stateByPort))
-	for _, st := range stateByPort {
-		items = append(items, *st)
-	}
-	sort.Slice(items, func(i, j int) bool { return items[i].Port < items[j].Port })
-	return items, activeWorkspaceID
-}
-
-func (s *Server) SetWorkspaceTunnelPreference(workspaceID string, port int, enabled bool) error {
-	ws, ok := s.workspaceMgr.Get(workspaceID)
-	if !ok {
-		return fmt.Errorf("workspace not found")
-	}
-	ports := append([]int(nil), ws.TunnelPorts...)
-	if enabled {
-		ports = append(ports, port)
-	} else {
-		next := make([]int, 0, len(ports))
-		for _, p := range ports {
-			if p != port {
-				next = append(next, p)
-			}
-		}
-		ports = next
-	}
-	if err := s.workspaceMgr.SetTunnelPorts(workspaceID, ports); err != nil {
-		return err
-	}
-
-	s.mu.RLock()
-	activeWorkspace := s.activeTunnelWorkspace
-	s.mu.RUnlock()
-	if activeWorkspace == workspaceID {
-		if enabled {
-			return s.ensureTunnelPort(workspaceID, port)
-		}
-		s.closeTunnelPort(workspaceID, port)
-	}
-	return nil
-}
-
-func (s *Server) ensureTunnelPort(workspaceID string, port int) error {
-	remotePort := s.composeTargetPort(workspaceID, port)
-	_, err := s.spotlightMgr.Expose(context.Background(), spotlight.ExposeSpec{
-		WorkspaceID: workspaceID,
-		Service:     "",
-		RemotePort:  remotePort,
-		LocalPort:   port,
-		Host:        "127.0.0.1",
-	})
-	if err != nil && !strings.Contains(err.Error(), "already in use") {
-		return err
-	}
-	return nil
-}
-
-func (s *Server) closeTunnelPort(workspaceID string, port int) {
-	for _, fwd := range s.spotlightMgr.List(workspaceID) {
-		if fwd.LocalPort == port {
-			_ = s.spotlightMgr.Close(fwd.ID)
-		}
-	}
-}
-
-func (s *Server) StartWorkspaceTunnels(workspaceID string) error {
-	s.mu.Lock()
-	existing := s.activeTunnelWorkspace
-	s.mu.Unlock()
-
-	if existing != "" && existing != workspaceID {
-		s.StopWorkspaceTunnels(existing)
-	}
-
-	s.mu.Lock()
-	s.activeTunnelWorkspace = workspaceID
-	s.mu.Unlock()
-
-	ws, ok := s.workspaceMgr.Get(workspaceID)
-	if !ok {
-		return fmt.Errorf("workspace not found")
-	}
-	for _, p := range ws.TunnelPorts {
-		if p <= 0 || p > 65535 {
-			continue
-		}
-		if err := s.ensureTunnelPort(workspaceID, p); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Server) StopWorkspaceTunnels(workspaceID string) {
-	for _, fwd := range s.spotlightMgr.List(workspaceID) {
-		_ = s.spotlightMgr.Close(fwd.ID)
-	}
-	s.mu.Lock()
-	if s.activeTunnelWorkspace == workspaceID {
-		s.activeTunnelWorkspace = ""
-	}
-	s.mu.Unlock()
+	return result
 }
 
 func (s *Server) requireWorkspaceStarted(workspaceID string) *rpckit.RPCError {
@@ -651,4 +730,443 @@ func (s *Server) requireWorkspaceStarted(workspaceID string) *rpckit.RPCError {
 	}
 
 	return nil
+}
+
+func (s *Server) handlePTYOpen(params json.RawMessage, conn *Connection, ws *workspace.Workspace) (interface{}, *rpckit.RPCError) {
+	var p ptyOpenParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+
+	rows := p.Rows
+	if rows <= 0 {
+		rows = 24
+	}
+	cols := p.Cols
+	if cols <= 0 {
+		cols = 80
+	}
+
+	shell := strings.TrimSpace(p.Shell)
+	if shell == "" {
+		shell = "bash"
+	}
+
+	workDir := ws.Path()
+	workspaceID := strings.TrimSpace(p.WorkspaceID)
+	if workspaceID == "" {
+		return nil, rpckit.ErrInvalidParams
+	}
+	if accessErr := s.requireWorkspaceStarted(workspaceID); accessErr != nil {
+		return nil, accessErr
+	}
+
+	if wsRecord, ok := s.workspaceMgr.Get(workspaceID); ok {
+		log.Printf("[pty.open] workspace=%s name=%s backend=%s localWorktree=%s root=%s", wsRecord.ID, wsRecord.WorkspaceName, wsRecord.Backend, wsRecord.LocalWorktreePath, wsRecord.RootPath)
+		if wsRecord.Backend == "firecracker" || wsRecord.Backend == "seatbelt" {
+			return s.handleFirecrackerPTYOpen(conn, p, wsRecord)
+		}
+		if strings.TrimSpace(wsRecord.LocalWorktreePath) != "" {
+			workDir = wsRecord.LocalWorktreePath
+		}
+	}
+
+	cmd := exec.Command(shell)
+	cmd.Dir = workDir
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	if err != nil {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("pty open failed: %v", err)}
+	}
+
+	sessionID := fmt.Sprintf("pty-%d", time.Now().UnixNano())
+	session := &ptySession{id: sessionID, cmd: cmd, file: ptmx, done: make(chan struct{})}
+
+	conn.ptyMu.Lock()
+	conn.pty[sessionID] = session
+	conn.ptyMu.Unlock()
+
+	go s.streamPTYOutput(conn, session)
+
+	return &ptyOpenResult{SessionID: sessionID}, nil
+}
+
+func (s *Server) handleFirecrackerPTYOpen(conn *Connection, p ptyOpenParams, wsRecord *workspacemgr.Workspace) (interface{}, *rpckit.RPCError) {
+	if s.runtimeFactory == nil {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: "runtime factory unavailable"}
+	}
+
+	requestedBackend := strings.TrimSpace(wsRecord.Backend)
+	backend := requestedBackend
+	if backend == "" {
+		backend = "firecracker"
+	}
+	if requestedBackend == "firecracker" || requestedBackend == "seatbelt" {
+		if driverAny, ok := s.runtimeFactory.DriverForBackend(requestedBackend); ok {
+			reported := strings.TrimSpace(driverAny.Backend())
+			log.Printf("[pty.open] %s driver type=%T reported-backend=%q", requestedBackend, driverAny, reported)
+			if reported != "" {
+				backend = reported
+			}
+		}
+	}
+
+	driverAny, ok := s.runtimeFactory.DriverForBackend(backend)
+	if !ok {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("%s runtime driver not configured", backend)}
+	}
+
+	connector, ok := driverAny.(firecrackerAgentConnector)
+	if !ok {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("%s runtime does not support agent connection", backend)}
+	}
+
+	openCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	agentConn, err := connector.AgentConn(openCtx, wsRecord.ID)
+	if err != nil {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("%s agent connect failed: %v", backend, err)}
+	}
+
+	shell := strings.TrimSpace(p.Shell)
+	if shell == "" {
+		shell = "bash"
+	}
+
+	sessionID := fmt.Sprintf("pty-%d", time.Now().UnixNano())
+	enc := json.NewEncoder(agentConn)
+	dec := json.NewDecoder(agentConn)
+
+	openReq := map[string]any{
+		"id":      sessionID,
+		"type":    "shell.open",
+		"command": shell,
+		"workdir": "/workspace",
+	}
+
+	if err := enc.Encode(openReq); err != nil {
+		_ = agentConn.Close()
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("firecracker agent request failed: %v", err)}
+	}
+	var openResp map[string]any
+	if err := dec.Decode(&openResp); err != nil {
+		_ = agentConn.Close()
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("firecracker shell open failed: %v", err)}
+	}
+	if exitRaw, ok := openResp["exit_code"].(float64); ok && int(exitRaw) != 0 {
+		_ = agentConn.Close()
+		stderr, _ := openResp["stderr"].(string)
+		if stderr == "" {
+			stderr = "shell open failed"
+		}
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: stderr}
+	}
+
+	session := &ptySession{id: sessionID, conn: agentConn, enc: enc, dec: dec, remote: true, done: make(chan struct{})}
+
+	conn.ptyMu.Lock()
+	conn.pty[sessionID] = session
+	conn.ptyMu.Unlock()
+
+	go s.streamRemoteShellOutput(conn, session)
+
+	return &ptyOpenResult{SessionID: sessionID}, nil
+}
+
+func (s *Server) streamRemoteShellOutput(conn *Connection, session *ptySession) {
+	defer close(session.done)
+	for {
+		var msg map[string]any
+		err := session.dec.Decode(&msg)
+		if err != nil {
+			break
+		}
+
+		typeStr, _ := msg["type"].(string)
+		if typeStr == "chunk" {
+			if data, ok := msg["data"].(string); ok && data != "" {
+				s.sendPTYData(conn, session.id, data)
+			}
+			continue
+		}
+		if typeStr == "result" {
+			if !session.closing.Load() {
+				continue
+			}
+
+			exitCode := 0
+			if v, ok := msg["exit_code"].(float64); ok {
+				exitCode = int(v)
+			}
+			s.sendPTYExit(conn, session.id, exitCode)
+			break
+		}
+	}
+
+	conn.removePTY(session.id)
+	_ = session.conn.Close()
+}
+
+func (s *Server) sendPTYData(conn *Connection, sessionID, data string) {
+	payload := map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "pty.data",
+		"params": map[string]any{
+			"sessionId": sessionID,
+			"data":      data,
+		},
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	select {
+	case conn.send <- encoded:
+	default:
+	}
+}
+
+func (s *Server) sendPTYExit(conn *Connection, sessionID string, exitCode int) {
+	payload := map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "pty.exit",
+		"params": map[string]any{
+			"sessionId": sessionID,
+			"exitCode":  exitCode,
+		},
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	select {
+	case conn.send <- encoded:
+	default:
+	}
+}
+
+func (s *Server) handlePTYWrite(params json.RawMessage, conn *Connection) (interface{}, *rpckit.RPCError) {
+	var p ptyWriteParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInvalidParams.Code, Message: fmt.Sprintf("invalid pty.write params: %v", err)}
+	}
+
+	session := conn.getPTY(p.SessionID)
+	if session == nil {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInvalidParams.Code, Message: fmt.Sprintf("pty session not found: %s", p.SessionID)}
+	}
+	if session.conn != nil {
+		if p.Data == "" {
+			return map[string]bool{"ok": true}, nil
+		}
+
+		session.mu.Lock()
+		defer session.mu.Unlock()
+		request := map[string]any{
+			"id":   session.id,
+			"type": "shell.write",
+			"data": p.Data,
+		}
+		if err := session.enc.Encode(request); err != nil {
+			return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("firecracker shell write failed: %v", err)}
+		}
+		return map[string]bool{"ok": true}, nil
+	}
+
+	if _, err := session.file.Write([]byte(p.Data)); err != nil {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("pty write failed: %v", err)}
+	}
+
+	return map[string]bool{"ok": true}, nil
+}
+
+func (s *Server) handlePTYResize(params json.RawMessage, conn *Connection) (interface{}, *rpckit.RPCError) {
+	var p ptyResizeParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInvalidParams.Code, Message: fmt.Sprintf("invalid pty.resize params: %v", err)}
+	}
+	if p.Cols <= 0 || p.Rows <= 0 {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInvalidParams.Code, Message: "invalid pty.resize params: cols/rows must be > 0"}
+	}
+
+	session := conn.getPTY(p.SessionID)
+	if session == nil {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInvalidParams.Code, Message: fmt.Sprintf("pty session not found: %s", p.SessionID)}
+	}
+	if session.conn != nil {
+		session.mu.Lock()
+		_ = session.enc.Encode(map[string]any{"id": session.id, "type": "shell.resize", "cols": p.Cols, "rows": p.Rows})
+		session.mu.Unlock()
+		return map[string]bool{"ok": true}, nil
+	}
+
+	if err := pty.Setsize(session.file, &pty.Winsize{Rows: uint16(p.Rows), Cols: uint16(p.Cols)}); err != nil {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInternalError.Code, Message: fmt.Sprintf("pty resize failed: %v", err)}
+	}
+
+	return map[string]bool{"ok": true}, nil
+}
+
+func (s *Server) handlePTYClose(params json.RawMessage, conn *Connection) (interface{}, *rpckit.RPCError) {
+	var p ptyCloseParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, &rpckit.RPCError{Code: rpckit.ErrInvalidParams.Code, Message: fmt.Sprintf("invalid pty.close params: %v", err)}
+	}
+
+	if !conn.closePTY(p.SessionID) {
+		return map[string]bool{"closed": true}, nil
+	}
+
+	return map[string]bool{"closed": true}, nil
+}
+
+func (s *Server) streamPTYOutput(conn *Connection, session *ptySession) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := session.file.Read(buf)
+		if n > 0 {
+			payload := map[string]any{
+				"jsonrpc": "2.0",
+				"method":  "pty.data",
+				"params": map[string]any{
+					"sessionId": session.id,
+					"data":      string(buf[:n]),
+				},
+			}
+			encoded, marshalErr := json.Marshal(payload)
+			if marshalErr == nil {
+				select {
+				case conn.send <- encoded:
+				default:
+				}
+			}
+		}
+
+		if err != nil {
+			break
+		}
+	}
+
+	conn.removePTY(session.id)
+	if session.cmd.Process != nil {
+		_, _ = session.cmd.Process.Wait()
+	}
+	if session.cmd.ProcessState != nil {
+		exitCode := session.cmd.ProcessState.ExitCode()
+		payload := map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "pty.exit",
+			"params": map[string]any{
+				"sessionId": session.id,
+				"exitCode":  exitCode,
+			},
+		}
+		encoded, marshalErr := json.Marshal(payload)
+		if marshalErr == nil {
+			select {
+			case conn.send <- encoded:
+			default:
+			}
+		}
+	}
+}
+
+func (c *Connection) getPTY(id string) *ptySession {
+	c.ptyMu.Lock()
+	defer c.ptyMu.Unlock()
+	return c.pty[id]
+}
+
+func (c *Connection) closePTY(id string) bool {
+	c.ptyMu.Lock()
+	session, ok := c.pty[id]
+	if ok {
+		delete(c.pty, id)
+	}
+	c.ptyMu.Unlock()
+	if !ok {
+		return false
+	}
+	if session.conn != nil {
+		session.closing.Store(true)
+		session.mu.Lock()
+		_ = session.enc.Encode(map[string]any{"id": session.id, "type": "shell.close"})
+		session.mu.Unlock()
+		_ = session.conn.Close()
+		if session.done != nil {
+			select {
+			case <-session.done:
+			case <-time.After(2 * time.Second):
+			}
+		}
+		return true
+	}
+
+	_ = session.file.Close()
+	if session.cmd.Process != nil {
+		_ = session.cmd.Process.Kill()
+		_, _ = session.cmd.Process.Wait()
+	}
+	return true
+}
+
+func (c *Connection) removePTY(id string) {
+	c.ptyMu.Lock()
+	delete(c.pty, id)
+	c.ptyMu.Unlock()
+}
+
+func (c *Connection) closeAllPTY() {
+	c.ptyMu.Lock()
+	ids := make([]string, 0, len(c.pty))
+	for id := range c.pty {
+		ids = append(ids, id)
+	}
+	c.ptyMu.Unlock()
+	for _, id := range ids {
+		_ = c.closePTY(id)
+	}
+}
+
+func (s *Server) handleLogsSubscribe(conn *Connection) (interface{}, *rpckit.RPCError) {
+	if s.logRing == nil {
+		return map[string]bool{"ok": false}, nil
+	}
+	tail, ch := s.logRing.Subscribe(100)
+	for _, entry := range tail {
+		push := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"method":  "daemon.log",
+			"params":  entry,
+		}
+		pushData, _ := json.Marshal(push)
+		select {
+		case conn.send <- pushData:
+		default:
+		}
+	}
+	go func() {
+		defer func() { recover() }() // guard against send on closed channel after conn drop
+		defer s.logRing.Unsubscribe(ch)
+		for {
+			entry, ok := <-ch
+			if !ok {
+				return
+			}
+			push := map[string]interface{}{
+				"jsonrpc": "2.0",
+				"method":  "daemon.log",
+				"params":  entry,
+			}
+			pushData, _ := json.Marshal(push)
+			select {
+			case conn.send <- pushData:
+			case <-s.shutdownCh:
+				return
+			}
+		}
+	}()
+	return map[string]bool{"ok": true}, nil
 }

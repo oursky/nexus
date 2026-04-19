@@ -27,9 +27,6 @@ func LoadWorkspaceConfig(root string) (WorkspaceConfig, []string, error) {
 		if err := cfg.ValidateBasic(); err != nil {
 			return WorkspaceConfig{}, warnings, fmt.Errorf("invalid %s: %w", workspacePath, err)
 		}
-		if cfg.Version == 0 {
-			cfg.Version = 1
-		}
 		return cfg, warnings, nil
 	}
 	_ = legacyData

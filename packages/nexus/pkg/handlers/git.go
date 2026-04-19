@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os/exec"
 	"strings"
 
@@ -16,7 +17,12 @@ type GitCommandParams struct {
 	Params      map[string]interface{} `json:"params,omitempty"`
 }
 
-func HandleGitCommand(ctx context.Context, p GitCommandParams, ws *workspace.Workspace) (map[string]interface{}, *rpckit.RPCError) {
+func HandleGitCommand(ctx context.Context, params json.RawMessage, ws *workspace.Workspace) (map[string]interface{}, *rpckit.RPCError) {
+	var p GitCommandParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+
 	if p.Action == "" {
 		return nil, rpckit.ErrInvalidParams
 	}

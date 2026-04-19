@@ -1,5 +1,28 @@
 import Foundation
 
+/// Delegate that forwards URLSessionWebSocketTask open/close events to the owning client.
+/// Held weakly by URLSession; owned by WebSocketDaemonClient.
+private final class WebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+    weak var client: WebSocketDaemonClient?
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol protocol: String?
+    ) {
+        client?.didOpen(task: webSocketTask)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+        reason: Data?
+    ) {
+        client?.didClose(task: webSocketTask)
+    }
+}
+
 /// Real client: JSON-RPC 2.0 over WebSocket, targeting the Nexus daemon.
 ///
 /// Token resolution order:
@@ -7,21 +30,17 @@ import Foundation
 ///   2. macOS Keychain generic password (service configurable via
 ///      NEXUS_DAEMON_TOKEN_KEYCHAIN_SERVICE)
 ///
-/// Port discovery: reads `daemon-PORT.pid` from the Nexus run dir to find the
-/// actual port the daemon is listening on.  Falls back to 63987 (n-e-x-u-s on a telephone keypad).
-///
 /// Auth: sends the token in the `Authorization: Bearer TOKEN` HTTP header on
 /// the WebSocket upgrade request.
 public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
 
     private let daemonURL: URL
+    /// Optional pre-resolved token for remote profiles. When set, takes priority over env/keychain resolution.
+    private let injectedToken: String?
+    private let wsDelegate = WebSocketDelegate()
     /// Single session for all WebSocket connections — `URLSession()` per `connect()` leaked memory when
     /// refresh/load stacked during handshake (see AppState refresh loop).
-    private let webSocketSession: URLSession = {
-        let cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 90
-        return URLSession(configuration: cfg)
-    }()
+    private let webSocketSession: URLSession
     private var task: URLSessionWebSocketTask?
     private var pending: [String: CheckedContinuation<Any, Error>] = [:]
     private var requestCounter = 0
@@ -29,9 +48,20 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
     /// Serializes `connect()` / `task` mutation. Parallel `call()` (e.g. `async let` list RPCs) must not
     /// create overlapping WebSocket handshakes — that leaked tasks, stacked `receiveLoop`, and grew RAM.
     private let connectionLock = NSLock()
+    /// Resolves when the WebSocket upgrade handshake completes (didOpen delegate callback).
+    /// All `performRPC` callers await this before sending — prevents sending before the connection is live.
+    private var readyTask: Task<Void, Error>?
+    private var readyContinuation: CheckedContinuation<Void, Error>?
+    /// Identity of the task whose open/close we are currently tracking.
+    private var trackedTask: URLSessionWebSocketTask?
 
-    public init(daemonURL: URL) {
+    public init(daemonURL: URL, token: String? = nil) {
         self.daemonURL = daemonURL
+        self.injectedToken = token
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 90
+        self.webSocketSession = URLSession(configuration: cfg, delegate: wsDelegate, delegateQueue: nil)
+        wsDelegate.client = self
     }
 
     deinit {
@@ -40,71 +70,9 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         webSocketSession.invalidateAndCancel()
     }
 
-    // MARK: - Daemon URL discovery
-
-    /// Resolves the WebSocket URL for the daemon.
-    ///
-    /// Uses `NEXUS_DAEMON_URL` when set. Otherwise picks a port **without synchronous HTTP**:
-    /// 1) Port already owned by the current process-isolation worktree (`daemon-*.owner`), if any.
-    /// 2) Else the **newest** `daemon-*.pid` by mtime (typical “last started daemon”).
-    /// 3) Else `DaemonLauncher.preferredPort()` (launcher will bind next).
-    public static func discoverURL() -> URL {
-        if let env = ProcessInfo.processInfo.environment["NEXUS_DAEMON_URL"], !env.isEmpty,
-           let url = URL(string: env) {
-            return url
-        }
-        let port = resolveConnectionPortDiskOnly()
-        return loopbackWebSocketURL(port: port)
-    }
-
-    /// Picks localhost port using run-dir metadata only (no `/healthz` on the main thread).
-    private static func resolveConnectionPortDiskOnly() -> Int {
-        let env = ProcessInfo.processInfo.environment
-        // Explicit port must win before owner/mtime heuristics; otherwise the newest `daemon-*.pid`
-        // on disk overrides scheme/test env (e.g. NEXUS_DAEMON_PORT=19998).
-        if let raw = env["NEXUS_DAEMON_PORT"]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty,
-           let p = Int(raw), (1..<65536).contains(p) {
-            return p
-        }
-        let preferred = DaemonLauncher.preferredPort()
-        let runDir = DaemonLauncher.resolveRunDir()
-
-        if let owned = DaemonLauncher.existingPortForCurrentProcessWorktree(),
-           FileManager.default.fileExists(atPath: "\(runDir)/daemon-\(owned).pid") {
-            return owned
-        }
-        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: runDir) else {
-            return preferred
-        }
-        let fm = FileManager.default
-        var bestPort: Int?
-        var bestMtime = Date.distantPast
-        for entry in entries where entry.hasPrefix("daemon-") && entry.hasSuffix(".pid") {
-            let inner = String(entry.dropFirst("daemon-".count).dropLast(".pid".count))
-            guard let port = Int(inner) else { continue }
-            let path = "\(runDir)/\(entry)"
-            let mtime = (try? fm.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
-            if mtime >= bestMtime {
-                bestMtime = mtime
-                bestPort = port
-            }
-        }
-        if let bestPort { return bestPort }
-        return preferred
-    }
-
-    private static func loopbackWebSocketURL(port: Int) -> URL {
-        var components = URLComponents()
-        components.scheme = "ws"
-        components.host = "localhost"
-        components.port = max(1, min(port, 65535))
-        return components.url ?? URL(fileURLWithPath: "/")
-    }
-
     // MARK: - Auth token
 
-    public static func readToken() -> String {
-        if let env = ProcessInfo.processInfo.environment["NEXUS_DAEMON_TOKEN"], !env.isEmpty {
+    public static func readToken() -> String {        if let env = ProcessInfo.processInfo.environment["NEXUS_DAEMON_TOKEN"], !env.isEmpty {
             return env
         }
         let configuredService = ProcessInfo.processInfo.environment["NEXUS_DAEMON_TOKEN_KEYCHAIN_SERVICE"]?
@@ -123,6 +91,12 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
             }
         }
         return ""
+    }
+
+    /// Reads a bearer token directly from a named Keychain service.
+    /// Returns nil if not found. Used by remote profile token resolution.
+    public static func readKeychainToken(service: String) -> String? {
+        readMacKeychainPassword(service: service)
     }
 
     private static func readMacKeychainPassword(service: String) -> String? {
@@ -158,20 +132,74 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         // caused every concurrent call to create a new URLSessionWebSocketTask before the first
         // one finished its TCP handshake, leaking tasks+buffers and growing RAM unboundedly.
         if task != nil {
+            let existingReady = readyTask
             connectionLock.unlock()
             StartupTrace.checkpoint("ws.connect.noop", "task already exists (state=\(task?.state.rawValue ?? -1))")
+            // Wait for the in-progress handshake to complete before returning to caller.
+            try await existingReady?.value
             return
         }
-        let token = Self.readToken()
+        let token = injectedToken ?? Self.readToken()
         var request = URLRequest(url: daemonURL)
         if !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        task = webSocketSession.webSocketTask(with: request)
-        task?.resume()
-        StartupTrace.checkpoint("ws.connect.resumed")
+        let newTask = webSocketSession.webSocketTask(with: request)
+        task = newTask
+        trackedTask = newTask
+
+        // Create the ready Task while still holding connectionLock so that any concurrent connect()
+        // that sees `task != nil` is guaranteed to also see a non-nil `readyTask`.  Previously
+        // readyTask was assigned AFTER the unlock, creating a window where a concurrent caller could
+        // capture `existingReady = nil`, await nil?.value (no-op), and proceed to call sock.send()
+        // on a socket still mid-handshake.
+        let ready: Task<Void, Error> = Task { [weak self] in
+            guard let self else { throw CancellationError() }
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                self.connectionLock.lock()
+                // Continuation resolves via didOpen delegate callback after the WebSocket
+                // upgrade handshake completes — not at resume() time.
+                self.readyContinuation = cont
+                newTask.resume()
+                StartupTrace.checkpoint("ws.connect.resumed")
+                self.connectionLock.unlock()
+                self.receiveLoop()
+            }
+        }
+        readyTask = ready
         connectionLock.unlock()
-        receiveLoop()
+        try await ready.value
+    }
+
+    /// Called by WebSocketDelegate when the upgrade handshake succeeds for the tracked task.
+    fileprivate func didOpen(task openedTask: URLSessionWebSocketTask) {
+        connectionLock.lock()
+        guard openedTask === trackedTask else {
+            connectionLock.unlock()
+            return
+        }
+        StartupTrace.checkpoint("ws.connect.open")
+        let cont = readyContinuation
+        readyContinuation = nil
+        connectionLock.unlock()
+        cont?.resume()
+    }
+
+    /// Called by WebSocketDelegate when the server closes the WebSocket for the tracked task.
+    fileprivate func didClose(task closedTask: URLSessionWebSocketTask) {
+        connectionLock.lock()
+        guard closedTask === trackedTask else {
+            connectionLock.unlock()
+            return
+        }
+        StartupTrace.checkpoint("ws.connect.closed")
+        let cont = readyContinuation
+        readyContinuation = nil
+        connectionLock.unlock()
+        if let cont {
+            cont.resume(throwing: RPCError(message: "WebSocket closed during handshake"))
+        }
+        failAll(RPCError(message: "WebSocket closed by server"))
     }
 
     public func disconnect() {
@@ -186,7 +214,12 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         connectionLock.lock()
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        trackedTask = nil
+        readyTask = nil
+        let cont = readyContinuation
+        readyContinuation = nil
         connectionLock.unlock()
+        cont?.resume(throwing: CancellationError())
     }
 
     // MARK: - Receive loop
@@ -203,8 +236,29 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
                 if case .string(let text) = msg { self.handle(text) }
                 self.receiveLoop()
             case .failure(let err):
+                // Signal failure so any pending connect() callers that haven't unblocked yet
+                // (e.g. on immediate TCP rejection) unblock with an error.
+                let nsErr = err as NSError
+                print("[WS.receiveLoop] FAIL domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
+                self.signalReady(err)
                 self.failAll(err)
             }
+        }
+    }
+
+    /// Resolves the one-shot readiness gate with an error (idempotent — only fires on first call).
+    /// Only called from receiveLoop's failure path, in case the TCP connection is rejected before
+    /// the ready signal fires (e.g. connect() resumes the task then receiveLoop gets an immediate error).
+    private func signalReady(_ error: Error?) {
+        connectionLock.lock()
+        let cont = readyContinuation
+        readyContinuation = nil
+        connectionLock.unlock()
+        guard let cont else { return }
+        if let error {
+            cont.resume(throwing: error)
+        } else {
+            cont.resume()
         }
     }
 
@@ -232,13 +286,21 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         }
     }
 
-    // MARK: - Notification dispatch (pty.data / pty.exit)
+    // MARK: - Notification dispatch (pty.data / pty.exit / daemon.log)
 
     private let ptyLock = NSLock()
     private var ptyDataHandlers: [String: @Sendable (String) -> Void] = [:]
     private var ptyExitHandlers: [String: @Sendable (Int) -> Void] = [:]
     // Buffers early pty.data that arrives before subscribePTY() is called (race window after pty.open)
     private var ptyDataBuffer: [String: [String]] = [:]
+
+    private let notifLock = NSLock()
+    private var daemonLogHandler: (@Sendable ([String: Any]) -> Void)?
+
+    /// Register a handler for `daemon.log` push messages.
+    public func setDaemonLogHandler(_ handler: (@Sendable ([String: Any]) -> Void)?) {
+        notifLock.withLock { daemonLogHandler = handler }
+    }
 
     private func handleNotification(method: String, params: [String: Any]) {
         switch method {
@@ -256,19 +318,38 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
             let code = params["exitCode"] as? Int ?? -1
             let h = ptyLock.withLock { ptyExitHandlers[sid] }
             h?(code)
+        case "daemon.log":
+            let h = notifLock.withLock { daemonLogHandler }
+            h?(params)
         default:
             break
         }
     }
 
     private func failAll(_ error: Error) {
+        let isClean: Bool
+        if let wsErr = error as? URLError, wsErr.code == .cancelled {
+            isClean = true
+        } else {
+            isClean = false
+        }
+        if !isClean {
+            print("[WebSocketClient] connection dropped unexpectedly: \(error)")
+        }
         let all = lock.withLock { () -> [String: CheckedContinuation<Any, Error>] in
             let a = pending; pending.removeAll(); return a
         }
         connectionLock.lock()
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        trackedTask = nil
+        readyTask = nil
+        // readyContinuation is cleared by signalReady() (called before failAll from receiveLoop).
+        // But guard here in case failAll is called from a path that skips signalReady.
+        let leftoverCont = readyContinuation
+        readyContinuation = nil
         connectionLock.unlock()
+        leftoverCont?.resume(throwing: error)
         all.values.forEach { $0.resume(throwing: error) }
     }
 
@@ -281,8 +362,14 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         // Do NOT call disconnect() here on RPC errors — timeouts and transient failures must not tear
         // down the shared WebSocket for all concurrent calls. Socket-level teardown is handled by
         // failAll() in receiveLoop's .failure branch, which is the only place it is appropriate.
-        return try await withTimeoutRPC(seconds: Self.defaultRPCSeconds) {
-            try await self.performRPC(method: method, params: params)
+        do {
+            return try await withTimeoutRPC(seconds: Self.defaultRPCSeconds) {
+                try await self.performRPC(method: method, params: params)
+            }
+        } catch {
+            let nsErr = error as NSError
+            print("[WS.call] THREW method=\(method) domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
+            throw error
         }
     }
 
@@ -314,8 +401,16 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
                 sock.send(.string(text)) { [weak self] err in
                     guard let self else { return }
                     if let err {
-                        let cont2 = self.lock.withLock { self.pending.removeValue(forKey: id) }
-                        cont2?.resume(throwing: err)
+                        let nsErr = err as NSError
+                        print("[WS.send] FAIL method=\(method) id=\(id) domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
+                        if self.isConnectionFatalSendError(err) {
+                            // Transport-level send failure means the shared socket is no longer
+                            // trustworthy. Tear down shared state so the next RPC reconnects.
+                            self.failAll(err)
+                        } else {
+                            let cont2 = self.lock.withLock { self.pending.removeValue(forKey: id) }
+                            cont2?.resume(throwing: err)
+                        }
                     }
                 }
             }
@@ -324,6 +419,12 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
             let cont = self.lock.withLock { self.pending.removeValue(forKey: id) }
             cont?.resume(throwing: CancellationError())
         }
+    }
+
+    private func isConnectionFatalSendError(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let urlErr = error as? URLError, urlErr.code == .cancelled { return false }
+        return true
     }
 
     private func withTimeoutRPC(seconds: UInt64, _ work: @escaping () async throws -> Any) async throws -> Any {
@@ -342,20 +443,25 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
 
     public func listWorkspaces() async throws -> [Workspace] {
         let result = try await call("workspace.list")
-        guard let dict = result as? [String: Any], let arr = dict["workspaces"] else { return [] }
+        guard let dict = result as? [String: Any], let arr = dict["workspaces"] as? [Any] else { return [] }
         return try JSONDecoder().decode([Workspace].self,
                                        from: JSONSerialization.data(withJSONObject: arr))
     }
 
     public func listProjects() async throws -> [Project] {
         let result = try await call("project.list")
-        guard let dict = result as? [String: Any], let arr = dict["projects"] else { return [] }
+        guard let dict = result as? [String: Any], let arr = dict["projects"] as? [Any] else { return [] }
         return try JSONDecoder().decode([Project].self,
                                         from: JSONSerialization.data(withJSONObject: arr))
     }
 
     public func createProject(repo: String) async throws -> Project {
-        let result = try await call("project.create", params: ["repo": repo])
+        let trimmedRepo = repo.trimmingCharacters(in: .whitespacesAndNewlines)
+        let projectName = try inferProjectName(from: trimmedRepo)
+        let result = try await call("project.create", params: [
+            "name": projectName,
+            "repoUrl": trimmedRepo,
+        ])
         guard let dict = result as? [String: Any], let raw = dict["project"] else {
             throw RPCError(message: "unexpected response from project.create")
         }
@@ -363,9 +469,31 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
                                         from: JSONSerialization.data(withJSONObject: raw))
     }
 
+    private func inferProjectName(from repo: String) throws -> String {
+        var name = repo
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        if let slash = name.lastIndex(of: "/") {
+            name = String(name[name.index(after: slash)...])
+        }
+        if let colon = name.lastIndex(of: ":") {
+            name = String(name[name.index(after: colon)...])
+        }
+        if name.hasSuffix(".git") {
+            name = String(name.dropLast(4))
+        }
+        name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if name.isEmpty {
+            throw RPCError(message: "project name is required")
+        }
+        return name
+    }
+
     public func listRelations() async throws -> [RelationsGroup] {
         let result = try await call("workspace.relations.list")
-        guard let dict = result as? [String: Any], let arr = dict["relations"] else { return [] }
+        guard let dict = result as? [String: Any], let arr = dict["relations"] as? [Any] else { return [] }
         return try JSONDecoder().decode([RelationsGroup].self,
                                        from: JSONSerialization.data(withJSONObject: arr))
     }
@@ -776,6 +904,14 @@ public struct DaemonInfo: Decodable, Equatable {
     public let commit: String
     public let builtAt: String
     public let protocolVersion: Int
+
+    public init(name: String, version: String, commit: String, builtAt: String, protocolVersion: Int) {
+        self.name = name
+        self.version = version
+        self.commit = commit
+        self.builtAt = builtAt
+        self.protocolVersion = protocolVersion
+    }
 
     /// Protocol version this build of the Swift app requires.
     /// Must match `ProtocolVersion` in `packages/nexus/pkg/buildinfo/buildinfo.go`.

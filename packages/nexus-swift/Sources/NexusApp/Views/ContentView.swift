@@ -20,10 +20,8 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 1080, minHeight: 560)
-        .sheet(isPresented: $appState.showNewWorkspace, onDismiss: {
-            appState.newSandboxProjectID = nil
-        }) {
-            NewWorkspaceSheet(fixedProjectID: appState.newSandboxProjectID)
+        .sheet(item: $appState.createIntent) { intent in
+            NewWorkspaceSheet(intent: intent)
                 .environmentObject(appState)
         }
     }
@@ -46,7 +44,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Startup splash (shown while daemon is launching)
+// MARK: - Startup splash (shown while establishing remote connection)
 
 private struct StartupView: View {
     var body: some View {
@@ -56,7 +54,7 @@ private struct StartupView: View {
             Text("Starting Nexus…")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(Theme.label)
-            Text("Launching sandbox daemon")
+            Text("Connecting to remote daemon…")
                 .font(.system(size: 11))
                 .foregroundColor(Theme.labelTertiary)
         }

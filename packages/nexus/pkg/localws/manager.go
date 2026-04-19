@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +19,7 @@ import (
 // Config holds local workspace settings. Zero values use defaults.
 type Config struct {
 	// WorktreeRoot is the directory under which named worktrees are created.
-	// Default: $XDG_DATA_HOME/nexus/workspaces (or ~/.nexus/workspaces)
+	// Default: ~/nexus-workspaces
 	WorktreeRoot string
 	// RepoCacheDir is the directory where bare repo clones are cached.
 	// Default: ~/.cache/nexus/repos
@@ -35,7 +34,11 @@ type Manager struct {
 // NewManager creates a new Manager. If cfg fields are empty, defaults are applied.
 func NewManager(cfg Config) (*Manager, error) {
 	if cfg.WorktreeRoot == "" {
-		cfg.WorktreeRoot = defaultWorktreeRoot()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("localws: cannot determine home dir: %w", err)
+		}
+		cfg.WorktreeRoot = filepath.Join(home, "nexus-workspaces")
 	}
 	if cfg.RepoCacheDir == "" {
 		cacheBase := os.Getenv("XDG_CACHE_HOME")
@@ -78,24 +81,17 @@ type SetupResult struct {
 //  3. Start a mutagen sync session between the worktree and RemotePath
 //     (gracefully skipped if mutagen is not installed or RemotePath is empty).
 func (m *Manager) Setup(ctx context.Context, spec SetupSpec) (*SetupResult, error) {
-	log.Printf("[localws] Setting up local worktree for %s...", spec.WorkspaceID)
-
 	// 1 ── Ensure the bare repo cache exists and is up to date.
 	cacheDir, err := m.ensureRepoCacheDir(ctx, spec.Repo)
 	if err != nil {
 		return nil, fmt.Errorf("localws: cache repo: %w", err)
 	}
 
-	plannedPath := filepath.Join(m.cfg.WorktreeRoot, spec.WorkspaceName)
-	log.Printf("[localws] Creating worktree at %s...", plannedPath)
-
 	// 2 ── Create the worktree.
 	worktreePath, err := m.createWorktree(ctx, cacheDir, spec.WorkspaceName, spec.Ref)
 	if err != nil {
 		return nil, fmt.Errorf("localws: create worktree: %w", err)
 	}
-
-	log.Printf("[localws] Worktree created, setting up mutagen...")
 
 	result := &SetupResult{WorktreePath: worktreePath}
 
@@ -226,16 +222,6 @@ func gitCmd(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	return cmd
-}
-
-// defaultWorktreeRoot returns the default path for workspace worktrees.
-// It respects $XDG_DATA_HOME if set; otherwise falls back to ~/.nexus/workspaces.
-func defaultWorktreeRoot() string {
-	if dataHome := os.Getenv("XDG_DATA_HOME"); dataHome != "" {
-		return filepath.Join(dataHome, "nexus", "workspaces")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".nexus", "workspaces")
 }
 
 // urlToSlug converts a git remote URL to a filesystem-safe slug.

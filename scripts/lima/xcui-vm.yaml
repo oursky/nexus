@@ -1,0 +1,31 @@
+# Lima VM config for NexusUITests CI
+# Runs a Linux guest that hosts the Nexus daemon.
+# Port 7777 on the guest is forwarded to 127.0.0.1:7777 on the macOS host.
+vmType: qemu
+os: Linux
+arch: x86_64
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+cpus: 2
+memory: "4GiB"
+disk: "20GiB"
+mounts:
+  - location: "~"
+    writable: false
+portForwards:
+  - guestPort: 7777
+    hostIP: "127.0.0.1"
+    hostPort: 7777
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+      # Install Go (for building nexus daemon)
+      GOVERSION=1.22.3
+      curl -fsSL "https://go.dev/dl/go${GOVERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+message: |
+  Lima VM for NexusUITests CI is ready.
+  Nexus daemon port 7777 is forwarded to host 127.0.0.1:7777.
+  Start the daemon manually or via CI provisioning after VM boot.

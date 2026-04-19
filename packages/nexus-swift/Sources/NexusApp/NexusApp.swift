@@ -15,7 +15,7 @@ struct NexusApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Project") {
-                    appState.newSandboxProjectID = "__new__"
+                    appState.createIntent = .newProject
                     appState.showNewWorkspace = true
                 }
                     .keyboardShortcut("n", modifiers: .command)

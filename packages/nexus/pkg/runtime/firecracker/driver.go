@@ -1,24 +1,28 @@
 package firecracker
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
-	"log"
+	"io"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
-	"github.com/inizio/nexus/packages/nexus/pkg/secrets/server"
-	"github.com/inizio/nexus/packages/nexus/pkg/secrets/vending"
 	"github.com/mdlayher/vsock"
 )
 
 var _ runtime.Driver = (*Driver)(nil)
-var _ runtime.ForkSnapshotter = (*Driver)(nil)
 
 type CommandRunner interface {
 	Run(ctx context.Context, dir string, cmd string, args ...string) error
@@ -29,8 +33,6 @@ type ManagerInterface interface {
 	Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error)
 	Stop(ctx context.Context, workspaceID string) error
 	Get(workspaceID string) (*Instance, error)
-	GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error
-	CheckpointForkSnapshot(ctx context.Context, workspaceID, childWorkspaceID string) (string, error)
 }
 
 type Driver struct {
@@ -39,6 +41,12 @@ type Driver struct {
 	projectRoots map[string]string
 	agents       map[string]*AgentClient
 	mu           sync.RWMutex
+}
+
+type hostCLIAvailability struct {
+	Opencode bool
+	Codex    bool
+	Claude   bool
 }
 
 func (d *Driver) AgentConn(ctx context.Context, workspaceID string) (net.Conn, error) {
@@ -87,11 +95,6 @@ func (d *Driver) Backend() string {
 	return "firecracker"
 }
 
-func (d *Driver) GuestWorkdir(workspaceID string) string {
-	_ = workspaceID
-	return "/workspace"
-}
-
 func (d *Driver) workspaceDir(workspaceID string) string {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -110,20 +113,20 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 		return errors.New("manager is required for firecracker driver")
 	}
 
-	memMiB := parsePositiveIntOption(req.Options, "mem_mib", 1024)
-	vcpus := parsePositiveIntOption(req.Options, "vcpus", 1)
-	if vcpus <= 0 {
-		vcpus = parsePositiveIntOption(req.Options, "vcpu_count", 1)
+	memMiB := 1024
+	if req.Options != nil {
+		if memStr, ok := req.Options["mem_mib"]; ok && memStr != "" {
+			if val, err := strconv.Atoi(memStr); err == nil {
+				memMiB = val
+			}
+		}
 	}
 
 	spec := SpawnSpec{
 		WorkspaceID: req.WorkspaceID,
 		ProjectRoot: req.ProjectRoot,
 		MemoryMiB:   memMiB,
-		VCPUs:       vcpus,
-	}
-	if req.Options != nil {
-		spec.SnapshotID = strings.TrimSpace(req.Options["lineage_snapshot_id"])
+		VCPUs:       1,
 	}
 
 	inst, err := d.manager.Spawn(ctx, spec)
@@ -135,21 +138,16 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	d.projectRoots[req.WorkspaceID] = req.ProjectRoot
 	d.mu.Unlock()
 
-	// Start singleton host vending server (shared across all workspaces)
-	hostServer, err := server.GetHostServer(VendingVSockPort)
+	hostCLI := detectHostCLIAvailability()
+	authBundle, err := buildHostAuthBundle()
 	if err != nil {
-		log.Printf("[secrets] Warning: failed to initialize vending: %v", err)
-	} else if !hostServer.IsRunning() {
-		if startErr := hostServer.Start(); startErr != nil {
-			log.Printf("[secrets] Warning: failed to start vending server: %v", startErr)
-		} else {
-			svc, _ := vending.GetHostVendingService()
-			providers := svc.ListProviders("")
-			log.Printf("[secrets] Started host vending server on port %d with providers: %v", VendingVSockPort, providers)
+		return fmt.Errorf("prepare host auth bundle: %w", err)
+	}
+	if shouldBootstrapGuestTooling(req.Options) {
+		if err := d.bootstrapGuestToolingAndAuth(ctx, req.WorkspaceID, hostCLI, authBundle); err != nil {
+			return err
 		}
 	}
-
-	// Pass vending URL to guest via config bundle (handled by runtime)
 
 	// TODO: Connect to agent via vsock when AgentClient dial is implemented
 	_ = inst
@@ -157,55 +155,234 @@ func (d *Driver) Create(ctx context.Context, req runtime.CreateRequest) error {
 	return nil
 }
 
-func parsePositiveIntOption(options map[string]string, key string, fallback int) int {
+func shouldBootstrapGuestTooling(options map[string]string) bool {
 	if options == nil {
-		return fallback
+		return false
 	}
-	raw := strings.TrimSpace(options[key])
+	raw := strings.TrimSpace(options["host_cli_sync"])
 	if raw == "" {
-		return fallback
+		return false
 	}
-	val, err := strconv.Atoi(raw)
-	if err != nil || val <= 0 {
-		return fallback
-	}
-	return val
+	raw = strings.ToLower(raw)
+	return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
 }
 
-func (d *Driver) GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error {
-	if d.manager == nil {
-		return errors.New("manager is required for firecracker driver")
+func (d *Driver) bootstrapGuestToolingAndAuth(ctx context.Context, workspaceID string, hostCLI hostCLIAvailability, authBundle string) error {
+	if !hostCLI.Opencode && !hostCLI.Codex && !hostCLI.Claude && strings.TrimSpace(authBundle) == "" {
+		return nil
 	}
 
-	if err := d.manager.GrowWorkspace(ctx, workspaceID, newSizeBytes); err != nil {
-		return fmt.Errorf("host-side grow failed: %w", err)
-	}
-
-	conn, err := d.AgentConn(ctx, workspaceID)
+	conn, err := d.waitForAgentConn(ctx, workspaceID, 30*time.Second)
 	if err != nil {
-		return fmt.Errorf("agent connect for disk.grow: %w", err)
+		return fmt.Errorf("bootstrap firecracker guest agent connection failed: %w", err)
 	}
 	defer conn.Close()
 
 	client := NewAgentClient(conn)
-	req := ExecRequest{
-		ID:      fmt.Sprintf("disk-grow-%d", time.Now().UnixNano()),
-		Type:    "disk.grow",
-		Command: "",
+	env := []string{}
+	if strings.TrimSpace(authBundle) != "" {
+		env = append(env, "NEXUS_HOST_AUTH_BUNDLE="+authBundle)
 	}
-	result, err := client.Exec(ctx, req)
-	if err != nil {
-		return fmt.Errorf("disk.grow exec failed: %w", err)
+
+	request := ExecRequest{
+		ID:      fmt.Sprintf("bootstrap-%d", time.Now().UnixNano()),
+		Command: "sh",
+		Args:    []string{"-lc", buildGuestCLIBootstrapCommand(hostCLI)},
+		WorkDir: "/workspace",
+		Env:     env,
+	}
+	result, execErr := client.Exec(ctx, request)
+	if execErr != nil {
+		return fmt.Errorf("bootstrap firecracker guest tooling failed: %w", execErr)
 	}
 	if result.ExitCode != 0 {
 		detail := strings.TrimSpace(result.Stderr)
 		if detail == "" {
+			detail = strings.TrimSpace(result.Stdout)
+		}
+		if detail == "" {
 			detail = fmt.Sprintf("exit code %d", result.ExitCode)
 		}
-		return fmt.Errorf("resize2fs failed: %s", detail)
+		return fmt.Errorf("bootstrap firecracker guest tooling failed: %s", detail)
 	}
 
 	return nil
+}
+
+func (d *Driver) waitForAgentConn(ctx context.Context, workspaceID string, timeout time.Duration) (net.Conn, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := d.AgentConn(ctx, workspaceID)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errors.New("agent connection timed out")
+}
+
+func detectHostCLIAvailability() hostCLIAvailability {
+	has := func(name string) bool {
+		_, err := exec.LookPath(name)
+		return err == nil
+	}
+	return hostCLIAvailability{
+		Opencode: has("opencode"),
+		Codex:    has("codex"),
+		Claude:   has("claude"),
+	}
+}
+
+func buildGuestCLIBootstrapCommand(hostCLI hostCLIAvailability) string {
+	parts := []string{"set -e", "mkdir -p ~/.config"}
+	parts = append(parts,
+		`if [ -n "${NEXUS_HOST_AUTH_BUNDLE:-}" ]; then `+
+			`(printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -d 2>/dev/null || printf '%s' "$NEXUS_HOST_AUTH_BUNDLE" | base64 -D 2>/dev/null) >/tmp/nexus-auth.tar.gz && `+
+			`tar -xzf /tmp/nexus-auth.tar.gz -C "$HOME" >/dev/null 2>&1 || true; `+
+			`rm -f /tmp/nexus-auth.tar.gz >/dev/null 2>&1 || true; fi`,
+		`if command -v npm >/dev/null 2>&1; then NPM_BIN=$(npm bin -g 2>/dev/null || true); if [ -n "$NPM_BIN" ] && [ -d "$NPM_BIN" ]; then export PATH="$NPM_BIN:$PATH"; fi; fi`,
+	)
+
+	pkg := make([]string, 0, 3)
+	if hostCLI.Opencode {
+		pkg = append(pkg, "opencode-ai")
+	}
+	if hostCLI.Codex {
+		pkg = append(pkg, "@openai/codex")
+	}
+	if hostCLI.Claude {
+		pkg = append(pkg, "@anthropic-ai/claude-code")
+	}
+	if len(pkg) > 0 {
+		parts = append(parts, "if command -v npm >/dev/null 2>&1; then npm i -g "+strings.Join(pkg, " ")+" >/dev/null 2>&1 || true; fi")
+	}
+	if hostCLI.Opencode {
+		parts = append(parts, "command -v opencode >/dev/null 2>&1")
+	}
+	if hostCLI.Codex {
+		parts = append(parts, "command -v codex >/dev/null 2>&1")
+	}
+	if hostCLI.Claude {
+		parts = append(parts, "command -v claude >/dev/null 2>&1")
+	}
+
+	return strings.Join(parts, "; ")
+}
+
+func buildHostAuthBundle() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "", nil
+	}
+
+	paths := []string{
+		filepath.Join(home, ".config", "opencode"),
+		filepath.Join(home, ".config", "codex"),
+		filepath.Join(home, ".codex"),
+		filepath.Join(home, ".config", "openai"),
+		filepath.Join(home, ".claude"),
+	}
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+
+	added := 0
+	for _, path := range paths {
+		if err := addPathToTar(tw, home, path); err != nil {
+			_ = tw.Close()
+			_ = gz.Close()
+			return "", err
+		}
+		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+			added++
+		}
+	}
+
+	if err := tw.Close(); err != nil {
+		_ = gz.Close()
+		return "", err
+	}
+	if err := gz.Close(); err != nil {
+		return "", err
+	}
+
+	if added == 0 || buf.Len() == 0 {
+		return "", nil
+	}
+
+	const maxBundleBytes = 4 * 1024 * 1024
+	if buf.Len() > maxBundleBytes {
+		return "", nil
+	}
+
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+}
+
+func addPathToTar(tw *tar.Writer, rootHome, src string) error {
+	_, err := os.Lstat(src)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	return filepath.Walk(src, func(path string, fi os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		if fi == nil {
+			return nil
+		}
+
+		rel, err := filepath.Rel(rootHome, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+
+		hdr, err := tar.FileInfoHeader(fi, "")
+		if err != nil {
+			return err
+		}
+		hdr.Name = rel
+
+		if fi.Mode()&os.ModeSymlink != 0 {
+			linkTarget, lerr := os.Readlink(path)
+			if lerr != nil {
+				return lerr
+			}
+			hdr.Linkname = linkTarget
+		}
+
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+
+		if !fi.Mode().IsRegular() {
+			return nil
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		_, err = io.Copy(tw, f)
+		return err
+	})
 }
 
 func (d *Driver) Start(ctx context.Context, workspaceID string) error {
@@ -223,74 +400,27 @@ func (d *Driver) Stop(ctx context.Context, workspaceID string) error {
 	delete(d.agents, workspaceID)
 	d.mu.Unlock()
 
-	// Cleanup workspace tokens from singleton vending service
-	if svc, err := vending.GetHostVendingService(); err == nil {
-		svc.CleanupWorkspace(workspaceID)
-	}
-
 	return d.manager.Stop(ctx, workspaceID)
 }
 
 func (d *Driver) Restore(ctx context.Context, workspaceID string) error {
-	return d.Resume(ctx, workspaceID)
+	// Native firecracker doesn't support restore in this cutover
+	return errors.New("restore not supported in native firecracker driver")
 }
 
 func (d *Driver) Pause(ctx context.Context, workspaceID string) error {
-	return d.Stop(ctx, workspaceID)
+	// Native firecracker doesn't support pause in this cutover
+	return errors.New("pause not supported in native firecracker driver")
 }
 
 func (d *Driver) Resume(ctx context.Context, workspaceID string) error {
-	if d.manager == nil {
-		return errors.New("manager is required for firecracker driver")
-	}
-
-	d.mu.RLock()
-	projectRoot := strings.TrimSpace(d.projectRoots[workspaceID])
-	d.mu.RUnlock()
-	if projectRoot == "" {
-		return fmt.Errorf("workspace %s has no recorded project root", workspaceID)
-	}
-
-	err := d.Create(ctx, runtime.CreateRequest{
-		WorkspaceID: workspaceID,
-		ProjectRoot: projectRoot,
-	})
-	if err != nil {
-		if strings.Contains(err.Error(), "already exists") {
-			return nil
-		}
-		return err
-	}
-	return nil
+	// Native firecracker doesn't support resume in this cutover
+	return errors.New("resume not supported in native firecracker driver")
 }
 
 func (d *Driver) Fork(ctx context.Context, workspaceID, childWorkspaceID string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	parentProjectRoot := strings.TrimSpace(d.projectRoots[workspaceID])
-	if parentProjectRoot == "" {
-		return fmt.Errorf("parent workspace %s not found", workspaceID)
-	}
-	if _, exists := d.projectRoots[childWorkspaceID]; exists {
-		return fmt.Errorf("workspace %s already exists", childWorkspaceID)
-	}
-	d.projectRoots[childWorkspaceID] = parentProjectRoot
-	return nil
-}
-
-// CheckpointFork creates a copy-on-write fork of the parent workspace by
-// snapshotting the workspace ext4 image. The returned snapshot ID is passed
-// as lineage_snapshot_id when spawning the child workspace VM.
-func (d *Driver) CheckpointFork(ctx context.Context, workspaceID, childWorkspaceID string) (string, error) {
-	if d.manager == nil {
-		return "", errors.New("manager is required for firecracker CheckpointFork")
-	}
-	snapshotID, err := d.manager.CheckpointForkSnapshot(ctx, workspaceID, childWorkspaceID)
-	if err != nil {
-		return "", fmt.Errorf("firecracker CheckpointFork: %w", err)
-	}
-	return snapshotID, nil
+	// Native firecracker doesn't support fork in this cutover
+	return errors.New("fork not supported in native firecracker driver")
 }
 
 func (d *Driver) Destroy(ctx context.Context, workspaceID string) error {
@@ -298,11 +428,6 @@ func (d *Driver) Destroy(ctx context.Context, workspaceID string) error {
 	delete(d.projectRoots, workspaceID)
 	delete(d.agents, workspaceID)
 	d.mu.Unlock()
-
-	// Cleanup workspace tokens from singleton vending service
-	if svc, err := vending.GetHostVendingService(); err == nil {
-		svc.CleanupWorkspace(workspaceID)
-	}
 
 	// Stop the VM if manager is available
 	if d.manager != nil {

@@ -60,12 +60,12 @@ func initRuntimeBootstrapManualSetupRequired() bool {
 }
 
 func initRuntimeBootstrapManualError(projectRoot string) error {
-	return fmt.Errorf("firecracker runtime setup requires passwordless sudo or root access in non-interactive sessions\n\nmanual next steps:\n  cd %s\n  sudo -E nexus init --force", projectRoot)
+	return fmt.Errorf("firecracker runtime setup requires passwordless sudo or root access in non-interactive sessions\n\nmanual next steps:\n  sudo -E nexus init --project-root %s", projectRoot)
 }
 
 func initRuntimeBootstrapWrapError(projectRoot string, err error) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("firecracker runtime setup failed: %w\n\nmanual next steps:\n  cd %s\n  sudo -E nexus init --force", err, projectRoot)
+	return fmt.Errorf("firecracker runtime setup failed: %w\n\nmanual next steps:\n  sudo -E nexus init --project-root %s", err, projectRoot)
 }

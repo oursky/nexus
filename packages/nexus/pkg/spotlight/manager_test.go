@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"testing"
 	"time"
 
@@ -67,13 +66,12 @@ func (f *fakeSpotlightRepo) ListSpotlightForwardRows() ([]store.SpotlightForward
 
 func TestExpose_FailsOnLocalPortCollision(t *testing.T) {
 	mgr := NewManager()
-	localPort := freeTCPPort(t)
-	_, err := mgr.Expose(context.Background(), ExposeSpec{WorkspaceID: "ws-1", LocalPort: localPort, RemotePort: 5173})
+	_, err := mgr.Expose(context.Background(), ExposeSpec{WorkspaceID: "ws-1", LocalPort: 5173, RemotePort: 5173})
 	if err != nil {
 		t.Fatalf("expected first expose to succeed, got %v", err)
 	}
 
-	_, err = mgr.Expose(context.Background(), ExposeSpec{WorkspaceID: "ws-2", LocalPort: localPort, RemotePort: 8000})
+	_, err = mgr.Expose(context.Background(), ExposeSpec{WorkspaceID: "ws-2", LocalPort: 5173, RemotePort: 8000})
 	if err == nil {
 		t.Fatal("expected second expose to fail due to port collision")
 	}
@@ -81,8 +79,7 @@ func TestExpose_FailsOnLocalPortCollision(t *testing.T) {
 
 func TestListAndClose(t *testing.T) {
 	mgr := NewManager()
-	localPort := freeTCPPort(t)
-	fwd, err := mgr.Expose(context.Background(), ExposeSpec{WorkspaceID: "ws-1", LocalPort: localPort, RemotePort: 5173})
+	fwd, err := mgr.Expose(context.Background(), ExposeSpec{WorkspaceID: "ws-1", LocalPort: 5173, RemotePort: 5173})
 	if err != nil {
 		t.Fatalf("unexpected expose error: %v", err)
 	}
@@ -151,7 +148,7 @@ func TestManager_HydratesAndPersistsViaRepository(t *testing.T) {
 			WorkspaceID: "ws-1",
 			Service:     "api",
 			RemotePort:  8000,
-			LocalPort:   freeTCPPort(t),
+			LocalPort:   18000,
 		})
 		if err != nil {
 			t.Fatalf("expose: %v", err)
@@ -169,7 +166,7 @@ func TestManager_HydratesAndPersistsViaRepository(t *testing.T) {
 			WorkspaceID: "ws-1",
 			Service:     "web",
 			RemotePort:  3000,
-			LocalPort:   freeTCPPort(t),
+			LocalPort:   13000,
 		})
 		if err == nil {
 			t.Fatal("expected expose to fail when upsert fails")
@@ -190,7 +187,7 @@ func TestManager_HydratesAndPersistsViaRepository(t *testing.T) {
 			WorkspaceID: "ws-1",
 			Service:     "api",
 			RemotePort:  8000,
-			LocalPort:   freeTCPPort(t),
+			LocalPort:   18000,
 		})
 		if err != nil {
 			t.Fatalf("expose: %v", err)
@@ -207,7 +204,7 @@ func TestManager_HydratesAndPersistsViaRepository(t *testing.T) {
 			WorkspaceID: "ws-1",
 			Service:     "api",
 			RemotePort:  8001,
-			LocalPort:   freeTCPPort(t),
+			LocalPort:   18001,
 		})
 		if err != nil {
 			t.Fatalf("second expose: %v", err)
@@ -222,18 +219,4 @@ func TestManager_HydratesAndPersistsViaRepository(t *testing.T) {
 			t.Fatal("expected close failure to restore in-memory state")
 		}
 	})
-}
-
-func freeTCPPort(t *testing.T) int {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("allocate free tcp port: %v", err)
-	}
-	defer ln.Close()
-	addr, ok := ln.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatal("expected tcp address")
-	}
-	return addr.Port
 }

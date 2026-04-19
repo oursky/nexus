@@ -2,76 +2,103 @@
 
 ## Project Overview
 
-Nexus remote workspace core: **Workspace Daemon** (Go, `packages/nexus`) and **Workspace SDK** (TypeScript, `packages/sdk/js`). Keep changes centered on those packages; do not reintroduce removed non-core surfaces.
+This repository is the Nexus remote workspace core.
 
-## Remote-First Architecture
+### Components
 
-**The daemon may run on a different machine than the user.** Design and verify under that assumption.
+| Component | Status | Description |
+|-----------|--------|-------------|
+| **Workspace Daemon** | ✅ Active | Go server for workspace lifecycle, RPC handlers, services, spotlight |
+| **Workspace SDK** | ✅ Active | TypeScript SDK for remote workspace control |
 
-- Daemon host paths are not user paths; do not read user credentials from the daemon's `$HOME` and assume they belong to the user.
-- Symlink-based credential tricks break when the daemon is remote; user-owned secrets must travel via RPC (`workspace.create` `configBundle`, auth relay at exec time, or explicit client-supplied payloads).
+### Packages
 
-**Host CLI sync:** `nexus create` calls `authbundle.BuildFromHome()` on the **client machine** and sends the result as `configBundle` in `workspace.create`. The daemon never reads the daemon host's `$HOME` for user credentials. Seatbelt delivers the bundle via a host-side temp file (no SSH arg-length limit), then unpacks it in the guest; it does **not** create live symlinks back to the daemon's filesystem.
+| Package | Status | Description |
+|---------|--------|-------------|
+| `packages/nexus` | ✅ Active | Go daemon runtime |
 
-Flag any feature that reads user-owned data from the daemon filesystem without an explicit client-supplied or relayed payload.
+### Scope Notes
 
-## Code Structure Policy
+- Keep repository changes centered on `packages/nexus` and `packages/sdk/js`.
+- Do not reintroduce removed non-core package surfaces.
 
-**Tiered file-size limits:**
+---
+
+## Enforcement Rules
+
+- An agent MUST complete tasks fully before claiming completion.
+- An agent MUST verify all requirements are explicitly addressed.
+- An agent MUST ensure code works, builds, runs, and tests pass.
+- An agent MUST provide evidence of success, not just claims.
+- An agent SHOULD test changes in real environments via dogfooding.
+- An agent MUST verify builds succeed before claiming completion.
+- An agent MUST verify there are zero type errors.
+- An agent MUST verify there are zero lint errors.
+- An agent SHOULD log friction points encountered during development.
+- An agent MUST use isolated workspaces for feature development.
+- An agent MUST NOT work directly in the main worktree for features.
+- An agent MUST list what remains undone if stopping early.
+- An agent MUST explain why it cannot complete a task if stopping early.
+- An agent MUST specify what the user needs to do next if stopping early.
+
+---
+
+## Taskfile and Scripting Rules
+
+- **Taskfile is an entrypoint only.** Shell logic, SSH commands, multi-step operations — all go in `scripts/`. Taskfile tasks call scripts; they do not inline logic.
+- **No inline SSH in Taskfile.** Any `ssh` or `scp` call belongs in a script under `scripts/remote/`. The Taskfile task sets `env:` vars and calls the script.
+- **Scripts live in `scripts/`.** Remote scripts go in `scripts/remote/`. Use `set -euo pipefail`. Make them executable (`chmod +x`).
+- **Why:** Inline shell in Taskfile is hard to test, easy to get quoting wrong (local vs remote shell expansion), and hard to reuse outside of Task.
+
+---
+
+## Documentation Guidelines
+
+### User-Facing Docs (docs/)
+
+User-facing documentation goes in `docs/` and its subdirectories:
+
+- `docs/tutorials/` - Step-by-step guides for users
+- `docs/reference/` - API references, CLI commands, configuration
+- `docs/explanation/` - Conceptual explanations and architecture
+- `docs/dev/` - Developer documentation (contributing, roadmap, ADRs)
+
+**Only document ACTUALLY IMPLEMENTED features.**
+
+### Internal Docs (docs/dev/internal/)
+
+Historical, planning, and research documents go in `docs/dev/internal/`:
+
+- `docs/dev/internal/implementation/` - Implementation plans (historical)
+- `docs/dev/internal/plans/` - Feature plans (some may not be implemented)
+- `docs/dev/internal/design/` - Design documents (historical)
+- `docs/dev/internal/research/` - Research findings
+- `docs/dev/internal/testing/` - Testing reports (some reference unimplemented features)
+- `docs/dev/internal/ARCHIVE/` - Archived documents
+
+### Architecture Decision Records
+
+ADRs go in `docs/dev/decisions/`:
+
+- `docs/dev/decisions/001-worktree-isolation.md`
+- `docs/dev/decisions/002-port-allocation.md`
+
+### What NOT to Reference
+
+Never reference removed module surfaces as active capabilities.
+
+If a feature doesn't exist, don't document it as if it does. Instead, note it as planned/future.
+
+### Documentation Structure
 
 ```
-Core/domain logic:              <= 300 lines
-Orchestration/application logic: <= 400 lines
-Transport/adapters/tests:        <= 500 lines
-Generated files:                 exempt
-```
-
-**Dependency direction rules:**
-
-```
-domain          → no project-specific dependencies
-orchestration   → may depend on domain
-transport       → may depend on application/domain
-storage         → implements domain/application-owned interfaces
-tests           → may depend on any layer; keep harness code modular
-```
-
-**Concept naming conventions:**
-
-```
-transport/    wire protocol, sockets, adapters, sessions
-storage/      persistence and backing stores
-runtime/      backend selection, preflight, driver-specific behavior
-workspace/    lifecycle, readiness, relations, create/fork/restore flows
-auth/         relay, bundle, profile mapping
-rpc/          method registration, DTOs, middleware
-harness/      reusable e2e support code only
-```
-
-**Known debt (tracked, not instant failures):**
-
-```
-packages/nexus/pkg/handlers/workspace_manager.go (~429 lines, over 400 limit)
-packages/sdk/js/src/browser-client.ts        (~181 lines, OK)
-packages/sdk/js/src/client.ts                (~159 lines, OK)
-```
-
-## Enforcement
-
-Complete work fully; verify builds, tests, types, and lint; provide evidence; use isolated worktrees for features (not the main worktree). If stopping early, list what is undone, why, and what the user should do next.
-
-## Documentation
-
-User-facing docs live under `docs/`: `guides/`, `reference/`, `superpowers/`, and `roadmap.md`. Contributing guidance is in the repository root `CONTRIBUTING.md`. Only document implemented behavior. Do not document removed module surfaces as current capabilities.
-
-```text
 docs/
-├── README.md
-├── guides/
+├── index.md
 ├── reference/
-└── roadmap.md
+│   ├── workspace-daemon.md
+│   ├── workspace-sdk.md
+│   └── workspace-config.md
+└── dev/
+    ├── contributing.md
+    └── migration-core-prune.md
 ```
-
-## Project scaffold
-
-Nexus lifecycle and doctor conventions use **`.nexus/` at the repository root** only (`nexus init`, `nexus doctor`). There is no second copy under `packages/nexus/`.

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -98,7 +99,12 @@ type StatResult struct {
 	ModTime string `json:"modTime"`
 }
 
-func HandleReadFile(ctx context.Context, p ReadFileParams, ws *workspace.Workspace) (*ReadFileResult, *rpckit.RPCError) {
+func HandleReadFile(ctx context.Context, params json.RawMessage, ws *workspace.Workspace) (*ReadFileResult, *rpckit.RPCError) {
+	var p ReadFileParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+
 	safePath, err := ws.SecurePath(p.Path)
 	if err != nil {
 		return nil, rpckit.ErrInvalidPath
@@ -124,7 +130,12 @@ func HandleReadFile(ctx context.Context, p ReadFileParams, ws *workspace.Workspa
 	}, nil
 }
 
-func HandleWriteFile(ctx context.Context, p WriteFileParams, ws *workspace.Workspace) (*WriteFileResult, *rpckit.RPCError) {
+func HandleWriteFile(ctx context.Context, params json.RawMessage, ws *workspace.Workspace) (*WriteFileResult, *rpckit.RPCError) {
+	var p WriteFileParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+
 	if p.Path == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
@@ -164,7 +175,12 @@ func HandleWriteFile(ctx context.Context, p WriteFileParams, ws *workspace.Works
 	}, nil
 }
 
-func HandleExists(ctx context.Context, p ExistsParams, ws *workspace.Workspace) (*ExistsResult, *rpckit.RPCError) {
+func HandleExists(ctx context.Context, params json.RawMessage, ws *workspace.Workspace) (*ExistsResult, *rpckit.RPCError) {
+	var p ExistsParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+
 	safePath, err := ws.SecurePath(p.Path)
 	if err != nil {
 		return nil, rpckit.ErrInvalidPath
@@ -179,7 +195,12 @@ func HandleExists(ctx context.Context, p ExistsParams, ws *workspace.Workspace) 
 	}, nil
 }
 
-func HandleReaddir(ctx context.Context, p ReaddirParams, ws *workspace.Workspace) (*ReaddirResult, *rpckit.RPCError) {
+func HandleReaddir(ctx context.Context, params json.RawMessage, ws *workspace.Workspace) (*ReaddirResult, *rpckit.RPCError) {
+	var p ReaddirParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+
 	path := "."
 	if p.Path != "" {
 		path = p.Path
@@ -221,7 +242,12 @@ func HandleReaddir(ctx context.Context, p ReaddirParams, ws *workspace.Workspace
 	}, nil
 }
 
-func HandleMkdir(ctx context.Context, p MkdirParams, ws *workspace.Workspace) (*WriteFileResult, *rpckit.RPCError) {
+func HandleMkdir(ctx context.Context, params json.RawMessage, ws *workspace.Workspace) (*WriteFileResult, *rpckit.RPCError) {
+	var p MkdirParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+
 	if p.Path == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
@@ -246,7 +272,12 @@ func HandleMkdir(ctx context.Context, p MkdirParams, ws *workspace.Workspace) (*
 	}, nil
 }
 
-func HandleRm(ctx context.Context, p RmParams, ws *workspace.Workspace) (*WriteFileResult, *rpckit.RPCError) {
+func HandleRm(ctx context.Context, params json.RawMessage, ws *workspace.Workspace) (*WriteFileResult, *rpckit.RPCError) {
+	var p RmParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+
 	if p.Path == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
@@ -275,7 +306,12 @@ func HandleRm(ctx context.Context, p RmParams, ws *workspace.Workspace) (*WriteF
 	}, nil
 }
 
-func HandleStat(ctx context.Context, p StatParams, ws *workspace.Workspace) (*StatResult, *rpckit.RPCError) {
+func HandleStat(ctx context.Context, params json.RawMessage, ws *workspace.Workspace) (*StatResult, *rpckit.RPCError) {
+	var p StatParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+
 	safePath, err := ws.SecurePath(p.Path)
 	if err != nil {
 		return nil, rpckit.ErrInvalidPath

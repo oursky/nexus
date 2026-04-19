@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/authrelay"
@@ -23,10 +24,12 @@ func TestHandleAuthRelayMint(t *testing.T) {
 	}
 
 	broker := authrelay.NewBroker()
-	res, rpcErr := HandleAuthRelayMint(context.Background(), AuthRelayMintParams{
-		WorkspaceID: ws.ID,
-		Binding:     "claude",
-	}, mgr, broker)
+	params, _ := json.Marshal(map[string]any{
+		"workspaceId": ws.ID,
+		"binding":     "claude",
+	})
+
+	res, rpcErr := HandleAuthRelayMint(context.Background(), params, mgr, broker)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}
@@ -44,16 +47,14 @@ func TestHandleAuthRelayMint(t *testing.T) {
 	if env["NEXUS_AUTH_VALUE"] != "token-123" {
 		t.Fatalf("expected injected value token-123, got %q", env["NEXUS_AUTH_VALUE"])
 	}
-	if env["ANTHROPIC_API_KEY"] != "token-123" {
-		t.Fatalf("expected ANTHROPIC_API_KEY token-123, got %q", env["ANTHROPIC_API_KEY"])
-	}
 }
 
 func TestHandleAuthRelayRevoke(t *testing.T) {
 	broker := authrelay.NewBroker()
 	token := broker.Mint("ws-1", map[string]string{"NEXUS_AUTH_VALUE": "abc"}, 0)
 
-	res, rpcErr := HandleAuthRelayRevoke(context.Background(), AuthRelayRevokeParams{Token: token}, broker)
+	params, _ := json.Marshal(map[string]any{"token": token})
+	res, rpcErr := HandleAuthRelayRevoke(context.Background(), params, broker)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}

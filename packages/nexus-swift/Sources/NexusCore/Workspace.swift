@@ -1,6 +1,20 @@
 import Foundation
 import Combine
 
+// MARK: - Sheet intent
+
+public enum CreateIntent: Identifiable {
+    case newProject
+    case newSandbox(projectID: String?)
+
+    public var id: String {
+        switch self {
+        case .newProject: return "newProject"
+        case .newSandbox(let pid): return "newSandbox:\(pid ?? "")"
+        }
+    }
+}
+
 // MARK: - Status
 
 /// Maps workspacemgr.WorkspaceState values from the daemon.
@@ -49,7 +63,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public var projectId: String?
     /// Daemon runtime backend id, e.g. firecracker, process.
     public let backend: String?
-    /// Human-readable summary from daemon (`runtimeLabel` JSON), e.g. backend + isolation + vm.mode.
+    /// Human-readable summary from daemon (`runtimeLabel` JSON), e.g. backend + isolation.
     public let runtimeLabel: String?
     public var ports: [ForwardedPort]
     public var hasActiveTunnels: Bool
@@ -168,7 +182,9 @@ public struct Project: Identifiable, Codable, Equatable, Sendable {
     public let rootPath: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, primaryRepo, rootPath
+        case id, name
+        case primaryRepo = "repoUrl"
+        case rootPath
     }
 }
 

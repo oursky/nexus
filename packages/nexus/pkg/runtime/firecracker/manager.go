@@ -3,16 +3,12 @@ package firecracker
 import (
 	"context"
 	"fmt"
-	"io"
 	"io/fs"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -28,13 +24,10 @@ var tapTeardownFunc func(tapName, subnetCIDR string) = realTeardownTAP
 // initialCID is the starting CID for guest VMs.
 const initialCID uint32 = 1000
 
-const VendingVSockPort uint32 = 10790
-
 // SpawnSpec defines the configuration for spawning a new Firecracker VM.
 type SpawnSpec struct {
 	WorkspaceID string
 	ProjectRoot string
-	SnapshotID  string
 	MemoryMiB   int
 	VCPUs       int
 }
@@ -68,10 +61,6 @@ type APIClientFactory func(sockPath string) apiClientInterface
 // apiClientInterface defines the methods we need from the API client.
 type apiClientInterface interface {
 	put(ctx context.Context, path string, body any) error
-	patch(ctx context.Context, path string, body any) error
-	PauseVM(ctx context.Context) error
-	ResumeVM(ctx context.Context) error
-	CreateSnapshot(ctx context.Context, vmstatePath, memFilePath string) error
 }
 
 // networkCommandRunner runs a network-related command.
@@ -98,9 +87,6 @@ type Manager struct {
 	mu               sync.RWMutex
 	nextCID          uint32
 	apiClientFactory APIClientFactory
-	snapshotCache    map[string]*baseSnapshot
-	snapshotMu       sync.RWMutex
-	reflinkAvailable bool
 }
 
 // NewManager creates a new Firecracker manager with the given configuration.
@@ -110,19 +96,11 @@ func NewManager(cfg ManagerConfig) *Manager {
 
 // newManager creates a new Firecracker manager with the given configuration.
 func newManager(cfg ManagerConfig) *Manager {
-	reflink := false
-	if strings.TrimSpace(cfg.WorkDirRoot) != "" {
-		if err := os.MkdirAll(cfg.WorkDirRoot, 0o755); err == nil {
-			reflink = probeReflink(cfg.WorkDirRoot)
-		}
-	}
 	return &Manager{
 		config:           cfg,
 		instances:        make(map[string]*Instance),
 		nextCID:          initialCID,
 		apiClientFactory: defaultAPIClientFactory,
-		snapshotCache:    make(map[string]*baseSnapshot),
-		reflinkAvailable: reflink,
 	}
 }
 
@@ -166,50 +144,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		return nil, fmt.Errorf("workspace already exists: %s", spec.WorkspaceID)
 	}
 
-	// Snapshot restore path (experiment-gated)
-	if os.Getenv("NEXUS_FIRECRACKER_SNAPSHOT") == "1" {
-		snap, err := m.ensureBaseSnapshot(ctx, m.config.KernelPath, m.config.RootFSPath)
-		if err != nil {
-			return nil, fmt.Errorf("ensure base snapshot: %w", err)
-		}
-		if _, statErr := os.Stat(snap.vmstatePath); statErr == nil {
-			m.mu.Unlock()
-			inst, restoreErr := m.restoreFromSnapshot(ctx, spec, snap)
-			m.mu.Lock()
-			if restoreErr == nil {
-				return inst, nil
-			}
-			log.Printf("[firecracker] snapshot restore failed, falling back to cold boot: %v", restoreErr)
-			key := snapshotCacheKey(m.config.KernelPath, m.config.RootFSPath)
-			m.snapshotMu.Lock()
-			delete(m.snapshotCache, key)
-			m.snapshotMu.Unlock()
-		}
-	}
-
 	workDir := filepath.Join(m.config.WorkDirRoot, spec.WorkspaceID)
-
-	var projectSizeBytes int64
-	if strings.TrimSpace(spec.SnapshotID) != "" {
-		snapPath := m.snapshotImagePath(spec.SnapshotID)
-		info, statErr := os.Stat(snapPath)
-		if statErr != nil {
-			return nil, fmt.Errorf("stat snapshot image: %w", statErr)
-		}
-		projectSizeBytes = info.Size()
-	} else {
-		size, sizeErr := directorySizeBytes(spec.ProjectRoot)
-		if sizeErr != nil {
-			return nil, fmt.Errorf("compute project size: %w", sizeErr)
-		}
-		projectSizeBytes = size
-	}
-	const miB = int64(1024 * 1024)
-	neededBytes := workspaceImageSizeBytes(projectSizeBytes) + 512*miB
-	if err := checkDiskSpace(m.config.WorkDirRoot, neededBytes); err != nil {
-		return nil, fmt.Errorf("insufficient disk space for workspace: %w", err)
-	}
-
 	if err := os.MkdirAll(workDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create workdir: %w", err)
 	}
@@ -234,22 +169,12 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		return nil, fmt.Errorf("failed to setup tap %s: %w", tap, err)
 	}
 
-	if strings.TrimSpace(spec.SnapshotID) != "" {
-		if err := copyFile(m.snapshotImagePath(spec.SnapshotID), workspaceImagePath); err != nil {
-			if cleanupTap {
-				teardownTAP(tap, subnetCIDR)
-			}
-			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("failed to restore workspace image from snapshot: %w", err)
+	if err := workspaceImageBuilderFunc(spec.ProjectRoot, workspaceImagePath); err != nil {
+		if cleanupTap {
+			teardownTAP(tap, subnetCIDR)
 		}
-	} else {
-		if err := workspaceImageBuilderFunc(spec.ProjectRoot, workspaceImagePath); err != nil {
-			if cleanupTap {
-				teardownTAP(tap, subnetCIDR)
-			}
-			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("failed to build workspace image: %w", err)
-		}
+		os.RemoveAll(workDir)
+		return nil, fmt.Errorf("failed to build workspace image: %w", err)
 	}
 
 	// Launch Firecracker directly in the host network namespace.
@@ -277,9 +202,6 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		return nil, fmt.Errorf("failed to start firecracker: %w", err)
 	}
 	_ = logFile.Close()
-
-	pidPath := filepath.Join(workDir, "firecracker.pid")
-	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0o600)
 
 	if err := m.waitForAPISocket(ctx, apiSocket); err != nil {
 		teardownTAP(tap, subnetCIDR)
@@ -365,25 +287,6 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		teardownTAP(tap, subnetCIDR)
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to start instance: %w", err)
-	}
-
-	// After successful cold boot, create base snapshot if experiment gate is active
-	if os.Getenv("NEXUS_FIRECRACKER_SNAPSHOT") == "1" {
-		snap, _ := m.ensureBaseSnapshot(ctx, m.config.KernelPath, m.config.RootFSPath)
-		if snap != nil {
-			if _, statErr := os.Stat(snap.vmstatePath); os.IsNotExist(statErr) {
-				if pauseErr := client.PauseVM(ctx); pauseErr == nil {
-					if snapErr := client.CreateSnapshot(ctx, snap.vmstatePath, snap.memFilePath); snapErr != nil {
-						log.Printf("[firecracker] WARNING: failed to create base snapshot: %v", snapErr)
-					}
-					if resumeErr := client.ResumeVM(ctx); resumeErr != nil {
-						log.Printf("[firecracker] WARNING: failed to resume after snapshot: %v", resumeErr)
-					}
-				} else {
-					log.Printf("[firecracker] WARNING: failed to pause for base snapshot: %v", pauseErr)
-				}
-			}
-		}
 	}
 
 	inst := &Instance{
@@ -481,104 +384,6 @@ func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 	return nil
 }
 
-// GrowWorkspace grows the workspace backing image to newSizeBytes and notifies
-// Firecracker via PATCH /drives/workspace so the guest can online-resize.
-// The caller must run `resize2fs /dev/vdb` in the guest after this returns.
-func (m *Manager) GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error {
-	m.mu.Lock()
-	inst, ok := m.instances[workspaceID]
-	m.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("workspace not found: %s", workspaceID)
-	}
-
-	if err := os.Truncate(inst.WorkspaceImage, newSizeBytes); err != nil {
-		return fmt.Errorf("grow workspace image: %w", err)
-	}
-
-	client := m.apiClientFactory(inst.APISocket)
-	patch := map[string]any{
-		"drive_id":     "workspace",
-		"path_on_host": inst.WorkspaceImage,
-		"is_read_only": false,
-	}
-	if err := client.patch(ctx, "/drives/workspace", patch); err != nil {
-		return fmt.Errorf("patch firecracker drive: %w", err)
-	}
-
-	return nil
-}
-
-// ReconcileOrphans scans WorkDirRoot for leftover Firecracker VM directories
-// from previous daemon runs and cleans up those whose process is no longer alive.
-// Directories belonging to live workspaceIDs whose process is still running are
-// left in place and logged.
-func (m *Manager) ReconcileOrphans(ctx context.Context, liveWorkspaceIDs map[string]struct{}) error {
-	if strings.TrimSpace(m.config.WorkDirRoot) == "" {
-		return nil
-	}
-
-	entries, err := os.ReadDir(m.config.WorkDirRoot)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("reconcile orphans: readdir %s: %w", m.config.WorkDirRoot, err)
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		wsID := entry.Name()
-
-		m.mu.RLock()
-		_, alreadyRegistered := m.instances[wsID]
-		m.mu.RUnlock()
-		if alreadyRegistered {
-			continue
-		}
-
-		workDir := filepath.Join(m.config.WorkDirRoot, wsID)
-		tap := tapNameForWorkspace(wsID)
-
-		pidData, readErr := os.ReadFile(filepath.Join(workDir, "firecracker.pid"))
-		pid := 0
-		if readErr == nil {
-			if p, parseErr := strconv.Atoi(strings.TrimSpace(string(pidData))); parseErr == nil {
-				pid = p
-			}
-		}
-
-		alive := pid > 0 && processAlive(pid)
-
-		if alive {
-			if _, isLive := liveWorkspaceIDs[wsID]; isLive {
-				log.Printf("firecracker reconcile: workspace %s process %d still running, skipping re-attach", wsID, pid)
-				continue
-			}
-			proc, findErr := os.FindProcess(pid)
-			if findErr == nil {
-				_ = proc.Kill()
-				_, _ = proc.Wait()
-			}
-		}
-
-		teardownTAP(tap, guestSubnetCIDR)
-		if removeErr := os.RemoveAll(workDir); removeErr != nil {
-			log.Printf("firecracker reconcile: remove workdir %s: %v", workDir, removeErr)
-		} else {
-			log.Printf("firecracker reconcile: cleaned orphaned workspace %s", wsID)
-		}
-	}
-
-	return nil
-}
-
-func processAlive(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
-}
-
 // Get retrieves an instance by workspace ID.
 func (m *Manager) Get(workspaceID string) (*Instance, error) {
 	m.mu.RLock()
@@ -647,53 +452,19 @@ func directorySizeBytes(root string) (int64, error) {
 
 func workspaceImageSizeBytes(projectSizeBytes int64) int64 {
 	const (
-		miB        = int64(1024 * 1024)
-		giB        = 1024 * miB
-		minSize    = 2 * giB
-		overhead   = 2 * giB
-		maxInitial = 20 * giB
+		miB          = int64(1024 * 1024)
+		minImageSize = int64(32*1024) * miB
+		overhead     = int64(16*1024) * miB
 	)
 
-	target := projectSizeBytes*2 + overhead
-	if target < minSize {
-		target = minSize
+	target := projectSizeBytes + overhead
+	if target < minImageSize {
+		target = minImageSize
 	}
-	if target > maxInitial {
-		target = maxInitial
-	}
+
 	if rem := target % miB; rem != 0 {
 		target += miB - rem
 	}
+
 	return target
-}
-
-func checkDiskSpace(dir string, needed int64) error {
-	var s syscall.Statfs_t
-	if err := syscall.Statfs(dir, &s); err != nil {
-		return nil
-	}
-	avail := int64(s.Bavail) * int64(s.Bsize)
-	if avail < needed {
-		return fmt.Errorf("need %d MiB, only %d MiB free in %s", needed>>20, avail>>20, dir)
-	}
-	return nil
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Sync()
 }

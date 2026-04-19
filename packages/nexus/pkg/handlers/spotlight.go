@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/compose"
+	"github.com/inizio/nexus/packages/nexus/pkg/config"
 
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
@@ -36,8 +38,18 @@ type SpotlightCloseResult struct {
 	Closed bool `json:"closed"`
 }
 
+type SpotlightApplyDefaultsParams struct {
+	WorkspaceID string `json:"workspaceId"`
+	RootPath    string `json:"rootPath,omitempty"`
+}
+
+type SpotlightApplyDefaultsResult struct {
+	Forwards []*spotlight.Forward `json:"forwards"`
+}
+
 type SpotlightApplyComposePortsParams struct {
 	WorkspaceID string `json:"workspaceId"`
+	RootPath    string `json:"rootPath,omitempty"`
 }
 
 type SpotlightApplyComposePortsError struct {
@@ -52,7 +64,12 @@ type SpotlightApplyComposePortsResult struct {
 	Errors   []SpotlightApplyComposePortsError `json:"errors"`
 }
 
-func HandleSpotlightExpose(ctx context.Context, p SpotlightExposeParams, mgr *spotlight.Manager) (*SpotlightExposeResult, *rpckit.RPCError) {
+func HandleSpotlightExpose(ctx context.Context, params json.RawMessage, mgr *spotlight.Manager) (*SpotlightExposeResult, *rpckit.RPCError) {
+	var p SpotlightExposeParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+
 	fwd, err := mgr.Expose(ctx, p.Spec)
 	if err != nil {
 		return nil, rpckit.ErrInvalidParams
@@ -61,12 +78,24 @@ func HandleSpotlightExpose(ctx context.Context, p SpotlightExposeParams, mgr *sp
 	return &SpotlightExposeResult{Forward: fwd}, nil
 }
 
-func HandleSpotlightList(_ context.Context, p SpotlightListParams, mgr *spotlight.Manager) (*SpotlightListResult, *rpckit.RPCError) {
+func HandleSpotlightList(_ context.Context, params json.RawMessage, mgr *spotlight.Manager) (*SpotlightListResult, *rpckit.RPCError) {
+	var p SpotlightListParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, rpckit.ErrInvalidParams
+		}
+	}
+
 	all := mgr.List(p.WorkspaceID)
 	return &SpotlightListResult{Forwards: all}, nil
 }
 
-func HandleSpotlightClose(_ context.Context, p SpotlightCloseParams, mgr *spotlight.Manager) (*SpotlightCloseResult, *rpckit.RPCError) {
+func HandleSpotlightClose(_ context.Context, params json.RawMessage, mgr *spotlight.Manager) (*SpotlightCloseResult, *rpckit.RPCError) {
+	var p SpotlightCloseParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+
 	closed := mgr.Close(p.ID)
 	if !closed {
 		return nil, rpckit.ErrInvalidParams
@@ -75,12 +104,48 @@ func HandleSpotlightClose(_ context.Context, p SpotlightCloseParams, mgr *spotli
 	return &SpotlightCloseResult{Closed: true}, nil
 }
 
-func HandleSpotlightApplyComposePorts(ctx context.Context, p SpotlightApplyComposePortsParams, rootPath string, mgr *spotlight.Manager) (*SpotlightApplyComposePortsResult, *rpckit.RPCError) {
-	if p.WorkspaceID == "" || rootPath == "" {
+func HandleSpotlightApplyDefaults(ctx context.Context, params json.RawMessage, mgr *spotlight.Manager) (*SpotlightApplyDefaultsResult, *rpckit.RPCError) {
+	var p SpotlightApplyDefaultsParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+	if p.WorkspaceID == "" || p.RootPath == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
 
-	published, err := discoverPublishedPorts(ctx, rootPath)
+	cfg, _, err := config.LoadWorkspaceConfig(p.RootPath)
+	if err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+
+	forwards := make([]*spotlight.Forward, 0, len(cfg.Spotlight.Defaults))
+	for _, d := range cfg.Spotlight.Defaults {
+		fwd, exposeErr := mgr.Expose(ctx, spotlight.ExposeSpec{
+			WorkspaceID: p.WorkspaceID,
+			Service:     d.Service,
+			RemotePort:  d.RemotePort,
+			LocalPort:   d.LocalPort,
+			Host:        d.Host,
+		})
+		if exposeErr != nil {
+			continue
+		}
+		forwards = append(forwards, fwd)
+	}
+
+	return &SpotlightApplyDefaultsResult{Forwards: forwards}, nil
+}
+
+func HandleSpotlightApplyComposePorts(ctx context.Context, params json.RawMessage, mgr *spotlight.Manager) (*SpotlightApplyComposePortsResult, *rpckit.RPCError) {
+	var p SpotlightApplyComposePortsParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
+	if p.WorkspaceID == "" || p.RootPath == "" {
+		return nil, rpckit.ErrInvalidParams
+	}
+
+	published, err := discoverPublishedPorts(ctx, p.RootPath)
 	if err != nil {
 		if errors.Is(err, compose.ErrComposeFileNotFound) {
 			return &SpotlightApplyComposePortsResult{
@@ -102,22 +167,13 @@ func HandleSpotlightApplyComposePorts(ctx context.Context, p SpotlightApplyCompo
 			host = "127.0.0.1"
 		}
 
-		var (
-			fwd       *spotlight.Forward
-			exposeErr error
-		)
-		for _, localPort := range composeLocalPortCandidates(entry.HostPort, entry.TargetPort) {
-			fwd, exposeErr = mgr.Expose(ctx, spotlight.ExposeSpec{
-				WorkspaceID: p.WorkspaceID,
-				Service:     entry.Service,
-				RemotePort:  entry.TargetPort,
-				LocalPort:   localPort,
-				Host:        host,
-			})
-			if exposeErr == nil {
-				break
-			}
-		}
+		fwd, exposeErr := mgr.Expose(ctx, spotlight.ExposeSpec{
+			WorkspaceID: p.WorkspaceID,
+			Service:     entry.Service,
+			RemotePort:  entry.TargetPort,
+			LocalPort:   entry.HostPort,
+			Host:        host,
+		})
 		if exposeErr != nil {
 			result.Errors = append(result.Errors, SpotlightApplyComposePortsError{
 				Service:    entry.Service,
@@ -131,32 +187,4 @@ func HandleSpotlightApplyComposePorts(ctx context.Context, p SpotlightApplyCompo
 	}
 
 	return result, nil
-}
-
-func composeLocalPortCandidates(hostPort, targetPort int) []int {
-	candidates := make([]int, 0, 5)
-	seen := map[int]struct{}{}
-	add := func(p int) {
-		if p <= 0 || p > 65535 {
-			return
-		}
-		if _, ok := seen[p]; ok {
-			return
-		}
-		seen[p] = struct{}{}
-		candidates = append(candidates, p)
-	}
-	add(hostPort)
-	if hostPort > 0 && hostPort < 1024 {
-		add(10000 + hostPort)
-		add(20000 + hostPort)
-		add(30000 + hostPort)
-	}
-	if targetPort >= 1024 {
-		add(targetPort)
-	}
-	if len(candidates) == 0 {
-		add(10000 + targetPort)
-	}
-	return candidates
 }

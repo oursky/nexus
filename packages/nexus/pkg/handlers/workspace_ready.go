@@ -2,9 +2,12 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
+	"path/filepath"
 	"time"
 
+	"github.com/inizio/nexus/packages/nexus/pkg/config"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/services"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
@@ -55,7 +58,11 @@ type WorkspaceReadyResult struct {
 	LastResults map[string]int `json:"lastResults"`
 }
 
-func HandleWorkspaceReady(ctx context.Context, p WorkspaceReadyParams, ws *workspace.Workspace, svcMgr *services.Manager) (*WorkspaceReadyResult, *rpckit.RPCError) {
+func HandleWorkspaceReady(ctx context.Context, params json.RawMessage, ws *workspace.Workspace, svcMgr *services.Manager) (*WorkspaceReadyResult, *rpckit.RPCError) {
+	var p WorkspaceReadyParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
 	if p.Profile != "" {
 		checks, ok := readinessProfileForWorkspace(ws.Path(), p.Profile)
 		if !ok {
@@ -166,10 +173,10 @@ func runReadinessCheck(ctx context.Context, check WorkspaceReadyCheck, ws *works
 		if check.Command == "" {
 			return -1, false
 		}
-		res, rpcErr := HandleExec(ctx, ExecParams{
-			Command: check.Command,
-			Args:    check.Args,
-		}, ws)
+		res, rpcErr := HandleExec(ctx, mustJSON(map[string]any{
+			"command": check.Command,
+			"args":    check.Args,
+		}), ws)
 		if rpcErr != nil {
 			return -1, false
 		}
@@ -203,7 +210,42 @@ func readinessProfiles() map[string][]WorkspaceReadyCheck {
 }
 
 func readinessProfileForWorkspace(root, profile string) ([]WorkspaceReadyCheck, bool) {
-	_ = root
+	if root != "" {
+		cfg, _, err := config.LoadWorkspaceConfig(root)
+		if err == nil {
+			if checks, ok := cfg.Readiness.Profiles[profile]; ok {
+				return mapConfigChecks(checks), true
+			}
+		}
+
+		cfg2, _, err := config.LoadWorkspaceConfig(filepath.Clean(root))
+		if err == nil {
+			if checks, ok := cfg2.Readiness.Profiles[profile]; ok {
+				return mapConfigChecks(checks), true
+			}
+		}
+	}
+
 	checks, ok := readinessProfiles()[profile]
 	return checks, ok
+}
+
+func mapConfigChecks(in []config.ReadinessCheck) []WorkspaceReadyCheck {
+	out := make([]WorkspaceReadyCheck, 0, len(in))
+	for _, c := range in {
+		out = append(out, WorkspaceReadyCheck{
+			Name:          c.Name,
+			Type:          c.Type,
+			Command:       c.Command,
+			Args:          c.Args,
+			ServiceName:   c.ServiceName,
+			ExpectRunning: c.ExpectRunning,
+		})
+	}
+	return out
+}
+
+func mustJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }

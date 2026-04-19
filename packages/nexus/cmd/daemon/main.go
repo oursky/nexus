@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -16,17 +14,11 @@ import (
 	goruntime "runtime"
 	"strings"
 	"syscall"
-	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/auth"
-	"github.com/inizio/nexus/packages/nexus/pkg/daemonclient"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime"
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime/drivers/shared"
 	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime/lima"
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime/sandbox"
+	"github.com/inizio/nexus/packages/nexus/pkg/runtime/process"
 	"github.com/inizio/nexus/packages/nexus/pkg/server"
-	"github.com/inizio/nexus/packages/nexus/pkg/spotlight"
 )
 
 var firecrackerProbeGOOS = goruntime.GOOS
@@ -37,6 +29,58 @@ var firecrackerProbeOutputFn = func(name string, args ...string) ([]byte, error)
 
 type CommandRunner struct{}
 
+type backendAliasDriver struct {
+	alias string
+	inner runtime.Driver
+}
+
+type backendAliasConnectorDriver struct {
+	backendAliasDriver
+}
+
+func (d *backendAliasConnectorDriver) AgentConn(ctx context.Context, workspaceID string) (net.Conn, error) {
+	if connector, ok := d.inner.(interface {
+		AgentConn(context.Context, string) (net.Conn, error)
+	}); ok {
+		return connector.AgentConn(ctx, workspaceID)
+	}
+	return nil, fmt.Errorf("%s runtime does not support agent connection", d.alias)
+}
+
+func (d *backendAliasDriver) Backend() string { return d.alias }
+
+func (d *backendAliasDriver) Create(ctx context.Context, req runtime.CreateRequest) error {
+	return d.inner.Create(ctx, req)
+}
+
+func (d *backendAliasDriver) Start(ctx context.Context, workspaceID string) error {
+	return d.inner.Start(ctx, workspaceID)
+}
+
+func (d *backendAliasDriver) Stop(ctx context.Context, workspaceID string) error {
+	return d.inner.Stop(ctx, workspaceID)
+}
+
+func (d *backendAliasDriver) Restore(ctx context.Context, workspaceID string) error {
+	return d.inner.Restore(ctx, workspaceID)
+}
+
+func (d *backendAliasDriver) Pause(ctx context.Context, workspaceID string) error {
+	return d.inner.Pause(ctx, workspaceID)
+}
+
+func (d *backendAliasDriver) Resume(ctx context.Context, workspaceID string) error {
+	return d.inner.Resume(ctx, workspaceID)
+}
+
+func (d *backendAliasDriver) Fork(ctx context.Context, workspaceID, childWorkspaceID string) error {
+	return d.inner.Fork(ctx, workspaceID, childWorkspaceID)
+}
+
+func (d *backendAliasDriver) Destroy(ctx context.Context, workspaceID string) error {
+	return d.inner.Destroy(ctx, workspaceID)
+}
+
 func (r *CommandRunner) Run(ctx context.Context, dir string, cmd string, args ...string) error {
 	c := exec.CommandContext(ctx, cmd, args...)
 	c.Dir = dir
@@ -44,61 +88,19 @@ func (r *CommandRunner) Run(ctx context.Context, dir string, cmd string, args ..
 }
 
 func main() {
-	port := flag.Int("port", 63987, "Port to listen on")
+	port := flag.Int("port", 8080, "Port to listen on")
 	defaultWorkspaceDir := resolveDefaultWorkspaceDir()
 	workspaceDir := flag.String("workspace-dir", defaultWorkspaceDir, "Workspace directory path")
-	tokenFlag := flag.String("token", "", "JWT secret (optional; if unset, a token is loaded or created under --data-dir)")
-	defaultDataDir, err := daemonclient.DefaultDataDir()
-	if err != nil {
-		log.Fatalf("Error: data directory: %v", err)
-	}
-	dataDir := flag.String("data-dir", defaultDataDir, "Daemon data directory (stores token file)")
+	token := flag.String("token", "", "JWT secret token for authentication")
 	flag.Parse()
 
-	token := strings.TrimSpace(*tokenFlag)
-	if token == "" {
-		var tokErr error
-		token, tokErr = loadOrCreateToken(*dataDir)
-		if tokErr != nil {
-			log.Fatalf("Error: %v", tokErr)
-		}
+	if *token == "" {
+		log.Fatal("Error: --token is required")
 	}
 
-	if err := runServer(*port, *workspaceDir, token); err != nil {
+	if err := runServer(*port, *workspaceDir, *token); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
-}
-
-func generateToken() (string, error) {
-	bytes := make([]byte, 32)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return base64.URLEncoding.EncodeToString(bytes), nil
-}
-
-func loadOrCreateToken(dataDir string) (string, error) {
-	tokenPath := filepath.Join(dataDir, "token")
-
-	if data, err := os.ReadFile(tokenPath); err == nil {
-		tok := strings.TrimSpace(string(data))
-		if tok != "" {
-			return tok, nil
-		}
-	}
-
-	token, err := generateToken()
-	if err != nil {
-		return "", fmt.Errorf("generate token: %w", err)
-	}
-
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return "", fmt.Errorf("create data directory: %w", err)
-	}
-	if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
-		return "", fmt.Errorf("write token: %w", err)
-	}
-	return token, nil
 }
 
 func resolveDefaultWorkspaceDir() string {
@@ -113,18 +115,14 @@ func resolveDefaultWorkspaceDir() string {
 }
 
 func runServer(port int, workspaceDir string, token string) error {
-	// preflight auto-install removed: host tool setup is now explicit during nexus init
+	_ = runtime.MaybeAutoinstallPreflightHostTools()
 	applyDaemonFirecrackerAssetDefaults()
-
-	if err := maybeInstallFirecracker(); err != nil {
-		return fmt.Errorf("firecracker install: %w", err)
-	}
 
 	srv, err := server.NewServer(port, workspaceDir, token)
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
 	}
-	srv.SetAuthProvider(auth.NewLocalTokenProvider(token))
+	srv.SetAsDefaultLogger()
 
 	runner := &CommandRunner{}
 
@@ -138,14 +136,11 @@ func runServer(port int, workspaceDir string, token string) error {
 
 	// Create runtime drivers.
 	firecrackerDriver := firecracker.NewDriver(runner, firecracker.WithManager(fcManager))
-	guest := lima.NewGuestDriver()
+	processDriver := process.NewDriver()
+
 	firecrackerAvailable := probeFirecrackerTooling(exec.LookPath)
-	firecrackerRuntimeDriver := runtime.Driver(firecrackerDriver)
-	if firecrackerProbeGOOS == "darwin" {
-		// On macOS, firecracker backend is hosted through Lima and can switch
-		// pooled/dedicated instances via driver options.
-		firecrackerRuntimeDriver = lima.NewDriver(guest)
-	}
+	// Process sandbox (macOS sandbox-exec / Linux bubblewrap) is always available on supported hosts.
+	processSandboxAvailable := firecrackerProbeGOOS == "darwin" || firecrackerProbeGOOS == "linux"
 
 	_, codexErr := exec.LookPath("codex")
 	codexAvailable := codexErr == nil
@@ -155,7 +150,7 @@ func runServer(port int, workspaceDir string, token string) error {
 
 	capabilities := []runtime.Capability{
 		{Name: "runtime.firecracker", Available: firecrackerAvailable},
-		{Name: "runtime.process", Available: true},
+		{Name: "runtime.process", Available: processSandboxAvailable},
 		{Name: "runtime.linux", Available: firecrackerAvailable},
 		{Name: "spotlight.tunnel", Available: true},
 		{Name: "auth.profile.git", Available: true},
@@ -164,37 +159,12 @@ func runServer(port int, workspaceDir string, token string) error {
 	}
 
 	drivers := map[string]runtime.Driver{
-		"firecracker": firecrackerRuntimeDriver,
-		"lima":        firecrackerRuntimeDriver, // on macOS lima IS the firecracker backend; on linux this is the same native driver
-		"process":     sandbox.NewDriver(),
+		"firecracker": firecrackerDriver,
+		"process":     processDriver,
 	}
 
 	factory := runtime.NewFactory(capabilities, drivers)
 	srv.SetRuntimeFactory(factory)
-
-	// Initialize live port monitoring
-	agentConnFn := guest.AgentConn
-	if connector, ok := firecrackerRuntimeDriver.(interface {
-		AgentConn(context.Context, string) (net.Conn, error)
-	}); ok {
-		agentConnFn = connector.AgentConn
-	}
-	portScanner := spotlight.NewShellPortScanner(agentConnFn)
-	portMonitor := spotlight.NewPortMonitor(srv.SpotlightManager(), portScanner, 5*time.Second)
-	srv.SetPortMonitor(portMonitor)
-
-	// Resume port monitoring and re-apply compose ports for workspaces that
-	// were already running when the daemon (re)started.
-	srv.ResumeRunningWorkspaces(context.Background())
-	srv.StartPTYMaintenance(context.Background(), 2*time.Minute)
-
-	liveIDs := map[string]struct{}{}
-	for _, id := range srv.WorkspaceIDs() {
-		liveIDs[id] = struct{}{}
-	}
-	if err := fcManager.ReconcileOrphans(context.Background(), liveIDs); err != nil {
-		log.Printf("firecracker reconcile: %v", err)
-	}
 
 	go func() {
 		sigChan := make(chan os.Signal, 1)
@@ -202,25 +172,6 @@ func runServer(port int, workspaceDir string, token string) error {
 		<-sigChan
 		srv.Shutdown()
 	}()
-
-	// On macOS, the firecracker backend runs inside Lima. Start a background
-	// health monitor that periodically checks SSH reachability and recovers
-	// zombie instances (status=Running but SSH dead).
-	if firecrackerProbeGOOS == "darwin" {
-		go func() {
-			const limaInstance = "nexus"
-			const checkInterval = 30 * time.Second
-			ticker := time.NewTicker(checkInterval)
-			defer ticker.Stop()
-			for range ticker.C {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-				if err := shared.EnsureLimaInstanceRunning(ctx, limaInstance, shared.DefaultLimactlOutput, shared.DefaultLimactlCombinedOutput); err != nil {
-					log.Printf("[lima-health] recovery attempt failed for %s: %v", limaInstance, err)
-				}
-				cancel()
-			}
-		}()
-	}
 
 	log.Printf("Workspace daemon started on port %d", port)
 	return srv.Start()
@@ -260,7 +211,7 @@ func probeLimaFirecrackerInstanceReady(lookPath func(string) (string, error)) bo
 		return false
 	}
 
-	out, err := firecrackerProbeOutputFn("limactl", "list", "--json", "nexus")
+	out, err := firecrackerProbeOutputFn("limactl", "list", "--json", "nexus-firecracker")
 	if err != nil {
 		return false
 	}
@@ -277,7 +228,7 @@ func probeLimaFirecrackerInstanceReady(lookPath func(string) (string, error)) bo
 	var entries []limaInstance
 	if err := json.Unmarshal([]byte(trimmed), &entries); err == nil {
 		for _, entry := range entries {
-			if strings.TrimSpace(entry.Name) == "nexus" && strings.EqualFold(strings.TrimSpace(entry.Status), "running") {
+			if strings.TrimSpace(entry.Name) == "nexus-firecracker" && strings.EqualFold(strings.TrimSpace(entry.Status), "running") {
 				return true
 			}
 		}
@@ -286,7 +237,7 @@ func probeLimaFirecrackerInstanceReady(lookPath func(string) (string, error)) bo
 
 	var single limaInstance
 	if err := json.Unmarshal([]byte(trimmed), &single); err == nil {
-		return strings.TrimSpace(single.Name) == "nexus" && strings.EqualFold(strings.TrimSpace(single.Status), "running")
+		return strings.TrimSpace(single.Name) == "nexus-firecracker" && strings.EqualFold(strings.TrimSpace(single.Status), "running")
 	}
 
 	return false

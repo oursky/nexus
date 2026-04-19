@@ -8,9 +8,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	nexusruntime "github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
 func TestDarwinBootstrapReturnsInstallInstructionsWhenLimactlMissing(t *testing.T) {
+	origPF := darwinInitPreflightRunner
+	darwinInitPreflightRunner = func(string) nexusruntime.FirecrackerPreflightResult {
+		return nexusruntime.FirecrackerPreflightResult{Status: nexusruntime.PreflightPass}
+	}
+	t.Cleanup(func() { darwinInitPreflightRunner = origPF })
+
 	originalLookPath := limactlLookPathFn
 	t.Cleanup(func() { limactlLookPathFn = originalLookPath })
 
@@ -47,9 +55,9 @@ func TestDarwinBootstrapReturnsInstallInstructionsWhenLimactlMissing(t *testing.
 }
 
 func TestDarwinBootstrapIsNoOpForNonFirecrackerRuntime(t *testing.T) {
-	err := runInitRuntimeBootstrapDarwin(t.TempDir(), "process")
+	err := runInitRuntimeBootstrapDarwin(t.TempDir(), "local")
 	if err != nil {
-		t.Fatalf("expected no error for process runtime, got: %v", err)
+		t.Fatalf("expected no error for local runtime, got: %v", err)
 	}
 }
 
@@ -147,6 +155,12 @@ func TestBootstrapFirecrackerExecContextDarwinFailsWhenWorkspaceNotReady(t *test
 }
 
 func TestDarwinBootstrapReturnsErrorWhenLimaStartFails(t *testing.T) {
+	origPF := darwinInitPreflightRunner
+	darwinInitPreflightRunner = func(string) nexusruntime.FirecrackerPreflightResult {
+		return nexusruntime.FirecrackerPreflightResult{Status: nexusruntime.PreflightPass}
+	}
+	t.Cleanup(func() { darwinInitPreflightRunner = origPF })
+
 	originalLookPath := limactlLookPathFn
 	originalRun := limactlRunFn
 	originalOutput := limactlOutputFn
@@ -193,6 +207,55 @@ func TestDarwinBootstrapReturnsErrorWhenLimaStartFails(t *testing.T) {
 	}
 }
 
+func TestDarwinBootstrapUsesSeatbeltWhenNestedVirtUnsupported(t *testing.T) {
+	origPF := darwinInitPreflightRunner
+	darwinInitPreflightRunner = func(string) nexusruntime.FirecrackerPreflightResult {
+		return nexusruntime.FirecrackerPreflightResult{Status: nexusruntime.PreflightUnsupportedNested}
+	}
+	t.Cleanup(func() { darwinInitPreflightRunner = origPF })
+
+	originalLookPath := limactlLookPathFn
+	originalRun := limactlRunFn
+	t.Cleanup(func() {
+		limactlLookPathFn = originalLookPath
+		limactlRunFn = originalRun
+	})
+
+	limaStartCalled := false
+	limactlLookPathFn = func(name string) (string, error) {
+		if name == "limactl" {
+			return "/opt/homebrew/bin/limactl", nil
+		}
+		return "", &notFoundError{name: name}
+	}
+	limactlRunFn = func(name string, args ...string) error {
+		if name == "limactl" && len(args) >= 1 && args[0] == "start" {
+			limaStartCalled = true
+		}
+		return nil
+	}
+
+	projectRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".nexus"), 0o755); err != nil {
+		t.Fatalf("create .nexus: %v", err)
+	}
+
+	if err := runInitRuntimeBootstrapDarwin(projectRoot, "firecracker"); err != nil {
+		t.Fatalf("expected nil when nested virt unsupported (seatbelt path), got: %v", err)
+	}
+	if limaStartCalled {
+		t.Fatal("did not expect limactl start when nested virt unsupported")
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectRoot, ".nexus", "run", "nexus-init-env"))
+	if err != nil {
+		t.Fatalf("read nexus-init-env: %v", err)
+	}
+	if !strings.Contains(string(data), "NEXUS_RUNTIME_BACKEND=seatbelt") {
+		t.Fatalf("expected seatbelt backend hint, got: %q", string(data))
+	}
+}
+
 type notFoundError struct {
 	name string
 }
@@ -203,24 +266,4 @@ func (e *notFoundError) Error() string {
 
 func (e *notFoundError) Unwrap() error {
 	return nil
-}
-
-func TestPatchLimaTemplateUID(t *testing.T) {
-	dir := t.TempDir()
-	templatePath := filepath.Join(dir, "lima.yaml")
-	if err := os.WriteFile(templatePath, []byte("vmType: vz\n"), 0644); err != nil {
-		t.Fatalf("write template: %v", err)
-	}
-
-	if err := patchLimaTemplateUID(templatePath, 501); err != nil {
-		t.Fatalf("patchLimaTemplateUID: %v", err)
-	}
-
-	content, err := os.ReadFile(templatePath)
-	if err != nil {
-		t.Fatalf("read template: %v", err)
-	}
-	if !strings.Contains(string(content), "uid: 501") {
-		t.Fatalf("expected uid: 501 in template, got:\n%s", content)
-	}
 }

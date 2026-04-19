@@ -66,6 +66,9 @@ func (f *Factory) selectBackend(required []string) (string, error) {
 			if _, ok := f.drivers[backend]; !ok {
 				continue
 			}
+			if !f.isCapabilityAvailable("runtime." + backend) {
+				continue
+			}
 			return backend, nil
 		}
 	}
@@ -76,15 +79,31 @@ func (f *Factory) selectBackend(required []string) (string, error) {
 func (f *Factory) expandRuntimeRequirement(raw string) []string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "linux":
-		return []string{"firecracker"}
+		if !f.isCapabilityAvailable("runtime.linux") {
+			return nil
+		}
+		if f.isCapabilityAvailable("runtime.firecracker") {
+			return []string{"firecracker"}
+		}
+		return nil
 	case "darwin":
-		return []string{"lima", "process"}
+		if !f.isCapabilityAvailable("runtime.process") && !f.isCapabilityAvailable("runtime.firecracker") {
+			return nil
+		}
+		if f.isCapabilityAvailable("runtime.firecracker") {
+			return []string{"firecracker"}
+		}
+		if f.isCapabilityAvailable("runtime.process") {
+			return []string{"process"}
+		}
+		return nil
 	case "process":
 		return []string{"process"}
-	case "lima":
-		return []string{"lima"}
+	// seatbelt is a legacy alias for process.
+	case "seatbelt":
+		return []string{"process"}
 	case "firecracker":
-		return []string{"firecracker"}
+		return []string{strings.ToLower(strings.TrimSpace(raw))}
 	default:
 		return nil
 	}

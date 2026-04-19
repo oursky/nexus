@@ -79,11 +79,6 @@
       <CommandLineArguments>
       </CommandLineArguments>
       <EnvironmentVariables>
-         <EnvironmentVariable
-            key = "NEXUS_DAEMON_PORT"
-            value = "19998"
-            isEnabled = "YES">
-         </EnvironmentVariable>
       </EnvironmentVariables>
    </TestAction>
    <LaunchAction

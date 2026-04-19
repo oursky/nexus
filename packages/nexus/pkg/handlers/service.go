@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
+	"github.com/inizio/nexus/packages/nexus/pkg/config"
 	rpckit "github.com/inizio/nexus/packages/nexus/pkg/rpcerrors"
 	"github.com/inizio/nexus/packages/nexus/pkg/services"
 	"github.com/inizio/nexus/packages/nexus/pkg/workspace"
@@ -15,7 +17,11 @@ type ServiceCommandParams struct {
 	Params      map[string]interface{} `json:"params,omitempty"`
 }
 
-func HandleServiceCommand(ctx context.Context, p ServiceCommandParams, ws *workspace.Workspace, mgr *services.Manager) (map[string]interface{}, *rpckit.RPCError) {
+func HandleServiceCommand(ctx context.Context, params json.RawMessage, ws *workspace.Workspace, mgr *services.Manager) (map[string]interface{}, *rpckit.RPCError) {
+	var p ServiceCommandParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, rpckit.ErrInvalidParams
+	}
 	if p.Action == "" {
 		return nil, rpckit.ErrInvalidParams
 	}
@@ -26,7 +32,7 @@ func HandleServiceCommand(ctx context.Context, p ServiceCommandParams, ws *works
 	}
 
 	svcName, _ := p.Params["name"].(string)
-	opts := parseStartOptions(p.Params)
+	opts := mergeStartOptionsWithConfig(ws.Path(), p.Params)
 
 	switch p.Action {
 	case "start":
@@ -114,4 +120,33 @@ func parseStartOptions(params map[string]interface{}) services.StartOptions {
 	}
 
 	return opts
+}
+
+func mergeStartOptionsWithConfig(root string, params map[string]interface{}) services.StartOptions {
+	request := parseStartOptions(params)
+	cfg, _, err := config.LoadWorkspaceConfig(root)
+	if err != nil {
+		return request
+	}
+
+	defaults := cfg.Services.Defaults
+	merged := request
+
+	if merged.StopTimeout <= 0 && defaults.StopTimeoutMs > 0 {
+		merged.StopTimeout = time.Duration(defaults.StopTimeoutMs) * time.Millisecond
+	}
+
+	if _, ok := params["autoRestart"]; !ok {
+		merged.AutoRestart = defaults.AutoRestart
+	}
+
+	if merged.MaxRestarts == 0 && defaults.MaxRestarts > 0 {
+		merged.MaxRestarts = defaults.MaxRestarts
+	}
+
+	if merged.RestartDelay <= 0 && defaults.RestartDelayMs > 0 {
+		merged.RestartDelay = time.Duration(defaults.RestartDelayMs) * time.Millisecond
+	}
+
+	return merged
 }

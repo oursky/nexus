@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -19,15 +20,17 @@ func TestHandleServiceCommand_StartStatusStop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	startRes, rpcErr := HandleServiceCommand(ctx, ServiceCommandParams{
-		WorkspaceID: "ws-1",
-		Action:      "start",
-		Params: map[string]interface{}{
+	startParams, _ := json.Marshal(map[string]interface{}{
+		"workspaceId": "ws-1",
+		"action":      "start",
+		"params": map[string]interface{}{
 			"name":    "probe",
 			"command": "sleep",
-			"args":    []interface{}{"2"},
+			"args":    []string{"2"},
 		},
-	}, ws, mgr)
+	})
+
+	startRes, rpcErr := HandleServiceCommand(ctx, startParams, ws, mgr)
 	if rpcErr != nil {
 		t.Fatalf("start rpc error: %+v", rpcErr)
 	}
@@ -35,13 +38,14 @@ func TestHandleServiceCommand_StartStatusStop(t *testing.T) {
 		t.Fatal("expected running true")
 	}
 
-	statusRes, rpcErr := HandleServiceCommand(ctx, ServiceCommandParams{
-		WorkspaceID: "ws-1",
-		Action:      "status",
-		Params: map[string]interface{}{
+	statusParams, _ := json.Marshal(map[string]interface{}{
+		"workspaceId": "ws-1",
+		"action":      "status",
+		"params": map[string]interface{}{
 			"name": "probe",
 		},
-	}, ws, mgr)
+	})
+	statusRes, rpcErr := HandleServiceCommand(ctx, statusParams, ws, mgr)
 	if rpcErr != nil {
 		t.Fatalf("status rpc error: %+v", rpcErr)
 	}
@@ -49,13 +53,14 @@ func TestHandleServiceCommand_StartStatusStop(t *testing.T) {
 		t.Fatal("expected service running")
 	}
 
-	stopRes, rpcErr := HandleServiceCommand(ctx, ServiceCommandParams{
-		WorkspaceID: "ws-1",
-		Action:      "stop",
-		Params: map[string]interface{}{
+	stopParams, _ := json.Marshal(map[string]interface{}{
+		"workspaceId": "ws-1",
+		"action":      "stop",
+		"params": map[string]interface{}{
 			"name": "probe",
 		},
-	}, ws, mgr)
+	})
+	stopRes, rpcErr := HandleServiceCommand(ctx, stopParams, ws, mgr)
 	if rpcErr != nil {
 		t.Fatalf("stop rpc error: %+v", rpcErr)
 	}
@@ -76,28 +81,30 @@ func TestHandleServiceCommand_Restart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, rpcErr := HandleServiceCommand(ctx, ServiceCommandParams{
-		WorkspaceID: "ws-1",
-		Action:      "start",
-		Params: map[string]interface{}{
+	startParams, _ := json.Marshal(map[string]interface{}{
+		"workspaceId": "ws-1",
+		"action":      "start",
+		"params": map[string]interface{}{
 			"name":    "probe",
 			"command": "sleep",
-			"args":    []interface{}{"2"},
+			"args":    []string{"2"},
 		},
-	}, ws, mgr)
+	})
+	_, rpcErr := HandleServiceCommand(ctx, startParams, ws, mgr)
 	if rpcErr != nil {
 		t.Fatalf("start rpc error: %+v", rpcErr)
 	}
 
-	restartRes, rpcErr := HandleServiceCommand(ctx, ServiceCommandParams{
-		WorkspaceID: "ws-1",
-		Action:      "restart",
-		Params: map[string]interface{}{
+	restartParams, _ := json.Marshal(map[string]interface{}{
+		"workspaceId": "ws-1",
+		"action":      "restart",
+		"params": map[string]interface{}{
 			"name":    "probe",
 			"command": "sleep",
-			"args":    []interface{}{"2"},
+			"args":    []string{"2"},
 		},
-	}, ws, mgr)
+	})
+	restartRes, rpcErr := HandleServiceCommand(ctx, restartParams, ws, mgr)
 	if rpcErr != nil {
 		t.Fatalf("restart rpc error: %+v", rpcErr)
 	}
@@ -115,27 +122,29 @@ func TestHandleServiceCommand_StopTimeoutOption(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, rpcErr := HandleServiceCommand(ctx, ServiceCommandParams{
-		WorkspaceID: "ws-1",
-		Action:      "start",
-		Params: map[string]interface{}{
+	startParams, _ := json.Marshal(map[string]interface{}{
+		"workspaceId": "ws-1",
+		"action":      "start",
+		"params": map[string]interface{}{
 			"name":    "probe",
 			"command": "sleep",
-			"args":    []interface{}{"2"},
+			"args":    []string{"2"},
 		},
-	}, ws, mgr)
+	})
+	_, rpcErr := HandleServiceCommand(ctx, startParams, ws, mgr)
 	if rpcErr != nil {
 		t.Fatalf("start rpc error: %+v", rpcErr)
 	}
 
-	stopRes, rpcErr := HandleServiceCommand(ctx, ServiceCommandParams{
-		WorkspaceID: "ws-1",
-		Action:      "stop",
-		Params: map[string]interface{}{
+	stopParams, _ := json.Marshal(map[string]interface{}{
+		"workspaceId": "ws-1",
+		"action":      "stop",
+		"params": map[string]interface{}{
 			"name":          "probe",
 			"stopTimeoutMs": 10,
 		},
-	}, ws, mgr)
+	})
+	stopRes, rpcErr := HandleServiceCommand(ctx, stopParams, ws, mgr)
 	if rpcErr != nil {
 		t.Fatalf("stop rpc error: %+v", rpcErr)
 	}

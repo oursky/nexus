@@ -560,62 +560,6 @@ func TestSetupWorkspaceMountBusyIsIgnored(t *testing.T) {
 	}
 }
 
-func TestSetupWorkspaceMountBusyReadOnlyRemountsRW(t *testing.T) {
-	origDevice := workspaceDevicePath
-	origMount := workspaceMountPoint
-	origAttempts := workspaceDeviceAttempts
-	origInterval := workspaceDeviceInterval
-	origMkdir := workspaceMkdirAll
-	origStat := workspaceStat
-	origMountFunc := workspaceMountFunc
-	origReadProcMounts := workspaceReadProcMounts
-	t.Cleanup(func() {
-		workspaceDevicePath = origDevice
-		workspaceMountPoint = origMount
-		workspaceDeviceAttempts = origAttempts
-		workspaceDeviceInterval = origInterval
-		workspaceMkdirAll = origMkdir
-		workspaceStat = origStat
-		workspaceMountFunc = origMountFunc
-		workspaceReadProcMounts = origReadProcMounts
-	})
-
-	workspaceDevicePath = "/test/vdb"
-	workspaceMountPoint = "/test/workspace"
-	workspaceDeviceAttempts = 1
-	workspaceDeviceInterval = 0
-	workspaceMkdirAll = func(string, os.FileMode) error { return nil }
-	workspaceStat = func(string) (os.FileInfo, error) { return fakeFileInfo{name: "vdb"}, nil }
-	workspaceReadProcMounts = func(string) ([]byte, error) {
-		return []byte("/test/vdb /test/workspace ext4 ro,relatime 0 0\n"), nil
-	}
-
-	remountCalled := false
-	workspaceMountFunc = func(source, target, fstype string, flags uintptr, data string) error {
-		if flags == unix.MS_REMOUNT {
-			remountCalled = true
-			if source != workspaceDevicePath {
-				t.Fatalf("expected remount source %q, got %q", workspaceDevicePath, source)
-			}
-			if target != workspaceMountPoint {
-				t.Fatalf("expected remount target %q, got %q", workspaceMountPoint, target)
-			}
-			if data != "rw" {
-				t.Fatalf("expected remount data rw, got %q", data)
-			}
-			return nil
-		}
-		return unix.EBUSY
-	}
-
-	if err := setupWorkspaceMountRequired(); err != nil {
-		t.Fatalf("expected read-only busy mount recovery to succeed, got %v", err)
-	}
-	if !remountCalled {
-		t.Fatal("expected read-only workspace mount to be remounted rw")
-	}
-}
-
 func TestSetupWorkspaceMountBusyWithoutActiveMountFails(t *testing.T) {
 	origDevice := workspaceDevicePath
 	origMount := workspaceMountPoint

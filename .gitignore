@@ -1,4 +1,7 @@
-# E2E local env (scripts/ci/flows-e2e-setup.sh)
+# Local contributor environment (never commit)
+.env.local
+
+# E2E local env (scripts/ci/sdk-runtime-e2e-setup.sh)
 .nexus-e2e-env.sh
 
 # Binaries
@@ -45,10 +48,6 @@ vendor/
 .nexus/pulse.db
 .nexus/telemetry.db
 .nexus/enforcer-rules.local.json
-.nexus/probe/
-.nexus/check/
-.nexus/e2e/
-.nexus/run/
 
 # Nexus worktrees
 .worktrees/
@@ -56,15 +55,6 @@ vendor/
 .nexus/dogfooding/
 .nexus/case-studies/
 .case-studies/
-
-# Agent/superpowers artifacts (never commit)
-docs/superpowers/
-.agents/
-.agent-git-backup.sh
-skills/
-
-# Task runner checksums (build artifacts)
-.task/
 
 # Nexus collection data (may contain credentials)
 .nexus/collection/data/
@@ -96,9 +86,6 @@ packages/nexus/nexus-daemon
 packages/nexus/.air-tmp/
 packages/nexus/.air.toml
 
-# Swift app bundled daemon (built artifact — do not commit)
-packages/nexus-swift/Resources/nexus-daemon
-
 # Nested nexus folder
 nexus/nexus/
 
@@ -124,7 +111,12 @@ nexus/nexus/
 .nexus/boulder/state.json
 .nexus/boulder/*.sh
 packages/enforcer/src/boulder/*.sh
-nexus-firecracker-agent
+/nexus-firecracker-agent
 
 # CocoIndex Code (ccc)
 /.cocoindex_code/
+.opencode/background-tasks/
+
+# Fixture repos and generated env
+scripts/fixtures/repos/
+scripts/fixtures/.env

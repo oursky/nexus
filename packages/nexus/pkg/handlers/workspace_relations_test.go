@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/inizio/nexus/packages/nexus/pkg/workspacemgr"
@@ -15,7 +16,7 @@ func TestHandleWorkspaceRelationsList_GroupsByRepoAndLineage(t *testing.T) {
 		Ref:           "main",
 		WorkspaceName: "hanlun-main",
 		AgentProfile:  "default",
-		Backend:       "process",
+		Backend:       "local",
 	})
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
@@ -33,13 +34,13 @@ func TestHandleWorkspaceRelationsList_GroupsByRepoAndLineage(t *testing.T) {
 		Ref:           "dev",
 		WorkspaceName: "local-only",
 		AgentProfile:  "default",
-		Backend:       "process",
+		Backend:       "local",
 	})
 	if err != nil {
 		t.Fatalf("create local-only: %v", err)
 	}
 
-	res, rpcErr := HandleWorkspaceRelationsList(context.Background(), WorkspaceRelationsListParams{}, mgr)
+	res, rpcErr := HandleWorkspaceRelationsList(context.Background(), nil, mgr)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}
@@ -90,7 +91,8 @@ func TestHandleWorkspaceRelationsList_FilterByRepoID(t *testing.T) {
 		t.Fatalf("create second: %v", err)
 	}
 
-	res, rpcErr := HandleWorkspaceRelationsList(context.Background(), WorkspaceRelationsListParams{RepoID: first.RepoID}, mgr)
+	params, _ := json.Marshal(WorkspaceRelationsListParams{RepoID: first.RepoID})
+	res, rpcErr := HandleWorkspaceRelationsList(context.Background(), params, mgr)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}

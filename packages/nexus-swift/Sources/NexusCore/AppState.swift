@@ -39,7 +39,7 @@ public final class AppState: ObservableObject {
     @Published public var connectionState: ConnectionState = .disconnected
     @Published public var daemonStatus: DaemonStatus = .unknown
     @Published public var showNewWorkspace = false
-    @Published public var newSandboxProjectID: String?
+    @Published public var createIntent: CreateIntent?
     @Published public var sidebarVisible = true
     @Published public var showInspector = true
     @Published public var error: String?
@@ -48,22 +48,67 @@ public final class AppState: ObservableObject {
     public private(set) var client: any DaemonClient
 
     private var refreshTask: Task<Void, Never>?
-    private var isRestarting = false
-    @Published public var isBusy = false
+    private var cachedProfile: DaemonProfile?
+    private var tunnelManager: SSHTunnelManager?
+    private var daemonLogStream: DaemonLogStream?
 
-    private var injectedDaemonURL: String? {
-        let value = ProcessInfo.processInfo.environment["NEXUS_DAEMON_URL"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return value.isEmpty ? nil : value
-    }
 
     public init() {
         StartupTrace.beginSession()
         StartupTrace.checkpoint("app.init", "before client")
-        self.client = WebSocketDaemonClient(daemonURL: WebSocketDaemonClient.discoverURL())
+
+        let procEnv = ProcessInfo.processInfo.environment
+        if let rawURL = procEnv["NEXUS_DAEMON_URL"], !rawURL.isEmpty,
+           let daemonURL = URL(string: rawURL) {
+            // When NEXUS_DAEMON_PORT is also set, use profile-based connection so the
+            // SSH tunnel manager forwards to the correct remote port. This lets tests use
+            // an isolated daemon on a non-default port (e.g. linuxbox:7778) while still
+            // getting the tunnel-managed connection.
+            if let portStr = procEnv["NEXUS_DAEMON_PORT"], !portStr.isEmpty,
+               let remotePort = Int32(portStr) {
+                // SSH target: from NEXUS_DAEMON_SSH_TARGET, daemonURL.host, or default.
+                // For tests: NEXUS_DAEMON_SSH_TARGET=newman@linuxbox,
+                //            NEXUS_DAEMON_URL=ws://localhost:<tunnelPort> (tunnel address).
+                let sshHost = procEnv["NEXUS_DAEMON_SSH_TARGET"]
+                    ?? daemonURL.host
+                    ?? "newman@linuxbox"
+                let profile = DaemonProfile(
+                    profileId: "env-override",
+                    name: "Test Profile",
+                    port: Int(remotePort),
+                    isDefault: true,
+                    sshTarget: sshHost,
+                    sshIdentity: nil
+                )
+                self.cachedProfile = profile
+                self.client = NullDaemonClient()
+                connectionState = .starting
+                StartupTrace.checkpoint("app.init", "env-var+tunnel; ssh=\(sshHost) port=\(remotePort)")
+                Task { await self.connectRemoteAndLoad() }
+                startRefreshLoop()
+                return
+            }
+
+            // Direct bypass: no SSH tunnel, connect straight to the URL.
+            let token: String? = {
+                let t = procEnv["NEXUS_DAEMON_TOKEN"] ?? ""
+                return t.isEmpty ? nil : t
+            }()
+            self.cachedProfile = nil
+            self.client = WebSocketDaemonClient(daemonURL: daemonURL, token: token)
+            connectionState = .connecting
+            StartupTrace.checkpoint("app.init", "env-var bypass; url=\(rawURL)")
+            Task { await self.load() }
+            startRefreshLoop()
+            return
+        }
+
+        let profile = DaemonProfileStore().defaultProfile()
+        self.cachedProfile = profile
+        self.client = NullDaemonClient()
         connectionState = .starting
-        StartupTrace.checkpoint("app.init", "after client; scheduling ensureDaemonAndLoad")
-        Task { await self.ensureDaemonAndLoad() }
+        StartupTrace.checkpoint("app.init", "after client; scheduling load")
+        Task { await self.connectRemoteAndLoad() }
         startRefreshLoop()
     }
 
@@ -100,15 +145,44 @@ public final class AppState: ObservableObject {
         Self.logger.debug("load() started")
         StartupTrace.checkpoint("load.enter")
         do {
+            StartupTrace.checkpoint("load.rpc.listWorkspaces.start")
             async let wsFetch = client.listWorkspaces()
+            StartupTrace.checkpoint("load.rpc.listRelations.start")
             async let relationsFetch = client.listRelations()
-            var workspaces = try await wsFetch
-            let relations = try await relationsFetch
-            let projects = try await client.listProjects()
+            var workspaces: [Workspace]
+            do {
+                workspaces = try await wsFetch
+                StartupTrace.checkpoint("load.rpc.listWorkspaces.ok", "count=\(workspaces.count)")
+            } catch {
+                let nsErr = error as NSError
+                print("[AppState.load] listWorkspaces FAILED domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
+                throw error
+            }
+            let relations: [RelationsGroup]
+            do {
+                relations = try await relationsFetch
+                StartupTrace.checkpoint("load.rpc.listRelations.ok", "count=\(relations.count)")
+            } catch {
+                let nsErr = error as NSError
+                print("[AppState.load] listRelations FAILED domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
+                throw error
+            }
+            StartupTrace.checkpoint("load.rpc.listProjects.start")
+            let projects: [Project]
+            do {
+                projects = try await client.listProjects()
+                StartupTrace.checkpoint("load.rpc.listProjects.ok", "count=\(projects.count)")
+            } catch {
+                let nsErr = error as NSError
+                print("[AppState.load] listProjects FAILED domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
+                throw error
+            }
 
             // Phase 1 — connect the UI as soon as lists return (no per-workspace side effects yet).
             applyLoadedWorkspaces(workspaces, relations: relations, projects: projects)
             StartupTrace.checkpoint("load.phase1_ok", "workspaces=\(workspaces.count) projects=\(projects.count)")
+            // Update daemon status from /version — best-effort, must not block phase 2.
+            Task { await self.refreshDaemonStatus() }
             Self.logger.debug("load() phase-1 connected with \(workspaces.count, privacy: .public) workspaces")
 
             // Phase 2 — best-effort; must not block startup indefinitely or pin RAM on hung RPCs.
@@ -130,16 +204,9 @@ public final class AppState: ObservableObject {
 
             Self.logger.debug("load() finished with \(workspaces.count, privacy: .public) workspaces and \(projects.count, privacy: .public) projects")
         } catch {
-            if injectedDaemonURL == nil, isMethodNotFound(error) {
-                Self.logger.error("load() hit method-not-found on local daemon; restarting managed daemon")
-                await restartDaemon()
-                return
-            }
             connectionState = .disconnected
             daemonStatus = .offline
-            if injectedDaemonURL != nil {
-                setInjectedDaemonUnavailableError(reason: error.localizedDescription)
-            } else if self.error == nil {
+            if self.error == nil {
                 self.error = "Cannot reach daemon: \(error.localizedDescription)"
             }
             StartupTrace.checkpoint("load.failed", error.localizedDescription)
@@ -195,170 +262,112 @@ public final class AppState: ObservableObject {
         }
     }
 
-    // MARK: - Daemon auto-start
+    // MARK: - Remote connection
 
-    /// On first launch: fast-path if daemon is up and auth works; otherwise
-    /// restart to a daemon token we control (env/keychain), then reconnect.
-    func ensureDaemonAndLoad() async {
-        let targetDaemonPort = DaemonLauncher.preferredPort()
+    /// Fetches /version from the current client and updates daemonStatus.
+    /// Best-effort: silently skips if the client is not a WebSocketDaemonClient.
+    /// If /version is unreachable or returns an incompatible format but load() succeeded,
+    /// falls back to a synthetic .running entry so the UI shows green instead of grey.
+    private func refreshDaemonStatus() async {
+        guard let wsClient = client as? WebSocketDaemonClient else { return }
+        if let info = await wsClient.fetchDaemonInfo() {
+            daemonStatus = info.isCompatible ? .running(info: info) : .outdated(running: info)
+            StartupTrace.checkpoint("daemon.status.ok", "v=\(info.version) protocol=\(info.protocolVersion)")
+        } else {
+            // /version endpoint missing or returned unexpected JSON (e.g. old daemon).
+            // We know the daemon is reachable because load() just succeeded — mark running
+            // with a synthetic info so the status pill shows green.
+            let synthetic = DaemonInfo(name: "nexus", version: "unknown", commit: "", builtAt: "", protocolVersion: DaemonInfo.requiredProtocol)
+            daemonStatus = .running(info: synthetic)
+            StartupTrace.checkpoint("daemon.status.fallback", "version endpoint unavailable; marking running")
+        }
+    }
+
+    private func connectRemoteAndLoad() async {
+        StartupTrace.checkpoint("remote.enter", "cachedProfile=\(cachedProfile != nil ? "yes" : "nil")")
+        guard let profile = cachedProfile else {
+            connectionState = .disconnected
+            error = "No remote profile configured. Add one in Settings."
+            StartupTrace.checkpoint("remote.noProfile")
+            return
+        }
+
         connectionState = .connecting
-        StartupTrace.checkpoint("ensure.enter", "port=\(targetDaemonPort)")
-        Self.logger.info("ensureDaemonAndLoad() started; preferred port \(targetDaemonPort, privacy: .public)")
-
+        StartupTrace.checkpoint("remote.tunnel.start", "sshTarget=\(profile.sshTarget ?? "nil") port=\(profile.port)")
+        let mgr = SSHTunnelManager(profile: profile)
+        self.tunnelManager = mgr
+        let daemonURL: URL
+        let resolvedToken: String
         do {
-            StartupTrace.checkpoint("ensure.before_startup_deadline", "cap=\(Self.startupDeadlineSeconds)s")
-            try await AsyncDeadline.withSecondsOnMainActor(Self.startupDeadlineSeconds) {
-                await self.ensureDaemonAndLoadUnbounded(preferredPort: targetDaemonPort)
-            }
-            StartupTrace.checkpoint("ensure.startup_deadline_returned_ok")
-        } catch {
-            if let ad = error as? AsyncDeadlineError, case .exceeded(let s) = ad {
+            let localPort = try await mgr.start()
+            StartupTrace.checkpoint("remote.tunnel.ok", "localPort=\(localPort)")
+            resolvedToken = try await mgr.fetchRemoteToken()
+            StartupTrace.checkpoint("remote.token.ok", "tokenLen=\(resolvedToken.count)")
+            guard let url = URL(string: "ws://127.0.0.1:\(localPort)") else {
                 connectionState = .disconnected
-                daemonStatus = .offline
-                self.error = "Startup did not finish within \(s) seconds. Check ~/.config/nexus/run/daemon.log and daemon health."
-                if let ws = client as? WebSocketDaemonClient {
-                    ws.disconnect()
-                }
-                StartupTrace.checkpoint("ensure.startup_deadline_exceeded", "\(s)s")
-                Self.logger.error("ensureDaemonAndLoad exceeded \(s, privacy: .public)s startup deadline")
+                error = "Tunnel started but could not form local URL"
                 return
             }
-            StartupTrace.checkpoint("ensure.error", error.localizedDescription)
+            daemonURL = url
+        } catch {
             connectionState = .disconnected
-            daemonStatus = .offline
-            if self.error == nil {
-                self.error = error.localizedDescription
+            self.error = "SSH tunnel failed: \(error.localizedDescription)"
+            StartupTrace.checkpoint("remote.tunnel.failed", error.localizedDescription)
+            self.daemonLogStream?.stop()
+            self.daemonLogStream = nil
+            self.tunnelManager = nil
+            return
+        }
+
+        client = WebSocketDaemonClient(daemonURL: daemonURL, token: resolvedToken.isEmpty ? nil : resolvedToken)
+        connectionState = .connecting
+        StartupTrace.checkpoint("remote.connect", daemonURL.absoluteString)
+        do {
+            try await AsyncDeadline.withSecondsOnMainActor(30) {
+                await self.load()
             }
-            Self.logger.error("ensureDaemonAndLoad failed: \(error.localizedDescription, privacy: .public)")
+            if let wsClient = self.client as? WebSocketDaemonClient {
+                let stream = DaemonLogStream(client: wsClient)
+                self.daemonLogStream = stream
+                stream.start()
+                Self.logger.info("DaemonLogStream started")
+            }
+            self.updateProfileStatus(profileId: profile.profileId, status: .connected)
+        } catch {
+            if connectionState != .connected {
+                connectionState = .disconnected
+                self.error = "Remote daemon unreachable: \(daemonURL.host ?? ""):\(daemonURL.port ?? 0) — \(error.localizedDescription)"
+                StartupTrace.checkpoint("remote.connect.failed", error.localizedDescription)
+                Self.logger.error("connectRemoteAndLoad failed: \(error.localizedDescription, privacy: .public)")
+                self.updateProfileStatus(profileId: profile.profileId, status: .unreachable)
+            }
         }
     }
 
-    private func ensureDaemonAndLoadUnbounded(preferredPort targetDaemonPort: Int) async {
-        StartupTrace.checkpoint("ensure.unbounded.enter")
-        // Step 1: Check daemon version compatibility (unauthenticated HTTP).
-        if let wsClient = client as? WebSocketDaemonClient {
-            if let info = await wsClient.fetchDaemonInfo() {
-                if info.isCompatible {
-                    daemonStatus = .running(info: info)
-                } else {
-                    daemonStatus = .outdated(running: info)
-                    if injectedDaemonURL != nil {
-                        connectionState = .disconnected
-                        error = "Daemon protocol v\(info.protocolVersion) is older than required v\(DaemonInfo.requiredProtocol)."
-                        return
-                    }
-                }
-                StartupTrace.checkpoint("ensure.version_ok", "protocol=\(info.protocolVersion) v=\(info.version)")
-            } else {
-                daemonStatus = .offline
-                StartupTrace.checkpoint("ensure.version_http_nil")
-            }
+    /// Persists an updated `lastKnownStatus` for the given profile ID.
+    private func updateProfileStatus(profileId: String, status: ProfileStatus) {
+        let store = DaemonProfileStore()
+        var profiles = store.load()
+        guard let idx = profiles.firstIndex(where: { $0.profileId == profileId }) else { return }
+        profiles[idx].lastKnownStatus = status
+        store.save(profiles)
+        // Refresh cachedProfile if it matches.
+        if cachedProfile?.profileId == profileId {
+            cachedProfile = profiles[idx]
         }
+    }
 
-        // Step 2: Fast path — lists only (no per-workspace side effects; matches bounded `load()`).
-        StartupTrace.checkpoint("ensure.attempt_load_begin")
-        do {
-            try await attemptLoad()
-            StartupTrace.checkpoint("ensure.fast_path_ok")
-            Self.logger.info("Fast-path daemon load succeeded")
-            return
-        } catch {
-            StartupTrace.checkpoint("ensure.fast_path_threw", error.localizedDescription)
-        }
 
-        if injectedDaemonURL != nil {
-            var lastError: Error?
-            for delay in [0.5, 1.0, 2.0] as [Double] {
-                try? await Task.sleep(for: .seconds(delay))
-                do {
-                    try await attemptLoad()
-                    return
-                } catch {
-                    lastError = error
-                }
-            }
-            connectionState = .disconnected
-            daemonStatus = .offline
-            setInjectedDaemonUnavailableError(reason: lastError?.localizedDescription)
-            Self.logger.error("Injected daemon unreachable: \(lastError?.localizedDescription ?? "unknown", privacy: .public)")
-            return
-        }
-
+    /// Re-reads the default profile and reconnects (e.g. after the user changes the active profile).
+    public func reconnect() async {
+        daemonLogStream?.stop()
+        daemonLogStream = nil
+        await tunnelManager?.stop()
+        tunnelManager = nil
+        let profile = DaemonProfileStore().defaultProfile()
+        self.cachedProfile = profile
         connectionState = .starting
-        StartupTrace.checkpoint("ensure.kill_begin", "port=\(targetDaemonPort)")
-        await Task.detached { DaemonLauncher.killRunning(port: targetDaemonPort) }.value
-        StartupTrace.checkpoint("ensure.kill_done")
-        try? await Task.sleep(for: .seconds(0.4))
-        StartupTrace.checkpoint("ensure.launch_begin")
-        do {
-            try await DaemonLauncher.ensureRunning(port: targetDaemonPort)
-            StartupTrace.checkpoint("ensure.launch_ok")
-            Self.logger.info("Managed daemon started on port \(targetDaemonPort, privacy: .public)")
-        } catch {
-            connectionState = .disconnected
-            self.error = error.localizedDescription
-            StartupTrace.checkpoint("ensure.launch_failed", error.localizedDescription)
-            Self.logger.error("Failed to start managed daemon: \(error.localizedDescription, privacy: .public)")
-            return
-        }
-        let newURL = WebSocketDaemonClient.discoverURL()
-        StartupTrace.checkpoint("ensure.new_client", newURL.absoluteString)
-        client = WebSocketDaemonClient(daemonURL: newURL)
-        if let wsClient = client as? WebSocketDaemonClient,
-           let info = await wsClient.fetchDaemonInfo() {
-            daemonStatus = .running(info: info)
-        } else {
-            daemonStatus = .unknown
-        }
-        StartupTrace.checkpoint("ensure.before_full_load")
-        await load()
-        StartupTrace.checkpoint("ensure.after_full_load")
-    }
-
-    private func setInjectedDaemonUnavailableError(reason: String?) {
-        let urlDisplay = injectedDaemonURL ?? "(unknown)"
-        let trimmedReason = reason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let reasonText = trimmedReason.isEmpty ? "" : " Reason: \(trimmedReason)."
-        error = "Injected daemon URL is unreachable: \(urlDisplay). Check NEXUS_DAEMON_URL, NEXUS_DAEMON_TOKEN, and ensure the daemon is running.\(reasonText)"
-    }
-
-    /// Kills the running daemon, starts a fresh one from the resolved binary,
-    /// and reconnects. Called by the daemon management UI.
-    public func restartDaemon() async {
-        guard !isRestarting else { return }
-        isRestarting = true
-        isBusy = true
-        defer { isRestarting = false; isBusy = false }
-        Self.logger.info("restartDaemon() requested")
-        let targetDaemonPort = DaemonLauncher.preferredPort()
-        await Task.detached { DaemonLauncher.killRunning(port: targetDaemonPort) }.value
-        try? await Task.sleep(for: .seconds(0.5))
-        do {
-            try await DaemonLauncher.ensureRunning(port: targetDaemonPort)
-            let newURL = WebSocketDaemonClient.discoverURL()
-            client = WebSocketDaemonClient(daemonURL: newURL)
-            if let wsClient = client as? WebSocketDaemonClient,
-               let info = await wsClient.fetchDaemonInfo() {
-                daemonStatus = .running(info: info)
-            } else {
-                daemonStatus = .unknown
-            }
-            await load()
-        } catch {
-            connectionState = .disconnected
-            daemonStatus = .offline
-            self.error = error.localizedDescription
-            Self.logger.error("restartDaemon() failed: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    /// Kills the running daemon without restarting.
-    public func stopDaemon() async {
-        let targetDaemonPort = DaemonLauncher.preferredPort()
-        await Task.detached { DaemonLauncher.killRunning(port: targetDaemonPort) }.value
-        connectionState = .disconnected
-        repos = []
-        daemonStatus = .offline
+        await connectRemoteAndLoad()
     }
 
     /// Fast-path: three list RPCs only (no markWorkspaceReady / ports fan-out).
@@ -370,10 +379,6 @@ public final class AppState: ObservableObject {
         let relations = try await relationsFetch
         let projects = try await client.listProjects()
         applyLoadedWorkspaces(workspaces, relations: relations, projects: projects)
-    }
-
-    private func isMethodNotFound(_ error: Error) -> Bool {
-        error.localizedDescription.lowercased().contains("method not found")
     }
 
     // MARK: - Workspace actions
@@ -393,6 +398,7 @@ public final class AppState: ObservableObject {
             let ws = try await client.createSandbox(request: request)
             await load()
             selectedWorkspaceID = ws.id
+            ConfigSyncManager.shared.startConfigSync(workspaceID: ws.id, backend: ws.backend)
         } catch {
             self.error = error.localizedDescription
         }
@@ -400,11 +406,13 @@ public final class AppState: ObservableObject {
 
     public func ensureProjectRootSandbox(projectID: String) async -> Workspace? {
         if let existing = projectRootSandbox(projectID: projectID) {
+            ConfigSyncManager.shared.startConfigSync(workspaceID: existing.id, backend: existing.backend)
             return existing
         }
         if projects.isEmpty || !projects.contains(where: { $0.id == projectID }) {
             await load()
             if let existing = projectRootSandbox(projectID: projectID) {
+                ConfigSyncManager.shared.startConfigSync(workspaceID: existing.id, backend: existing.backend)
                 return existing
             }
         }
@@ -423,6 +431,7 @@ public final class AppState: ObservableObject {
             ))
             await load()
             if let root = projectRootSandbox(projectID: projectID) {
+                ConfigSyncManager.shared.startConfigSync(workspaceID: root.id, backend: root.backend)
                 return root
             }
             self.error = "Project root sandbox creation did not appear in list"
@@ -462,6 +471,7 @@ public final class AppState: ObservableObject {
 
     public func remove(_ workspace: Workspace) async {
         if selectedWorkspaceID == workspace.id { selectedWorkspaceID = nil }
+        ConfigSyncManager.shared.stopConfigSync(workspaceID: workspace.id)
         await perform { try await self.client.removeWorkspace(id: workspace.id) }
     }
 

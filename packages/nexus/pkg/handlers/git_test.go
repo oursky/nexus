@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,9 +44,11 @@ func createGitWorkspace(t *testing.T) *workspace.Workspace {
 
 func TestHandleGitCommand_Status(t *testing.T) {
 	ws := createGitWorkspace(t)
-	result, rpcErr := HandleGitCommand(context.Background(), GitCommandParams{
-		Action: "status",
-	}, ws)
+	params, _ := json.Marshal(map[string]any{
+		"action": "status",
+	})
+
+	result, rpcErr := HandleGitCommand(context.Background(), params, ws)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}
@@ -57,10 +60,12 @@ func TestHandleGitCommand_Status(t *testing.T) {
 
 func TestHandleGitCommand_RevParse(t *testing.T) {
 	ws := createGitWorkspace(t)
-	result, rpcErr := HandleGitCommand(context.Background(), GitCommandParams{
-		Action: "revParse",
-		Params: map[string]interface{}{"ref": "HEAD"},
-	}, ws)
+	params, _ := json.Marshal(map[string]any{
+		"action": "revParse",
+		"params": map[string]any{"ref": "HEAD"},
+	})
+
+	result, rpcErr := HandleGitCommand(context.Background(), params, ws)
 	if rpcErr != nil {
 		t.Fatalf("unexpected rpc error: %+v", rpcErr)
 	}

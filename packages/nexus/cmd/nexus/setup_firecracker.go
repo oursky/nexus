@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	nexusruntime "github.com/inizio/nexus/packages/nexus/pkg/runtime"
 )
 
 // privilegeMode describes how privileged steps will be executed.
@@ -553,6 +555,8 @@ func runSetupScript(mode privilegeMode, script string) error {
 // if any step fails, or if manual steps are needed (non-interactive without
 // passwordless sudo).
 func runSetupFirecracker(w io.Writer) error {
+	_ = nexusruntime.MaybeAutoinstallPreflightHostTools()
+
 	forceRefresh := strings.TrimSpace(os.Getenv("NEXUS_SETUP_FIRECRACKER_FORCE")) == "1"
 
 	fmt.Fprintln(w, "==> Verifying setup...")
@@ -606,8 +610,7 @@ func runSetupFirecracker(w io.Writer) error {
 		fmt.Fprintln(w, "")
 		fmt.Fprintln(w, "Run the following command to prepare firecracker prerequisites:")
 		fmt.Fprintln(w, "")
-		fmt.Fprintln(w, "  cd <repo-path>")
-		fmt.Fprintln(w, "  sudo -E nexus init --force")
+		fmt.Fprintln(w, "  sudo -E nexus init --project-root <absolute-repo-path>")
 		fmt.Fprintln(w, "")
 		return fmt.Errorf("manual privileged step required — run the sudo nexus init command above")
 	}
@@ -638,8 +641,7 @@ func runSetupFirecracker(w io.Writer) error {
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "Run the following command to prepare firecracker prerequisites:")
 			fmt.Fprintln(w, "")
-			fmt.Fprintln(w, "  cd <repo-path>")
-			fmt.Fprintln(w, "  sudo -E nexus init --force")
+			fmt.Fprintln(w, "  sudo -E nexus init --project-root <absolute-repo-path>")
 			fmt.Fprintln(w, "")
 			return fmt.Errorf("manual privileged step required — run the sudo nexus init command above")
 		}

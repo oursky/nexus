@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/inizio/nexus/packages/nexus/pkg/config"
 )
 
 type LifecycleConfig struct {
@@ -58,14 +60,37 @@ func NewManager(workspaceDir string) (*Manager, error) {
 }
 
 func (m *Manager) loadConfig() error {
+	workspaceCfg, warnings, err := config.LoadWorkspaceConfig(m.workspaceDir)
+	if err != nil {
+		return err
+	}
+	for _, w := range warnings {
+		log.Printf("[lifecycle] %s", w)
+	}
+
 	autodetected, err := m.autodetectedHooks()
 	if err != nil {
 		return err
 	}
 
-	preStart := autodetected.PreStart
-	postStart := autodetected.PostStart
-	preStop := autodetected.PreStop
+	configuredPreStart := commandsToHooks(workspaceCfg.Lifecycle.OnSetup)
+	configuredPostStart := commandsToHooks(workspaceCfg.Lifecycle.OnStart)
+	configuredPreStop := commandsToHooks(workspaceCfg.Lifecycle.OnTeardown)
+
+	preStart := configuredPreStart
+	if len(preStart) == 0 {
+		preStart = autodetected.PreStart
+	}
+
+	postStart := configuredPostStart
+	if len(postStart) == 0 {
+		postStart = autodetected.PostStart
+	}
+
+	preStop := configuredPreStop
+	if len(preStop) == 0 {
+		preStop = autodetected.PreStop
+	}
 
 	if len(preStart) == 0 && len(postStart) == 0 && len(preStop) == 0 {
 		return errNoLifecycleHooks
@@ -130,6 +155,21 @@ func (m *Manager) autodetectedScriptHook(name, filename string) ([]Hook, error) 
 		Command: "bash",
 		Args:    []string{"-euo", "pipefail", scriptPath},
 	}}, nil
+}
+
+func commandsToHooks(commands []string) []Hook {
+	out := make([]Hook, 0, len(commands))
+	for i, cmd := range commands {
+		if cmd == "" {
+			continue
+		}
+		out = append(out, Hook{
+			Name:    fmt.Sprintf("hook-%d", i+1),
+			Command: "sh",
+			Args:    []string{"-lc", cmd},
+		})
+	}
+	return out
 }
 
 func (m *Manager) RunPreStart() error {

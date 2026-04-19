@@ -79,3 +79,43 @@ func TestManager_FailsWhenAutodetectedScriptNotExecutable(t *testing.T) {
 	}
 }
 
+func TestManager_ConfigLifecycleOverridesAutodetectedScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script execution semantics are Unix-specific")
+	}
+
+	root := t.TempDir()
+	configMarker := filepath.Join(root, "config-ran.txt")
+	scriptMarker := filepath.Join(root, "script-ran.txt")
+
+	workspaceCfg := `{
+  "version": 1,
+  "lifecycle": {
+    "onSetup": ["touch ` + configMarker + `"]
+  }
+}`
+	if err := os.MkdirAll(filepath.Join(root, ".nexus"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".nexus", "workspace.json"), []byte(workspaceCfg), 0o644); err != nil {
+		t.Fatalf("write workspace.json: %v", err)
+	}
+
+	writeExecutableScript(t, root, ".nexus/lifecycles/setup.sh", "#!/usr/bin/env bash\n: > \""+scriptMarker+"\"\n")
+
+	mgr, err := NewManager(root)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	if err := mgr.RunPreStart(); err != nil {
+		t.Fatalf("run pre-start: %v", err)
+	}
+
+	if _, err := os.Stat(configMarker); err != nil {
+		t.Fatalf("expected config lifecycle command to run: %v", err)
+	}
+	if _, err := os.Stat(scriptMarker); err == nil {
+		t.Fatal("expected autodetected setup script not to run when config onSetup is set")
+	}
+}
