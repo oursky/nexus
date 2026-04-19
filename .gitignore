@@ -1,6 +1,17 @@
 # Local contributor environment (never commit)
 .env.local
 
+# Local tool configs
+opencode.json
+.agents/
+/main
+
+# Experiments / scratch
+experiments/
+
+# PRD specs (never commit)
+docs/prds/
+
 # E2E local env (scripts/ci/sdk-runtime-e2e-setup.sh)
 .nexus-e2e-env.sh
 
