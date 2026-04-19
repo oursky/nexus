@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Lima
-        run: brew install lima
+        run: brew install lima lima-additional-guestagents
 
       - name: Start Lima VM
         run: limactl start --name=xcui-vm scripts/lima/xcui-vm.yaml --tty=false
