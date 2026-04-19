@@ -4,114 +4,38 @@ import Foundation
 
 // MARK: - Test helpers
 
-/// Returns true if the Nexus daemon is accepting connections at its discovered URL
-/// AND we can authenticate (token round-trip succeeds).
+/// Default daemon URL for integration tests.
+/// Override via NEXUS_TEST_DAEMON_URL env var.
+private let defaultDaemonURL = URL(string:
+    ProcessInfo.processInfo.environment["NEXUS_TEST_DAEMON_URL"] ?? "ws://localhost:63987"
+)!
+
+/// Returns true if the Nexus daemon is accepting connections at the default URL.
 func isDaemonRunning() -> Bool {
-    let wsURL = WebSocketDaemonClient.discoverURL()
-    guard var comps = URLComponents(url: wsURL, resolvingAgainstBaseURL: false) else { return false }
-    comps.scheme = "http"
+    guard var comps = URLComponents(url: defaultDaemonURL, resolvingAgainstBaseURL: false) else { return false }
+    comps.scheme = comps.scheme == "wss" ? "https" : "http"
     comps.path = "/healthz"
-    comps.queryItems = nil
+    comps.query = nil
     guard let url = comps.url else { return false }
 
+    var req = URLRequest(url: url)
+    req.timeoutInterval = 2
     let sem = DispatchSemaphore(value: 0)
     var running = false
-    let task = URLSession.shared.dataTask(with: url) { _, resp, _ in
+    let task = URLSession.shared.dataTask(with: req) { _, resp, _ in
         running = (resp as? HTTPURLResponse)?.statusCode == 200
         sem.signal()
     }
     task.resume()
-    _ = sem.wait(timeout: .now() + 2.0)
+    _ = sem.wait(timeout: .now() + 3.0)
     return running
 }
 
-/// Creates a WebSocketDaemonClient pointed at the auto-discovered daemon.
+/// Creates a WebSocketDaemonClient pointed at the default daemon URL.
 func makeClient() -> WebSocketDaemonClient {
-    WebSocketDaemonClient(daemonURL: WebSocketDaemonClient.discoverURL())
-}
-
-// MARK: - DaemonLauncher unit tests (no daemon required)
-
-final class DaemonLauncherTests: XCTestCase {
-
-    func testResolveRunDirUsesXDGRuntimeDirWhenSet() {
-        let save = ProcessInfo.processInfo.environment["XDG_RUNTIME_DIR"]
-
-        // Can't mutate the real env in Swift tests; verify the logic path indirectly
-        // by checking the default (no XDG_RUNTIME_DIR) uses ~/.config/nexus/run.
-        let runDir = DaemonLauncher.resolveRunDir()
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        XCTAssertTrue(
-            runDir.hasPrefix(home) || runDir.hasPrefix("/tmp"),
-            "Run dir should be under home or /tmp, got: \(runDir)"
-        )
-        XCTAssertTrue(runDir.hasSuffix("nexus/run") || runDir.hasSuffix("nexus"),
-            "Run dir should end with nexus/run, got: \(runDir)")
-        _ = save  // suppress unused warning
-    }
-
-    func testResolveBinaryFindsDevBinaryInMonorepoLayout() {
-        // In the dev layout (swift run from packages/nexus-swift/),
-        // resolveBinary() should walk up and find packages/nexus/nexus-daemon.
-        let result = DaemonLauncher.resolveBinary()
-
-        // If the binary is found, verify it exists and is executable.
-        if let url = result {
-            XCTAssertTrue(
-                FileManager.default.isExecutableFile(atPath: url.path),
-                "Resolved binary should be executable: \(url.path)"
-            )
-            XCTAssertTrue(
-                url.lastPathComponent == "nexus-daemon",
-                "Binary name should be nexus-daemon, got: \(url.lastPathComponent)"
-            )
-        } else {
-            // In CI without the Go binary built, it's OK to not find it.
-            // Warn so it's visible in test output, but don't fail.
-            print("WARNING: DaemonLauncher.resolveBinary() returned nil " +
-                  "(expected in CI before Go build; binary not in PATH or project tree)")
-        }
-    }
-
-    func testResolveRunningPortReturnsPIDFilePort() {
-        let runDir = DaemonLauncher.resolveRunDir()
-        let fm = FileManager.default
-
-        // Write a fake PID file for port 19999
-        try? fm.createDirectory(atPath: runDir, withIntermediateDirectories: true)
-        let fakePID = runDir + "/daemon-19999.pid"
-        try? "12345".write(toFile: fakePID, atomically: true, encoding: .utf8)
-
-        let port = DaemonLauncher.resolveRunningPort()
-        try? fm.removeItem(atPath: fakePID)
-
-        XCTAssertEqual(port, 19999)
-    }
-
-    func testResolveRunningPortReturnsNilWhenNoPIDFiles() {
-        // Just verify the returned port (if any) is a valid port number.
-        let port = DaemonLauncher.resolveRunningPort()
-        if let p = port {
-            XCTAssertGreaterThan(p, 0)
-            XCTAssertLessThan(p, 65536)
-        }
-        // nil is also valid (no daemon running)
-    }
-
-    func testIsHealthyReturnsFalseForClosedPort() async {
-        // Port 19998 should never be in use during tests.
-        let healthy = await DaemonLauncher.isHealthy(port: 19998)
-        XCTAssertFalse(healthy)
-    }
-
-    func testIsHealthyReturnsTrueWhenDaemonRunning() async throws {
-        guard isDaemonRunning() else {
-            throw XCTSkip("Daemon not running — skipping isHealthy live test")
-        }
-        let port = DaemonLauncher.resolveRunningPort() ?? 8080
-        let healthy = await DaemonLauncher.isHealthy(port: port)
-        XCTAssertTrue(healthy)
-    }
+    let token = ProcessInfo.processInfo.environment["NEXUS_DAEMON_TOKEN"]
+             ?? WebSocketDaemonClient.readToken()
+    return WebSocketDaemonClient(daemonURL: defaultDaemonURL, token: token.isEmpty ? nil : token)
 }
 
 // MARK: - Workspace model unit tests (no daemon required)

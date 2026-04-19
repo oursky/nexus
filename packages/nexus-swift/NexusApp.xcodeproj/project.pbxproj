@@ -27,6 +27,9 @@
 		AD51BA2C3901D464D639F60D /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9C9A878181FBC6C382D9F0 /* SidebarView.swift */; };
 		B5EC8D397B7A962CD2BDF820 /* debug_pty.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D96DD4872B23F7851C58FC /* debug_pty.swift */; };
 		C1C7D99C12055E99522AC87F /* SSHTunnelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4813F94247C8246742DEA82F /* SSHTunnelManager.swift */; };
+		C9A3B91F2F949B45001B3BCA /* DaemonLogStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9A3B91E2F949B45001B3BCA /* DaemonLogStream.swift */; };
+		C9A3B9232F94AE04001B3BCA /* NexusCreateFlowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9A3B9222F94AE04001B3BCA /* NexusCreateFlowUITests.swift */; };
+		C9A3B9252F94AE89001B3BCA /* NexusTerminalUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9A3B9242F94AE89001B3BCA /* NexusTerminalUITests.swift */; };
 		CA97140DFA9661F38F425E4B /* ConfigSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C35EE5C1D87F8B4C3189948F /* ConfigSyncManager.swift */; };
 		CBD8EF15A85756F63CF36229 /* AsyncDeadline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E4D7D285580F1646BA523C0 /* AsyncDeadline.swift */; };
 		DA15791279FE3FB2D12D1CC2 /* AsyncDeadlineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1299EB3EDDA3B0AD4AA85C6 /* AsyncDeadlineTests.swift */; };
@@ -86,6 +89,9 @@
 		BFBDA3B5F4182BD67D9EB847 /* NexusUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusUITests.swift; sourceTree = "<group>"; };
 		C35EE5C1D87F8B4C3189948F /* ConfigSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigSyncManager.swift; sourceTree = "<group>"; };
 		C6C584F5FBD31845678BD347 /* NexusUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NexusUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C9A3B91E2F949B45001B3BCA /* DaemonLogStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonLogStream.swift; sourceTree = "<group>"; };
+		C9A3B9222F94AE04001B3BCA /* NexusCreateFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusCreateFlowUITests.swift; sourceTree = "<group>"; };
+		C9A3B9242F94AE89001B3BCA /* NexusTerminalUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusTerminalUITests.swift; sourceTree = "<group>"; };
 		CBE87649ADC2236DDDD799E3 /* StartupTrace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartupTrace.swift; sourceTree = "<group>"; };
 		D8BD091C6D75E7BF48014347 /* NexusApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NexusApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E3045A4B1F455132950EB624 /* libNexusCore.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libNexusCore.a; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -151,6 +157,8 @@
 			isa = PBXGroup;
 			children = (
 				BFBDA3B5F4182BD67D9EB847 /* NexusUITests.swift */,
+				C9A3B9222F94AE04001B3BCA /* NexusCreateFlowUITests.swift */,
+				C9A3B9242F94AE89001B3BCA /* NexusTerminalUITests.swift */,
 			);
 			path = NexusUITests;
 			sourceTree = "<group>";
@@ -195,6 +203,7 @@
 				CBE87649ADC2236DDDD799E3 /* StartupTrace.swift */,
 				2E3741BD5102248BC1C00360 /* Workspace.swift */,
 				36DB5E4ECA85CE38724246A2 /* Client */,
+				C9A3B91E2F949B45001B3BCA /* DaemonLogStream.swift */,
 			);
 			path = NexusCore;
 			sourceTree = "<group>";
@@ -438,6 +447,7 @@
 				C1C7D99C12055E99522AC87F /* SSHTunnelManager.swift in Sources */,
 				5142C089169B296EB634FB67 /* StartupTrace.swift in Sources */,
 				A512F81B9A51ED222CBECA5F /* WebSocketClient.swift in Sources */,
+				C9A3B91F2F949B45001B3BCA /* DaemonLogStream.swift in Sources */,
 				0C76B45650EA71489DE56713 /* Workspace.swift in Sources */,
 				B5EC8D397B7A962CD2BDF820 /* debug_pty.swift in Sources */,
 			);
@@ -448,6 +458,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				ED4D6C81197202F704C73D63 /* NexusUITests.swift in Sources */,
+				C9A3B9252F94AE89001B3BCA /* NexusTerminalUITests.swift in Sources */,
+				C9A3B9232F94AE04001B3BCA /* NexusCreateFlowUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

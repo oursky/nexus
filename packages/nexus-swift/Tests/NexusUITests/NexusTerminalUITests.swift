@@ -119,9 +119,6 @@ final class NexusTerminalUITests: XCTestCase {
     }
 
     // ── 4. Terminal re-opens cleanly after workspace switch ───────────────
-    //
-    // Directly tests the lazy-umount fix: navigating away and back must NOT
-    // produce a "target is busy" PTY error banner.
 
     func testTerminalReopensAfterWorkspaceSwitch() throws {
         app.launch()
@@ -134,25 +131,20 @@ final class NexusTerminalUITests: XCTestCase {
             throw XCTSkip("No workspace rows found")
         }
 
-        // Select first workspace
         rows.firstMatch.click()
         guard terminalView.waitForExistence(timeout: 10) else {
             throw XCTSkip("First workspace is not running — cannot test reopen")
         }
 
-        // Navigate away (second row if available; otherwise click the header)
         if rows.count >= 2 {
             rows.element(boundBy: 1).click()
             Thread.sleep(forTimeInterval: 1)
         } else {
-            // Click empty area to deselect
             app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5)).click()
             Thread.sleep(forTimeInterval: 0.5)
         }
-        // Navigate back
         rows.firstMatch.click()
 
-        // Terminal should reopen — allow a few seconds for pty.open to complete
         XCTAssertTrue(terminalView.waitForExistence(timeout: 10),
             "Terminal should reopen after workspace switch")
 
@@ -174,7 +166,6 @@ final class NexusTerminalUITests: XCTestCase {
             throw XCTSkip("No workspace rows found")
         }
 
-        // Click each row until we find one that shows the placeholder
         var foundPlaceholder = false
         for i in 0..<min(rows.count, 5) {
             rows.element(boundBy: i).click()
@@ -192,7 +183,6 @@ final class NexusTerminalUITests: XCTestCase {
     }
 
     // ── 6. Recording playground ───────────────────────────────────────────
-    // Place cursor on the empty line below and press ● Record.
 
     func testRecordTerminalInteraction() throws {
         app.launch()
@@ -206,8 +196,7 @@ final class NexusTerminalUITests: XCTestCase {
     }
 
     // ── 7. PTY session exposes SSH_AUTH_SOCK ───────────────────────────────
-    //
-    // Regressions here break `git fetch` over SSH and tools like opencode.
+
     func testPTYSessionHasSSHAuthSock() throws {
         let requireSSHAgent = ProcessInfo.processInfo.environment["NEXUS_UI_TEST_REQUIRE_SSH_AGENT"] == "1"
         guard requireSSHAgent else {
@@ -277,15 +266,10 @@ final class NexusTerminalUITests: XCTestCase {
         XCTAssertEqual(fields.count, 4, "Expected 4 SSH summary fields, got: \(summaryValue)")
         guard fields.count == 4 else { return }
 
-        let sockPath = fields[0]
-        let sockStatus = fields[1]
-        let sshAddRC = fields[2]
-        let gitRC = fields[3]
-
-        XCTAssertFalse(sockPath.isEmpty, "Expected SSH_AUTH_SOCK to be non-empty in PTY shell")
-        XCTAssertEqual(sockStatus, "yes", "Expected SSH_AUTH_SOCK path to be a live Unix socket")
-        XCTAssertEqual(sshAddRC, "0", "Expected ssh-add -l to succeed via SSH agent")
-        XCTAssertEqual(gitRC, "0", "Expected git ls-remote over SSH to succeed")
+        XCTAssertFalse(fields[0].isEmpty, "Expected SSH_AUTH_SOCK to be non-empty in PTY shell")
+        XCTAssertEqual(fields[1], "yes", "Expected SSH_AUTH_SOCK path to be a live Unix socket")
+        XCTAssertEqual(fields[2], "0", "Expected ssh-add -l to succeed via SSH agent")
+        XCTAssertEqual(fields[3], "0", "Expected git ls-remote over SSH to succeed")
     }
 }
 
@@ -293,20 +277,14 @@ final class NexusTerminalUITests: XCTestCase {
 
 extension NexusTerminalUITests {
 
-    // Terminal state elements are sidebar Buttons (NavigationSplitView detail
-    // pane is not accessible on macOS via XCUITest — sidebar IS accessible).
-    var terminalView:    XCUIElement { app.buttons["terminal_view"] }
+    var terminalView:        XCUIElement { app.buttons["terminal_view"] }
     var terminalPlaceholder: XCUIElement { app.buttons["terminal_placeholder"] }
-    var terminalError:   XCUIElement { app.buttons["terminal_error"] }
+    var terminalError:       XCUIElement { app.buttons["terminal_error"] }
 
-    /// Returns the query for all workspace rows in the sidebar.
     func workspaceRows() -> XCUIElementQuery {
-        app.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH 'workspace_row_'")
-        )
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'workspace_row_'"))
     }
 
-    /// Throws if at least one workspace row doesn't appear within `timeout` seconds.
     func waitForConnected(timeout: TimeInterval = 30) throws {
         let rows = workspaceRows()
         let appeared = rows.firstMatch.waitForExistence(timeout: timeout)
@@ -324,7 +302,6 @@ extension NexusTerminalUITests {
         }
     }
 
-    /// Returns the first workspace row, waiting up to `timeout` for it to appear.
     func firstWorkspaceRow(timeout: TimeInterval = 15) throws -> XCUIElement {
         let rows = workspaceRows()
         guard rows.firstMatch.waitForExistence(timeout: timeout) else {
@@ -333,49 +310,32 @@ extension NexusTerminalUITests {
         return rows.firstMatch
     }
 
-    /// Clicks workspace rows until one shows the active terminal_view.
-    /// Skips the test if no running workspace is found.
     func selectFirstRunningWorkspace() throws {
         let rows = workspaceRows()
         guard rows.firstMatch.waitForExistence(timeout: 15) else {
             throw XCTSkip("No workspace rows visible — create a workspace first")
         }
-
         let count = rows.count
         for i in 0..<min(count, 5) {
             rows.element(boundBy: i).click()
-            if terminalView.waitForExistence(timeout: 4) {
-                return
-            }
+            if terminalView.waitForExistence(timeout: 4) { return }
         }
         throw XCTSkip("None of the \(count) visible workspace(s) show an active terminal")
     }
-
 }
 
 // MARK: - Token helper
 
 private func resolveDaemonToken() -> String? {
     if let env = ProcessInfo.processInfo.environment["NEXUS_DAEMON_TOKEN"]?
-        .trimmingCharacters(in: .whitespacesAndNewlines),
-       !env.isEmpty {
+        .trimmingCharacters(in: .whitespacesAndNewlines), !env.isEmpty {
         return env
     }
-
     let configuredService = ProcessInfo.processInfo.environment["NEXUS_DAEMON_TOKEN_KEYCHAIN_SERVICE"]?
         .trimmingCharacters(in: .whitespacesAndNewlines)
-    let services = [
-        configuredService,
-        "nexus-daemon-token",
-        "nexus/token",
-        "nexus-daemon",
-        "nexus",
-    ]
-    for maybeService in services {
+    for maybeService in [configuredService, "nexus-daemon-token", "nexus/token", "nexus-daemon", "nexus"] {
         guard let service = maybeService, !service.isEmpty else { continue }
-        if let token = readMacKeychainPassword(service: service), !token.isEmpty {
-            return token
-        }
+        if let token = readMacKeychainPassword(service: service), !token.isEmpty { return token }
     }
     return nil
 }
@@ -384,19 +344,12 @@ private func readMacKeychainPassword(service: String) -> String? {
     let task = Process()
     task.executableURL = URL(fileURLWithPath: "/usr/bin/security")
     task.arguments = ["find-generic-password", "-s", service, "-w"]
-
     let out = Pipe()
     task.standardOutput = out
     task.standardError = Pipe()
-
-    do {
-        try task.run()
-    } catch {
-        return nil
-    }
+    do { try task.run() } catch { return nil }
     task.waitUntilExit()
     guard task.terminationStatus == 0 else { return nil }
-
     let data = out.fileHandleForReading.readDataToEndOfFile()
     guard let raw = String(data: data, encoding: .utf8) else { return nil }
     let token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -415,34 +368,17 @@ private final class PTYRPCClient {
         let config = URLSessionConfiguration.default
         self.session = URLSession(configuration: config)
         var request = URLRequest(url: url)
-        if !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         self.ws = session.webSocketTask(with: request)
         self.ws.resume()
     }
 
-    func close() {
-        ws.cancel(with: .normalClosure, reason: nil)
-        session.invalidateAndCancel()
-    }
+    func close() { ws.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
 
     func openPTY(workspaceID: String) throws -> String {
         let reqID = nextRequestID()
-        let payload: [String: Any] = [
-            "jsonrpc": "2.0",
-            "id": reqID,
-            "method": "pty.open",
-            "params": [
-                "workspaceId": workspaceID,
-                "shell": "bash",
-                "workdir": "/workspace",
-                "cols": 120,
-                "rows": 40
-            ]
-        ]
-        try send(payload)
-
+        try send(["jsonrpc": "2.0", "id": reqID, "method": "pty.open",
+                  "params": ["workspaceId": workspaceID, "shell": "bash", "workdir": "/workspace", "cols": 120, "rows": 40]])
         let deadline = Date().addingTimeInterval(10)
         while Date() < deadline {
             let msg = try receiveJSON(timeout: 10)
@@ -450,10 +386,7 @@ private final class PTYRPCClient {
                 if let error = msg["error"] as? [String: Any] {
                     throw NSError(domain: "PTYRPCClient", code: 2, userInfo: [NSLocalizedDescriptionKey: "pty.open error: \(error)"])
                 }
-                guard
-                    let result = msg["result"] as? [String: Any],
-                    let sid = result["sessionId"] as? String
-                else {
+                guard let result = msg["result"] as? [String: Any], let sid = result["sessionId"] as? String else {
                     throw NSError(domain: "PTYRPCClient", code: 3, userInfo: [NSLocalizedDescriptionKey: "pty.open missing sessionId"])
                 }
                 return sid
@@ -464,32 +397,19 @@ private final class PTYRPCClient {
 
     func listWorkspaces() throws -> [WorkspaceRecord] {
         let reqID = nextRequestID()
-        try send([
-            "jsonrpc": "2.0",
-            "id": reqID,
-            "method": "workspace.list",
-            "params": [:]
-        ])
+        try send(["jsonrpc": "2.0", "id": reqID, "method": "workspace.list", "params": [:]])
         let deadline = Date().addingTimeInterval(10)
         while Date() < deadline {
             let msg = try receiveJSON(timeout: 10)
-            if String(describing: msg["id"] ?? "") != reqID {
-                continue
-            }
+            if String(describing: msg["id"] ?? "") != reqID { continue }
             if let error = msg["error"] as? [String: Any] {
                 throw NSError(domain: "PTYRPCClient", code: 11, userInfo: [NSLocalizedDescriptionKey: "workspace.list error: \(error)"])
             }
-            guard
-                let result = msg["result"] as? [String: Any],
-                let workspaces = result["workspaces"] as? [[String: Any]]
-            else {
-                return []
-            }
+            guard let result = msg["result"] as? [String: Any],
+                  let workspaces = result["workspaces"] as? [[String: Any]] else { return [] }
             return workspaces.compactMap { raw in
                 guard let id = raw["id"] as? String else { return nil }
-                let state = (raw["state"] as? String) ?? ""
-                let backend = (raw["backend"] as? String) ?? ""
-                return WorkspaceRecord(id: id, state: state, backend: backend)
+                return WorkspaceRecord(id: id, state: (raw["state"] as? String) ?? "", backend: (raw["backend"] as? String) ?? "")
             }
         }
         throw NSError(domain: "PTYRPCClient", code: 12, userInfo: [NSLocalizedDescriptionKey: "workspace.list timed out"])
@@ -497,18 +417,11 @@ private final class PTYRPCClient {
 
     func startWorkspace(id: String) throws {
         let reqID = nextRequestID()
-        try send([
-            "jsonrpc": "2.0",
-            "id": reqID,
-            "method": "workspace.start",
-            "params": ["id": id]
-        ])
+        try send(["jsonrpc": "2.0", "id": reqID, "method": "workspace.start", "params": ["id": id]])
         let deadline = Date().addingTimeInterval(20)
         while Date() < deadline {
             let msg = try receiveJSON(timeout: 20)
-            if String(describing: msg["id"] ?? "") != reqID {
-                continue
-            }
+            if String(describing: msg["id"] ?? "") != reqID { continue }
             if let error = msg["error"] as? [String: Any] {
                 throw NSError(domain: "PTYRPCClient", code: 13, userInfo: [NSLocalizedDescriptionKey: "workspace.start error: \(error)"])
             }
@@ -518,28 +431,13 @@ private final class PTYRPCClient {
     }
 
     func writePTY(sessionID: String, data: String) throws {
-        let payload: [String: Any] = [
-            "jsonrpc": "2.0",
-            "id": nextRequestID(),
-            "method": "pty.write",
-            "params": [
-                "sessionId": sessionID,
-                "data": data
-            ]
-        ]
-        try send(payload)
+        try send(["jsonrpc": "2.0", "id": nextRequestID(), "method": "pty.write",
+                  "params": ["sessionId": sessionID, "data": data]])
     }
 
     func closePTY(sessionID: String) throws {
-        let payload: [String: Any] = [
-            "jsonrpc": "2.0",
-            "id": nextRequestID(),
-            "method": "pty.close",
-            "params": [
-                "sessionId": sessionID
-            ]
-        ]
-        try send(payload)
+        try send(["jsonrpc": "2.0", "id": nextRequestID(), "method": "pty.close",
+                  "params": ["sessionId": sessionID]])
     }
 
     func awaitDataLine(sessionID: String, containing marker: String, timeout: TimeInterval) throws -> String {
@@ -547,29 +445,16 @@ private final class PTYRPCClient {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             let msg: [String: Any]
-            do {
-                msg = try receiveJSON(timeout: 2)
-            } catch let err as NSError where err.domain == "PTYRPCClient" && err.code == 8 {
-                continue
-            }
-            guard
-                let method = msg["method"] as? String,
-                method == "pty.data",
-                let params = msg["params"] as? [String: Any],
-                let sid = params["sessionId"] as? String,
-                sid == sessionID,
-                let data = params["data"] as? String
-            else {
-                continue
-            }
+            do { msg = try receiveJSON(timeout: 2) }
+            catch let err as NSError where err.domain == "PTYRPCClient" && err.code == 8 { continue }
+            guard let method = msg["method"] as? String, method == "pty.data",
+                  let params = msg["params"] as? [String: Any],
+                  let sid = params["sessionId"] as? String, sid == sessionID,
+                  let data = params["data"] as? String else { continue }
             buffer.append(data)
             let lines = buffer.components(separatedBy: "\n")
-            for line in lines where line.contains(marker) {
-                return line
-            }
-            if let last = lines.last {
-                buffer = last
-            }
+            for line in lines where line.contains(marker) { return line }
+            if let last = lines.last { buffer = last }
         }
         throw NSError(domain: "PTYRPCClient", code: 5, userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for marker \(marker)"])
     }
@@ -579,58 +464,29 @@ private final class PTYRPCClient {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             let msg: [String: Any]
-            do {
-                msg = try receiveJSON(timeout: 2)
-            } catch let err as NSError where err.domain == "PTYRPCClient" && err.code == 8 {
-                continue
-            }
-            guard
-                let method = msg["method"] as? String,
-                method == "pty.data",
-                let params = msg["params"] as? [String: Any],
-                let sid = params["sessionId"] as? String,
-                sid == sessionID,
-                let data = params["data"] as? String
-            else {
-                continue
-            }
+            do { msg = try receiveJSON(timeout: 2) }
+            catch let err as NSError where err.domain == "PTYRPCClient" && err.code == 8 { continue }
+            guard let method = msg["method"] as? String, method == "pty.data",
+                  let params = msg["params"] as? [String: Any],
+                  let sid = params["sessionId"] as? String, sid == sessionID,
+                  let data = params["data"] as? String else { continue }
             buffer.append(data)
             let lines = buffer.components(separatedBy: "\n")
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard trimmed.contains(prefix) else { continue }
-
-                // Skip echoed command lines (they often contain marker literals)
-                // and only keep lines that look like evaluated output.
-                if trimmed.contains("${")
-                    || trimmed.contains("printf ")
-                    || trimmed.contains("echo ")
-                    || trimmed.contains("$sock_status")
-                    || trimmed.contains("$ssh_add_rc")
-                    || trimmed.contains("$git_rc") {
-                    continue
-                }
-                if let r = trimmed.range(of: prefix) {
-                    return String(trimmed[r.lowerBound...])
-                }
+                if trimmed.contains("${") || trimmed.contains("printf ") || trimmed.contains("echo ")
+                    || trimmed.contains("$sock_status") || trimmed.contains("$ssh_add_rc") || trimmed.contains("$git_rc") { continue }
+                if let r = trimmed.range(of: prefix) { return String(trimmed[r.lowerBound...]) }
             }
-            if let last = lines.last {
-                buffer = last
-            }
+            if let last = lines.last { buffer = last }
         }
         throw NSError(domain: "PTYRPCClient", code: 15, userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for marker prefix \(prefix)"])
     }
 
-    private func nextRequestID() -> String {
-        defer { nextID += 1 }
-        return String(nextID)
-    }
+    private func nextRequestID() -> String { defer { nextID += 1 }; return String(nextID) }
 
-    struct WorkspaceRecord {
-        let id: String
-        let state: String
-        let backend: String
-    }
+    struct WorkspaceRecord { let id: String; let state: String; let backend: String }
 
     private func send(_ obj: [String: Any]) throws {
         let data = try JSONSerialization.data(withJSONObject: obj, options: [])
@@ -639,14 +495,9 @@ private final class PTYRPCClient {
         }
         let sem = DispatchSemaphore(value: 0)
         var sendError: Error?
-        ws.send(.string(text)) { err in
-            sendError = err
-            sem.signal()
-        }
+        ws.send(.string(text)) { err in sendError = err; sem.signal() }
         _ = sem.wait(timeout: .now() + 10)
-        if let err = sendError {
-            throw err
-        }
+        if let err = sendError { throw err }
     }
 
     private func receiveJSON(timeout: TimeInterval) throws -> [String: Any] {
@@ -655,16 +506,12 @@ private final class PTYRPCClient {
         var recvData: Data?
         ws.receive { result in
             switch result {
-            case .failure(let err):
-                recvError = err
+            case .failure(let err): recvError = err
             case .success(let msg):
                 switch msg {
-                case .string(let s):
-                    recvData = s.data(using: .utf8)
-                case .data(let d):
-                    recvData = d
-                @unknown default:
-                    recvError = NSError(domain: "PTYRPCClient", code: 7, userInfo: [NSLocalizedDescriptionKey: "Unknown websocket message"])
+                case .string(let s): recvData = s.data(using: .utf8)
+                case .data(let d): recvData = d
+                @unknown default: recvError = NSError(domain: "PTYRPCClient", code: 7, userInfo: [NSLocalizedDescriptionKey: "Unknown websocket message"])
                 }
             }
             sem.signal()
@@ -672,9 +519,7 @@ private final class PTYRPCClient {
         if sem.wait(timeout: .now() + timeout) == .timedOut {
             throw NSError(domain: "PTYRPCClient", code: 8, userInfo: [NSLocalizedDescriptionKey: "Websocket receive timed out"])
         }
-        if let err = recvError {
-            throw err
-        }
+        if let err = recvError { throw err }
         guard let data = recvData else {
             throw NSError(domain: "PTYRPCClient", code: 9, userInfo: [NSLocalizedDescriptionKey: "No websocket data"])
         }

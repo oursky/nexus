@@ -70,22 +70,14 @@ final class NexusCreateFlowUITests: XCTestCase {
         }
         plusBtn.click()
 
-        guard app.staticTexts["New Sandbox"].waitForExistence(timeout: 5) else {
-            throw XCTSkip("New Sandbox sheet did not open")
+        guard app.buttons["create_project_button"].waitForExistence(timeout: 5) else {
+            throw XCTSkip("New Project sheet did not open (create_project_button not found)")
         }
 
-        // Select "Create new project…" in the project picker.
-        let picker = app.popUpButtons["sandbox_project_picker"]
-        guard picker.waitForExistence(timeout: 5) else {
-            throw XCTSkip("Project picker not visible")
-        }
-        picker.click()
-        app.menuItems["Create new project…"].click()
-
-        // Fill local path.
+        // Fill local path — sheet is already in project-create mode when opened via new_project_button.
         let pathField = app.textFields["project_local_path_field"]
         guard pathField.waitForExistence(timeout: 5) else {
-            XCTFail("project_local_path_field not visible after selecting 'Create new project…'")
+            XCTFail("project_local_path_field not visible in New Project sheet")
             return
         }
         pathField.click()
@@ -93,16 +85,12 @@ final class NexusCreateFlowUITests: XCTestCase {
 
         // Submit.
         let createBtn = app.buttons["create_project_button"]
-        guard createBtn.waitForExistence(timeout: 5) else {
-            XCTFail("create_project_button not visible")
-            return
-        }
         XCTAssertTrue(createBtn.isEnabled, "Create Project button should be enabled after entering a path")
         createBtn.click()
 
         // Sheet should dismiss on success.
         XCTAssertTrue(
-            app.staticTexts["New Sandbox"].waitForNonExistence(timeout: 15),
+            createBtn.waitForNonExistence(timeout: 15),
             "Sheet should dismiss after successful project creation"
         )
 
@@ -154,8 +142,8 @@ final class NexusCreateFlowUITests: XCTestCase {
 
         addSandboxBtns.firstMatch.click()
 
-        guard app.staticTexts["New Sandbox"].waitForExistence(timeout: 5) else {
-            XCTFail("New Sandbox sheet did not open")
+        guard app.buttons["create_sandbox_button"].waitForExistence(timeout: 5) else {
+            XCTFail("New Sandbox sheet did not open (create_sandbox_button not found)")
             return
         }
 
@@ -253,9 +241,20 @@ private func isHealthzUp(_ rawURL: String) -> Bool {
 
 private extension NexusCreateFlowUITests {
     func isConfiguredDaemonHealthzUp() -> Bool {
-        let wsURL = ProcessInfo.processInfo.environment["NEXUS_DAEMON_URL"]
-            ?? app.launchEnvironment["NEXUS_DAEMON_URL"]
-            ?? "ws://localhost:63987"
+        // Prefer NEXUS_UI_TEST_DAEMON_URL (set by test-xcui.sh) then fall back
+        // to NEXUS_DAEMON_URL, then the app launchEnvironment value, then default.
+        // Resolution order: test-runner env → app launch env → hardcoded default.
+        // Note: app.launchEnvironment["NEXUS_DAEMON_URL"] may be an empty string (set from an
+        // unset env var in setUp); treat empty strings the same as absent to avoid producing a
+        // malformed URL like http://healthz/ when URLComponents processes an empty host.
+        let wsURL: String = {
+            let candidates: [String?] = [
+                ProcessInfo.processInfo.environment["NEXUS_UI_TEST_DAEMON_URL"],
+                ProcessInfo.processInfo.environment["NEXUS_DAEMON_URL"],
+                app.launchEnvironment["NEXUS_DAEMON_URL"],
+            ]
+            return candidates.compactMap { $0 }.first(where: { !$0.isEmpty }) ?? "ws://localhost:63987"
+        }()
         guard var components = URLComponents(string: wsURL) else { return false }
         components.scheme = (components.scheme == "wss") ? "https" : "http"
         components.path = "/healthz"
