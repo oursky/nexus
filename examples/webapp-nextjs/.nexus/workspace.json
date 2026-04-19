@@ -1,8 +1,0 @@
-{
-  "name": "webapp-nextjs",
-  "lifecycle": {
-    "probe": ["npm", "run", "health-check"],
-    "start": ["npm", "run", "dev"]
-  },
-  "ports": [{"guest": 3000, "host": 3000}]
-}
