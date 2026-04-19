@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-/// Writes a line-oriented trace to `DaemonLauncher.resolveRunDir()/app-startup-trace.log`
+/// Writes a line-oriented trace to `~/.config/nexus/run/app-startup-trace.log`
 /// and mirrors checkpoints to the unified log (Console.app: subsystem `com.nexus.NexusApp`, category `startup-trace`).
 ///
 /// **Durability:** Lines are written **synchronously** (no `DispatchQueue.async`) and `FileHandle.synchronize()` runs
@@ -33,7 +33,7 @@ public enum StartupTrace {
             return
         }
 
-        let dir = DaemonLauncher.resolveRunDir()
+        let dir = Self.resolveRunDir()
         logPath = "\(dir)/app-startup-trace.log"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
@@ -74,6 +74,12 @@ public enum StartupTrace {
             return "[\(prefix)] \(t) \(code)"
         }
         return "[\(prefix)] \(t) \(code) — \(detail)"
+    }
+
+    private static func resolveRunDir() -> String {
+        let configHome = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"]
+            ?? "\(ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory())/.config"
+        return "\(configHome)/nexus/run"
     }
 
     private static func appendToFileSynchronouslyNoLock(_ utf8: String) {

@@ -165,7 +165,13 @@ public final class ConfigSyncManager: Sendable {
     }
 
     private func resolveMutagen() -> String? {
-        return ToolBinaryResolver.resolvePreferred("mutagen")
+        let searchPaths = (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/local/bin:/usr/bin:/bin")
+            .split(separator: ":").map(String.init)
+        for dir in searchPaths {
+            let candidate = "\(dir)/mutagen"
+            if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+        }
+        return nil
     }
 
     private func nexusSSHConfigPath() -> String {
