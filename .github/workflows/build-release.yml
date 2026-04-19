@@ -79,7 +79,7 @@ jobs:
   build:
     name: Build for ${{ matrix.os }}
     if: startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && needs.semantic-release.outputs.released == 'true')
-    needs: [semantic-release]
+    needs: [semantic-release, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -87,23 +87,20 @@ jobs:
         include:
           - os: ubuntu-latest
             target: linux-amd64
+            artifact: nexus-linux-amd64
           - os: ubuntu-latest
             target: linux-arm64
+            artifact: nexus-linux-arm64
           - os: macos-latest
             target: darwin-amd64
+            artifact: nexus-darwin-amd64
           - os: macos-latest
             target: darwin-arm64
+            artifact: nexus-darwin-arm64
+          - os: windows-latest
+            target: windows-amd64
+            artifact: nexus-windows-amd64
     steps:
-      - name: Verify update signing secrets
-        shell: bash
-        env:
-          NEXUS_UPDATE_MANIFEST_PUBLIC_KEY_B64: ${{ secrets.NEXUS_UPDATE_MANIFEST_PUBLIC_KEY_B64 }}
-        run: |
-          if [[ -z "${NEXUS_UPDATE_MANIFEST_PUBLIC_KEY_B64}" ]]; then
-            echo "Missing required secret: NEXUS_UPDATE_MANIFEST_PUBLIC_KEY_B64" >&2
-            echo "See docs/guides/release-signing.md for setup instructions." >&2
-            exit 1
-          fi
       - name: Checkout code
         uses: actions/checkout@v4
         with:
@@ -117,162 +114,50 @@ jobs:
       - name: Build binary
         shell: bash
         working-directory: packages/nexus
-        env:
-          RELEASE_VERSION: ${{ needs.semantic-release.outputs.version != '' && needs.semantic-release.outputs.version || github.ref_name }}
-          RELEASE_COMMIT: ${{ github.sha }}
-          RELEASE_BUILT_AT: ${{ github.run_id }}
-          NEXUS_UPDATE_MANIFEST_PUBLIC_KEY_B64: ${{ secrets.NEXUS_UPDATE_MANIFEST_PUBLIC_KEY_B64 }}
         run: |
           mkdir -p dist
-          target_os=$(echo "${{ matrix.target }}" | cut -d'-' -f1)
-          target_arch=$(echo "${{ matrix.target }}" | cut -d'-' -f2)
-          version="${RELEASE_VERSION#v}"
-          ldflags="-X 'github.com/inizio/nexus/packages/nexus/pkg/buildinfo.CLIVersion=${version}' -X 'github.com/inizio/nexus/packages/nexus/pkg/buildinfo.DaemonVersion=${version}' -X 'github.com/inizio/nexus/packages/nexus/pkg/buildinfo.Commit=${RELEASE_COMMIT}' -X 'github.com/inizio/nexus/packages/nexus/pkg/buildinfo.BuiltAt=${RELEASE_BUILT_AT}' -X 'github.com/inizio/nexus/packages/nexus/pkg/buildinfo.UpdatePublicKeyBase64=${NEXUS_UPDATE_MANIFEST_PUBLIC_KEY_B64}'"
-          GOOS="$target_os" GOARCH="$target_arch" go build -ldflags "$ldflags" -o "dist/nexus-${target_os}-${target_arch}" ./cmd/nexus
-          GOOS="$target_os" GOARCH="$target_arch" go build -ldflags "$ldflags" -o "dist/nexus-daemon-${target_os}-${target_arch}" ./cmd/daemon
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.target }}
-          path: packages/nexus/dist/*
-
-  swift-dev-app:
-    name: Build Swift Dev App
-    if: startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && needs.semantic-release.outputs.released == 'true')
-    needs: [semantic-release, build]
-    runs-on: macos-latest
-    env:
-      DERIVED_DATA_PATH: packages/nexus-swift/.build/xcbuild-release
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.semantic-release.outputs.tag != '' && needs.semantic-release.outputs.tag || github.ref }}
-
-      - name: Resolve build metadata
-        id: meta
-        shell: bash
-        run: |
-          bundle_id="com.nexus.NexusApp.dev"
-          if [[ -n "${{ needs.semantic-release.outputs.version }}" ]]; then
-            ver="${{ needs.semantic-release.outputs.version }}"
+          if [[ "${{ matrix.target }}" == windows* ]]; then
+            GOOS=windows GOARCH=amd64 go build -o dist/${{ matrix.artifact }}.exe ./cmd/nexus
           else
-            ver="${GITHUB_REF_NAME#v}"
+            GOOS=$(echo ${{ matrix.target }} | cut -d'-' -f1) \
+            GOARCH=$(echo ${{ matrix.target }} | cut -d'-' -f2) \
+            go build -o dist/${{ matrix.artifact }} ./cmd/nexus
           fi
-          echo "bundle_id=$bundle_id" >> "$GITHUB_OUTPUT"
-          echo "version=$ver" >> "$GITHUB_OUTPUT"
 
-      - name: Download darwin-arm64 CLI/daemon artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: darwin-arm64
-          path: .ci-darwin-arm64
-
-      - name: Refresh bundled nexus binaries from CI build
+      - name: Package binary
         shell: bash
+        working-directory: packages/nexus
         run: |
-          set -euo pipefail
-          test -f ".ci-darwin-arm64/nexus-darwin-arm64"
-          test -f ".ci-darwin-arm64/nexus-daemon-darwin-arm64"
-          mkdir -p packages/nexus-swift/Resources/tools
-          cp .ci-darwin-arm64/nexus-darwin-arm64 packages/nexus-swift/Resources/tools/nexus
-          cp .ci-darwin-arm64/nexus-daemon-darwin-arm64 packages/nexus-swift/Resources/nexus-daemon
-          cp .ci-darwin-arm64/nexus-daemon-darwin-arm64 packages/nexus-swift/Resources/tools/nexus-daemon
-          chmod +x \
-            packages/nexus-swift/Resources/tools/nexus \
-            packages/nexus-swift/Resources/nexus-daemon \
-            packages/nexus-swift/Resources/tools/nexus-daemon
-
-      - name: Build macOS app (unsigned)
-        shell: bash
-        run: |
-          xcodebuild \
-            -project packages/nexus-swift/NexusApp.xcodeproj \
-            -scheme NexusApp \
-            -configuration Release \
-            -destination "platform=macOS" \
-            -derivedDataPath "${DERIVED_DATA_PATH}" \
-            NEXUS_APP_BUNDLE_ID="${{ steps.meta.outputs.bundle_id }}" \
-            NEXUS_APP_TEST_BUNDLE_ID="${{ steps.meta.outputs.bundle_id }}.tests" \
-            NEXUS_UI_TEST_BUNDLE_ID="${{ steps.meta.outputs.bundle_id }}.uitests" \
-            CODE_SIGNING_ALLOWED=NO \
-            build
-
-      - name: Package app artifact
-        shell: bash
-        run: |
-          app_path="${DERIVED_DATA_PATH}/Build/Products/Release/NexusApp.app"
-          if [[ ! -d "$app_path" ]]; then
-            echo "App bundle not found at $app_path" >&2
-            exit 1
+          mkdir -p release
+          if [[ -n "${{ needs.semantic-release.outputs.version }}" ]]; then
+            version="${{ needs.semantic-release.outputs.version }}"
+          else
+            version="${GITHUB_REF#refs/tags/v}"
           fi
-          mkdir -p artifacts
-          ditto -c -k --sequesterRsrc --keepParent "$app_path" "artifacts/NexusApp-dev-macos-${{ steps.meta.outputs.version }}.zip"
+          archive="nexus-${version}-${{ matrix.target }}.tar.gz"
+          if [[ "${{ matrix.target }}" == windows* ]]; then
+            tar -C dist -czf "release/${archive}" "${{ matrix.artifact }}.exe"
+          else
+            tar -C dist -czf "release/${archive}" "${{ matrix.artifact }}"
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nexus-swift-dev-app
-          path: artifacts/*.zip
+          name: ${{ matrix.artifact }}
+          path: packages/nexus/release/*
 
   release:
     name: Create Release
     if: startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && needs.semantic-release.outputs.released == 'true')
-    needs: [semantic-release, test, build, swift-dev-app]
+    needs: [semantic-release, build]
     runs-on: ubuntu-latest
     steps:
-      - name: Verify update signing secrets
-        shell: bash
-        env:
-          NEXUS_UPDATE_MANIFEST_PRIVATE_KEY_B64: ${{ secrets.NEXUS_UPDATE_MANIFEST_PRIVATE_KEY_B64 }}
-          NEXUS_UPDATE_MANIFEST_PUBLIC_KEY_B64: ${{ secrets.NEXUS_UPDATE_MANIFEST_PUBLIC_KEY_B64 }}
-        run: |
-          if [[ -z "${NEXUS_UPDATE_MANIFEST_PRIVATE_KEY_B64}" ]]; then
-            echo "Missing required secret: NEXUS_UPDATE_MANIFEST_PRIVATE_KEY_B64" >&2
-            echo "See docs/guides/release-signing.md for setup instructions." >&2
-            exit 1
-          fi
-          if [[ -z "${NEXUS_UPDATE_MANIFEST_PUBLIC_KEY_B64}" ]]; then
-            echo "Missing required secret: NEXUS_UPDATE_MANIFEST_PUBLIC_KEY_B64" >&2
-            echo "See docs/guides/release-signing.md for setup instructions." >&2
-            exit 1
-          fi
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.semantic-release.outputs.tag != '' && needs.semantic-release.outputs.tag || github.ref_name }}
-
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install signing dependency
-        run: pip install cryptography
-
-      - name: Generate checksums and release manifest
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.semantic-release.outputs.version != '' && needs.semantic-release.outputs.version || github.ref_name }}
-          RELEASE_TAG: ${{ needs.semantic-release.outputs.tag != '' && needs.semantic-release.outputs.tag || github.ref_name }}
-          NEXUS_UPDATE_MANIFEST_PRIVATE_KEY_B64: ${{ secrets.NEXUS_UPDATE_MANIFEST_PRIVATE_KEY_B64 }}
-        run: |
-          version="${RELEASE_VERSION#v}"
-          tag="${RELEASE_TAG}"
-          base_url="https://github.com/${{ github.repository }}/releases/download/${tag}"
-          python scripts/release/generate_release_manifest.py \
-            --version "$version" \
-            --artifacts-dir artifacts \
-            --base-url "$base_url" \
-            --manifest-out artifacts/release-manifest.json \
-            --signature-out artifacts/release-manifest.sig
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

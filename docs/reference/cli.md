@@ -1,104 +1,166 @@
-# CLI Reference
+# CLI
 
-`nexus` is the unified binary for both the workspace client CLI and the remote workspace daemon.
+This reference is intentionally named `cli.md` because it covers Nexus control-plane interfaces, not only workspace internals.
 
-> **Current scope:** The binary today implements the daemon subgroup only. Workspace lifecycle commands (`create`, `shell`, `exec`, etc.) are planned for a future release once the underlying workspace manager packages are rebuilt.
+Semantic boundary:
 
-## Commands
+- `nexus` is the human/operator command interface.
+- `workspace-daemon` is the programmatic runtime/API interface consumed by SDK and automation.
 
-### Daemon management
+The sections below focus on daemon runtime behavior and RPC/HTTP APIs, which are the stable contract surface for remote control.
 
-```
-nexus daemon start [flags]
-```
-Starts the Nexus daemon. All flags are optional; a bearer token is auto-generated and
-persisted when `--network` is active and no explicit `--token` is given.
+The workspace daemon is a Go-based server that provides remote file system and execution capabilities to the Nexus SDK via WebSocket.
 
-```
-nexus daemon token
-```
-Prints the bearer token the daemon uses for network authentication. Generates and persists
-a new token if none exists yet. Reads from the OS keyring (D-Bus Secret Service on Linux)
-with a file fallback at `~/.config/nexus/daemon-token`.
+## Overview
 
 ```
-nexus daemon stop
-nexus daemon status
+┌─────────────┐     WebSocket      ┌─────────────────┐
+│ SDK Client  │ ◄────────────────► │  Workspace      │
+│             │                    │  Daemon (Go)    │
+└─────────────┘                    └────────┬────────┘
+                                             │
+                                      ┌──────▼──────┐
+                                      │ Isolated    │
+                                      │ Workspace   │
+                                      │ (firecracker) │
+                                      └─────────────┘
 ```
-Stop the running daemon or query its status. _(Not yet implemented.)_
 
-## Environment variables
+The daemon manages isolated Firecracker-backed workspaces using native Firecracker integration. The daemon communicates directly with Firecracker via Unix socket REST API and executes commands through a vsock guest agent (a binary running inside the VM that receives commands over the virtio-vsock interface and executes them on behalf of the daemon). All ingress to the workspace is via Spotlight port forwards — there is no direct host port exposure.
 
-| Variable | Description |
-|---|---|
-| `NEXUS_DAEMON_TOKEN` | Bearer token override for `nexus daemon start` (auto-managed when unset) |
+## Installation
 
-## Planned commands (not yet implemented)
+```bash
+# Build from source
+cd packages/nexus
+go build -o workspace-daemon ./cmd/daemon
+```
 
-The following commands are planned for future releases once the workspace manager and related packages are available. They are listed here for reference only — they do not exist in the current binary.
+## Running the Daemon
 
-| Command | Description |
-|---|---|
-| `nexus create` | Create a workspace from the current directory |
-| `nexus list` | List all workspaces |
-| `nexus start <id>` | Start a stopped workspace |
-| `nexus stop <id>` | Stop a running workspace |
-| `nexus remove <id>` | Permanently remove a workspace |
-| `nexus restore <id>` | Restore from last snapshot |
-| `nexus fork <id> <name>` | Fork a workspace into a new branch |
-| `nexus shell <id>` | Open an interactive shell in a workspace |
-| `nexus exec <id> -- <cmd>` | Run a single command in a workspace |
-| `nexus run -- <cmd>` | Ephemeral workspace; run and discard |
-| `nexus tunnel <id>` | Apply compose port forwards |
-| `nexus init [path]` | Scaffold `.nexus/` config in a project |
-| `nexus doctor` | Health-check the local runtime environment |
-| `nexus version` | Print CLI and daemon version info |
-| `nexus update` | Self-update the CLI binary |
+```bash
+workspace-daemon \
+  --port 8080 \
+  --token <jwt-secret> \
+  --workspace-dir /workspace
+```
 
-## `nexus daemon start` flags
+## Embedded Web UI
 
-### Core flags
+The daemon serves an embedded web control plane for workspace operations.
 
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--db` | string | `~/.local/state/nexus/nexus.db` | SQLite database path |
-| `--socket` | string | `~/.local/state/nexus/nexusd.sock` | Unix socket path |
-| `--node-name` | string | hostname | Node identity name |
-| `--firecracker` | bool | false | Enable Firecracker VM backend |
-| `--firecracker-bin` | string | `firecracker` | Firecracker binary name |
-| `--kernel` | string | `$NEXUS_FIRECRACKER_KERNEL` | Firecracker kernel image path |
-| `--rootfs` | string | `$NEXUS_FIRECRACKER_ROOTFS` | Firecracker rootfs image path |
-| `--workdir-root` | string | `~/.local/state/nexus/firecracker-vms` | Firecracker VM work dir root |
+- UI path: `/ui` (legacy alias: `/portal`)
+- Summary API: `GET /ui/api/summary`
+- Workspace APIs (token-required):
+  - `GET /ui/api/workspaces` - list workspaces
+  - `POST /ui/api/workspaces` - create workspace
+  - `POST /ui/api/workspaces/{id}/actions/{action}` - lifecycle action (`start`, `stop`, `restore`, `pause`, `resume`)
+  - `POST /ui/api/workspaces/{id}/fork` - fork workspace
+  - `DELETE /ui/api/workspaces/{id}` - remove workspace
 
-### Network listener flags
+Authentication for UI APIs supports:
 
-| Flag | Type | Default | Description |
-|---|---|---|---|
-| `--network` | bool | false | Enable TCP/WebSocket network listener |
-| `--bind` | string | `127.0.0.1` | Bind address for the network listener |
-| `--port` | int | `7777` | Port for the network listener |
-| `--token` | string | _(auto-generated when `--network`)_ | Static bearer token for authentication |
-| `--tls` | string | `off` | TLS mode: `off` \| `auto` \| `required` |
-| `--tls-cert` | string | — | Path to TLS certificate PEM (`required` mode) |
-| `--tls-key` | string | — | Path to TLS key PEM (`required` mode) |
+- `X-Nexus-Token: <daemon token>` header (used by embedded UI)
+- `Authorization: Bearer <token>` header
+- `?token=<token>` query parameter
 
-**TLS modes:**
+Open locally:
 
-- `off` — plaintext; safe only over loopback or SSH tunnel
-- `auto` — self-signed certificate generated in memory at startup
-- `required` — use `--tls-cert` / `--tls-key`; falls back to self-signed if files are omitted
+```bash
+open "http://localhost:8080/ui"
+```
 
-**Endpoints exposed by the network listener:**
+## Configuration
 
-| Path | Method | Auth | Description |
-|---|---|---|---|
-| `/healthz` | GET | none | Returns `{"status":"ok"}` |
-| `/version` | GET | none | Returns `{"version":"..."}` |
-| `/` | WebSocket | Bearer token | JSON-RPC 2.0 entry point |
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--port` | Server port | 8080 |
+| `--token` | Authentication token | - |
+| `--workspace-dir` | Workspace directory | /workspace |
+| `--host` | Host to bind to | localhost |
 
-See [Remote Daemon runbook](../guides/operations.md#remote-daemon-nexus-daemon-start-on-linux) for end-to-end setup.
+## Intent Model
 
-## Related
+Nexus CLI and daemon surfaces are organized by operator intent. This keeps command discovery and SDK mapping stable.
 
-- Workspace config: [`workspace-config.md`](workspace-config.md)
-- Operations guide: [`../guides/operations.md`](../guides/operations.md)
+### 1) Auth and Session
+
+- Authenticate and establish control-plane connectivity.
+- Typical surfaces: daemon token validation and client connection bootstrap.
+
+### 2) Workspace Lifecycle
+
+Canonical lifecycle verbs used across daemon APIs and SDK:
+
+- `create`
+- `list`
+- `open`
+- `start`
+- `pause`
+- `resume`
+- `stop`
+- `restore`
+- `fork`
+- `remove`
+
+### 3) Execution and Filesystem
+
+- Filesystem operations: read/write/stat/list/remove.
+- Command execution operations: execute process and collect output.
+
+### 4) Forwarding and Network Access
+
+- Spotlight operations for exposing workspace service ports.
+- Compose/default forward application flows.
+
+### 5) Diagnostics and Readiness
+
+- Capability checks and readiness polling.
+- Runtime state introspection and service health checks.
+
+## Components
+
+### Server (`cmd/daemon/`)
+
+- Main entry point for the daemon
+- WebSocket server handling RPC calls
+
+### Handlers (`pkg/`)
+
+- File system handlers
+- Command execution handlers
+
+## RPC Methods
+
+| Method | Description |
+|--------|-------------|
+| `workspace.create` | Create isolated remote workspace |
+| `workspace.list` | List workspace records |
+| `workspace.open` | Open workspace by id |
+| `workspace.start` | Start workspace compute and mark running |
+| `workspace.pause` | Pause a running workspace VM |
+| `workspace.resume` | Resume a paused workspace VM |
+| `workspace.stop` | Stop compute, persist workspace state |
+| `workspace.restore` | Restore persisted workspace to running state |
+| `workspace.fork` | Fork a workspace into a child workspace |
+| `workspace.remove` | Remove workspace by id |
+| `workspace.info` | Get workspace info |
+| `fs.readFile` | Read file contents |
+| `fs.writeFile` | Write file contents |
+| `fs.mkdir` | Create directory |
+| `fs.readdir` | List directory |
+| `fs.exists` | Check path exists |
+| `fs.stat` | Get file stats |
+| `fs.rm` | Remove file/directory |
+| `exec` | Execute command |
+| `git.command` | Run scoped git action in workspace |
+| `service.command` | Start/stop/restart/status/logs for workspace services |
+| `spotlight.expose` | Expose remote service port locally (Spotlight-only ingress) |
+| `spotlight.list` | List active Spotlight forwards |
+| `spotlight.close` | Close Spotlight forward |
+| `spotlight.applyDefaults` | Apply project spotlight defaults from `.nexus/workspace.json` |
+| `spotlight.applyComposePorts` | Auto-forward all docker-compose published ports |
+| `workspace.ready` | Poll readiness checks until success/timeout |
+| `capabilities.list` | List available runtime and toolchain capabilities |
+| `authrelay.mint` | Mint one-time auth relay token for exec injection |
+| `authrelay.revoke` | Revoke auth relay token |

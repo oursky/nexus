@@ -46,10 +46,40 @@ jobs:
           fi
 
       - name: Run XCUITests
-        env:
-          NEXUS_UI_TEST_DAEMON_URL: ws://127.0.0.1:7777
-          NEXUS_UI_TEST_DAEMON_TOKEN: ${{ secrets.NEXUS_DAEMON_TOKEN }}
         run: bash scripts/test-xcui.sh --no-tunnel
+
+      - name: Write Step Summary
+        if: always()
+        run: |
+          BUILD_DIR="packages/nexus-swift/.build/xcresults"
+          INDEX=$(ls "${BUILD_DIR}/index/"*.json 2>/dev/null | sort | tail -1)
+          if [[ -z "$INDEX" ]]; then
+            echo "## NexusUITests" >> "$GITHUB_STEP_SUMMARY"
+            echo "No index file found — tests may not have run." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python3 - "$INDEX" >> "$GITHUB_STEP_SUMMARY" <<'PYEOF'
+          import sys, json
+          index_path = sys.argv[1]
+          with open(index_path) as f:
+              d = json.load(f)
+          run_id = d['runId']
+          s = d['summary']
+          tests = d['tests']
+          lines = [
+              f'## NexusUITests — `{run_id}`',
+              '',
+              f'**{s["passed"]} passed · {s["failed"]} failed · {s["skipped"]} skipped · {s["durationSec"]:.1f}s**',
+              '',
+              '| Test | Status | Duration | Screenshots |',
+              '|------|--------|----------|-------------|',
+          ]
+          for t in tests:
+              ss_links = ' '.join(f'`{sc["name"]}`' for sc in t['screenshots']) or '—'
+              lines.append(f'| `{t["name"]}` | {t["statusIcon"]} | {t["durationSec"]:.1f}s | {ss_links} |')
+          lines.append('')
+          print('\n'.join(lines))
+          PYEOF
 
       - name: Upload xcresult bundle
         if: always()
@@ -59,10 +89,20 @@ jobs:
           path: packages/nexus-swift/.build/xcresults/*.xcresult
           if-no-files-found: warn
 
-      - name: Upload test report
+      - name: Upload report and index
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: NexusUITests-report
-          path: packages/nexus-swift/.build/xcresults/latest-report.md
+          path: |
+            packages/nexus-swift/.build/xcresults/reports/
+            packages/nexus-swift/.build/xcresults/index/
+          if-no-files-found: warn
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexusUITests-screenshots
+          path: packages/nexus-swift/.build/xcresults/screenshots/
           if-no-files-found: warn

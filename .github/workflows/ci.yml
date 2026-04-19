@@ -55,10 +55,7 @@ jobs:
         working-directory: packages/nexus
         run: |
           set -euo pipefail
-          # cmd/nexus and cmd/nexus-firecracker-agent import old pkg/* paths
-          # that were removed in the rewrite; exclude them until CLI is rewired
-          go test ./internal/... ./cmd/nexusd/ \
-            -covermode=atomic -coverprofile=coverage.out
+          go test ./... -covermode=atomic -coverprofile=coverage.out
           go tool cover -func=coverage.out | tail -n 1
 
       - name: Upload coverage artifact
@@ -71,7 +68,6 @@ jobs:
   ci:
     name: Core CI (linux)
     runs-on: ubuntu-latest
-
 
     steps:
       - name: Checkout code
@@ -111,49 +107,95 @@ jobs:
             **/coverage/
           retention-days: 7
 
-  # macOS: GitHub-hosted arm64 runners cannot use Apple Hypervisor Framework inside the VM (HV_UNSUPPORTED);
-  # see https://github.com/abiosoft/colima/issues/970 — use the hosted Intel image (nested virt) or slower QEMU/lima
-  # workarounds on arm64. We use macos-15-intel (x86_64) for Lima + Firecracker strict E2E without self-hosted runners.
-  integration-sandbox:
-    name: Integration Tests (process/sandbox)
+  opencode-nexus-plugin:
+    name: OpenCode Nexus Plugin Tests
     runs-on: ubuntu-latest
-    container:
-      image: golang:1.24
-      options: >-
-        --cap-add SYS_ADMIN
-        --cap-add NET_ADMIN
-        --security-opt seccomp=unconfined
-        --security-opt apparmor:unconfined
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build nexus daemon
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run opencode-nexus plugin tests
+        working-directory: packages/opencode-nexus
+        run: node --test test/*.test.js
+
+  # macOS: GitHub-hosted arm64 runners cannot use Apple Hypervisor Framework inside the VM (HV_UNSUPPORTED);
+  # see https://github.com/abiosoft/colima/issues/970 — use the hosted Intel image (nested virt) or slower QEMU/lima
+  # workarounds on arm64. We use macos-15-intel (x86_64) for Lima + Firecracker strict E2E without self-hosted runners.
+  sdk-runtime-e2e:
+    name: SDK Runtime E2E (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux
+          - os: macos-15-intel
+            label: macos-intel
+    env:
+      CI: true
+      NEXUS_E2E_STRICT_RUNTIME: '1'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Allow Firecracker to use KVM on hosted Linux runners
+        if: runner.os == 'Linux'
         run: |
-          git config --global --add safe.directory "$(pwd)"
-          cd packages/nexus
-          go build -o /tmp/nexusd ./cmd/nexusd/
+          if [[ -e /dev/kvm ]]; then
+            sudo chmod 666 /dev/kvm || true
+          fi
 
-      - name: Install bubblewrap (process sandbox dependency)
-        run: apt-get update -q && apt-get install -y bubblewrap
+      - name: Build nexus CLI, runtime tools, and seed nexus init
+        run: ./scripts/ci/sdk-runtime-e2e-setup.sh
 
-      - name: Run e2e tests
+      - name: Reset conflicting Lima instances on macOS
+        if: runner.os == 'macOS'
+        shell: bash
         run: |
-          cd packages/nexus
-          NEXUS_E2E_BINARY=/tmp/nexusd go test -tags e2e ./test/e2e/...
+          set -euo pipefail
+          limactl delete -f nexus-firecracker || true
+          limactl delete -f nexus-seatbelt || true
 
-  # Lima/macOS integration tests require macOS runners with nested virtualization.
-  # Uncomment when macos-15-intel runners are available in this org.
-  # integration-lima:
-  #   name: Integration Tests (lima/macOS)
-  #   runs-on: macos-15-intel
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-go@v5
-  #       with:
-  #         go-version-file: packages/nexus/go.mod
-  #     - name: Run lima integration tests
-  #       run: |
-  #         cd packages/nexus
-  #         go test -tags integration -v -timeout 30m -run 'TestAllDrivers/lima|TestPoolCoexistence/lima' ./test/integration/...
+      - name: Run runtime backend selection E2E (strict)
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          source "${GITHUB_WORKSPACE}/.nexus-e2e-env.sh"
+          set +a
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            export NEXUS_RUNTIME_SEATBELT_INSTANCE=nexus-seatbelt
+          fi
+          pnpm --filter @nexus/e2e-sdk-runtime test:ci -- src/cases/runtime-selection.e2e.test.ts
