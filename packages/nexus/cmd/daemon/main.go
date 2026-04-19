@@ -122,6 +122,7 @@ func runServer(port int, workspaceDir string, token string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create server: %w", err)
 	}
+	srv.SetAsDefaultLogger()
 
 	runner := &CommandRunner{}
 

@@ -173,7 +173,6 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 	ring := logstream.NewRing(500)
 	ringHandler := logstream.NewHandler(ring)
 	daemonLog = slog.New(newMultiHandler(slog.Default().Handler(), ringHandler))
-	slog.SetDefault(daemonLog) // ensure slog.Info/Debug/... in other packages feed the ring
 
 	return &Server{
 		port:         port,
@@ -197,6 +196,12 @@ func NewServer(port int, workspaceDir string, tokenSecret string) (*Server, erro
 		logRing:             ring,
 		shutdownCh:          make(chan struct{}),
 	}, nil
+}
+
+// SetAsDefaultLogger redirects the global slog/log output through this
+// server's ring handler. Call once from main; do not call in tests.
+func (s *Server) SetAsDefaultLogger() {
+	slog.SetDefault(daemonLog)
 }
 
 func (s *Server) Close() error {
