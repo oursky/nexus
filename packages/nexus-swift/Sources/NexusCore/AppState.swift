@@ -55,6 +55,23 @@ public final class AppState: ObservableObject {
     public init() {
         StartupTrace.beginSession()
         StartupTrace.checkpoint("app.init", "before client")
+
+        let procEnv = ProcessInfo.processInfo.environment
+        if let rawURL = procEnv["NEXUS_DAEMON_URL"], !rawURL.isEmpty,
+           let daemonURL = URL(string: rawURL) {
+            let token: String? = {
+                let t = procEnv["NEXUS_DAEMON_TOKEN"] ?? ""
+                return t.isEmpty ? nil : t
+            }()
+            self.cachedProfile = nil
+            self.client = WebSocketDaemonClient(daemonURL: daemonURL, token: token)
+            connectionState = .connecting
+            StartupTrace.checkpoint("app.init", "env-var bypass; url=\(rawURL)")
+            Task { await self.load() }
+            startRefreshLoop()
+            return
+        }
+
         let profile = DaemonProfileStore().defaultProfile()
         self.cachedProfile = profile
         self.client = NullDaemonClient()

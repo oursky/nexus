@@ -37,7 +37,7 @@ final class NexusUITests: XCTestCase {
         let env = ProcessInfo.processInfo.environment
         // Point at the already-running daemon so tests don't need to cold-start one.
         // Remove or adjust these env vars if you want to test the full auto-start path.
-        app.launchEnvironment["NEXUS_DAEMON_URL"] = env["NEXUS_UI_TEST_DAEMON_URL"] ?? "ws://localhost:63987"
+        app.launchEnvironment["NEXUS_DAEMON_URL"] = env["NEXUS_UI_TEST_DAEMON_URL"] ?? ""
         app.launchEnvironment["NEXUS_DAEMON_TOKEN"] = env["NEXUS_UI_TEST_DAEMON_TOKEN"] ?? (resolveDaemonToken() ?? "")
         app.launchEnvironment["NEXUS_UI_TEST_OPEN_DAEMON_PANEL"] = "1"
     }
@@ -344,7 +344,9 @@ private extension NexusUITests {
     }
 
     func isConfiguredDaemonHealthzUp() -> Bool {
-        let wsURL = app.launchEnvironment["NEXUS_DAEMON_URL"] ?? "ws://localhost:63987"
+        let wsURL = ProcessInfo.processInfo.environment["NEXUS_DAEMON_URL"]
+            ?? app.launchEnvironment["NEXUS_DAEMON_URL"]
+            ?? "ws://localhost:63987"
         guard var components = URLComponents(string: wsURL) else { return false }
         components.scheme = (components.scheme == "wss") ? "https" : "http"
         components.path = "/healthz"

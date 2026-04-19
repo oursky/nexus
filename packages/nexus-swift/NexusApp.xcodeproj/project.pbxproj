@@ -18,18 +18,19 @@
 		66EBFC88F463C187C400B0A2 /* DaemonProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE93856B0461004CF52C7968 /* DaemonProfile.swift */; };
 		6A3FAF5507F5406EDF804D0C /* NexusTerminalUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E06F1FDED2DC1368200DA652 /* NexusTerminalUITests.swift */; };
 		70A032749A38094DCC47722E /* RemoteProfileSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E45EF82BB328F02C2023EACB /* RemoteProfileSettingsView.swift */; };
+		76600FE6A81581B65B2B0082 /* NullDaemonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08F9D4363D42212510937E4D /* NullDaemonClient.swift */; };
 		7E776D62015DFBCF25EEE644 /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6231766FDA3F470858042A87 /* TerminalView.swift */; };
 		80CE1FC1D1DC6ED9FA1B0B3D /* NexusApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 804B2FADD0C5143C198F46DA /* NexusApp.swift */; };
 		8831D4FD2BE4EC9CA00D54D9 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 659564BF098092F19E1351D0 /* AppState.swift */; };
 		A512F81B9A51ED222CBECA5F /* WebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BFDE21D93B71D9558A8EB6 /* WebSocketClient.swift */; };
 		A774123997F078D6CD0C11BA /* WorkspaceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E59BFA6CB8B1E9F66EE1247E /* WorkspaceDetailView.swift */; };
 		A9273E20904D087845541518 /* DaemonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9C948C4674F0FD006FCE84F /* DaemonClient.swift */; };
-		B3A1C2D3E4F567890ABCDEF0 /* NullDaemonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D4E5F6A7B8C9D0E1F2A3B4 /* NullDaemonClient.swift */; };
 		AD51BA2C3901D464D639F60D /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9C9A878181FBC6C382D9F0 /* SidebarView.swift */; };
 		B5EC8D397B7A962CD2BDF820 /* debug_pty.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D96DD4872B23F7851C58FC /* debug_pty.swift */; };
 		C1C7D99C12055E99522AC87F /* SSHTunnelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4813F94247C8246742DEA82F /* SSHTunnelManager.swift */; };
 		CA97140DFA9661F38F425E4B /* ConfigSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C35EE5C1D87F8B4C3189948F /* ConfigSyncManager.swift */; };
 		CBD8EF15A85756F63CF36229 /* AsyncDeadline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E4D7D285580F1646BA523C0 /* AsyncDeadline.swift */; };
+		D81A44206B2BB574B42B87C2 /* NexusCreateFlowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A618ECA31B5F1E5406D7C841 /* NexusCreateFlowUITests.swift */; };
 		DA15791279FE3FB2D12D1CC2 /* AsyncDeadlineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1299EB3EDDA3B0AD4AA85C6 /* AsyncDeadlineTests.swift */; };
 		DCD55CD52BA08D65FF1A4C57 /* PTYSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE2B07751BE8ACCB41EBA453 /* PTYSessionManager.swift */; };
 		DF2C4D97A2B64D2BC0771EEE /* MultiTabTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F4BBF609F635803ECB96420 /* MultiTabTerminalView.swift */; };
@@ -64,6 +65,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		08F9D4363D42212510937E4D /* NullDaemonClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NullDaemonClient.swift; sourceTree = "<group>"; };
 		0E4D7D285580F1646BA523C0 /* AsyncDeadline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncDeadline.swift; sourceTree = "<group>"; };
 		1075C8BF288888AA4624C6B0 /* NexusAppTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusAppTests.swift; sourceTree = "<group>"; };
 		2B1758E3987EA79C35151F7B /* BottomPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BottomPanelView.swift; sourceTree = "<group>"; };
@@ -80,6 +82,7 @@
 		9A570BFC62A722A8BE1F84B9 /* NexusAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NexusAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1299EB3EDDA3B0AD4AA85C6 /* AsyncDeadlineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncDeadlineTests.swift; sourceTree = "<group>"; };
 		A2BFDE21D93B71D9558A8EB6 /* WebSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketClient.swift; sourceTree = "<group>"; };
+		A618ECA31B5F1E5406D7C841 /* NexusCreateFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusCreateFlowUITests.swift; sourceTree = "<group>"; };
 		B13EB4886DD523ACF011861C /* NewWorkspaceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewWorkspaceSheet.swift; sourceTree = "<group>"; };
 		BA9C9A878181FBC6C382D9F0 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
 		BE2B07751BE8ACCB41EBA453 /* PTYSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PTYSessionManager.swift; sourceTree = "<group>"; };
@@ -94,7 +97,6 @@
 		E59BFA6CB8B1E9F66EE1247E /* WorkspaceDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDetailView.swift; sourceTree = "<group>"; };
 		E82D4B646E6A09E4463C92C5 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		E9C948C4674F0FD006FCE84F /* DaemonClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonClient.swift; sourceTree = "<group>"; };
-		C3D4E5F6A7B8C9D0E1F2A3B4 /* NullDaemonClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NullDaemonClient.swift; sourceTree = "<group>"; };
 		EE93856B0461004CF52C7968 /* DaemonProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonProfile.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -134,7 +136,7 @@
 			isa = PBXGroup;
 			children = (
 				E9C948C4674F0FD006FCE84F /* DaemonClient.swift */,
-				C3D4E5F6A7B8C9D0E1F2A3B4 /* NullDaemonClient.swift */,
+				08F9D4363D42212510937E4D /* NullDaemonClient.swift */,
 				A2BFDE21D93B71D9558A8EB6 /* WebSocketClient.swift */,
 			);
 			path = Client;
@@ -152,6 +154,7 @@
 		6CD39A99843D99288153BF5A /* NexusUITests */ = {
 			isa = PBXGroup;
 			children = (
+				A618ECA31B5F1E5406D7C841 /* NexusCreateFlowUITests.swift */,
 				E06F1FDED2DC1368200DA652 /* NexusTerminalUITests.swift */,
 				BFBDA3B5F4182BD67D9EB847 /* NexusUITests.swift */,
 			);
@@ -237,6 +240,7 @@
 			buildConfigurationList = B992D6D8DB2250A5C1A5A0DF /* Build configuration list for PBXNativeTarget "NexusApp" */;
 			buildPhases = (
 				2C9E70762C891E5819603FF9 /* Sources */,
+				77F45765587B63B666448DE8 /* Copy bundled tools to app Resources */,
 				FAB36B0455E6FDDE1FDD72F2 /* Frameworks */,
 			);
 			buildRules = (
@@ -366,6 +370,36 @@
 			shellPath = /bin/sh;
 			shellScript = "ditto \"${SCRIPT_INPUT_FILE_0}\" \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 		};
+		77F45765587B63B666448DE8 /* Copy bundled tools to app Resources */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Resources/nexus-daemon",
+				"$(SRCROOT)/Resources/tools/nexus",
+				"$(SRCROOT)/Resources/tools/nexus-daemon",
+				"$(SRCROOT)/Resources/tools/mutagen",
+				"$(SRCROOT)/Resources/tools/limactl",
+				"$(SRCROOT)/Resources/tools/tmux",
+			);
+			name = "Copy bundled tools to app Resources";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-daemon",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/nexus",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/nexus-daemon",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/mutagen",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/limactl",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/tmux",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "copy_tool() {\n  local src=\"$1\"\n  local dst=\"$2\"\n  local label=\"$3\"\n  if [ -f \"$src\" ]; then\n    mkdir -p \"$(dirname \"$dst\")\"\n    cp \"$src\" \"$dst\"\n    chmod +x \"$dst\"\n    echo \"Bundled ${label} -> ${dst}\"\n  else\n    echo \"warning: ${label} not found at ${src}; run 'task swift:prepare-resources' to stage Resources\"\n  fi\n}\n\ncopy_tool \"${SRCROOT}/Resources/nexus-daemon\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-daemon\" \"nexus-daemon\"\n\nfor tool in nexus nexus-daemon mutagen limactl tmux; do\n  copy_tool \"${SRCROOT}/Resources/tools/${tool}\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/tools/${tool}\" \"${tool}\"\ndone\n";
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -404,8 +438,8 @@
 				CBD8EF15A85756F63CF36229 /* AsyncDeadline.swift in Sources */,
 				CA97140DFA9661F38F425E4B /* ConfigSyncManager.swift in Sources */,
 				A9273E20904D087845541518 /* DaemonClient.swift in Sources */,
-				B3A1C2D3E4F567890ABCDEF0 /* NullDaemonClient.swift in Sources */,
 				66EBFC88F463C187C400B0A2 /* DaemonProfile.swift in Sources */,
+				76600FE6A81581B65B2B0082 /* NullDaemonClient.swift in Sources */,
 				DCD55CD52BA08D65FF1A4C57 /* PTYSessionManager.swift in Sources */,
 				C1C7D99C12055E99522AC87F /* SSHTunnelManager.swift in Sources */,
 				5142C089169B296EB634FB67 /* StartupTrace.swift in Sources */,
@@ -419,6 +453,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D81A44206B2BB574B42B87C2 /* NexusCreateFlowUITests.swift in Sources */,
 				6A3FAF5507F5406EDF804D0C /* NexusTerminalUITests.swift in Sources */,
 				ED4D6C81197202F704C73D63 /* NexusUITests.swift in Sources */,
 			);

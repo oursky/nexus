@@ -32,8 +32,9 @@ final class NexusTerminalUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication(bundleIdentifier: "com.nexus.NexusApp")
-        app.launchEnvironment["NEXUS_DAEMON_URL"]   = "ws://localhost:63987"
-        app.launchEnvironment["NEXUS_DAEMON_TOKEN"] = resolveDaemonToken() ?? ""
+        let env = ProcessInfo.processInfo.environment
+        app.launchEnvironment["NEXUS_DAEMON_URL"]   = env["NEXUS_UI_TEST_DAEMON_URL"]   ?? ""
+        app.launchEnvironment["NEXUS_DAEMON_TOKEN"] = env["NEXUS_UI_TEST_DAEMON_TOKEN"] ?? (resolveDaemonToken() ?? "")
     }
 
     override func setUp() {
