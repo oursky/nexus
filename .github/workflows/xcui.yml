@@ -1,11 +1,14 @@
 name: XCUITests
 
+# Disabled: XCUITests require a full Lima VM + WDA setup which is too slow/flaky for CI.
+# TODO: Replace with simulator tests using a mocked JSON-RPC server.
 on:
-  push:
-    branches: [xcui-fixture-rewrite, main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      enable:
+        description: 'Set to "true" to run (disabled by default)'
+        required: true
+        default: 'false'
 
 jobs:
   xcuitests:
