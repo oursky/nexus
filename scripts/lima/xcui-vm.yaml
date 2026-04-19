@@ -13,8 +13,6 @@ disk: "20GiB"
 mounts:
   - location: "~"
     writable: false
-  - location: "/tmp/lima"
-    writable: true
 portForwards:
   - guestPort: 7777
     hostIP: "127.0.0.1"
@@ -24,17 +22,9 @@ provision:
     script: |
       #!/bin/bash
       set -euo pipefail
-      # Install Docker
-      curl -fsSL https://get.docker.com | sh
-      usermod -aG docker "$SUDO_USER" || true
-  - mode: user
-    script: |
-      #!/bin/bash
-      set -euo pipefail
       # Install Go (for building nexus daemon)
-      export GOVERSION=1.22.3
-      curl -fsSL "https://go.dev/dl/go${GOVERSION}.linux-amd64.tar.gz" | sudo tar -C /usr/local -xz
-      echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+      GOVERSION=1.22.3
+      curl -fsSL "https://go.dev/dl/go${GOVERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
 message: |
   Lima VM for NexusUITests CI is ready.
   Nexus daemon port 7777 is forwarded to host 127.0.0.1:7777.
