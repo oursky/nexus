@@ -66,6 +66,11 @@ func New(t *testing.T, opts ...Option) *Harness {
 		o(cfg)
 	}
 
+	// Check Firecracker availability before building the binary so that skips
+	// happen fast (no multi-second compile) on unsupported platforms / CI
+	// environments that lack Firecracker configuration.
+	RequireFirecracker(t)
+
 	dbPath := TempDB(t)
 	socketPath := TempSocket(t)
 	workdir := TempWorkdir(t)
@@ -86,10 +91,6 @@ func New(t *testing.T, opts ...Option) *Harness {
 			t.Fatalf("harness: build nexusd: %v\n%s", err, out)
 		}
 	}
-
-	// All harness-started daemons run Firecracker. macOS cannot run
-	// Firecracker so every test using this harness skips on darwin.
-	RequireFirecracker(t)
 
 	args := []string{
 		"daemon", "start",

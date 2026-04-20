@@ -5,6 +5,10 @@ cd "$(dirname "$0")/../.."
 
 task mutagen:update
 task firecracker:update
+# Build embedded agent + tap-helper binaries before compiling the nexus binary.
+# The //go:embed directives in embed_agent_*.go / embed_tap_helper_*.go require
+# these binaries to exist at compile time.
+cd packages/nexus && go generate ./cmd/nexus/ && cd -
 task build:workspace-daemon
 task lint:workspace-daemon
 task test:workspace-daemon
