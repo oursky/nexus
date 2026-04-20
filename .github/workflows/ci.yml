@@ -117,18 +117,29 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y squashfs-tools e2fsprogs libcap2-bin rsync
 
-      # Cache the Firecracker kernel (static, changes only with upstream version).
-      # Cache the pre-built ext4 rootfs (keyed on agent source so it rebuilds
-      # when the guest agent code changes).
-      - name: Cache Firecracker VM assets
+      # Cache the Firecracker kernel — static, changes only with the upstream URL.
+      - name: Cache Firecracker kernel
         uses: actions/cache@v4
         with:
-          path: |
-            /tmp/nexus-vmlinux.bin
-            /tmp/nexus-rootfs.ext4
-          key: firecracker-assets-amd64-${{ hashFiles('packages/nexus/cmd/nexus-firecracker-agent/**/*.go', 'packages/nexus/cmd/nexus/scripts/firecracker-setup.sh') }}
+          path: /tmp/nexus-vmlinux.bin
+          key: firecracker-kernel-v1.13-x86_64
+
+      # Cache the squashfs download — large (~200 MB), rarely changes.
+      - name: Cache Ubuntu squashfs
+        uses: actions/cache@v4
+        with:
+          path: /tmp/nexus-ubuntu.squashfs
+          key: firecracker-squashfs-ubuntu24-v1.13-x86_64
+
+      # Cache the pre-built ext4 rootfs — keyed on agent + setup script so it
+      # rebuilds automatically when the guest agent code changes.
+      - name: Cache Firecracker rootfs
+        uses: actions/cache@v4
+        with:
+          path: /tmp/nexus-rootfs.ext4
+          key: firecracker-rootfs-amd64-${{ hashFiles('packages/nexus/cmd/nexus-firecracker-agent/**/*.go', 'packages/nexus/cmd/nexus/scripts/firecracker-setup.sh') }}
           restore-keys: |
-            firecracker-assets-amd64-
+            firecracker-rootfs-amd64-
 
       # Download external embedded binaries and build the guest agent + tap-helper
       # so that the //go:embed directives in cmd/nexus are satisfied.

@@ -182,7 +182,9 @@ if [ ! -f "$ROOTFS_PATH" ]; then
     unsquashfs -d "$SQUASHFS_TMP/rootfs" "$SQUASHFS_TMP/rootfs.squashfs"
 
     echo "  -> Creating ext4 image..."
-    dd if=/dev/zero of="$ROOTFS_PATH" bs=1M count=4096 status=none
+    # Use truncate (sparse file) for instant allocation instead of dd which
+    # writes zeros sequentially and can take several minutes for a large image.
+    truncate -s 4G "$ROOTFS_PATH"
     mkfs.ext4 -F -q "$ROOTFS_PATH"
 
     mount -o loop "$ROOTFS_PATH" "$ROOTFS_MOUNT"
