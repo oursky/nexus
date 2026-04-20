@@ -41,6 +41,18 @@ func createCommand() *cobra.Command {
 		Use:   "create",
 		Short: "Create a new workspace",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Accept an optional positional path: `workspace create .` or
+			// `workspace create /path/to/repo` as a shorthand for --repo.
+			if len(args) == 1 && repo == "" {
+				repo = args[0]
+			}
+			// Infer name from the repo directory when not explicitly provided.
+			if repo != "" && name == "" {
+				abs, err := filepath.Abs(repo)
+				if err == nil {
+					name = filepath.Base(abs)
+				}
+			}
 			if repo == "" || name == "" {
 				return fmt.Errorf("--repo and --name are required")
 			}

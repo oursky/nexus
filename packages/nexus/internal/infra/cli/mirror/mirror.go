@@ -220,6 +220,9 @@ func flushSession(mutagenPath, sessionName string) error {
 
 func sshArgs(target string, port int, bash string) []string {
 	args := []string{"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no"}
+	if id := strings.TrimSpace(os.Getenv("NEXUS_E2E_SSH_IDENTITY")); id != "" {
+		args = append(args, "-i", id)
+	}
 	if port > 0 && port != 22 {
 		args = append(args, "-p", fmt.Sprintf("%d", port))
 	}

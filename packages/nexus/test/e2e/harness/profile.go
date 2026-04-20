@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/inizio/nexus/packages/nexus/internal/auth/tokenstore"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/profile"
 )
 
@@ -42,6 +43,13 @@ func writeE2EProfile(t *testing.T, configHome, sshHost string, daemonPort int, t
 	path := filepath.Join(dir, "default.json")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("writeE2EProfile: write: %v", err)
+	}
+	// Token is json:"-" so it is not in the JSON file; persist to the token
+	// store (headless file store on Linux) so LoadDefault() can retrieve it.
+	if token != "" {
+		if err := tokenstore.SaveProfileToken(token); err != nil {
+			t.Fatalf("writeE2EProfile: save token: %v", err)
+		}
 	}
 	t.Logf("e2e: wrote profile at %s (host=%s port=%d sshPort=%d)", path, sshHost, daemonPort, sshPort)
 }
