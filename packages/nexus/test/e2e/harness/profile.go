@@ -47,16 +47,14 @@ func writeE2EProfile(t *testing.T, configHome, sshHost string, daemonPort int, t
 	// Token is json:"-" so it is not in the JSON file; persist to the headless
 	// file store so LoadDefault() can retrieve it.
 	//
-	// Use a sub-directory of configHome as XDG_STATE_HOME so both the test
-	// process and CLI subprocesses use a writable, per-test-isolated path
-	// (avoids permission-denied when /home/runner/.config/nexus/ is root-owned
-	// from a previous sudo daemon run).
+	// Set XDG_CONFIG_HOME in the test process to configHome so that
+	// tokenstore.SaveProfileToken → os.UserConfigDir() → $XDG_CONFIG_HOME
+	// writes to the per-test temp dir, not /home/runner/.config (which may be
+	// root-owned when the provisioning daemon ran via sudo).
+	// The CLI subprocess already receives XDG_CONFIG_HOME=configHome via cliEnv,
+	// so both sides use the same writable path.
 	if token != "" {
-		stateHome := filepath.Join(configHome, ".state")
-		if err := os.MkdirAll(stateHome, 0o755); err != nil {
-			t.Fatalf("writeE2EProfile: mkdir state: %v", err)
-		}
-		t.Setenv("XDG_STATE_HOME", stateHome)
+		t.Setenv("XDG_CONFIG_HOME", configHome)
 		if err := tokenstore.SaveProfileToken(token); err != nil {
 			t.Fatalf("writeE2EProfile: save token: %v", err)
 		}
@@ -119,11 +117,6 @@ func (c *CLIHarness) cliEnv(configHome string) []string {
 		out = append(out, "XDG_CONFIG_HOME="+configHome)
 		if id := strings.TrimSpace(os.Getenv("NEXUS_E2E_SSH_IDENTITY")); id != "" {
 			out = append(out, "NEXUS_E2E_SSH_IDENTITY="+id) // tunnel reads this; documented in sshtunnel
-		}
-		// Forward the per-test XDG_STATE_HOME so the CLI subprocess resolves
-		// the profile token from the same writable location as the test process.
-		if sh := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); sh != "" {
-			out = append(out, "XDG_STATE_HOME="+sh)
 		}
 		return out
 	}
