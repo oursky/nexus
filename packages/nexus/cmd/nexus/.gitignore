@@ -2,3 +2,11 @@
 # Regenerate with: go generate ./cmd/nexus
 tap-helper-linux-amd64
 tap-helper-linux-arm64
+
+# Firecracker release binaries (task firecracker:update → scripts/nexus/update-firecracker.sh)
+firecracker-linux-amd64
+firecracker-linux-arm64
+
+# Guest agent binaries (go generate ./cmd/nexus builds ../nexus-firecracker-agent)
+agent-linux-amd64
+agent-linux-arm64
