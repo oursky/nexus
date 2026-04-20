@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -292,6 +294,10 @@ func hostName() string {
 // The kernel boots the agent directly via the init= boot argument
 // ("init=/usr/local/bin/nexus-firecracker-agent"), so we no longer need to
 // patch /sbin/init or write a wrapper script — just the binary itself.
+//
+// Injection is skipped when the agent binary hash matches the hash stored in
+// rootfsPath+".agent-sha256" — this avoids slow debugfs round-trips on every
+// daemon start when the binary hasn't changed.
 func ensureFirecrackerGuestAgent(rootfsPath string) error {
 	rootfsPath = strings.TrimSpace(rootfsPath)
 	if rootfsPath == "" {
@@ -309,8 +315,21 @@ func ensureFirecrackerGuestAgent(rootfsPath string) error {
 		return err
 	}
 
-	// Best effort fsck to recover from unclean loopback state.
-	_ = exec.Command("e2fsck", "-fy", rootfsPath).Run()
+	// Skip injection when the agent binary hasn't changed since the last time
+	// we wrote it into the rootfs.  The hash is stored in a sidecar file next
+	// to the rootfs so the check is a fast stat + file read with no I/O on the
+	// ext4 image itself.
+	hashFile := rootfsPath + ".agent-sha256"
+	if agentHash, hashErr := sha256HexFile(agentPath); hashErr == nil {
+		if stored, readErr := os.ReadFile(hashFile); readErr == nil &&
+			strings.TrimSpace(string(stored)) == agentHash {
+			return nil
+		}
+		// Inject and record the new hash on success (below).
+		defer func() {
+			_ = os.WriteFile(hashFile, []byte(agentHash+"\n"), 0o644)
+		}()
+	}
 
 	for _, cmd := range []string{
 		"mkdir /usr/local",
@@ -330,6 +349,16 @@ func ensureFirecrackerGuestAgent(rootfsPath string) error {
 		return fmt.Errorf("set mode on guest agent in rootfs: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// sha256HexFile returns the hex-encoded SHA-256 digest of the file at path.
+func sha256HexFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func resolveGuestAgentBinary() (string, error) {

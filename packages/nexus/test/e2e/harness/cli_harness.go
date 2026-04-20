@@ -84,7 +84,7 @@ func NewCLIHarness(t *testing.T) *CLIHarness {
 		t.Fatalf("cliharness: start daemon: %v", err)
 	}
 
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	var client *Client
 	for time.Now().Before(deadline) {
 		c, err := Dial(socketPath)

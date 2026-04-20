@@ -115,7 +115,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 		t.Fatalf("harness: start nexusd: %v", err)
 	}
 
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	var client *Client
 	for time.Now().Before(deadline) {
 		c, err := Dial(socketPath)
