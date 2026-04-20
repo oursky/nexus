@@ -48,6 +48,16 @@ tasks:
       - echo "  task test         — run the test suite"
       - echo "  task dev:daemon   — start the daemon with hot-reload"
 
+  firecracker:update:
+    desc: "Download latest Firecracker binaries for embedding"
+    cmds:
+      - scripts/nexus/update-firecracker.sh
+
+  mutagen:update:
+    desc: "Download latest Mutagen binaries (Darwin + Linux amd64/arm64) for embedding in the nexus CLI"
+    cmds:
+      - scripts/nexus/update-mutagen.sh
+
   setup:go:
     desc: "Download Go module dependencies"
     dir: packages/nexus
@@ -86,6 +96,11 @@ tasks:
     dir: packages/nexus
     cmds:
       - go test ./...
+
+  test:e2e:
+    desc: "Go e2e suite (test/e2e, -tags e2e): RPC + CLI against local daemon"
+    cmds:
+      - ./scripts/ci/nexus-e2e.sh
 
   # ── Lint ─────────────────────────────────────────────────────────────────
   lint:
@@ -154,6 +169,18 @@ tasks:
     cmds:
       - scripts/remote/daemon-restart.sh
 
+  daemon:clean-state:
+    desc: "Clean remote Firecracker runtime artifacts and lingering TAP/process state"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+      REMOTE_BIN: "{{.REMOTE_BIN}}"
+      REMOTE_PORT: "{{.REMOTE_PORT}}"
+    cmds:
+      - scripts/remote/daemon-clean-state.sh
+
   daemon:token:
     desc: "Print the daemon token from the remote host"
     preconditions:
@@ -185,7 +212,59 @@ tasks:
     cmds:
       - nexus daemon profile
 
+  remote:e2e-shell:
+    desc: "Redeploy remote daemon, start workspace, and run interactive workspace shell smoke test"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+      REMOTE_BIN: "{{.REMOTE_BIN}}"
+      REMOTE_PORT: "{{.REMOTE_PORT}}"
+      WORKSPACE_ID: "{{.WORKSPACE_ID}}"
+      WORKSPACE_NAME: "{{.WORKSPACE_NAME}}"
+      SKIP_DAEMON_STOP: "{{.SKIP_DAEMON_STOP}}"
+    cmds:
+      - scripts/remote/e2e-shell-workflow.sh
+
   # ── Swift ────────────────────────────────────────────────────────────────
+  generate:sdk:
+    desc: "Generate NexusRPC.swift from Go daemon RPC types (run after any handler change)"
+    cmds:
+      - scripts/generate-sdk.sh
+
+  swift:build:
+    desc: "Build the NexusApp macOS app (Debug)"
+    cmds:
+      - scripts/swift/build.sh
+
+  swift:open:
+    desc: "Open (or relaunch) the built NexusApp"
+    cmds:
+      - scripts/swift/open.sh
+
+  swift:rebuild:
+    desc: "Regenerate Swift SDK then rebuild the macOS app"
+    cmds:
+      - task: generate:sdk
+      - task: swift:build
+
+  dev:swift:
+    desc: "Full contributor loop: deploy daemon → restart → regenerate SDK → build app → open"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+      REMOTE_BIN: "{{.REMOTE_BIN}}"
+      REMOTE_PORT: "{{.REMOTE_PORT}}"
+    cmds:
+      - task: deploy:remote
+      - task: daemon:restart
+      - task: generate:sdk
+      - task: swift:build
+      - task: swift:open
+
   swift:test:ui:
     desc: "Run NexusUITests XCUITest suite against the remote daemon (SSH tunnel auto-managed)"
     cmds:
