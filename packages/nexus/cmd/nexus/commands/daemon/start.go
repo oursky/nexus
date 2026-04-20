@@ -322,7 +322,10 @@ func ensureFirecrackerGuestAgent(rootfsPath string) error {
 		"mkdir /usr/local/bin",
 		"mkdir /workspace",
 		"rm /usr/local/bin/nexus-firecracker-agent",
-		"rm /sbin/init",
+		// /sbin is a symlink to usr/sbin in modern rootfs images; write through
+		// the real path so debugfs (which doesn't follow symlinks) can find the
+		// directory.  The kernel resolves the symlink and finds /sbin/init fine.
+		"rm /usr/sbin/init",
 	} {
 		_ = exec.Command("debugfs", "-w", "-R", cmd, rootfsPath).Run()
 	}
@@ -330,16 +333,16 @@ func ensureFirecrackerGuestAgent(rootfsPath string) error {
 	if out, err := exec.Command("debugfs", "-w", "-R", fmt.Sprintf("write %s /usr/local/bin/nexus-firecracker-agent", agentPath), rootfsPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("write guest agent into rootfs: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	// debugfs write does not preserve source file permissions; set mode explicitly.
+	// debugfs write does not preserve source file permissions; set mode with sif.
 	// 0100755 = S_IFREG | 0755 (regular file, rwxr-xr-x).
 	if out, err := exec.Command("debugfs", "-w", "-R", "sif /usr/local/bin/nexus-firecracker-agent mode 0100755", rootfsPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("set mode on guest agent in rootfs: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	if out, err := exec.Command("debugfs", "-w", "-R", fmt.Sprintf("write %s /sbin/init", initPath), rootfsPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("write /sbin/init into rootfs: %w: %s", err, strings.TrimSpace(string(out)))
+	if out, err := exec.Command("debugfs", "-w", "-R", fmt.Sprintf("write %s /usr/sbin/init", initPath), rootfsPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("write /usr/sbin/init into rootfs: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	if out, err := exec.Command("debugfs", "-w", "-R", "sif /sbin/init mode 0100755", rootfsPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("set mode on /sbin/init in rootfs: %w: %s", err, strings.TrimSpace(string(out)))
+	if out, err := exec.Command("debugfs", "-w", "-R", "sif /usr/sbin/init mode 0100755", rootfsPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("set mode on /usr/sbin/init in rootfs: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

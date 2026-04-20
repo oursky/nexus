@@ -71,7 +71,7 @@ func checkBridge() error {
 }
 
 func tapHelperSetupInstructions() string {
-	return "  nexus daemon start --network   # auto-provisions on first run"
+	return "  nexus daemon start   # auto-provisions on first run"
 }
 
 func bridgeSetupInstructions() string {
