@@ -13,6 +13,6 @@ import _ "embed"
 //
 //	go generate ./cmd/nexus
 //
-//go:generate CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o agent-linux-amd64 ../nexus-firecracker-agent/
+//go:generate env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o agent-linux-amd64 ../nexus-firecracker-agent/
 //go:embed agent-linux-amd64
 var embeddedAgent []byte
