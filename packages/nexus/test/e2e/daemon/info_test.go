@@ -9,6 +9,7 @@ import (
 )
 
 func TestNodeInfo(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 
 	var result struct {

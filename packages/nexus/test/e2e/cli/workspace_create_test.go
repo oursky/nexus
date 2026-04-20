@@ -12,6 +12,7 @@ import (
 // TestCLI_WorkspaceCreate_EndToEnd runs the full production path: project discovery,
 // embedded Mutagen sync to the SSH profile host, then workspace.create — same as developers.
 func TestCLI_WorkspaceCreate_EndToEnd(t *testing.T) {
+	t.Parallel()
 	harness.RequireE2EFullStack(t)
 	h := harness.NewCLIHarness(t)
 	repo := harness.MakeLocalGitRepo(t, "ws-create-e2e")

@@ -14,6 +14,7 @@ import (
 // Note: workspace.restore resumes from a snapshot taken during workspace.stop
 // (the daemon persists VM state on stop). There is no separate snapshot RPC.
 func TestWorkspaceRestore(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 
 	clientRepo := harness.MakeLocalGitRepo(t, "restore")

@@ -14,6 +14,7 @@ import (
 
 // TestProtocol_Healthz verifies the /healthz HTTP endpoint returns 200 OK.
 func TestProtocol_Healthz(t *testing.T) {
+	t.Parallel()
 	h := harness.NewCLIHarness(t)
 	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", h.DaemonPort())
 
@@ -36,6 +37,7 @@ func TestProtocol_Healthz(t *testing.T) {
 
 // TestProtocol_NodeInfo verifies node.info returns a valid response with capabilities.
 func TestProtocol_NodeInfo(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 
 	var res struct {
@@ -59,6 +61,7 @@ func TestProtocol_NodeInfo(t *testing.T) {
 
 // TestProtocol_AuthReject verifies the HTTP endpoint rejects requests without a valid token.
 func TestProtocol_AuthReject(t *testing.T) {
+	t.Parallel()
 	h := harness.NewCLIHarness(t)
 	url := fmt.Sprintf("http://127.0.0.1:%d/", h.DaemonPort())
 
@@ -78,6 +81,7 @@ func TestProtocol_AuthReject(t *testing.T) {
 
 // TestProtocol_WorkflowRoundTrip verifies a complete create/start/stop/remove workflow via RPC.
 func TestProtocol_WorkflowRoundTrip(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	repoPath := harness.MakeLocalGitRepo(t, "proto-roundtrip")
 

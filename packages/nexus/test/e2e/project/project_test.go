@@ -9,6 +9,7 @@ import (
 )
 
 func TestProject(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	repo := harness.MakeLocalGitRepo(t, "project")
 

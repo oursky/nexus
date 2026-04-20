@@ -10,6 +10,7 @@ import (
 )
 
 func TestWorkspaceFork(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 
 	clientRepo := harness.MakeLocalGitRepo(t, "fork")

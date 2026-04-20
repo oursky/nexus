@@ -9,6 +9,7 @@ import (
 )
 
 func TestAuthRelay(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	repo := harness.MakeLocalGitRepo(t, "auth-relay")
 	cfg := harness.MirrorProfileConfigHome(t)

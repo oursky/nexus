@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,6 +50,7 @@ type FCDriver struct {
 	runner       CommandRunner
 	manager      ManagerInterface
 	projectRoots map[string]string
+	snapshotIDs  map[string]string // optional lineage snapshot ID per workspace
 	agents       map[string]*AgentClient
 	mu           sync.RWMutex
 }
@@ -68,6 +70,7 @@ func New(runner CommandRunner, opts ...Option) *FCDriver {
 	d := &FCDriver{
 		runner:       runner,
 		projectRoots: make(map[string]string),
+		snapshotIDs:  make(map[string]string),
 		agents:       make(map[string]*AgentClient),
 	}
 	for _, opt := range opts {
@@ -187,42 +190,25 @@ func (d *FCDriver) AgentConn(ctx context.Context, workspaceID string) (net.Conn,
 	return conn, nil
 }
 
-// Create spawns a new Firecracker VM for the workspace.
-func (d *FCDriver) Create(ctx context.Context, req CreateRequest) error {
+// Create registers a workspace lazily — it records the project root and optional
+// snapshot ID but does NOT spawn the Firecracker VM yet. The VM is started on
+// demand by EnsureStarted (called via workspace.start or pty.create). This keeps
+// workspace.create fast: no mkfs.ext4, no VM boot.
+func (d *FCDriver) Create(_ context.Context, req CreateRequest) error {
 	if req.ProjectRoot == "" {
 		return errors.New("project root is required")
 	}
 
-	if d.manager == nil {
-		return errors.New("manager is required for firecracker driver")
-	}
-
-	memMiB := parsePositiveIntOption(req.Options, "mem_mib", 1024)
-	vcpus := parsePositiveIntOption(req.Options, "vcpus", 1)
-	if vcpus <= 0 {
-		vcpus = parsePositiveIntOption(req.Options, "vcpu_count", 1)
-	}
-
-	spec := SpawnSpec{
-		WorkspaceID: req.WorkspaceID,
-		ProjectRoot: req.ProjectRoot,
-		MemoryMiB:   memMiB,
-		VCPUs:       vcpus,
-	}
-	if req.Options != nil {
-		spec.SnapshotID = strings.TrimSpace(req.Options["lineage_snapshot_id"])
-	}
-
-	inst, err := d.manager.Spawn(ctx, spec)
-	if err != nil {
-		return err
-	}
-
 	d.mu.Lock()
 	d.projectRoots[req.WorkspaceID] = req.ProjectRoot
+	if req.Options != nil {
+		if snap := strings.TrimSpace(req.Options["lineage_snapshot_id"]); snap != "" {
+			d.snapshotIDs[req.WorkspaceID] = snap
+		}
+	}
 	d.mu.Unlock()
 
-	log.Printf("[firecracker] created workspace %s (cid=%d)", req.WorkspaceID, inst.CID)
+	log.Printf("[firecracker] registered workspace %s (lazy; VM starts on first start)", req.WorkspaceID)
 	return nil
 }
 
@@ -283,16 +269,16 @@ func (d *FCDriver) Start(_ context.Context, _ string) error {
 	return nil
 }
 
-// EnsureStarted guarantees there is a live instance for workspaceID.
-// If the manager has no in-memory instance (e.g. daemon restart), it re-spawns
-// the VM from the workspace project root.
+// EnsureStarted guarantees there is a live Firecracker instance for workspaceID.
+// This is the real "start" path: it runs mkfs.ext4 (if needed) and boots the VM.
+// Called by Adapter.Start (workspace.start RPC) and AgentConn (pty.create RPC).
 func (d *FCDriver) EnsureStarted(ctx context.Context, workspaceID, projectRoot string) error {
 	if d.manager == nil {
 		return errors.New("manager is required for firecracker driver")
 	}
 
 	if _, err := d.manager.Get(workspaceID); err == nil {
-		return nil
+		return nil // already running
 	}
 
 	root := strings.TrimSpace(projectRoot)
@@ -305,10 +291,36 @@ func (d *FCDriver) EnsureStarted(ctx context.Context, workspaceID, projectRoot s
 		return fmt.Errorf("workspace %s has no project root for firecracker start", workspaceID)
 	}
 
-	return d.Create(ctx, CreateRequest{
+	d.mu.RLock()
+	snapshotID := d.snapshotIDs[workspaceID]
+	d.mu.RUnlock()
+
+	memMiB := defaultMemMiB()
+	spec := SpawnSpec{
 		WorkspaceID: workspaceID,
 		ProjectRoot: root,
-	})
+		MemoryMiB:   memMiB,
+		VCPUs:       1,
+		SnapshotID:  snapshotID,
+	}
+
+	inst, err := d.manager.Spawn(ctx, spec)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("[firecracker] started workspace %s (cid=%d)", workspaceID, inst.CID)
+	return nil
+}
+
+// defaultMemMiB returns the VM memory size in MiB, respecting NEXUS_FIRECRACKER_MEM_MIB.
+func defaultMemMiB() int {
+	if raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_MEM_MIB")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 1024
 }
 
 // Stop terminates a running VM.

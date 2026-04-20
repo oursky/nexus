@@ -9,6 +9,7 @@ import (
 )
 
 func TestPTY(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 
 	repoPath := harness.MakeLocalGitRepo(t, "pty")

@@ -9,6 +9,7 @@ import (
 )
 
 func TestSpotlight(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	repo := harness.MakeLocalGitRepo(t, "spotlight")
 	cfg := harness.MirrorProfileConfigHome(t)

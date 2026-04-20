@@ -17,6 +17,7 @@ import (
 // TestCLI_WorkspaceShellPTY drives `nexus workspace shell` through a real pseudoterminal
 // (not only stdin pipe), so the interactive code path is exercised.
 func TestCLI_WorkspaceShellPTY(t *testing.T) {
+	t.Parallel()
 	h := harness.NewCLIHarness(t)
 	clientRepo := harness.MakeLocalGitRepo(t, "pty-interactive")
 	_, daemonRepo := h.MirrorGitToDaemon(t, clientRepo, "proj-pty-interactive")

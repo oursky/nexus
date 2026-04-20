@@ -59,6 +59,7 @@ func rpcErrorCode(err error) int {
 
 // TestLifecycle_StartAndStop verifies a workspace can be started and stopped.
 func TestLifecycle_StartAndStop(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	id := createWorkspaceForSM(t, h, "sm-start-stop")
 
@@ -86,6 +87,7 @@ func TestLifecycle_StartAndStop(t *testing.T) {
 
 // TestLifecycle_ReadyState verifies workspace.ready follows start/stop transitions.
 func TestLifecycle_ReadyState(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	id := createWorkspaceForSM(t, h, "sm-ready")
 
@@ -105,6 +107,7 @@ func TestLifecycle_ReadyState(t *testing.T) {
 
 // TestLifecycle_RestoreFromStopped verifies a stopped workspace can be restored.
 func TestLifecycle_RestoreFromStopped(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	id := createWorkspaceForSM(t, h, "sm-restore")
 
@@ -131,6 +134,7 @@ func TestLifecycle_RestoreFromStopped(t *testing.T) {
 
 // TestLifecycle_RemoveNotInList verifies a removed workspace is absent from workspace.list.
 func TestLifecycle_RemoveNotInList(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	repoPath := harness.MakeLocalGitRepo(t, "sm-remove")
 	var res struct {
@@ -160,6 +164,7 @@ func TestLifecycle_RemoveNotInList(t *testing.T) {
 
 // TestLifecycle_NotFound verifies workspace.info for an unknown id returns a 404 error.
 func TestLifecycle_NotFound(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	err := h.Call("workspace.info", map[string]any{"id": "ws-nonexistent-999"}, nil)
 	if err == nil {
@@ -173,6 +178,7 @@ func TestLifecycle_NotFound(t *testing.T) {
 
 // TestLifecycle_StartNotFound verifies workspace.start for an unknown id returns a 404 error.
 func TestLifecycle_StartNotFound(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	err := h.Call("workspace.start", map[string]any{"id": "ws-nonexistent-999"}, nil)
 	if err == nil {
@@ -186,6 +192,7 @@ func TestLifecycle_StartNotFound(t *testing.T) {
 
 // TestLifecycle_ForkRequiresChildRef verifies workspace.fork without childRef is rejected.
 func TestLifecycle_ForkRequiresChildRef(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	id := createWorkspaceForSM(t, h, "sm-fork-noref")
 

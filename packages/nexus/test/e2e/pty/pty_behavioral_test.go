@@ -39,6 +39,7 @@ func createWorkspaceLocalRepo(t *testing.T, h *harness.CLIHarness, repoPath, nam
 
 // TestPTY_ExecPWD verifies that workspace exec runs in the workspace's repo directory.
 func TestPTY_ExecPWD(t *testing.T) {
+	t.Parallel()
 	h := harness.NewCLIHarness(t)
 	repoPath := harness.MakeLocalGitRepo(t, "exec-pwd")
 	wsID := createWorkspaceLocalRepo(t, h, repoPath, "exec-pwd")
@@ -56,6 +57,7 @@ func TestPTY_ExecPWD(t *testing.T) {
 
 // TestPTY_ExecEcho verifies stdout is streamed back from workspace exec.
 func TestPTY_ExecEcho(t *testing.T) {
+	t.Parallel()
 	h := harness.NewCLIHarness(t)
 	repoPath := harness.MakeLocalGitRepo(t, "exec-echo")
 	wsID := createWorkspaceLocalRepo(t, h, repoPath, "exec-echo")
@@ -71,6 +73,7 @@ func TestPTY_ExecEcho(t *testing.T) {
 
 // TestPTY_ExecGitBranch verifies git branch reports correctly in the workspace.
 func TestPTY_ExecGitBranch(t *testing.T) {
+	t.Parallel()
 	h := harness.NewCLIHarness(t)
 	repoPath := harness.MakeLocalGitRepo(t, "exec-git-branch")
 	wsID := createWorkspaceLocalRepo(t, h, repoPath, "exec-git-branch")
@@ -87,6 +90,7 @@ func TestPTY_ExecGitBranch(t *testing.T) {
 
 // TestPTY_ExecWriteAndReadFile verifies file writes are visible from workspace exec.
 func TestPTY_ExecWriteAndReadFile(t *testing.T) {
+	t.Parallel()
 	h := harness.NewCLIHarness(t)
 	repoPath := harness.MakeLocalGitRepo(t, "exec-file")
 	wsID := createWorkspaceLocalRepo(t, h, repoPath, "exec-file")
@@ -113,6 +117,7 @@ func TestPTY_ExecWriteAndReadFile(t *testing.T) {
 
 // TestPTY_ExecExitCode verifies non-zero exit codes propagate correctly.
 func TestPTY_ExecExitCode(t *testing.T) {
+	t.Parallel()
 	h := harness.NewCLIHarness(t)
 	repoPath := harness.MakeLocalGitRepo(t, "exec-exit")
 	wsID := createWorkspaceLocalRepo(t, h, repoPath, "exec-exit")
@@ -126,6 +131,7 @@ func TestPTY_ExecExitCode(t *testing.T) {
 
 // TestPTY_ShellNonInteractiveScript verifies workspace shell with stdin pipe runs a script.
 func TestPTY_ShellNonInteractiveScript(t *testing.T) {
+	t.Parallel()
 	h := harness.NewCLIHarness(t)
 	repoPath := harness.MakeLocalGitRepo(t, "shell-script")
 	wsID := createWorkspaceLocalRepo(t, h, repoPath, "shell-script")
@@ -141,6 +147,7 @@ func TestPTY_ShellNonInteractiveScript(t *testing.T) {
 
 // TestPTY_ListSession verifies pty.list shows a created session.
 func TestPTY_ListSession(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	repoPath := harness.MakeLocalGitRepo(t, "pty-list")
 	var wsRes struct {

@@ -12,6 +12,7 @@ import (
 )
 
 func TestCLI_ProjectCreateListGetRemove(t *testing.T) {
+	t.Parallel()
 	h := harness.NewCLIHarness(t)
 	root := t.TempDir()
 	base := filepath.Base(root)
@@ -55,6 +56,7 @@ func TestCLI_ProjectCreateListGetRemove(t *testing.T) {
 }
 
 func TestCLI_WorkspaceShellAndExec(t *testing.T) {
+	t.Parallel()
 	h := harness.NewCLIHarness(t)
 	clientRepo := harness.MakeLocalGitRepo(t, "shell")
 	_, daemonRepo := h.MirrorGitToDaemon(t, clientRepo, "proj-cli-shell")

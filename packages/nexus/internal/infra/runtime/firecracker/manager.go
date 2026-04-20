@@ -152,24 +152,27 @@ func (m *Manager) cleanup(workDir string, proc *os.Process) {
 
 // Spawn creates and starts a new Firecracker VM instance.
 func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) {
+	// Phase 1: Quick duplicate check and CID allocation (mutex held briefly).
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if _, exists := m.instances[spec.WorkspaceID]; exists {
+		m.mu.Unlock()
 		return nil, fmt.Errorf("workspace already exists: %s", spec.WorkspaceID)
 	}
 
-	// Snapshot restore path (experiment-gated)
+	// Snapshot restore path (experiment-gated).
 	if os.Getenv("NEXUS_FIRECRACKER_SNAPSHOT") == "1" {
 		snap, err := m.ensureBaseSnapshot(ctx, m.config.KernelPath, m.config.RootFSPath)
 		if err != nil {
+			m.mu.Unlock()
 			return nil, fmt.Errorf("ensure base snapshot: %w", err)
 		}
 		if _, statErr := os.Stat(snap.vmstatePath); statErr == nil {
 			m.mu.Unlock()
 			inst, restoreErr := m.restoreFromSnapshot(ctx, spec, snap)
-			m.mu.Lock()
 			if restoreErr == nil {
+				m.mu.Lock()
+				m.instances[spec.WorkspaceID] = inst
+				m.mu.Unlock()
 				return inst, nil
 			}
 			log.Printf("[firecracker] snapshot restore failed, falling back to cold boot: %v", restoreErr)
@@ -177,9 +180,17 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 			m.snapshotMu.Lock()
 			delete(m.snapshotCache, key)
 			m.snapshotMu.Unlock()
+			m.mu.Lock()
 		}
 	}
 
+	cid := m.nextCID
+	m.nextCID++
+	// Release mutex before slow I/O (mkfs.ext4, Firecracker launch, API config).
+	// Other operations (Stop, Get, etc.) can proceed concurrently during image build.
+	m.mu.Unlock()
+
+	// Phase 2: Slow I/O — all of this runs WITHOUT the global mutex.
 	workDir := filepath.Join(m.config.WorkDirRoot, spec.WorkspaceID)
 
 	var projectSizeBytes int64
@@ -211,10 +222,6 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	vsockPath := filepath.Join(workDir, "vsock.sock")
 	serialLog := filepath.Join(workDir, "firecracker.log")
 	workspaceImagePath := filepath.Join(workDir, "workspace.ext4")
-	cleanupTap := true
-
-	cid := m.nextCID
-	m.nextCID++
 
 	// Derive a tap name for this workspace and create it on the host bridge.
 	tap := tapNameForWorkspace(spec.WorkspaceID)
@@ -229,17 +236,13 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	if strings.TrimSpace(spec.SnapshotID) != "" {
 		if err := copyFile(m.snapshotImagePath(spec.SnapshotID), workspaceImagePath); err != nil {
-			if cleanupTap {
-				teardownTAP(tap, subnetCIDR)
-			}
+			teardownTAP(tap, subnetCIDR)
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("failed to restore workspace image from snapshot: %w", err)
 		}
 	} else {
 		if err := workspaceImageBuilderFunc(spec.ProjectRoot, workspaceImagePath); err != nil {
-			if cleanupTap {
-				teardownTAP(tap, subnetCIDR)
-			}
+			teardownTAP(tap, subnetCIDR)
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("failed to build workspace image: %w", err)
 		}
@@ -395,8 +398,18 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		HostIP:         hostIP,
 	}
 
+	// Phase 3: Re-acquire mutex to register the instance.
+	// Guard against the rare case where the workspace was removed and re-created
+	// concurrently while mkfs/VM-boot was in progress.
+	m.mu.Lock()
+	if _, exists := m.instances[spec.WorkspaceID]; exists {
+		m.mu.Unlock()
+		teardownTAP(tap, subnetCIDR)
+		m.cleanup(workDir, cmd.Process)
+		return nil, fmt.Errorf("workspace already exists: %s", spec.WorkspaceID)
+	}
 	m.instances[spec.WorkspaceID] = inst
-	cleanupTap = false
+	m.mu.Unlock()
 	return inst, nil
 }
 

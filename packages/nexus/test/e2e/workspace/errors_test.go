@@ -10,6 +10,7 @@ import (
 
 // TestErrors_WorkspaceNotFound verifies workspace operations on unknown IDs return 404.
 func TestErrors_WorkspaceNotFound(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	const unknownID = "ws-does-not-exist-00000"
 
@@ -42,6 +43,7 @@ func TestErrors_WorkspaceNotFound(t *testing.T) {
 
 // TestErrors_CreateMissingRequiredFields verifies workspace.create rejects missing fields.
 func TestErrors_CreateMissingRequiredFields(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 
 	// Missing repo.
@@ -63,6 +65,7 @@ func TestErrors_CreateMissingRequiredFields(t *testing.T) {
 
 // TestErrors_MissingIDParam verifies methods that require id reject empty/missing id.
 func TestErrors_MissingIDParam(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 
 	cases := []struct {
@@ -87,6 +90,7 @@ func TestErrors_MissingIDParam(t *testing.T) {
 
 // TestErrors_SpotlightStopMissingWorkspaceID verifies spotlight.stop with no workspaceId returns 400.
 func TestErrors_SpotlightStopMissingWorkspaceID(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	err := h.Call("spotlight.stop", map[string]any{}, nil)
 	if err == nil {
@@ -97,6 +101,7 @@ func TestErrors_SpotlightStopMissingWorkspaceID(t *testing.T) {
 // TestErrors_SpotlightStopUnknownWorkspace verifies spotlight.stop on a workspace with no
 // active forwards succeeds (idempotent — nothing to stop is not an error).
 func TestErrors_SpotlightStopUnknownWorkspace(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	err := h.Call("spotlight.stop", map[string]any{"workspaceId": "ws-does-not-exist"}, nil)
 	if err != nil {
@@ -106,6 +111,7 @@ func TestErrors_SpotlightStopUnknownWorkspace(t *testing.T) {
 
 // TestErrors_MethodNotFound verifies calling an unregistered method returns an error.
 func TestErrors_MethodNotFound(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	err := h.Call("workspace.no_such_method", nil, nil)
 	if err == nil {
@@ -115,6 +121,7 @@ func TestErrors_MethodNotFound(t *testing.T) {
 
 // TestErrors_PTYCreateMissingWorkspace verifies pty.create with unknown workspace returns an error.
 func TestErrors_PTYCreateMissingWorkspace(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 	err := h.Call("pty.create", map[string]any{
 		"workspaceId": "ws-does-not-exist",
