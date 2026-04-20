@@ -38,6 +38,12 @@ func New(host string, remotePort, sshPort int) *Manager {
 // Returns the local port the tunnel is listening on.
 // If localPort is 0, it auto-selects an available port.
 func (m *Manager) Ensure() (int, error) {
+	return m.EnsureWithLocalPort(m.localPort)
+}
+
+// EnsureWithLocalPort opens the SSH tunnel if not already running,
+// binding to the specified localPort. If localPort is 0, auto-selects.
+func (m *Manager) EnsureWithLocalPort(localPort int) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -45,12 +51,14 @@ func (m *Manager) Ensure() (int, error) {
 		return m.localPort, nil
 	}
 
-	if m.localPort == 0 {
+	if localPort == 0 {
 		port, err := findAvailablePort()
 		if err != nil {
 			return 0, fmt.Errorf("find available port: %w", err)
 		}
 		m.localPort = port
+	} else {
+		m.localPort = localPort
 	}
 
 	args := []string{"-fNL", fmt.Sprintf("localhost:%d:localhost:%d", m.localPort, m.remotePort)}
