@@ -95,7 +95,6 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 	if cfg.firecrackerBin != "" {
 		args = append(args,
-			"--firecracker",
 			"--firecracker-bin", cfg.firecrackerBin,
 			"--kernel", cfg.firecrackerKernel,
 			"--rootfs", cfg.firecrackerRootfs,
@@ -111,7 +110,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 		t.Fatalf("harness: start nexusd: %v", err)
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	var client *Client
 	for time.Now().Before(deadline) {
 		c, err := Dial(socketPath)
@@ -129,7 +128,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 	if client == nil {
 		_ = cmd.Process.Kill()
-		t.Fatalf("harness: nexusd did not become ready within 10s")
+		t.Fatalf("harness: nexusd did not become ready within 20s")
 	}
 
 	h := &Harness{

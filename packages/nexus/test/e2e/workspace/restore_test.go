@@ -16,7 +16,9 @@ import (
 func TestWorkspaceRestore(t *testing.T) {
 	h := harness.New(t)
 
-	repoPath := makeLocalGitRepo(t, "restore")
+	clientRepo := harness.MakeLocalGitRepo(t, "restore")
+	cfg := harness.MirrorProfileConfigHome(t)
+	_, remoteRepo := harness.MirrorGitCheckoutToDaemon(t, h, cfg, clientRepo, "proj-restore")
 
 	// 1. Create
 	var createRes struct {
@@ -27,7 +29,7 @@ func TestWorkspaceRestore(t *testing.T) {
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{
-			"repo":          repoPath,
+			"repo":          remoteRepo,
 			"ref":           "main",
 			"workspaceName": "restore-test",
 		},

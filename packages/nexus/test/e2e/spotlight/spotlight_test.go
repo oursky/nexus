@@ -10,6 +10,9 @@ import (
 
 func TestSpotlight(t *testing.T) {
 	h := harness.New(t)
+	repo := harness.MakeLocalGitRepo(t, "spotlight")
+	cfg := harness.MirrorProfileConfigHome(t)
+	_, remoteRepo := harness.MirrorGitCheckoutToDaemon(t, h, cfg, repo, "proj-spotlight")
 
 	// Create and start a workspace to attach spotlight forwards to.
 	var createRes struct {
@@ -19,7 +22,7 @@ func TestSpotlight(t *testing.T) {
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{
-			"repo":          "git@github.com:test/repo.git",
+			"repo":          remoteRepo,
 			"ref":           "main",
 			"workspaceName": "spotlight-test",
 		},

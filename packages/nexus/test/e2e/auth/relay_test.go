@@ -10,6 +10,9 @@ import (
 
 func TestAuthRelay(t *testing.T) {
 	h := harness.New(t)
+	repo := harness.MakeLocalGitRepo(t, "auth-relay")
+	cfg := harness.MirrorProfileConfigHome(t)
+	_, remoteRepo := harness.MirrorGitCheckoutToDaemon(t, h, cfg, repo, "proj-auth-relay")
 
 	// Create a workspace with an auth binding so we can mint tokens against it.
 	var createRes struct {
@@ -19,7 +22,7 @@ func TestAuthRelay(t *testing.T) {
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{
-			"repo":          "git@github.com:test/repo.git",
+			"repo":          remoteRepo,
 			"ref":           "main",
 			"workspaceName": "auth-relay-test",
 			"authBinding": map[string]string{
