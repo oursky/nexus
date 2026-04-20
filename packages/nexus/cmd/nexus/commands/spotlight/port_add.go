@@ -9,17 +9,18 @@ import (
 )
 
 func portAddCommand() *cobra.Command {
-	var workspaceID string
 	var port int
 	var remotePort int
 	var protocol string
 
 	cmd := &cobra.Command{
-		Use:   "add",
+		Use:   "add <workspace-id>",
 		Short: "Add a port forward to a workspace",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if workspaceID == "" || port == 0 {
-				return fmt.Errorf("nexus spotlight port add: --workspace and --port are required")
+			workspaceID := args[0]
+			if port == 0 {
+				return fmt.Errorf("nexus spotlight port add: --port is required")
 			}
 			if remotePort == 0 {
 				remotePort = port
@@ -51,7 +52,6 @@ func portAddCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&workspaceID, "workspace", "", "workspace ID (required)")
 	cmd.Flags().IntVar(&port, "port", 0, "local port to expose (required)")
 	cmd.Flags().IntVar(&remotePort, "remote-port", 0, "remote port (defaults to --port)")
 	cmd.Flags().StringVar(&protocol, "protocol", "", "protocol (tcp/http)")

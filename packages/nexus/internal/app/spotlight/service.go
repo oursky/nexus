@@ -18,24 +18,42 @@ type PortForwarder interface {
 	StartSpotlight(ctx context.Context, workspaceID string, spec spotlight.ExposeSpec) (*spotlight.Forward, error)
 }
 
+// EndpointResolver resolves how to reach a workspace-internal service from the daemon host.
+type EndpointResolver interface {
+	ResolveWorkspaceEndpoint(ctx context.Context, workspaceID string, remotePort int) (host string, port int, err error)
+}
+
 // Service manages port forwards (spotlight) for workspaces.
 var _ PortForwarder = (*Service)(nil)
 
 type Service struct {
 	repo          spotlight.Repository
 	workspaceRepo workspace.Repository
+	resolver      EndpointResolver
 
 	mu        sync.RWMutex
 	listeners map[string]net.Listener
 }
 
+// Option configures spotlight service dependencies.
+type Option func(*Service)
+
+// WithEndpointResolver enables internal workspace endpoint routing without daemon-host binds.
+func WithEndpointResolver(r EndpointResolver) Option {
+	return func(s *Service) { s.resolver = r }
+}
+
 // New creates a Service.
-func New(repo spotlight.Repository, workspaceRepo workspace.Repository) *Service {
-	return &Service{
+func New(repo spotlight.Repository, workspaceRepo workspace.Repository, opts ...Option) *Service {
+	s := &Service{
 		repo:          repo,
 		workspaceRepo: workspaceRepo,
 		listeners:     make(map[string]net.Listener),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // StartSpotlight creates and activates a port forward for the given workspace.
@@ -66,6 +84,26 @@ func (s *Service) StartSpotlight(ctx context.Context, workspaceID string, spec s
 	}
 	if fwd.Protocol == "" {
 		fwd.Protocol = "tcp"
+	}
+	fwd.TargetHost = "127.0.0.1"
+
+	// Firecracker workspaces should route spotlight directly to guest-internal
+	// service endpoints instead of binding daemon-host ports.
+	if ws.Backend == "firecracker" && s.resolver != nil {
+		targetHost, targetPort, err := s.resolver.ResolveWorkspaceEndpoint(ctx, workspaceID, spec.RemotePort)
+		if err != nil {
+			return nil, fmt.Errorf("resolve workspace endpoint: %w", err)
+		}
+		if targetHost == "" || targetPort <= 0 {
+			return nil, fmt.Errorf("invalid workspace endpoint %q:%d", targetHost, targetPort)
+		}
+		fwd.TargetHost = targetHost
+		fwd.RemotePort = targetPort
+		if err := s.repo.Create(ctx, fwd); err != nil {
+			return nil, fmt.Errorf("persist forward: %w", err)
+		}
+		copy := *fwd
+		return &copy, nil
 	}
 
 	host := "127.0.0.1"

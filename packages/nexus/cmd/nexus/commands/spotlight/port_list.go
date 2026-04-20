@@ -9,17 +9,15 @@ import (
 )
 
 func portListCommand() *cobra.Command {
-	var workspaceID string
 	var asJSON bool
 
 	cmd := &cobra.Command{
-		Use:     "list",
+		Use:     "list <workspace-id>",
 		Aliases: []string{"ls"},
 		Short:   "List port forwards for a workspace",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if workspaceID == "" {
-				return fmt.Errorf("nexus spotlight port list: --workspace is required")
-			}
+			workspaceID := args[0]
 
 			conn, err := rpc.EnsureDaemon()
 			if err != nil {
@@ -58,7 +56,6 @@ func portListCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&workspaceID, "workspace", "", "workspace ID (required)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output as JSON")
 	return cmd
 }

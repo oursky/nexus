@@ -24,7 +24,7 @@ func New(svc *appspotlight.Service) *Handler {
 func (h *Handler) Register(reg registry.Registry) error {
 	reg.Register("spotlight.start", h.HandleStart)
 	reg.Register("spotlight.list", h.HandleList)
-	reg.Register("spotlight.close", h.HandleClose)
+	reg.Register("spotlight.stop", h.HandleStop)
 	reg.Register("workspace.ports.list", h.HandlePortsList)
 	reg.Register("workspace.ports.add", h.HandlePortsAdd)
 	reg.Register("workspace.ports.remove", h.HandlePortsRemove)
@@ -90,7 +90,7 @@ func (h *Handler) HandleList(ctx context.Context, raw json.RawMessage) (any, err
 	return &listResult{Forwards: fwds}, nil
 }
 
-// --- spotlight.close ---
+// --- spotlight.stop ---
 
 type closeParams struct {
 	ID string `json:"id"`
@@ -100,7 +100,7 @@ type closeResult struct {
 	Closed bool `json:"closed"`
 }
 
-func (h *Handler) HandleClose(ctx context.Context, raw json.RawMessage) (any, error) {
+func (h *Handler) HandleStop(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p closeParams
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, rpcerrors.InvalidParams("invalid params: " + err.Error())
