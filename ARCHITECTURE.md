@@ -98,7 +98,8 @@ func (s *WorkspaceStore) Get(ctx context.Context, id string) (*workspace.Workspa
 
 **CLI-only infra** (used by `cmd/nexus`, never by the daemon):
 - `infra/cli/compose/` — discovers Docker Compose projects on the *client* machine
-- `infra/cli/daemonclient/` — auto-starts the daemon process from the CLI
+- `infra/cli/profile/` — daemon profile store (host, port, token, SSH port)
+- `infra/cli/sshtunnel/` — SSH tunnel manager for remote daemon connections
 
 ---
 
@@ -216,8 +217,8 @@ internal/
 ├── infra/
 │   ├── cli/            CLI-only infra (NOT used by daemon)
 │   │   ├── compose/    Docker Compose project discovery (client machine)
-│   │   ├── daemonclient/ Auto-start daemon from CLI
-│   │   └── localws/    Local worktree + mutagen sync management (client machine)
+│   │   ├── profile/    Daemon profile store (host, port, token, SSH port)
+│   │   └── sshtunnel/  SSH tunnel manager for remote daemon connections
 │   ├── config/         Node and workspace config (disk reads)
 │   ├── fsworkspace/    Filesystem operations for workspace dirs on daemon host
 │   ├── runtime/
