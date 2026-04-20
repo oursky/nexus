@@ -33,7 +33,7 @@ func implodeCommand() *cobra.Command {
   • [Linux] Removes ~/.local/bin/nexus-tap-helper and ~/.local/bin/firecracker
   • [Linux] Removes the VM kernel and rootfs from /var/lib/nexus/
 
-After implode, running ` + "`nexus daemon start --network`" + ` will re-provision
+After implode, running ` + "`nexus daemon start`" + ` will re-provision
 everything from scratch.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
@@ -71,7 +71,7 @@ everything from scratch.`,
 
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "✓ Nexus daemon state removed.")
-			fmt.Fprintln(w, "  To start fresh: nexus daemon start --network --port 7777")
+			fmt.Fprintln(w, "  To start fresh: nexus daemon start")
 			return nil
 		},
 	}
