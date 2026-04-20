@@ -38,6 +38,22 @@ if ! grep -qF "$(cat "$KEY.pub")" "${HOME}/.ssh/authorized_keys" 2>/dev/null; th
   cat "$KEY.pub" >> "${HOME}/.ssh/authorized_keys"
 fi
 
+# Write an SSH client config so both the direct `ssh` invocations and Mutagen's
+# internal SSH client use the correct identity file for the loopback host.
+SSH_CONFIG="${HOME}/.ssh/config"
+touch "$SSH_CONFIG"
+chmod 600 "$SSH_CONFIG"
+if ! grep -q "Host 127.0.0.1" "$SSH_CONFIG" 2>/dev/null; then
+  cat >> "$SSH_CONFIG" << EOF
+
+Host 127.0.0.1
+  IdentityFile $KEY
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  BatchMode yes
+EOF
+fi
+
 sudo mkdir -p /run/sshd
 sudo service ssh start 2>/dev/null || sudo systemctl start ssh 2>/dev/null || true
 
