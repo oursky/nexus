@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	creackpty "github.com/creack/pty"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/firecracker"
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
@@ -54,6 +55,8 @@ type execRequest struct {
 	Env     []string `json:"env,omitempty"`
 	Stream  bool     `json:"stream,omitempty"`
 	Data    string   `json:"data,omitempty"`
+	Cols    int      `json:"cols,omitempty"`
+	Rows    int      `json:"rows,omitempty"`
 }
 
 type execResponse struct {
@@ -69,9 +72,7 @@ type execResponse struct {
 type shellSession struct {
 	id   string
 	cmd  *exec.Cmd
-	in   io.WriteCloser
-	out  io.ReadCloser
-	err  io.ReadCloser
+	ptmx *os.File
 	done chan int
 }
 
@@ -325,7 +326,7 @@ func handleShellRequest(req execRequest, encoder *json.Encoder) {
 	case "shell.write":
 		handleShellWrite(req, encoder)
 	case "shell.resize":
-		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 0})
+		handleShellResize(req, encoder)
 	case "shell.close":
 		handleShellClose(req, encoder)
 	default:
@@ -334,9 +335,6 @@ func handleShellRequest(req execRequest, encoder *json.Encoder) {
 }
 
 func handleShellOpen(req execRequest, encoder *json.Encoder) {
-	ctx, cancel := context.WithTimeout(context.Background(), agentExecTimeout())
-	defer cancel()
-
 	env := append([]string{}, os.Environ()...)
 	env = ensurePathInEnv(env)
 
@@ -346,7 +344,7 @@ func handleShellOpen(req execRequest, encoder *json.Encoder) {
 	}
 	if workDir == workspaceMountPoint || strings.HasPrefix(workDir, workspaceMountPoint+"/") {
 		if err := setupWorkspaceMountRequiredFunc(); err != nil {
-			_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: fmt.Sprintf("workspace mount ensure failed: %v", err)})
+			_ = encoder.Encode(execResponse{ID: req.ID, Type: "ack", ExitCode: 1, Stderr: fmt.Sprintf("workspace mount ensure failed: %v", err)})
 			return
 		}
 	}
@@ -356,54 +354,46 @@ func handleShellOpen(req execRequest, encoder *json.Encoder) {
 		shell = "bash"
 	}
 
-	cmd := exec.CommandContext(ctx, shell, "-l")
+	// Interactive shell sessions are long-lived; do not tie them to a short-lived
+	// request context that gets canceled when this handler returns.
+	cmd := exec.Command(shell, "-l")
 	cmd.Dir = workDir
 	cmd.Env = env
 
-	in, err := cmd.StdinPipe()
+	cols := req.Cols
+	rows := req.Rows
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+	ptmx, err := creackpty.StartWithSize(cmd, &creackpty.Winsize{
+		Cols: uint16(cols),
+		Rows: uint16(rows),
+	})
 	if err != nil {
-		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()})
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "ack", ExitCode: 1, Stderr: err.Error()})
 		return
 	}
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()})
-		return
-	}
-	errOut, err := cmd.StderrPipe()
-	if err != nil {
-		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()})
-		return
-	}
-
-	if err := cmd.Start(); err != nil {
-		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()})
-		return
-	}
-
-	s := &shellSession{id: req.ID, cmd: cmd, in: in, out: out, err: errOut, done: make(chan int, 1)}
+	s := &shellSession{id: req.ID, cmd: cmd, ptmx: ptmx, done: make(chan int, 1)}
 
 	shellSessionsMu.Lock()
 	shellSessions[req.ID] = s
 	shellSessionsMu.Unlock()
 
-	_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 0})
+	_ = encoder.Encode(execResponse{ID: req.ID, Type: "ack", ExitCode: 0})
 
 	go func() {
-		scan := bufio.NewScanner(out)
-		scan.Buffer(make([]byte, 0, 4096), 1024*1024)
-		for scan.Scan() {
-			line := scan.Text() + "\n"
-			_ = encoder.Encode(execResponse{ID: req.ID, Type: "chunk", Stream: "stdout", Data: line})
-		}
-	}()
-
-	go func() {
-		scan := bufio.NewScanner(errOut)
-		scan.Buffer(make([]byte, 0, 4096), 1024*1024)
-		for scan.Scan() {
-			line := scan.Text() + "\n"
-			_ = encoder.Encode(execResponse{ID: req.ID, Type: "chunk", Stream: "stderr", Data: line})
+		buf := make([]byte, 4096)
+		for {
+			n, err := ptmx.Read(buf)
+			if n > 0 {
+				_ = encoder.Encode(execResponse{ID: req.ID, Type: "chunk", Stream: "stdout", Data: string(buf[:n])})
+			}
+			if err != nil {
+				return
+			}
 		}
 	}()
 
@@ -418,6 +408,7 @@ func handleShellOpen(req execRequest, encoder *json.Encoder) {
 			}
 		}
 		s.done <- exitCode
+		_ = ptmx.Close()
 		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: exitCode})
 		shellSessionsMu.Lock()
 		delete(shellSessions, req.ID)
@@ -434,11 +425,32 @@ func handleShellWrite(req execRequest, encoder *json.Encoder) {
 		return
 	}
 
-	if _, err := io.WriteString(s.in, req.Data); err != nil {
+	if _, err := io.WriteString(s.ptmx, req.Data); err != nil {
 		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()})
 		return
 	}
 
+	_ = encoder.Encode(execResponse{ID: req.ID, Type: "ack", ExitCode: 0})
+}
+
+func handleShellResize(req execRequest, encoder *json.Encoder) {
+	shellSessionsMu.Lock()
+	s, ok := shellSessions[req.ID]
+	shellSessionsMu.Unlock()
+	if !ok {
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: "shell session not found"})
+		return
+	}
+	cols := req.Cols
+	rows := req.Rows
+	if cols <= 0 || rows <= 0 {
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: "invalid resize dimensions"})
+		return
+	}
+	if err := creackpty.Setsize(s.ptmx, &creackpty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil {
+		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: err.Error()})
+		return
+	}
 	_ = encoder.Encode(execResponse{ID: req.ID, Type: "ack", ExitCode: 0})
 }
 
@@ -457,6 +469,9 @@ func handleShellClose(req execRequest, encoder *json.Encoder) {
 
 	if s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
+	}
+	if s.ptmx != nil {
+		_ = s.ptmx.Close()
 	}
 	_ = encoder.Encode(execResponse{ID: req.ID, Type: "ack", ExitCode: 0})
 }
@@ -499,6 +514,9 @@ func bootstrapGuestEnvironment(pid int) {
 
 	if pid == 1 {
 		mountKernelFilesystemsFunc()
+		if err := setupPTYDevices(); err != nil {
+			emitDiagnostic("agent pty device setup failed (non-fatal): %v", err)
+		}
 		emitDiagnostic("agent pid1 kernel filesystems mounted")
 	}
 
@@ -516,6 +534,12 @@ func bootstrapGuestEnvironment(pid int) {
 
 	setupDNSFunc()
 	emitDiagnostic("agent dns configured")
+
+	if pid == 1 {
+		if err := ensureDockerDaemon(); err != nil {
+			emitDiagnostic("agent docker daemon setup failed (non-fatal): %v", err)
+		}
+	}
 }
 
 func ensureAgentProcessPath() {
@@ -653,6 +677,88 @@ func mountKernelFilesystems() {
 	_ = kernelMountFunc("sysfs", "/sys", "sysfs", 0, "")
 	_ = kernelMountFunc("devtmpfs", "/dev", "devtmpfs", 0, "")
 	mountCgroupFilesystems()
+}
+
+func setupPTYDevices() error {
+	if err := os.MkdirAll("/dev/pts", 0o755); err != nil {
+		return fmt.Errorf("mkdir /dev/pts: %w", err)
+	}
+	if err := kernelMountFunc("devpts", "/dev/pts", "devpts", 0, "ptmxmode=0666,mode=0620"); err != nil && !errors.Is(err, unix.EBUSY) {
+		return fmt.Errorf("mount devpts: %w", err)
+	}
+	if _, err := os.Lstat("/dev/ptmx"); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat /dev/ptmx: %w", err)
+		}
+		if linkErr := os.Symlink("pts/ptmx", "/dev/ptmx"); linkErr != nil && !os.IsExist(linkErr) {
+			return fmt.Errorf("symlink /dev/ptmx -> pts/ptmx: %w", linkErr)
+		}
+	}
+	return nil
+}
+
+func ensureDockerDaemon() error {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return nil
+	}
+	if _, err := exec.LookPath("dockerd"); err != nil {
+		return nil
+	}
+	if err := exec.Command("docker", "info").Run(); err == nil {
+		emitDiagnostic("agent docker daemon already available")
+		return nil
+	}
+
+	_ = os.Remove("/var/run/docker.pid")
+	if err := os.MkdirAll("/workspace/.nexus-docker", 0o755); err != nil {
+		return fmt.Errorf("mkdir docker data root: %w", err)
+	}
+	if err := os.MkdirAll("/workspace/.nexus-docker-exec", 0o755); err != nil {
+		return fmt.Errorf("mkdir docker exec root: %w", err)
+	}
+
+	iptablesFlag := "--iptables=false"
+	if _, err := exec.LookPath("iptables-legacy"); err == nil {
+		iptablesFlag = "--iptables=true"
+	} else if _, err := exec.LookPath("iptables"); err == nil {
+		iptablesFlag = "--iptables=true"
+	}
+
+	logFile, err := os.OpenFile("/tmp/nexus-agent-dockerd.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("open dockerd log: %w", err)
+	}
+	defer logFile.Close()
+
+	cmd := exec.Command(
+		"dockerd",
+		"--host=unix:///var/run/docker.sock",
+		"--data-root=/workspace/.nexus-docker",
+		"--exec-root=/workspace/.nexus-docker-exec",
+		"--storage-driver=overlay2",
+		iptablesFlag,
+	)
+	cmd.Env = ensurePathInEnv(os.Environ())
+	disableRaw := strings.TrimSpace(os.Getenv("NEXUS_DOCKER_DISABLE_IPTABLES_RAW"))
+	if disableRaw == "" || disableRaw == "1" {
+		cmd.Env = append(cmd.Env, "DOCKER_INSECURE_NO_IPTABLES_RAW=1")
+	}
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start dockerd: %w", err)
+	}
+	_ = cmd.Process.Release()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := exec.Command("docker", "info").Run(); err == nil {
+			emitDiagnostic("agent docker daemon ready")
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return errors.New("dockerd did not become ready within 15s (see /tmp/nexus-agent-dockerd.log)")
 }
 
 func mountCgroupFilesystems() {
