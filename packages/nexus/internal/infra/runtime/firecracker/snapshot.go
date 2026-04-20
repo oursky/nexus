@@ -21,37 +21,6 @@ type baseSnapshot struct {
 	rootfsPath  string
 }
 
-func probeReflink(workDirRoot string) bool {
-	tmp1 := filepath.Join(workDirRoot, ".reflink-probe-tmp1")
-	tmp2 := filepath.Join(workDirRoot, ".reflink-probe-tmp2")
-
-	if err := os.WriteFile(tmp1, []byte("probe"), 0o644); err != nil {
-		log.Printf("[firecracker] reflink probe: failed to write temp file: %v", err)
-		return false
-	}
-	defer os.Remove(tmp1)
-	defer os.Remove(tmp2)
-
-	cmd := exec.Command("cp", "--reflink=always", tmp1, tmp2)
-	if err := cmd.Run(); err != nil {
-		log.Printf("[firecracker] XFS reflink not available on %s; fork will use full copy. Format WorkDirRoot as XFS for better performance.", workDirRoot)
-		return false
-	}
-
-	log.Printf("[firecracker] XFS reflink available on %s, using CoW fork", workDirRoot)
-	return true
-}
-
-func (m *Manager) cowCopy(src, dst string) error {
-	if m.reflinkAvailable {
-		cmd := exec.Command("cp", "--reflink=always", src, dst)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("reflink copy %s → %s: %w: %s", src, dst, err, string(out))
-		}
-		return nil
-	}
-	return copyFile(src, dst)
-}
 
 // snapshotCacheKey returns a deterministic key for a (kernelPath, rootfsPath) pair.
 func snapshotCacheKey(kernelPath, rootfsPath string) string {
@@ -138,8 +107,8 @@ func (m *Manager) CheckpointForkSnapshot(ctx context.Context, workspaceID, child
 	}
 
 	childImg := filepath.Join(forkDir, "workspace.ext4")
-	if err := m.cowCopy(parent.WorkspaceImage, childImg); err != nil {
-		return "", fmt.Errorf("cowCopy workspace image for fork: %w", err)
+	if err := copyFile(parent.WorkspaceImage, childImg); err != nil {
+		return "", fmt.Errorf("copy workspace image for fork: %w", err)
 	}
 
 	snapshotID := forkDirName
@@ -195,17 +164,17 @@ func (m *Manager) restoreFromSnapshot(ctx context.Context, spec SpawnSpec, snap 
 	}
 
 	memOverlay := filepath.Join(workDir, "mem.file")
-	if err := m.cowCopy(snap.memFilePath, memOverlay); err != nil {
+	if err := copyFile(snap.memFilePath, memOverlay); err != nil {
 		teardownTAP(tap, subnetCIDR)
 		os.RemoveAll(workDir)
-		return nil, fmt.Errorf("cowCopy memory snapshot: %w", err)
+		return nil, fmt.Errorf("copy memory snapshot: %w", err)
 	}
 
 	rootfsOverlay := filepath.Join(workDir, "rootfs.ext4")
-	if err := m.cowCopy(snap.rootfsPath, rootfsOverlay); err != nil {
+	if err := copyFile(snap.rootfsPath, rootfsOverlay); err != nil {
 		teardownTAP(tap, subnetCIDR)
 		os.RemoveAll(workDir)
-		return nil, fmt.Errorf("cowCopy rootfs: %w", err)
+		return nil, fmt.Errorf("copy rootfs: %w", err)
 	}
 
 	if err := workspaceImageBuilderFunc(spec.ProjectRoot, workspaceImagePath); err != nil {
@@ -226,13 +195,13 @@ func (m *Manager) restoreFromSnapshot(ctx context.Context, spec SpawnSpec, snap 
 		"drives": []map[string]any{
 			{
 				"drive_id":       "rootfs",
-				"path_on_host":   rootfsOverlay,
+				"path_on_host":   "rootfs.ext4",
 				"is_root_device": true,
 				"is_read_only":   false,
 			},
 			{
 				"drive_id":       "workspace",
-				"path_on_host":   workspaceImagePath,
+				"path_on_host":   "workspace.ext4",
 				"is_root_device": false,
 				"is_read_only":   false,
 			},
@@ -247,7 +216,7 @@ func (m *Manager) restoreFromSnapshot(ctx context.Context, spec SpawnSpec, snap 
 		"vsock": map[string]any{
 			"vsock_id":  "agent",
 			"guest_cid": cid,
-			"uds_path":  vsockPath,
+			"uds_path":  "vsock.sock",
 		},
 	}
 

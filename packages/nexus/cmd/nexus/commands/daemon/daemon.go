@@ -11,7 +11,6 @@ func Command() *cobra.Command {
 		Short: "Manage the Nexus daemon",
 	}
 	cmd.AddCommand(
-		setupCommand(),
 		startCommand(),
 		stopCommand(),
 		statusCommand(),

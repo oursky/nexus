@@ -98,7 +98,6 @@ type Manager struct {
 	apiClientFactory APIClientFactory
 	snapshotCache    map[string]*baseSnapshot
 	snapshotMu       sync.RWMutex
-	reflinkAvailable bool
 }
 
 // NewManager creates a new Firecracker manager with the given configuration.
@@ -108,11 +107,8 @@ func NewManager(cfg ManagerConfig) *Manager {
 
 // newManager creates a new Firecracker manager with the given configuration.
 func newManager(cfg ManagerConfig) *Manager {
-	reflink := false
 	if strings.TrimSpace(cfg.WorkDirRoot) != "" {
-		if err := os.MkdirAll(cfg.WorkDirRoot, 0o755); err == nil {
-			reflink = probeReflink(cfg.WorkDirRoot)
-		}
+		_ = os.MkdirAll(cfg.WorkDirRoot, 0o755)
 	}
 	return &Manager{
 		config:           cfg,
@@ -120,7 +116,6 @@ func newManager(cfg ManagerConfig) *Manager {
 		nextCID:          initialCID,
 		apiClientFactory: defaultAPIClientFactory,
 		snapshotCache:    make(map[string]*baseSnapshot),
-		reflinkAvailable: reflink,
 	}
 }
 
@@ -322,8 +317,8 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	}
 
 	workspaceDriveConfig := map[string]any{
-		"drive_id":       "workspace",
-		"path_on_host":   workspaceImagePath,
+		"drive_id": "workspace",
+		"path_on_host":   "workspace.ext4",
 		"is_root_device": false,
 		"is_read_only":   false,
 	}
@@ -348,7 +343,9 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	vsockConfig := map[string]any{
 		"vsock_id":  "agent",
 		"guest_cid": cid,
-		"uds_path":  vsockPath,
+		// Relative path: Firecracker creates the socket in its working directory.
+		// The host driver dials the absolute vsockPath stored in the Instance.
+		"uds_path": "vsock.sock",
 	}
 	if err := client.put(ctx, "/vsock", vsockConfig); err != nil {
 		teardownTAP(tap, subnetCIDR)
@@ -407,11 +404,15 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 // If NEXUS_FIRECRACKER_BOOT_ARGS is set, it is returned verbatim.
 // Otherwise a standard set is generated. Guest networking is configured
 // by udhcpc (DHCP) inside the VM — no static ip= kernel argument.
+//
+// init= tells the kernel to launch our agent directly instead of the rootfs's
+// default init. This means we never need to patch /sbin/init in the rootfs
+// image (adopted from forgevm).
 func defaultFirecrackerBootArgs() string {
 	if raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_BOOT_ARGS")); raw != "" {
 		return raw
 	}
-	return "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw"
+	return "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/usr/local/bin/nexus-firecracker-agent"
 }
 
 // waitForAPISocket polls for the API socket to exist with the given context.

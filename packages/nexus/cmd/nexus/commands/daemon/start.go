@@ -286,6 +286,12 @@ func hostName() string {
 	return name
 }
 
+// ensureFirecrackerGuestAgent writes the nexus-firecracker-agent binary into
+// the rootfs image at /usr/local/bin/nexus-firecracker-agent.
+//
+// The kernel boots the agent directly via the init= boot argument
+// ("init=/usr/local/bin/nexus-firecracker-agent"), so we no longer need to
+// patch /sbin/init or write a wrapper script — just the binary itself.
 func ensureFirecrackerGuestAgent(rootfsPath string) error {
 	rootfsPath = strings.TrimSpace(rootfsPath)
 	if rootfsPath == "" {
@@ -303,17 +309,6 @@ func ensureFirecrackerGuestAgent(rootfsPath string) error {
 		return err
 	}
 
-	initFile, err := os.CreateTemp("", "nexus-firecracker-init-*")
-	if err != nil {
-		return fmt.Errorf("create temp init script: %w", err)
-	}
-	initPath := initFile.Name()
-	_ = initFile.Close()
-	defer os.Remove(initPath)
-	if err := os.WriteFile(initPath, []byte("#!/bin/sh\nexec /usr/local/bin/nexus-firecracker-agent\n"), 0o755); err != nil {
-		return fmt.Errorf("write temp init script: %w", err)
-	}
-
 	// Best effort fsck to recover from unclean loopback state.
 	_ = exec.Command("e2fsck", "-fy", rootfsPath).Run()
 
@@ -322,10 +317,6 @@ func ensureFirecrackerGuestAgent(rootfsPath string) error {
 		"mkdir /usr/local/bin",
 		"mkdir /workspace",
 		"rm /usr/local/bin/nexus-firecracker-agent",
-		// /sbin is a symlink to usr/sbin in modern rootfs images; write through
-		// the real path so debugfs (which doesn't follow symlinks) can find the
-		// directory.  The kernel resolves the symlink and finds /sbin/init fine.
-		"rm /usr/sbin/init",
 	} {
 		_ = exec.Command("debugfs", "-w", "-R", cmd, rootfsPath).Run()
 	}
@@ -337,12 +328,6 @@ func ensureFirecrackerGuestAgent(rootfsPath string) error {
 	// 0100755 = S_IFREG | 0755 (regular file, rwxr-xr-x).
 	if out, err := exec.Command("debugfs", "-w", "-R", "sif /usr/local/bin/nexus-firecracker-agent mode 0100755", rootfsPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("set mode on guest agent in rootfs: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	if out, err := exec.Command("debugfs", "-w", "-R", fmt.Sprintf("write %s /usr/sbin/init", initPath), rootfsPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("write /usr/sbin/init into rootfs: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	if out, err := exec.Command("debugfs", "-w", "-R", "sif /usr/sbin/init mode 0100755", rootfsPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("set mode on /usr/sbin/init in rootfs: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
