@@ -9,6 +9,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type rpcRequest struct {
@@ -80,6 +81,11 @@ func (c *Client) Call(method string, params, out any) error {
 		return fmt.Errorf("marshal request: %w", err)
 	}
 	b = append(b, '\n')
+
+	// Per-call deadline: prevents indefinite hang when the daemon never responds
+	// (e.g. workspace.start waiting for a VM that fails to boot).
+	_ = c.conn.SetDeadline(time.Now().Add(90 * time.Second))
+	defer c.conn.SetDeadline(time.Time{}) //nolint:errcheck
 
 	if _, err := c.conn.Write(b); err != nil {
 		return fmt.Errorf("write: %w", err)
