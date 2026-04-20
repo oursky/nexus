@@ -21,5 +21,5 @@ func runInitRuntimeBootstrapOther(projectRoot, runtimeName string) error {
 	if runtimeName != "firecracker" {
 		return nil
 	}
-	return fmt.Errorf("firecracker is only supported on Linux (with KVM) and macOS (with Lima); current platform is %s", runtime.GOOS)
+	return fmt.Errorf("firecracker is only supported on Linux (with KVM); current platform is %s", runtime.GOOS)
 }

@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/firecracker"
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
 )

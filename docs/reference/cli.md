@@ -1,166 +1,236 @@
-# CLI
+# CLI Reference
 
-This reference is intentionally named `cli.md` because it covers Nexus control-plane interfaces, not only workspace internals.
-
-Semantic boundary:
-
-- `nexus` is the human/operator command interface.
-- `workspace-daemon` is the programmatic runtime/API interface consumed by SDK and automation.
-
-The sections below focus on daemon runtime behavior and RPC/HTTP APIs, which are the stable contract surface for remote control.
-
-The workspace daemon is a Go-based server that provides remote file system and execution capabilities to the Nexus SDK via WebSocket.
-
-## Overview
+## Architecture Overview
 
 ```
-┌─────────────┐     WebSocket      ┌─────────────────┐
-│ SDK Client  │ ◄────────────────► │  Workspace      │
-│             │                    │  Daemon (Go)    │
-└─────────────┘                    └────────┬────────┘
-                                             │
-                                      ┌──────▼──────┐
-                                      │ Isolated    │
-                                      │ Workspace   │
-                                      │ (firecracker) │
-                                      └─────────────┘
+┌──────────────────┐                    ┌──────────────────────┐
+│  Mac CLI         │   SSH tunnel       │  Linux Daemon (Go)   │
+│  (nexus ...)     │ ◄────────────────► │  Unix socket / WS    │
+└──────────────────┘                    └──────────────────────┘
+        │
+        │  ~/.local/state/nexus/profile.json
+        │  (host, port, token, sshPort)
 ```
 
-The daemon manages isolated Firecracker-backed workspaces using native Firecracker integration. The daemon communicates directly with Firecracker via Unix socket REST API and executes commands through a vsock guest agent (a binary running inside the VM that receives commands over the virtio-vsock interface and executes them on behalf of the daemon). All ingress to the workspace is via Spotlight port forwards — there is no direct host port exposure.
+The CLI runs on the local machine. All workspace operations are forwarded over an SSH tunnel to the remote daemon as JSON-RPC 2.0 over WebSocket with Bearer token auth.
 
-## Installation
+---
 
-```bash
-# Build from source
-cd packages/nexus
-go build -o workspace-daemon ./cmd/daemon
-```
+## Connection Model
 
-## Running the Daemon
+**Profile** — stored at `~/.local/state/nexus/profile.json` after `nexus daemon connect`.
 
-```bash
-workspace-daemon \
-  --port 8080 \
-  --token <jwt-secret> \
-  --workspace-dir /workspace
-```
+**SSH tunnel** — the CLI opens an SSH tunnel on demand (cached per session) and connects via WebSocket. The daemon runs on a Unix socket on the remote host; the tunnel maps a local port to the daemon's WebSocket listener.
 
-## Embedded Web UI
+**Auth** — Bearer token sent in the WebSocket `Authorization` header.
 
-The daemon serves an embedded web control plane for workspace operations.
+---
 
-- UI path: `/ui` (legacy alias: `/portal`)
-- Summary API: `GET /ui/api/summary`
-- Workspace APIs (token-required):
-  - `GET /ui/api/workspaces` - list workspaces
-  - `POST /ui/api/workspaces` - create workspace
-  - `POST /ui/api/workspaces/{id}/actions/{action}` - lifecycle action (`start`, `stop`, `restore`, `pause`, `resume`)
-  - `POST /ui/api/workspaces/{id}/fork` - fork workspace
-  - `DELETE /ui/api/workspaces/{id}` - remove workspace
+## Command Reference
 
-Authentication for UI APIs supports:
+### `nexus daemon`
 
-- `X-Nexus-Token: <daemon token>` header (used by embedded UI)
-- `Authorization: Bearer <token>` header
-- `?token=<token>` query parameter
+Manage the connection profile and the remote daemon process.
 
-Open locally:
+#### `nexus daemon connect <user@host> [flags]`
 
-```bash
-open "http://localhost:8080/ui"
-```
-
-## Configuration
+Store a profile and fetch an auth token via SSH.
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--port` | Server port | 8080 |
-| `--token` | Authentication token | - |
-| `--workspace-dir` | Workspace directory | /workspace |
-| `--host` | Host to bind to | localhost |
+| `--port PORT` | Daemon port on remote host | — |
+| `--ssh-port PORT` | SSH port for tunnel | 22 |
 
-## Intent Model
+```bash
+nexus daemon connect newman@linuxbox --port 7777
+```
 
-Nexus CLI and daemon surfaces are organized by operator intent. This keeps command discovery and SDK mapping stable.
+#### `nexus daemon disconnect`
 
-### 1) Auth and Session
+Remove the stored profile.
 
-- Authenticate and establish control-plane connectivity.
-- Typical surfaces: daemon token validation and client connection bootstrap.
+#### `nexus daemon start`
 
-### 2) Workspace Lifecycle
+Start the daemon process on the remote host.
 
-Canonical lifecycle verbs used across daemon APIs and SDK:
+#### `nexus daemon stop`
 
-- `create`
-- `list`
-- `open`
-- `start`
-- `pause`
-- `resume`
-- `stop`
-- `restore`
-- `fork`
-- `remove`
+Stop the daemon process on the remote host.
 
-### 3) Execution and Filesystem
+#### `nexus daemon status`
 
-- Filesystem operations: read/write/stat/list/remove.
-- Command execution operations: execute process and collect output.
+Show daemon status.
 
-### 4) Forwarding and Network Access
+#### `nexus daemon token`
 
-- Spotlight operations for exposing workspace service ports.
-- Compose/default forward application flows.
+Print the current auth token from the stored profile.
 
-### 5) Diagnostics and Readiness
+---
 
-- Capability checks and readiness polling.
-- Runtime state introspection and service health checks.
+### `nexus workspace`
 
-## Components
+Full workspace lifecycle management.
 
-### Server (`cmd/daemon/`)
+| Command | Description |
+|---------|-------------|
+| `nexus workspace list` | List all workspaces |
+| `nexus workspace create` | Create a new workspace |
+| `nexus workspace start <id>` | Start a workspace |
+| `nexus workspace stop <id>` | Stop a workspace |
+| `nexus workspace remove <id>` | Remove a workspace |
+| `nexus workspace checkout <id>` | Checkout workspace |
+| `nexus workspace fork <id>` | Fork a workspace |
+| `nexus workspace portal <id>` | Open workspace portal |
+| `nexus workspace ready <id>` | Poll until workspace is ready |
+| `nexus workspace restore <id>` | Restore workspace state |
+| `nexus workspace run <id> <command>` | Run a command in the workspace |
+| `nexus workspace shell <id>` | Open an interactive shell |
 
-- Main entry point for the daemon
-- WebSocket server handling RPC calls
+---
 
-### Handlers (`pkg/`)
+### `nexus spotlight`
 
-- File system handlers
-- Command execution handlers
+Port-forward management. Spotlight discovers Docker Compose ports in a workspace and creates daemon forwards + SSH tunnels to the local machine.
+
+| Command | Description |
+|---------|-------------|
+| `nexus spotlight start <workspace-id>` | Discover all compose ports, create forwards + SSH tunnels |
+| `nexus spotlight stop <workspace-id>` | Stop all forwards for the workspace |
+| `nexus spotlight list` | List active spotlight forwards |
+| `nexus spotlight port <workspace-id> <port>` | Show info for a specific port |
+| `nexus spotlight port add <workspace-id> <port>` | Add a port forward |
+| `nexus spotlight port list <workspace-id>` | List forwarded ports for workspace |
+| `nexus spotlight port remove <workspace-id> <port>` | Remove a port forward |
+
+---
+
+### `nexus project`
+
+Project management.
+
+| Command | Description |
+|---------|-------------|
+| `nexus project list` | List projects |
+| `nexus project create` | Create a project |
+| `nexus project get <id>` | Get project details |
+| `nexus project remove <id>` | Remove a project |
+
+---
+
+### `nexus init`
+
+Initialize `.nexus/` workspace metadata in a project directory.
+
+```bash
+nexus init --project-root <abs-path>
+```
+
+| Flag | Description |
+|------|-------------|
+| `--project-root` | Absolute path to the project root |
+
+---
+
+### `nexus exec`
+
+Execute a command in a workspace runtime.
+
+```bash
+nexus exec --project-root <abs-path> [--timeout DURATION] -- <command>
+```
+
+| Flag | Description |
+|------|-------------|
+| `--project-root` | Absolute path to the project root |
+| `--timeout` | Command timeout duration |
+
+---
+
+### `nexus doctor`
+
+Run readiness checks against a workspace runtime.
+
+```bash
+nexus doctor --project-root <abs-path> --suite <name> [flags]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--project-root` | Absolute path to the project root |
+| `--suite` | Check suite name to run |
+| `--compose-file` | Docker Compose file path |
+| `--required-host-ports` | Comma-separated list of required host ports |
+| `--report-json` | Path to write JSON report |
+
+Runtime backends: `firecracker` (Linux/KVM), `seatbelt` (macOS sandbox).
+
+---
 
 ## RPC Methods
 
+The daemon exposes JSON-RPC 2.0 over WebSocket. These methods are called by the CLI and SDK.
+
+### Workspace
+
 | Method | Description |
 |--------|-------------|
-| `workspace.create` | Create isolated remote workspace |
 | `workspace.list` | List workspace records |
-| `workspace.open` | Open workspace by id |
-| `workspace.start` | Start workspace compute and mark running |
-| `workspace.pause` | Pause a running workspace VM |
-| `workspace.resume` | Resume a paused workspace VM |
-| `workspace.stop` | Stop compute, persist workspace state |
-| `workspace.restore` | Restore persisted workspace to running state |
-| `workspace.fork` | Fork a workspace into a child workspace |
+| `workspace.create` | Create a new workspace |
+| `workspace.start` | Start workspace compute |
+| `workspace.stop` | Stop workspace compute |
 | `workspace.remove` | Remove workspace by id |
 | `workspace.info` | Get workspace info |
+| `workspace.fork` | Fork a workspace |
+| `workspace.restore` | Restore workspace state |
+| `workspace.ready` | Poll readiness until success/timeout |
+| `workspace.discover-ports` | Discover Docker Compose published ports |
+
+### Spotlight
+
+| Method | Description |
+|--------|-------------|
+| `spotlight.start` | Start port forwards for a workspace |
+| `spotlight.stop` | Stop port forwards for a workspace |
+| `spotlight.list` | List active forwards |
+| `spotlight.close` | Close a specific forward |
+
+### Project
+
+| Method | Description |
+|--------|-------------|
+| `project.list` | List projects |
+| `project.create` | Create a project |
+| `project.get` | Get project by id |
+| `project.remove` | Remove project by id |
+
+### Filesystem
+
+| Method | Description |
+|--------|-------------|
 | `fs.readFile` | Read file contents |
 | `fs.writeFile` | Write file contents |
 | `fs.mkdir` | Create directory |
-| `fs.readdir` | List directory |
-| `fs.exists` | Check path exists |
+| `fs.readdir` | List directory contents |
+| `fs.exists` | Check if path exists |
 | `fs.stat` | Get file stats |
-| `fs.rm` | Remove file/directory |
-| `exec` | Execute command |
-| `git.command` | Run scoped git action in workspace |
-| `service.command` | Start/stop/restart/status/logs for workspace services |
-| `spotlight.expose` | Expose remote service port locally (Spotlight-only ingress) |
-| `spotlight.list` | List active Spotlight forwards |
-| `spotlight.close` | Close Spotlight forward |
-| `spotlight.applyDefaults` | Apply project spotlight defaults from `.nexus/workspace.json` |
-| `spotlight.applyComposePorts` | Auto-forward all docker-compose published ports |
-| `workspace.ready` | Poll readiness checks until success/timeout |
-| `capabilities.list` | List available runtime and toolchain capabilities |
-| `authrelay.mint` | Mint one-time auth relay token for exec injection |
-| `authrelay.revoke` | Revoke auth relay token |
+| `fs.rm` | Remove file or directory |
+
+### Execution
+
+| Method | Description |
+|--------|-------------|
+| `exec` | Execute a command in the workspace |
+| `pty.*` | PTY session operations (open, resize, close) |
+
+### Daemon
+
+| Method | Description |
+|--------|-------------|
+| `daemon.info` | Node info and capabilities |
+
+### Auth
+
+| Method | Description |
+|--------|-------------|
+| `authrelay.mint` | Mint a one-time auth relay token |
+| `authrelay.revoke` | Revoke an auth relay token |

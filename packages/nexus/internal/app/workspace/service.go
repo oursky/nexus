@@ -10,6 +10,8 @@ import (
 	"github.com/inizio/nexus/packages/nexus/internal/domain/project"
 	"github.com/inizio/nexus/packages/nexus/internal/domain/runtime"
 	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/config"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/dockercompose"
 )
 
 // Service orchestrates workspace lifecycle operations.
@@ -158,7 +160,83 @@ func (s *Service) Start(ctx context.Context, id string) (*workspace.Workspace, e
 	if err := s.repo.Update(ctx, ws); err != nil {
 		return nil, fmt.Errorf("persist start: %w", err)
 	}
+
 	return ws, nil
+}
+
+// DiscoveredPort is a port discovered from docker-compose or workspace config.
+type DiscoveredPort struct {
+	LocalPort  int    `json:"localPort"`
+	RemotePort int    `json:"remotePort"`
+	Service    string `json:"service,omitempty"`
+	Protocol   string `json:"protocol,omitempty"`
+	Source     string `json:"source,omitempty"` // "config" or "compose"
+}
+
+// DiscoverPorts merges config defaults with docker-compose port discovery.
+// Config defaults take precedence on conflict (same remote port).
+func (s *Service) DiscoverPorts(ctx context.Context, id string) ([]DiscoveredPort, error) {
+	ws, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return nil, workspace.ErrNotFound
+	}
+	if ws.Repo == "" {
+		return nil, nil
+	}
+
+	// 1. Load workspace config defaults
+	configDefaults := make(map[int]DiscoveredPort) // remotePort → port
+	cfg, _, err := config.LoadWorkspaceConfig(ws.Repo)
+	if err == nil {
+		for _, d := range cfg.Spotlight.Defaults {
+			if d.RemotePort > 0 && d.LocalPort > 0 {
+				configDefaults[d.RemotePort] = DiscoveredPort{
+					LocalPort:  d.LocalPort,
+					RemotePort: d.RemotePort,
+					Service:    d.Service,
+					Protocol:   "tcp",
+					Source:     "config",
+				}
+			}
+		}
+	}
+
+	// 2. Discover docker-compose ports
+	// HostPort is the port published on the daemon host (e.g., 8080 for "8080:80").
+	// Both LocalPort and RemotePort use HostPort since we tunnel to the daemon's published port.
+	composeDefaults := make(map[int]DiscoveredPort) // HostPort → port
+	discoverCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if ports, err := dockercompose.DiscoverPublishedPorts(discoverCtx, ws.Repo); err == nil {
+		for _, p := range ports {
+			composeDefaults[p.HostPort] = DiscoveredPort{
+				LocalPort:  p.HostPort,
+				RemotePort: p.HostPort,
+				Service:    p.Service,
+				Protocol:   p.Protocol,
+				Source:     "compose",
+			}
+		}
+	}
+
+	// 3. Merge: config defaults override compose ports on same port
+	merged := make(map[int]DiscoveredPort)
+	for port, p := range composeDefaults {
+		merged[port] = p
+	}
+	for _, p := range configDefaults {
+		merged[p.RemotePort] = p
+	}
+
+	// 4. Build sorted result
+	result := make([]DiscoveredPort, 0, len(merged))
+	for _, p := range merged {
+		result = append(result, p)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].RemotePort < result[j].RemotePort
+	})
+	return result, nil
 }
 
 func (s *Service) Stop(ctx context.Context, id string) (*workspace.Workspace, error) {
@@ -229,16 +307,6 @@ func (s *Service) Ready(ctx context.Context, id string) (bool, error) {
 		return false, workspace.ErrNotFound
 	}
 	return ws.State == workspace.StateRunning, nil
-}
-
-func (s *Service) SetLocalWorktree(ctx context.Context, id, path string) error {
-	ws, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return workspace.ErrNotFound
-	}
-	ws.UpdatedAt = time.Now().UTC()
-	_ = path
-	return s.repo.Update(ctx, ws)
 }
 
 func (s *Service) Relations(ctx context.Context, id string) (*Relations, error) {

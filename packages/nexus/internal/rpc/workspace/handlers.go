@@ -87,14 +87,6 @@ type checkoutRes struct {
 	Workspace *workspace.Workspace `json:"workspace"`
 }
 
-type setLocalWorktreeReq struct {
-	ID   string `json:"id"`
-	Path string `json:"path"`
-}
-type setLocalWorktreeRes struct {
-	OK bool `json:"ok"`
-}
-
 type readyReq struct {
 	ID string `json:"id"`
 }
@@ -280,20 +272,6 @@ func (h *Handler) handleCheckout(ctx context.Context, raw json.RawMessage) (any,
 	return &checkoutRes{Workspace: ws}, nil
 }
 
-func (h *Handler) handleSetLocalWorktree(ctx context.Context, raw json.RawMessage) (any, error) {
-	req, err := decode[setLocalWorktreeReq](raw)
-	if err != nil {
-		return nil, err
-	}
-	if req.ID == "" {
-		return nil, rpce.InvalidParams("id is required")
-	}
-	if err := h.svc.SetLocalWorktree(ctx, req.ID, req.Path); err != nil {
-		return nil, mapErr(err)
-	}
-	return &setLocalWorktreeRes{OK: true}, nil
-}
-
 func (h *Handler) handleReady(ctx context.Context, raw json.RawMessage) (any, error) {
 	req, err := decode[readyReq](raw)
 	if err != nil {
@@ -378,4 +356,25 @@ func mapErr(err error) error {
 		return rpcErr
 	}
 	return rpce.Internal(fmt.Sprintf("internal error: %v", err))
+}
+
+// ── Discover Ports ──────────────────────────────────────────────────────────
+
+type discoverPortsReq struct {
+	ID string `json:"id"`
+}
+
+func (h *Handler) handleDiscoverPorts(ctx context.Context, raw json.RawMessage) (any, error) {
+	req, err := decode[discoverPortsReq](raw)
+	if err != nil {
+		return nil, err
+	}
+	if req.ID == "" {
+		return nil, rpce.InvalidParams("id is required")
+	}
+	ports, err := h.svc.DiscoverPorts(ctx, req.ID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return ports, nil
 }

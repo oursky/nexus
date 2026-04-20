@@ -1,66 +1,38 @@
 # Nexus
 
-Nexus is a remote workspace daemon and SDK for running, checking, and automating project workspaces across local and VM-backed runtimes.
+Nexus is a remote workspace platform. The daemon runs on a Linux host; a Mac CLI controls it over an SSH tunnel.
 
-## Install
+## Components
 
-Use a published release binary from:
-
-- https://github.com/IniZio/nexus/releases
-
-Pick the archive for your platform:
-
-- `linux-amd64`
-- `linux-arm64`
-- `darwin-amd64`
-- `darwin-arm64`
-- `windows-amd64`
-
-Example (macOS arm64):
-
-```bash
-tar -xzf nexus-<version>-darwin-arm64.tar.gz
-chmod +x nexus-darwin-arm64
-mv nexus-darwin-arm64 /usr/local/bin/nexus
-```
-
-Verify:
-
-```bash
-nexus --help
-```
+| Component | Package | Description |
+|-----------|---------|-------------|
+| **Workspace Daemon + CLI** | `packages/nexus` | Go daemon (remote host) + full CLI (local) |
+| **Workspace SDK** | `packages/sdk/js` | TypeScript SDK for programmatic workspace control |
 
 ## Quick Start
 
-From your project root:
-
 ```bash
-nexus init
-nexus exec -- echo "hello from nexus"
-nexus doctor
+# Connect CLI to remote daemon
+nexus daemon connect newman@linuxbox --port 7777
+
+# Create and start a workspace
+nexus workspace create
+nexus workspace start <workspace-id>
+
+# Forward workspace ports to local machine
+nexus spotlight start <workspace-id>
 ```
 
-Common runtime override:
+## Build from Source
 
 ```bash
-NEXUS_RUNTIME_BACKEND=firecracker nexus doctor
+cd packages/nexus
+go build ./cmd/nexus/...
 ```
 
 ## Docs
 
-- Documentation index: `docs/index.md`
-- Workspace daemon package docs: `packages/nexus/README.md`
-- JavaScript SDK docs: `packages/sdk/js/README.md`
-- CLI and daemon reference: `docs/reference/cli.md`
-- SDK reference: `docs/reference/sdk.md`
-
-## Development
-
-Use the repository tasks:
-
-```bash
-task ci
-task test
-task lint
-task build
-```
+- [Docs index](docs/README.md)
+- [CLI reference](docs/reference/cli.md)
+- [Architecture](ARCHITECTURE.md)
+- [Contributing](CONTRIBUTING.md)

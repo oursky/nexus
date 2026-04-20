@@ -1,0 +1,6 @@
+{
+  "macos": {
+    "platformName": "mac",
+    "appium:automationName": "mac2"
+  }
+}

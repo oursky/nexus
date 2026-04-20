@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -20,11 +19,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/compose"
-	"github.com/inizio/nexus/packages/nexus/pkg/config"
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
+	"github.com/spf13/cobra"
+
+	"github.com/inizio/nexus/packages/nexus/internal/infra/config"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/dockercompose"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/firecracker"
 
 	daemoncmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/daemon"
+	projectcmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/project"
+	spotlightcmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/spotlight"
+	workspacecmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/workspace"
 )
 
 type options struct {
@@ -50,145 +54,114 @@ type initOptions struct {
 const execKVMGroupReexecEnv = "NEXUS_EXEC_KVM_GROUP_REEXEC"
 
 func main() {
-	if len(os.Args) == 1 {
-		printUsage()
-		os.Exit(2)
+	root := &cobra.Command{
+		Use:           "nexus",
+		Short:         "Nexus remote workspace CLI",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
 
-	command := os.Args[1]
-	args := os.Args[2:]
-	if strings.HasPrefix(command, "-") {
-		command = "doctor"
-		args = os.Args[1:]
-	}
+	root.AddCommand(
+		daemoncmd.Command(),
+		workspacecmd.Command(),
+		spotlightcmd.Command(),
+		projectcmd.Command(),
+		initCommand(),
+		execCommand(),
+		doctorCommand(),
+	)
 
-	switch command {
-	case "init":
-		runInitCommand(args)
-		return
-	case "daemon":
-		cmd := daemoncmd.Command()
-		cmd.SetArgs(args)
-		if err := cmd.Execute(); err != nil {
-			os.Exit(1)
-		}
-		return
-	case "exec":
-		runExecCommand(args)
-		return
-	case "workspace", "ws":
-		runWorkspaceCommand(args)
-		return
-	case "spotlight", "spot":
-		runSpotlightCommand(args)
-		return
-	case "project", "proj":
-		runProjectCommand(args)
-		return
-	case "doctor":
-		// handled below
-	default:
-		printUsage()
-		fmt.Fprintf(os.Stderr, "\nunknown subcommand: %s\n", command)
-		os.Exit(2)
-	}
-
-	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	projectRoot := fs.String("project-root", "", "absolute path to downstream project repository")
-	suite := fs.String("suite", "", "doctor suite name")
-	composeFile := fs.String("compose-file", "docker-compose.yml", "compose file path relative to project root")
-	requiredPorts := fs.String("required-host-ports", "", "comma-separated required published host ports (defaults to workspace config doctor.requiredHostPorts)")
-	reportJSON := fs.String("report-json", "", "optional path to write doctor probe results as JSON")
-	if err := fs.Parse(args); err != nil {
-		os.Exit(2)
-	}
-
-	if *projectRoot == "" || *suite == "" {
-		fmt.Fprintln(os.Stderr, "--project-root and --suite are required")
-		os.Exit(2)
-	}
-
-	var ports []int
-	if strings.TrimSpace(*requiredPorts) != "" {
-		parsedPorts, err := parseRequiredPorts(*requiredPorts)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
-		}
-		ports = parsedPorts
-	}
-
-	if err := run(options{
-		projectRoot:       *projectRoot,
-		suite:             *suite,
-		composeFile:       *composeFile,
-		requiredHostPorts: ports,
-		reportJSON:        strings.TrimSpace(*reportJSON),
-	}); err != nil {
+	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func printUsage() {
-	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  nexus doctor --project-root <abs-path> --suite <name> [--compose-file docker-compose.yml] [--required-host-ports 5173,5174,8000] [--report-json path]")
-	fmt.Fprintln(os.Stderr, "  nexus init --project-root <abs-path> [--force]")
-	fmt.Fprintln(os.Stderr, "  nexus exec --project-root <abs-path> [--timeout 10m] -- <command> [args...]")
-	fmt.Fprintln(os.Stderr, "  nexus workspace <list|create|stop|remove|fork|portal>")
-	fmt.Fprintln(os.Stderr, "  nexus spotlight <start|list|stop|port>")
-	fmt.Fprintln(os.Stderr, "  nexus project <list|create|get|remove>")
-	fmt.Fprintln(os.Stderr, "  nexus daemon <start|stop|status|token|connect>")
+func initCommand() *cobra.Command {
+	var projectRoot string
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Initialize nexus workspace metadata",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runInit(initOptions{
+				projectRoot: projectRoot,
+				force:       force,
+			})
+		},
+	}
+
+	cmd.Flags().StringVar(&projectRoot, "project-root", "", "absolute path to project repository")
+	_ = cmd.MarkFlagRequired("project-root")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing .nexus files")
+	return cmd
 }
 
-func runInitCommand(args []string) {
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	projectRoot := fs.String("project-root", "", "absolute path to project repository")
-	force := fs.Bool("force", false, "overwrite existing .nexus files")
-	if err := fs.Parse(args); err != nil {
-		os.Exit(2)
+func execCommand() *cobra.Command {
+	var projectRoot string
+	var timeout time.Duration
+
+	cmd := &cobra.Command{
+		Use:   "exec",
+		Short: "Execute a command in the workspace runtime",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return fmt.Errorf("command is required")
+			}
+			return runExec(execOptions{
+				projectRoot: projectRoot,
+				timeout:     timeout,
+				command:     args[0],
+				args:        args[1:],
+			})
+		},
 	}
 
-	if *projectRoot == "" {
-		fmt.Fprintln(os.Stderr, "--project-root is required")
-		os.Exit(2)
-	}
-
-	if err := runInit(initOptions{
-		projectRoot: *projectRoot,
-		force:       *force,
-	}); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	cmd.Flags().StringVar(&projectRoot, "project-root", "", "absolute path to downstream project repository")
+	_ = cmd.MarkFlagRequired("project-root")
+	cmd.Flags().DurationVar(&timeout, "timeout", 10*time.Minute, "command timeout")
+	return cmd
 }
 
-func runExecCommand(args []string) {
-	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	projectRoot := fs.String("project-root", "", "absolute path to downstream project repository")
-	timeout := fs.Duration("timeout", 10*time.Minute, "command timeout")
-	if err := fs.Parse(args); err != nil {
-		os.Exit(2)
+func doctorCommand() *cobra.Command {
+	var projectRoot string
+	var suite string
+	var composeFile string
+	var requiredPorts string
+	var reportJSON string
+
+	cmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Run doctor probes and tests for a project",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var ports []int
+			if strings.TrimSpace(requiredPorts) != "" {
+				parsedPorts, err := parseRequiredPorts(requiredPorts)
+				if err != nil {
+					return err
+				}
+				ports = parsedPorts
+			}
+
+			return run(options{
+				projectRoot:       projectRoot,
+				suite:             suite,
+				composeFile:       composeFile,
+				requiredHostPorts: ports,
+				reportJSON:        strings.TrimSpace(reportJSON),
+			})
+		},
 	}
 
-	rest := fs.Args()
-	if *projectRoot == "" || len(rest) == 0 {
-		fmt.Fprintln(os.Stderr, "--project-root and command are required")
-		os.Exit(2)
-	}
-
-	if err := runExec(execOptions{
-		projectRoot: *projectRoot,
-		timeout:     *timeout,
-		command:     rest[0],
-		args:        rest[1:],
-	}); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	cmd.Flags().StringVar(&projectRoot, "project-root", "", "absolute path to downstream project repository")
+	_ = cmd.MarkFlagRequired("project-root")
+	cmd.Flags().StringVar(&suite, "suite", "", "doctor suite name")
+	_ = cmd.MarkFlagRequired("suite")
+	cmd.Flags().StringVar(&composeFile, "compose-file", "docker-compose.yml", "compose file path relative to project root")
+	cmd.Flags().StringVar(&requiredPorts, "required-host-ports", "", "comma-separated required published host ports")
+	cmd.Flags().StringVar(&reportJSON, "report-json", "", "optional path to write doctor probe results as JSON")
+	return cmd
 }
 
 func runInit(opts initOptions) error {
@@ -443,11 +416,11 @@ func run(opts options) error {
 
 	opts = applyDoctorConfigDefaults(opts, workspaceConfig.Doctor)
 
-	publishedPorts := make([]compose.PublishedPort, 0)
+	publishedPorts := make([]dockercompose.PublishedPort, 0)
 	composePath := filepath.Join(opts.projectRoot, opts.composeFile)
 	discoverCtx, discoverCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer discoverCancel()
-	if ports, discoverErr := compose.DiscoverPublishedPorts(discoverCtx, opts.projectRoot); discoverErr != nil {
+	if ports, discoverErr := dockercompose.DiscoverPublishedPorts(discoverCtx, opts.projectRoot); discoverErr != nil {
 		fmt.Printf("doctor warning: compose port discovery failed for %s: %v\n", composePath, discoverErr)
 	} else {
 		publishedPorts = ports
@@ -1214,9 +1187,6 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 }
 
 func dispatchFirecrackerBootstrap(projectRoot string, execCtx doctorExecContext) error {
-	if firecrackerHostGOOS == "darwin" {
-		return bootstrapFirecrackerExecContextDarwinFn(projectRoot, execCtx)
-	}
 	return bootstrapFirecrackerExecContextNative(projectRoot, execCtx)
 }
 
@@ -1225,9 +1195,6 @@ func bootstrapFirecrackerExecContext(projectRoot string, execCtx doctorExecConte
 }
 
 func runFirecrackerCheckCommandForHost(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-	if firecrackerHostGOOS == "darwin" {
-		return runLimaCheckCommandFn(ctx, projectRoot, command, args)
-	}
 	return firecrackerCheckCommandRunner(ctx, projectRoot, command, args)
 }
 
@@ -1761,9 +1728,6 @@ func selectRuntimeBackend(required []string) string {
 		switch trimmed {
 		case "darwin":
 			if firecrackerHostGOOS == "darwin" {
-				if _, err := exec.LookPath("limactl"); err == nil {
-					return "firecracker"
-				}
 				return "seatbelt"
 			}
 		case "linux":
@@ -1778,9 +1742,6 @@ func selectRuntimeBackend(required []string) string {
 	}
 
 	if firecrackerHostGOOS == "darwin" {
-		if _, err := exec.LookPath("limactl"); err == nil {
-			return "firecracker"
-		}
 		return "seatbelt"
 	}
 	if firecrackerHostGOOS == "linux" {
@@ -2140,7 +2101,7 @@ func ensureDotEnv(projectRoot string) error {
 	return nil
 }
 
-func missingRequiredPorts(required []int, discovered []compose.PublishedPort) []int {
+func missingRequiredPorts(required []int, discovered []dockercompose.PublishedPort) []int {
 	found := map[int]bool{}
 	for _, p := range discovered {
 		found[p.HostPort] = true

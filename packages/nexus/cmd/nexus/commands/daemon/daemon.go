@@ -16,6 +16,8 @@ func Command() *cobra.Command {
 		statusCommand(),
 		tokenCommand(),
 		connectCommand(),
+		disconnectCommand(),
+		profileCommand(),
 	)
 	return cmd
 }
