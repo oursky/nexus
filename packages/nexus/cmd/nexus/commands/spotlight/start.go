@@ -11,77 +11,92 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// tunnelCache holds active SSH port forwards keyed by remote port.
+// tunnelCache holds active SSH port forwards keyed by local port.
 var tunnelCache struct {
 	mu       sync.Mutex
 	forwards map[int]*sshtunnel.Manager // localPort → tunnel
 }
 
+// discoveredPort matches the server's DiscoveredPort DTO.
+type discoveredPort struct {
+	LocalPort  int    `json:"localPort"`
+	RemotePort int    `json:"remotePort"`
+	Service    string `json:"service,omitempty"`
+	Protocol   string `json:"protocol,omitempty"`
+	Source     string `json:"source,omitempty"`
+}
+
 func startCommand() *cobra.Command {
 	var workspaceID string
-	var localPort int
-	var remotePort int
-	var protocol string
 
 	cmd := &cobra.Command{
-		Use:   "start",
-		Short: "Start a spotlight port forward",
+		Use:   "start <workspace-id>",
+		Short: "Start spotlight — tunnels all discovered ports to localhost",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if workspaceID == "" || localPort == 0 {
-				return fmt.Errorf("nexus spotlight start: --workspace and --local-port are required")
-			}
-			if remotePort == 0 {
-				remotePort = localPort
-			}
-
+			workspaceID = args[0]
 			conn, err := rpc.EnsureDaemon()
 			if err != nil {
 				return fmt.Errorf("nexus spotlight start: %w", err)
 			}
 			defer conn.Close()
 
-			// Create daemon-side spotlight forward
-			spec := spotlight.ExposeSpec{
-				WorkspaceID: workspaceID,
-				LocalPort:   localPort,
-				RemotePort:  remotePort,
-				Protocol:    protocol,
+			// Discover ports from docker-compose + workspace config
+			var ports []discoveredPort
+			if err := rpc.Do(conn, "workspace.discover-ports", map[string]any{"id": workspaceID}, &ports); err != nil {
+				return fmt.Errorf("nexus spotlight start: port discovery failed: %w", err)
 			}
-			var result struct {
-				Forward *spotlight.Forward `json:"forward"`
-			}
-			if err := rpc.Do(conn, "spotlight.start", map[string]any{
-				"workspaceId": workspaceID,
-				"spec":        spec,
-			}, &result); err != nil {
-				return fmt.Errorf("nexus spotlight start: %w", err)
-			}
-
-			forwardID := "unknown"
-			if result.Forward != nil {
-				forwardID = result.Forward.ID
-			}
-
-			// Auto-open SSH tunnel so port is accessible locally
-			p, profErr := profile.LoadDefault()
-			if profErr == nil {
-				if tunnelErr := openSSHTunnel(p, localPort, remotePort); tunnelErr != nil {
-					fmt.Fprintf(cmd.OutOrStdout(), "spotlight started (%s) but SSH tunnel failed: %v\n", forwardID, tunnelErr)
-					return nil
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "spotlight started (%s) → localhost:%d\n", forwardID, localPort)
+			if len(ports) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no ports discovered")
 				return nil
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "spotlight started (%s)\n", forwardID)
+			// Load profile for SSH tunneling
+			p, err := profile.LoadDefault()
+			if err != nil {
+				return fmt.Errorf("nexus spotlight start: %w", err)
+			}
+
+			// Create daemon-side spotlight forwards + SSH tunnels for each port
+			forwarded := 0
+			for _, port := range ports {
+				// Create daemon-side forward
+				spec := spotlight.ExposeSpec{
+					WorkspaceID: workspaceID,
+					LocalPort:   port.LocalPort,
+					RemotePort:  port.RemotePort,
+					Protocol:    port.Protocol,
+				}
+				var result struct {
+					Forward *spotlight.Forward `json:"forward"`
+				}
+				if err := rpc.Do(conn, "spotlight.start", map[string]any{
+					"workspaceId": workspaceID,
+					"spec":        spec,
+				}, &result); err != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %d/%s: daemon forward failed: %v\n", port.LocalPort, port.Service, err)
+					continue
+				}
+
+				// Open SSH tunnel to client
+				if err := openSSHTunnel(p, port.LocalPort, port.RemotePort); err != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %d/%s: tunnel failed: %v\n", port.LocalPort, port.Service, err)
+					continue
+				}
+
+				label := port.Service
+				if label == "" {
+					label = fmt.Sprintf(":%d", port.RemotePort)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s → localhost:%d\n", label, port.LocalPort)
+				forwarded++
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "forwarded %d/%d ports\n", forwarded, len(ports))
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&workspaceID, "workspace", "", "workspace ID (required)")
-	cmd.Flags().IntVar(&localPort, "local-port", 0, "local port to expose (required)")
-	cmd.Flags().IntVar(&remotePort, "remote-port", 0, "remote port (defaults to local-port)")
-	cmd.Flags().StringVar(&protocol, "protocol", "", "protocol (tcp/http)")
 	return cmd
 }
 
