@@ -37,6 +37,7 @@ func (h *Handler) Register(reg registry.Registry) {
 	reg.Register("workspace.ports.remove", h.wrap(h.handlePortsRemove))
 	reg.Register("workspace.tunnels.start", h.wrap(h.handleTunnelsStart))
 	reg.Register("workspace.tunnels.stop", h.wrap(h.handleTunnelsStop))
+	reg.Register("workspace.discover-ports", h.wrap(h.handleDiscoverPorts))
 }
 
 func (h *Handler) wrap(fn func(ctx context.Context, raw json.RawMessage) (any, error)) registry.HandlerFunc {

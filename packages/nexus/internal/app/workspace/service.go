@@ -3,14 +3,12 @@ package workspace
 import (
 	"context"
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/inizio/nexus/packages/nexus/internal/domain/project"
 	"github.com/inizio/nexus/packages/nexus/internal/domain/runtime"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/spotlight"
 	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/config"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/dockercompose"
@@ -18,25 +16,14 @@ import (
 
 // Service orchestrates workspace lifecycle operations.
 type Service struct {
-	repo          workspace.Repository
-	projectRepo   project.Repository
-	driver        runtime.Driver
-	portForwarder spotlightPortForwarder
+	repo        workspace.Repository
+	projectRepo project.Repository
+	driver      runtime.Driver
 }
 
-// spotlightPortForwarder creates port forwards when a workspace starts.
-type spotlightPortForwarder interface {
-	StartSpotlight(ctx context.Context, workspaceID string, spec spotlight.ExposeSpec) (*spotlight.Forward, error)
-}
-
-// NewService constructs a Service. driver and portForwarder may be nil.
+// NewService constructs a Service. driver may be nil if no runtime backend is available.
 func NewService(repo workspace.Repository, projectRepo project.Repository, driver runtime.Driver) *Service {
 	return &Service{repo: repo, projectRepo: projectRepo, driver: driver}
-}
-
-// SetPortForwarder injects the spotlight port forwarder. Call after construction.
-func (s *Service) SetPortForwarder(pf spotlightPortForwarder) {
-	s.portForwarder = pf
 }
 
 // Relations is a graph of workspaces grouped by repo.
@@ -174,90 +161,80 @@ func (s *Service) Start(ctx context.Context, id string) (*workspace.Workspace, e
 		return nil, fmt.Errorf("persist start: %w", err)
 	}
 
-	// Auto-forward ports from docker-compose + workspace config
-	if s.portForwarder != nil && ws.Repo != "" {
-		s.autoForwardPorts(ctx, ws)
-	}
-
 	return ws, nil
 }
 
-// autoForwardPorts discovers ports from docker-compose and workspace config,
-// then creates spotlight forwards for each unique port.
-func (s *Service) autoForwardPorts(ctx context.Context, ws *workspace.Workspace) {
-	forwards := s.resolveForwardPorts(ctx, ws.Repo)
-	for _, fwd := range forwards {
-		spec := spotlight.ExposeSpec{
-			LocalPort:   fwd.localPort,
-			RemotePort:  fwd.remotePort,
-			Protocol:    "tcp",
-			Source:      spotlight.ForwardSourceAuto,
-			WorkspaceID: ws.ID,
-		}
-		if _, err := s.portForwarder.StartSpotlight(ctx, ws.ID, spec); err != nil {
-			log.Printf("workspace.start: auto-forward port %d→%d failed: %v", fwd.localPort, fwd.remotePort, err)
-		} else {
-			log.Printf("workspace.start: auto-forwarded port %d→%d", fwd.localPort, fwd.remotePort)
-		}
-	}
+// DiscoveredPort is a port discovered from docker-compose or workspace config.
+type DiscoveredPort struct {
+	LocalPort  int    `json:"localPort"`
+	RemotePort int    `json:"remotePort"`
+	Service    string `json:"service,omitempty"`
+	Protocol   string `json:"protocol,omitempty"`
+	Source     string `json:"source,omitempty"` // "config" or "compose"
 }
 
-// forwardPort is a resolved (local, remote) port pair.
-type forwardPort struct {
-	localPort  int
-	remotePort int
-}
-
-// resolveForwardPorts merges config defaults with docker-compose port discovery.
+// DiscoverPorts merges config defaults with docker-compose port discovery.
 // Config defaults take precedence on conflict (same remote port).
-func (s *Service) resolveForwardPorts(ctx context.Context, projectRoot string) []forwardPort {
+func (s *Service) DiscoverPorts(ctx context.Context, id string) ([]DiscoveredPort, error) {
+	ws, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return nil, workspace.ErrNotFound
+	}
+	if ws.Repo == "" {
+		return nil, nil
+	}
+
 	// 1. Load workspace config defaults
-	var configDefaults []forwardPort
-	cfg, _, err := config.LoadWorkspaceConfig(projectRoot)
+	configDefaults := make(map[int]DiscoveredPort) // remotePort → port
+	cfg, _, err := config.LoadWorkspaceConfig(ws.Repo)
 	if err == nil {
 		for _, d := range cfg.Spotlight.Defaults {
 			if d.RemotePort > 0 && d.LocalPort > 0 {
-				configDefaults = append(configDefaults, forwardPort{
-					localPort:  d.LocalPort,
-					remotePort: d.RemotePort,
-				})
+				configDefaults[d.RemotePort] = DiscoveredPort{
+					LocalPort:  d.LocalPort,
+					RemotePort: d.RemotePort,
+					Service:    d.Service,
+					Protocol:   "tcp",
+					Source:     "config",
+				}
 			}
 		}
 	}
 
 	// 2. Discover docker-compose ports
-	var composePorts []forwardPort
+	composeDefaults := make(map[int]DiscoveredPort) // remotePort → port
 	discoverCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	if ports, err := dockercompose.DiscoverPublishedPorts(discoverCtx, projectRoot); err == nil {
+	if ports, err := dockercompose.DiscoverPublishedPorts(discoverCtx, ws.Repo); err == nil {
 		for _, p := range ports {
-			composePorts = append(composePorts, forwardPort{
-				localPort:  p.HostPort,
-				remotePort: p.TargetPort,
-			})
+			composeDefaults[p.TargetPort] = DiscoveredPort{
+				LocalPort:  p.HostPort,
+				RemotePort: p.TargetPort,
+				Service:    p.Service,
+				Protocol:   p.Protocol,
+				Source:     "compose",
+			}
 		}
 	}
 
 	// 3. Merge: config defaults override compose ports on same remote port
-	remoteToLocal := make(map[int]int) // remotePort → localPort
-	// Add compose ports first
-	for _, p := range composePorts {
-		remoteToLocal[p.remotePort] = p.localPort
+	merged := make(map[int]DiscoveredPort)
+	for remote, p := range composeDefaults {
+		merged[remote] = p
 	}
-	// Config defaults override
-	for _, p := range configDefaults {
-		remoteToLocal[p.remotePort] = p.localPort
+	for remote, p := range configDefaults {
+		merged[remote] = p
 	}
 
 	// 4. Build sorted result
-	result := make([]forwardPort, 0, len(remoteToLocal))
-	for remote, local := range remoteToLocal {
-		result = append(result, forwardPort{localPort: local, remotePort: remote})
+	result := make([]DiscoveredPort, 0, len(merged))
+	for _, p := range merged {
+		result = append(result, p)
 	}
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].remotePort < result[j].remotePort
+		return result[i].RemotePort < result[j].RemotePort
 	})
-	return result
+	return result, nil
 }
 
 func (s *Service) Stop(ctx context.Context, id string) (*workspace.Workspace, error) {

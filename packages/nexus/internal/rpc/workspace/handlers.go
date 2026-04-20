@@ -357,3 +357,24 @@ func mapErr(err error) error {
 	}
 	return rpce.Internal(fmt.Sprintf("internal error: %v", err))
 }
+
+// ── Discover Ports ──────────────────────────────────────────────────────────
+
+type discoverPortsReq struct {
+	ID string `json:"id"`
+}
+
+func (h *Handler) handleDiscoverPorts(ctx context.Context, raw json.RawMessage) (any, error) {
+	req, err := decode[discoverPortsReq](raw)
+	if err != nil {
+		return nil, err
+	}
+	if req.ID == "" {
+		return nil, rpce.InvalidParams("id is required")
+	}
+	ports, err := h.svc.DiscoverPorts(ctx, req.ID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return ports, nil
+}
