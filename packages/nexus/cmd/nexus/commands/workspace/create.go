@@ -11,6 +11,8 @@ import (
 	"github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	domainworkspace "github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/localws"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/mirror"
+	cliprofile "github.com/inizio/nexus/packages/nexus/internal/infra/cli/profile"
 	"github.com/spf13/cobra"
 )
 
@@ -50,8 +52,29 @@ func createCommand() *cobra.Command {
 			}
 			defer conn.Close()
 
+			resolvedRepo := normalizeRepoForCreate(repo)
+
+			// When connected to a remote SSH daemon and --repo is a local path,
+			// mirror it to the Linux host via mutagen so the daemon can access it.
+			if !looksLikeRemoteRepo(resolvedRepo) {
+				if p, err := cliprofile.LoadDefault(); err == nil && p.Host != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "mirroring %s to %s…\n", resolvedRepo, p.Host)
+					slug := filepath.Base(resolvedRepo)
+					result, mirrorErr := mirror.Ensure(mirror.Spec{
+						LocalPath: resolvedRepo,
+						ProjectID: slug,
+						SSHTarget: p.Host,
+						SSHPort:   p.SSHPort,
+					})
+					if mirrorErr != nil {
+						return fmt.Errorf("nexus workspace create: mirror local repo: %w", mirrorErr)
+					}
+					resolvedRepo = result.RemotePath
+				}
+			}
+
 			spec := domainworkspace.CreateSpec{
-				Repo:          normalizeRepoForCreate(repo),
+				Repo:          resolvedRepo,
 				Ref:           ref,
 				WorkspaceName: name,
 				AgentProfile:  profile,
