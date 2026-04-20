@@ -1,4 +1,4 @@
-package compose
+package dockercompose
 
 import (
 	"context"

@@ -21,7 +21,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/compose"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/dockercompose"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/config"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/firecracker"
 
@@ -416,11 +416,11 @@ func run(opts options) error {
 
 	opts = applyDoctorConfigDefaults(opts, workspaceConfig.Doctor)
 
-	publishedPorts := make([]compose.PublishedPort, 0)
+	publishedPorts := make([]dockercompose.PublishedPort, 0)
 	composePath := filepath.Join(opts.projectRoot, opts.composeFile)
 	discoverCtx, discoverCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer discoverCancel()
-	if ports, discoverErr := compose.DiscoverPublishedPorts(discoverCtx, opts.projectRoot); discoverErr != nil {
+	if ports, discoverErr := dockercompose.DiscoverPublishedPorts(discoverCtx, opts.projectRoot); discoverErr != nil {
 		fmt.Printf("doctor warning: compose port discovery failed for %s: %v\n", composePath, discoverErr)
 	} else {
 		publishedPorts = ports
@@ -2101,7 +2101,7 @@ func ensureDotEnv(projectRoot string) error {
 	return nil
 }
 
-func missingRequiredPorts(required []int, discovered []compose.PublishedPort) []int {
+func missingRequiredPorts(required []int, discovered []dockercompose.PublishedPort) []int {
 	found := map[int]bool{}
 	for _, p := range discovered {
 		found[p.HostPort] = true

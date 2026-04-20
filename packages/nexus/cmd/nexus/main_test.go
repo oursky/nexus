@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/compose"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/dockercompose"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/config"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/firecracker"
 )
@@ -89,7 +89,7 @@ func TestDetectHostDockerSocketPrefersSnapHostfsSocket(t *testing.T) {
 
 func TestMissingRequiredPorts(t *testing.T) {
 	required := []int{5173, 5174, 8000}
-	discovered := []compose.PublishedPort{{HostPort: 5173}, {HostPort: 8000}}
+	discovered := []dockercompose.PublishedPort{{HostPort: 5173}, {HostPort: 8000}}
 	missing := missingRequiredPorts(required, discovered)
 	expected := []int{5174}
 	if !reflect.DeepEqual(missing, expected) {
