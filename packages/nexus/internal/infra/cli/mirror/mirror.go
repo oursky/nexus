@@ -147,9 +147,12 @@ func Stop(spec Spec) error {
 func prepareRemoteDir(spec Spec, dirExpr string) (string, error) {
 	bash := "mkdir -p " + dirExpr + " && cd " + dirExpr + " && pwd"
 	args := sshArgs(spec.SSHTarget, spec.SSHPort, bash)
-	out, err := exec.Command("ssh", args...).Output()
+	var stderr bytes.Buffer
+	cmd := exec.Command("ssh", args...)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("ssh: %w", err)
+		return "", fmt.Errorf("ssh: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 	abs := strings.TrimSpace(string(out))
 	if abs == "" || !strings.HasPrefix(abs, "/") {
@@ -226,8 +229,9 @@ func sshArgs(target string, port int, bash string) []string {
 	if port > 0 && port != 22 {
 		args = append(args, "-p", fmt.Sprintf("%d", port))
 	}
-	// Pass the entire bash command as a single quoted argument so SSH doesn't
-	// split it; otherwise 'bash -lc <cmd>' receives only the first word.
-	args = append(args, target, "bash -lc '"+strings.ReplaceAll(bash, "'", "'\\''")+"'")
+	// SSH passes a single-argument command to the remote login shell.
+	// Avoid login-flag wrapping (bash -lc) to prevent /etc/profile side-effects;
+	// the remote sshd already spawns a shell that handles &&, ~ etc.
+	args = append(args, target, bash)
 	return args
 }
