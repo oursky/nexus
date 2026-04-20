@@ -6,6 +6,13 @@ TARGET_DIR="$ROOT/packages/nexus/internal/infra/cli/mutagenbin"
 
 mkdir -p "$TARGET_DIR"
 
+# Skip download if all four mutagen binaries are already present (idempotent in CI).
+if [[ -f "$TARGET_DIR/mutagen-darwin-arm64" && -f "$TARGET_DIR/mutagen-darwin-amd64" \
+   && -f "$TARGET_DIR/mutagen-linux-amd64" && -f "$TARGET_DIR/mutagen-linux-arm64" ]]; then
+  echo "Mutagen binaries already present; skipping download."
+  exit 0
+fi
+
 python3 - "$TARGET_DIR" <<'PY'
 import json
 import os

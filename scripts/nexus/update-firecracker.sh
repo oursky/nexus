@@ -6,6 +6,12 @@ TARGET_DIR="$ROOT/packages/nexus/cmd/nexus"
 
 mkdir -p "$TARGET_DIR"
 
+# Skip download if both binaries are already present (idempotent in CI).
+if [[ -f "$TARGET_DIR/firecracker-linux-amd64" && -f "$TARGET_DIR/firecracker-linux-arm64" ]]; then
+  echo "Firecracker binaries already present; skipping download."
+  exit 0
+fi
+
 python3 - "$TARGET_DIR" <<'PY'
 import json
 import os
