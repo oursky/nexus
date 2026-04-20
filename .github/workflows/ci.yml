@@ -189,6 +189,8 @@ jobs:
           CI: true
           NEXUS_FIRECRACKER_KERNEL: /var/lib/nexus/vmlinux.bin
           NEXUS_FIRECRACKER_ROOTFS: /var/lib/nexus/rootfs.ext4
+          # Use a small workspace image so mkfs.ext4 finishes in seconds on CI.
+          NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
 
       - name: Upload test results on failure
         if: failure()

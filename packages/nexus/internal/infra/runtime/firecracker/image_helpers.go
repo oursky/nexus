@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -70,6 +71,26 @@ func workspaceImageSizeBytes(projectSizeBytes int64) int64 {
 		overhead   = 2 * giB
 		maxInitial = 20 * giB
 	)
+
+	// Allow CI/test environments to override the minimum image size so that
+	// mkfs.ext4 completes quickly (smaller sparse files = less metadata to init).
+	// Set NEXUS_WORKSPACE_IMAGE_MIN_MIB=512 to use a 512 MiB minimum.
+	if raw := strings.TrimSpace(os.Getenv("NEXUS_WORKSPACE_IMAGE_MIN_MIB")); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+			minVal := n * miB
+			target := projectSizeBytes*2 + minVal/2
+			if target < minVal {
+				target = minVal
+			}
+			if target > maxInitial {
+				target = maxInitial
+			}
+			if rem := target % miB; rem != 0 {
+				target += miB - rem
+			}
+			return target
+		}
+	}
 
 	target := projectSizeBytes*2 + overhead
 	if target < minSize {
