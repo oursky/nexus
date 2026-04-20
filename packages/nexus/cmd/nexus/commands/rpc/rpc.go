@@ -5,17 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/daemonclient"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/profile"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/sshtunnel"
 )
-
-const DefaultDaemonPort = 7874
 
 type Request struct {
 	JSONRPC string      `json:"jsonrpc"`
@@ -34,35 +34,39 @@ type Response struct {
 	} `json:"error,omitempty"`
 }
 
-func DaemonPort() int {
-	if v := os.Getenv("NEXUS_DAEMON_PORT"); v != "" {
-		if p, err := strconv.Atoi(v); err == nil && p > 0 {
-			return p
-		}
-	}
-	return DefaultDaemonPort
-}
-
-func DaemonToken() (string, error) {
-	if t := os.Getenv("NEXUS_DAEMON_TOKEN"); t != "" {
-		return t, nil
-	}
-	return daemonclient.LoadOrCreateToken()
+// tunnelCache caches the active tunnel so it's reused across commands.
+var tunnelCache struct {
+	sync.Once
+	tunnel *sshtunnel.Manager
+	port   int
+	err    error
 }
 
 func EnsureDaemon() (*websocket.Conn, error) {
-	port := DaemonPort()
-	token, err := DaemonToken()
+	p, err := profile.LoadDefault()
 	if err != nil {
-		return nil, fmt.Errorf("daemon token: %w", err)
+		return nil, err
 	}
 
-	if err := daemonclient.EnsureRunning(port, token, ""); err != nil {
-		return nil, fmt.Errorf("start daemon: %w", err)
+	tunnelCache.Do(func() {
+		tm := sshtunnel.New(p.Host, p.Port, p.SSHPort)
+		localPort, err := tm.Ensure()
+		if err != nil {
+			tm.Close()
+			tunnelCache.err = fmt.Errorf("ssh tunnel to %s: %w", p.Host, err)
+			return
+		}
+		tunnelCache.tunnel = tm
+		tunnelCache.port = localPort
+	})
+	if tunnelCache.err != nil {
+		return nil, tunnelCache.err
 	}
 
-	url := fmt.Sprintf("ws://localhost:%d/?token=%s", port, token)
-	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	url := fmt.Sprintf("ws://localhost:%d/", tunnelCache.port)
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+p.Token)
+	conn, _, err := websocket.DefaultDialer.Dial(url, header)
 	if err != nil {
 		return nil, fmt.Errorf("connect to daemon: %w", err)
 	}

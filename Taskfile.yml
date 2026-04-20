@@ -125,6 +125,12 @@ tasks:
   # Set REMOTE_HOST=user@hostname in .env.local (see .env.local.example).
   # Override per-run: task deploy:remote REMOTE_HOST=user@host
   # Shell logic lives in scripts/remote/ — Taskfile is the entrypoint only.
+
+  deploy:local:
+    desc: "Build nexus for the local OS/arch and install to ~/.local/bin/nexus"
+    cmds:
+      - scripts/local/deploy.sh
+
   deploy:remote:
     desc: "Cross-compile nexus single binary for linux/amd64 and deploy to remote host"
     preconditions:
@@ -169,17 +175,15 @@ tasks:
     cmds:
       - scripts/remote/daemon-logs.sh
 
-  daemon:status:
-    desc: "Check daemon status on the remote host"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN: "{{.REMOTE_BIN}}"
-      REMOTE_PORT: "{{.REMOTE_PORT}}"
+  daemon:connect:
+    desc: "Connect CLI to remote daemon (creates default profile)"
     cmds:
-      - scripts/remote/daemon-status.sh
+      - nexus daemon connect {{.REMOTE_HOST}} --port {{.REMOTE_PORT}}
+
+  daemon:status:
+    desc: "Show current daemon connection profile"
+    cmds:
+      - nexus daemon profile
 
   # ── Swift ────────────────────────────────────────────────────────────────
   swift:test:ui:
@@ -192,4 +196,5 @@ tasks:
     desc: Clean core build artifacts
     cmds:
       - rm -rf packages/nexus/nexus
+      - rm -rf packages/nexus/tmp
       - rm -rf packages/nexus/.air-tmp
