@@ -5,8 +5,6 @@
 | Tool | Version | Install |
 |------|---------|---------|
 | [Go](https://go.dev/dl/) | ≥ 1.21 | `brew install go` |
-| [Node.js](https://nodejs.org/) | ≥ 20 | `brew install node` |
-| [pnpm](https://pnpm.io/installation) | latest | `npm install -g pnpm` |
 | [go-task](https://taskfile.dev/installation/) | latest | `brew install go-task` |
 
 ## Getting Started
@@ -25,7 +23,7 @@ task build                          # compile all packages
 task test
 ```
 
-Runs `go test ./...` in `packages/nexus` and `pnpm test` in `packages/sdk/js`.
+Runs `go test ./...` in `packages/nexus`.
 
 ## Local Development
 

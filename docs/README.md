@@ -1,19 +1,26 @@
 # Nexus Docs
 
-Isolated VM workspaces with fast local iteration.
+Remote workspace platform — run workspaces on a Linux host, controlled from your Mac.
 
-## Quick start
+## Quick Start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/inizio/nexus/main/install.sh | bash
-cd /path/to/project
-nexus init && nexus create && nexus list && nexus start <workspace-id>
-```
+# Connect the CLI to a remote daemon
+nexus daemon connect newman@linuxbox --port 7777
 
-`nexus create` prints the id used by `start`, `ssh`, `tunnel`, and `stop`.
+# Create and start a workspace
+nexus workspace create
+nexus workspace list
+nexus workspace start <workspace-id>
+
+# Forward workspace ports locally
+nexus spotlight start <workspace-id>
+```
 
 ## Reference
 
 | Topic | Doc |
 |-------|-----|
 | CLI reference | [`docs/reference/cli.md`](reference/cli.md) |
+| Architecture | [`ARCHITECTURE.md`](../ARCHITECTURE.md) |
+| Contributing | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |

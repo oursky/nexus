@@ -1,10 +1,10 @@
-# Nexus Daemon Architecture
+# Nexus Architecture
 
 ## Overview
 
-The Nexus daemon (`packages/nexus/`) is a Go service (`github.com/inizio/nexus/packages/nexus`) that manages remote workspaces using Firecracker VMs. It exposes JSON-RPC 2.0 over a Unix socket and is designed to run on a remote host separate from the CLI client.
+The Nexus daemon (`packages/nexus/`) is a Go service that manages remote workspaces. It exposes JSON-RPC 2.0 over a Unix socket and runs on a remote Linux host. The CLI runs locally and communicates with the daemon over an SSH tunnel using WebSocket + Bearer token auth.
 
-Entry point: `cmd/nexusd/main.go`  
+Entry point: `cmd/nexus/main.go`  
 Composition root: `internal/daemon/daemon.go` — wires all layers together.
 
 ---
@@ -100,6 +100,7 @@ func (s *WorkspaceStore) Get(ctx context.Context, id string) (*workspace.Workspa
 **CLI-only infra** (used by `cmd/nexus`, never by the daemon):
 - `infra/cli/profile/` — daemon profile store (host, port, token, SSH port)
 - `infra/cli/sshtunnel/` — SSH tunnel manager for remote daemon connections
+- `infra/cli/localws/` — local workspace helpers for CLI
 
 ---
 
@@ -216,6 +217,7 @@ internal/
 ├── identity/           Identity management
 ├── infra/
 │   ├── cli/            CLI-only infra (NOT used by daemon)
+│   │   ├── localws/    Local workspace helpers
 │   │   ├── profile/    Daemon profile store (host, port, token, SSH port)
 │   │   └── sshtunnel/  SSH tunnel manager for remote daemon connections
 │   ├── config/         Node and workspace config (disk reads)
@@ -280,7 +282,7 @@ The daemon runs on a different machine than the user:
 
 ## VM Backend
 
-**Firecracker only.** Lima has been removed. `internal/infra/runtime/sandbox/` provides a process-isolation fallback for environments where Firecracker is unavailable.
+**Firecracker** — Linux/KVM microVM backend. `internal/infra/runtime/sandbox/` provides a process-isolation fallback for environments where Firecracker is unavailable.
 
 ---
 
@@ -289,5 +291,5 @@ The daemon runs on a different machine than the user:
 Tests live in `test/e2e/` with the `//go:build e2e` build tag.
 
 ```sh
-NEXUS_E2E_BINARY=/tmp/nexusd go test -tags e2e ./test/e2e/...
+NEXUS_E2E_BINARY=/tmp/nexus go test -tags e2e ./test/e2e/...
 ```
