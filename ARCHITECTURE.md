@@ -92,12 +92,12 @@ func (s *WorkspaceStore) Get(ctx context.Context, id string) (*workspace.Workspa
 - `infra/store/` — SQLite persistence; implements all three domain repository interfaces (`WorkspaceStore`, `ProjectStore`, `ForwardStore`)
 - `infra/fsworkspace/` — filesystem operations for workspace directories on the daemon host (git, file layout); this is I/O, not a domain entity
 - `infra/config/` — reads node and workspace config from disk
+- `infra/dockercompose/` — discovers published ports from Docker Compose files (used by daemon and CLI)
 - `infra/runtime/firecracker/` — Firecracker VM adapter; implements `domain/runtime.Driver`
 - `infra/runtime/sandbox/` — process-isolation fallback adapter; implements `domain/runtime.Driver`
 - `infra/secrets/inject/` — secrets injection into workspace environments
 
 **CLI-only infra** (used by `cmd/nexus`, never by the daemon):
-- `infra/cli/dockercompose/` — discovers Docker Compose projects on the *client* machine
 - `infra/cli/profile/` — daemon profile store (host, port, token, SSH port)
 - `infra/cli/sshtunnel/` — SSH tunnel manager for remote daemon connections
 
@@ -216,10 +216,10 @@ internal/
 ├── identity/           Identity management
 ├── infra/
 │   ├── cli/            CLI-only infra (NOT used by daemon)
-│   │   ├── dockercompose/ Docker Compose project discovery (client machine)
 │   │   ├── profile/    Daemon profile store (host, port, token, SSH port)
 │   │   └── sshtunnel/  SSH tunnel manager for remote daemon connections
 │   ├── config/         Node and workspace config (disk reads)
+│   ├── dockercompose/  Docker Compose port discovery (daemon + CLI)
 │   ├── fsworkspace/    Filesystem operations for workspace dirs on daemon host
 │   ├── runtime/
 │   │   ├── firecracker/ Firecracker VM adapter

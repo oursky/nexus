@@ -12,7 +12,15 @@ import (
 	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
 )
 
+// PortForwarder creates and manages spotlight port forwards.
+// Implementations bind a local TCP port and proxy traffic to the remote port.
+type PortForwarder interface {
+	StartSpotlight(ctx context.Context, workspaceID string, spec spotlight.ExposeSpec) (*spotlight.Forward, error)
+}
+
 // Service manages port forwards (spotlight) for workspaces.
+var _ PortForwarder = (*Service)(nil)
+
 type Service struct {
 	repo          spotlight.Repository
 	workspaceRepo workspace.Repository

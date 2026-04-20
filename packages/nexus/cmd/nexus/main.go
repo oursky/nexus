@@ -21,8 +21,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/dockercompose"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/config"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/dockercompose"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/firecracker"
 
 	daemoncmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/daemon"

@@ -3,25 +3,40 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/inizio/nexus/packages/nexus/internal/domain/project"
 	"github.com/inizio/nexus/packages/nexus/internal/domain/runtime"
+	"github.com/inizio/nexus/packages/nexus/internal/domain/spotlight"
 	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/config"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/dockercompose"
 )
 
 // Service orchestrates workspace lifecycle operations.
 type Service struct {
-	repo        workspace.Repository
-	projectRepo project.Repository
-	driver      runtime.Driver
+	repo          workspace.Repository
+	projectRepo   project.Repository
+	driver        runtime.Driver
+	portForwarder spotlightPortForwarder
 }
 
-// NewService constructs a Service. driver may be nil if no runtime backend is available.
+// spotlightPortForwarder creates port forwards when a workspace starts.
+type spotlightPortForwarder interface {
+	StartSpotlight(ctx context.Context, workspaceID string, spec spotlight.ExposeSpec) (*spotlight.Forward, error)
+}
+
+// NewService constructs a Service. driver and portForwarder may be nil.
 func NewService(repo workspace.Repository, projectRepo project.Repository, driver runtime.Driver) *Service {
 	return &Service{repo: repo, projectRepo: projectRepo, driver: driver}
+}
+
+// SetPortForwarder injects the spotlight port forwarder. Call after construction.
+func (s *Service) SetPortForwarder(pf spotlightPortForwarder) {
+	s.portForwarder = pf
 }
 
 // Relations is a graph of workspaces grouped by repo.
@@ -158,7 +173,91 @@ func (s *Service) Start(ctx context.Context, id string) (*workspace.Workspace, e
 	if err := s.repo.Update(ctx, ws); err != nil {
 		return nil, fmt.Errorf("persist start: %w", err)
 	}
+
+	// Auto-forward ports from docker-compose + workspace config
+	if s.portForwarder != nil && ws.Repo != "" {
+		s.autoForwardPorts(ctx, ws)
+	}
+
 	return ws, nil
+}
+
+// autoForwardPorts discovers ports from docker-compose and workspace config,
+// then creates spotlight forwards for each unique port.
+func (s *Service) autoForwardPorts(ctx context.Context, ws *workspace.Workspace) {
+	forwards := s.resolveForwardPorts(ctx, ws.Repo)
+	for _, fwd := range forwards {
+		spec := spotlight.ExposeSpec{
+			LocalPort:   fwd.localPort,
+			RemotePort:  fwd.remotePort,
+			Protocol:    "tcp",
+			Source:      spotlight.ForwardSourceAuto,
+			WorkspaceID: ws.ID,
+		}
+		if _, err := s.portForwarder.StartSpotlight(ctx, ws.ID, spec); err != nil {
+			log.Printf("workspace.start: auto-forward port %d→%d failed: %v", fwd.localPort, fwd.remotePort, err)
+		} else {
+			log.Printf("workspace.start: auto-forwarded port %d→%d", fwd.localPort, fwd.remotePort)
+		}
+	}
+}
+
+// forwardPort is a resolved (local, remote) port pair.
+type forwardPort struct {
+	localPort  int
+	remotePort int
+}
+
+// resolveForwardPorts merges config defaults with docker-compose port discovery.
+// Config defaults take precedence on conflict (same remote port).
+func (s *Service) resolveForwardPorts(ctx context.Context, projectRoot string) []forwardPort {
+	// 1. Load workspace config defaults
+	var configDefaults []forwardPort
+	cfg, _, err := config.LoadWorkspaceConfig(projectRoot)
+	if err == nil {
+		for _, d := range cfg.Spotlight.Defaults {
+			if d.RemotePort > 0 && d.LocalPort > 0 {
+				configDefaults = append(configDefaults, forwardPort{
+					localPort:  d.LocalPort,
+					remotePort: d.RemotePort,
+				})
+			}
+		}
+	}
+
+	// 2. Discover docker-compose ports
+	var composePorts []forwardPort
+	discoverCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if ports, err := dockercompose.DiscoverPublishedPorts(discoverCtx, projectRoot); err == nil {
+		for _, p := range ports {
+			composePorts = append(composePorts, forwardPort{
+				localPort:  p.HostPort,
+				remotePort: p.TargetPort,
+			})
+		}
+	}
+
+	// 3. Merge: config defaults override compose ports on same remote port
+	remoteToLocal := make(map[int]int) // remotePort → localPort
+	// Add compose ports first
+	for _, p := range composePorts {
+		remoteToLocal[p.remotePort] = p.localPort
+	}
+	// Config defaults override
+	for _, p := range configDefaults {
+		remoteToLocal[p.remotePort] = p.localPort
+	}
+
+	// 4. Build sorted result
+	result := make([]forwardPort, 0, len(remoteToLocal))
+	for remote, local := range remoteToLocal {
+		result = append(result, forwardPort{localPort: local, remotePort: remote})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].remotePort < result[j].remotePort
+	})
+	return result
 }
 
 func (s *Service) Stop(ctx context.Context, id string) (*workspace.Workspace, error) {

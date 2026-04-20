@@ -112,6 +112,7 @@ func New(cfg Config) (*Daemon, error) {
 	wsSvc := appworkspace.NewService(wsStore, projStore, rtDriver)
 
 	spotlightSvc := appspotlight.New(fwdStore, wsStore)
+	wsSvc.SetPortForwarder(spotlightSvc)
 	ptyReg := apppty.NewRegistry()
 	broker := relay.NewBroker()
 
