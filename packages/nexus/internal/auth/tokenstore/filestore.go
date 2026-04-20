@@ -37,3 +37,11 @@ func (f *FileStore) Save(token string) error {
 	}
 	return os.WriteFile(f.path, []byte(token), 0600)
 }
+
+func (f *FileStore) Delete() error {
+	err := os.Remove(f.path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
