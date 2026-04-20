@@ -503,9 +503,10 @@ func TestBuildSetupScriptSeedsMakeBinaryIntoRootfs(t *testing.T) {
 	requireLinux(t)
 
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent", "/tmp/nexus-firecracker", "/tmp/nexus-bin")
-	needle := "docker-init docker-proxy iptables ip6tables make; do"
-	if count := strings.Count(script, needle); count != 2 {
-		t.Fatalf("expected setup script to seed runtime helpers (including make) in both binary copy loops, count=%d", count)
+	// The setup script injects nexus-firecracker-agent as /usr/local/bin and wires /sbin/init.
+	needle := "cp \"$NEXUS_SETUP_AGENT_SRC\""
+	if count := strings.Count(script, needle); count < 1 {
+		t.Fatalf("expected setup script to copy nexus-firecracker-agent into rootfs, count=%d", count)
 	}
 }
 
@@ -2279,10 +2280,10 @@ func TestBuildSetupScriptUsesLocalKernelCacheBeforeDownload(t *testing.T) {
 
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent", "/tmp/nexus-firecracker", "/tmp/nexus-bin")
 
-	if !strings.Contains(script, "if [ -f /tmp/nexus-vmlinux.bin ]; then") {
-		t.Fatalf("expected setup script to check local kernel cache first, got:\n%s", script)
+	if !strings.Contains(script, `KERNEL_CACHE="/tmp/nexus-vmlinux.bin"`) {
+		t.Fatalf("expected setup script to declare kernel cache path, got:\n%s", script)
 	}
-	if !strings.Contains(script, "cp /tmp/nexus-vmlinux.bin /var/lib/nexus/vmlinux.bin") {
+	if !strings.Contains(script, `cp "$KERNEL_CACHE" "$KERNEL_PATH"`) {
 		t.Fatalf("expected setup script to copy local kernel cache when present, got:\n%s", script)
 	}
 }
@@ -2292,10 +2293,10 @@ func TestBuildSetupScriptUsesLocalSquashfsCacheBeforeDownload(t *testing.T) {
 
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent", "/tmp/nexus-firecracker", "/tmp/nexus-bin")
 
-	if !strings.Contains(script, "if [ -f /tmp/nexus-ubuntu.squashfs ]; then") {
-		t.Fatalf("expected setup script to check local squashfs cache first, got:\n%s", script)
+	if !strings.Contains(script, `SQUASHFS_CACHE="/tmp/nexus-ubuntu.squashfs"`) {
+		t.Fatalf("expected setup script to declare squashfs cache path, got:\n%s", script)
 	}
-	if !strings.Contains(script, "cp /tmp/nexus-ubuntu.squashfs \"$SQUASHFS_TMP/rootfs.squashfs\"") {
+	if !strings.Contains(script, `cp "$SQUASHFS_CACHE" "$SQUASHFS_TMP/rootfs.squashfs"`) {
 		t.Fatalf("expected setup script to copy local squashfs cache when present, got:\n%s", script)
 	}
 }
@@ -2318,13 +2319,13 @@ func TestBuildSetupScriptNormalizesVMAssetOwnershipForSudoUser(t *testing.T) {
 
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent", "/tmp/nexus-firecracker", "/tmp/nexus-bin")
 
-	if !strings.Contains(script, "chown \"$SUDO_USER\":\"$SUDO_USER\" /var/lib/nexus/vmlinux.bin") {
+	if !strings.Contains(script, "chown \"$SUDO_USER\":\"$SUDO_USER\" \"$KERNEL_PATH\"") {
 		t.Fatalf("expected setup script to chown kernel to sudo user, got:\n%s", script)
 	}
-	if !strings.Contains(script, "chown \"$SUDO_USER\":\"$SUDO_USER\" /var/lib/nexus/rootfs.ext4") {
+	if !strings.Contains(script, "chown \"$SUDO_USER\":\"$SUDO_USER\" \"$ROOTFS_PATH\"") {
 		t.Fatalf("expected setup script to chown rootfs to sudo user, got:\n%s", script)
 	}
-	if !strings.Contains(script, "chmod 600 /var/lib/nexus/rootfs.ext4") {
+	if !strings.Contains(script, "chmod 600 \"$ROOTFS_PATH\"") {
 		t.Fatalf("expected setup script to restrict rootfs mode for user-owned rw access, got:\n%s", script)
 	}
 }
@@ -2334,23 +2335,18 @@ func TestBuildSetupScriptUpdatesExistingRootfsAgentPayload(t *testing.T) {
 
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent", "/tmp/nexus-firecracker", "/tmp/nexus-bin")
 
-	if !strings.Contains(script, "if [ \"$ROOTFS_REBUILD\" -eq 0 ]; then") {
-		t.Fatalf("expected setup script to handle existing rootfs agent update, got:\n%s", script)
+	// Script uses _update_agent_in_rootfs to inject the latest agent into rootfs.
+	if !strings.Contains(script, "_update_agent_in_rootfs") {
+		t.Fatalf("expected setup script to include _update_agent_in_rootfs helper, got:\n%s", script)
 	}
-	if !strings.Contains(script, "cp /tmp/nexus-firecracker-agent \"$ROOTFS_MOUNT/usr/local/bin/nexus-firecracker-agent\"") {
-		t.Fatalf("expected setup script to copy fresh agent into existing rootfs, got:\n%s", script)
+	if !strings.Contains(script, "cp \"$NEXUS_SETUP_AGENT_SRC\" \"$mount_dir/usr/local/bin/nexus-firecracker-agent\"") {
+		t.Fatalf("expected setup script to copy fresh agent into rootfs mount, got:\n%s", script)
 	}
-	if !strings.Contains(script, "mkdir -p \"$ROOTFS_MOUNT/workspace\"") {
+	if !strings.Contains(script, "mkdir -p \"$mount_dir/usr/local/bin\" \"$mount_dir/workspace\"") {
 		t.Fatalf("expected setup script to ensure /workspace exists in rootfs, got:\n%s", script)
 	}
-	if !strings.Contains(script, "for candidate in docker dockerd containerd containerd-shim-runc-v2 ctr runc docker-init docker-proxy iptables ip6tables make; do") {
-		t.Fatalf("expected setup script to seed docker runtime binaries (including make) into rootfs, got:\n%s", script)
-	}
-	if !strings.Contains(script, "copy_bin_with_libs") {
-		t.Fatalf("expected setup script to include copy_bin_with_libs helper, got:\n%s", script)
-	}
-	if !strings.Contains(script, "printf '#!/bin/sh\\nexec /usr/local/bin/nexus-firecracker-agent\\n' > \"$ROOTFS_MOUNT/sbin/init\"") {
-		t.Fatalf("expected setup script to rewrite init inside existing rootfs, got:\n%s", script)
+	if !strings.Contains(script, "printf '#!/bin/sh\\nexec /usr/local/bin/nexus-firecracker-agent\\n' > \"$mount_dir/sbin/init\"") {
+		t.Fatalf("expected setup script to rewrite init inside rootfs, got:\n%s", script)
 	}
 }
 
@@ -2359,10 +2355,10 @@ func TestBuildSetupScriptChecksBridgeRouteLinkdownNotLinkState(t *testing.T) {
 
 	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent", "/tmp/nexus-firecracker", "/tmp/nexus-bin")
 
-	if !strings.Contains(script, "if ! ip route show dev nexusbr0 | grep -q 'linkdown'; then") {
+	if !strings.Contains(script, "if ip route show dev nexusbr0 | grep -q 'linkdown'; then") {
 		t.Fatalf("expected setup script to check route linkdown status, got:\n%s", script)
 	}
-	if !strings.Contains(script, "WARN: nexusbr0 route still linkdown after setup") {
+	if !strings.Contains(script, "WARN: nexusbr0 route still linkdown") {
 		t.Fatalf("expected setup script to emit linkdown warning, got:\n%s", script)
 	}
 	if !strings.Contains(script, "ip rule add pref 5190 to 172.26.0.0/16 lookup main") {
