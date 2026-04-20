@@ -160,6 +160,10 @@ func attachToBridge(tapName, bridge string) error {
 	req.Index = int32(tapIface.Index)
 
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), siocBrAddIf, uintptr(unsafe.Pointer(&req))); errno != 0 {
+		// Idempotent create: EBUSY means the interface is already attached.
+		if errno == unix.EBUSY {
+			return nil
+		}
 		return errno
 	}
 

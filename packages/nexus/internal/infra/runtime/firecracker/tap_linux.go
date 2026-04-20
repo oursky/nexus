@@ -71,7 +71,12 @@ func bridgeSetupInstructions() string {
 func realSetupTAP(tapName, hostIP, subnetCIDR string) (any, error) {
 	out, err := exec.Command(tapHelperBin, "create", tapName, bridgeName).CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("nexus-tap-helper create %s: %w: %s", tapName, err, strings.TrimSpace(string(out)))
+		msg := strings.TrimSpace(string(out))
+		// Existing TAPs can race with cleanup; treat EBUSY as idempotent success.
+		if strings.Contains(msg, "device or resource busy") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("nexus-tap-helper create %s: %w: %s", tapName, err, msg)
 	}
 	return nil, nil
 }
