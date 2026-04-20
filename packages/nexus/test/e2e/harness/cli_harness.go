@@ -30,7 +30,7 @@ type CLIHarness struct {
 	configHome string // lazily filled when using remote profile mode
 }
 
-// NewCLIHarness starts a foreground daemon (NEXUS_DAEMON_SERVE=1) with --network on a free port.
+// NewCLIHarness starts a foreground daemon with --network on a free port.
 func NewCLIHarness(t *testing.T) *CLIHarness {
 	t.Helper()
 
@@ -71,14 +71,15 @@ func NewCLIHarness(t *testing.T) *CLIHarness {
 		"--db", dbPath,
 		"--socket", socketPath,
 		"--workdir-root", workdir,
-		"--network",
+		"--network=true",
 		"--bind", "127.0.0.1",
 		"--port", strconv.Itoa(port),
 		"--token", token,
+		"--foreground", // skip self-daemonize; harness kills the process directly
 	}
 
 	cmd := exec.Command(binPath, args...)
-	cmd.Env = append(os.Environ(), "NEXUS_DAEMON_SERVE=1")
+	cmd.Stdout = os.Stderr // capture startup messages
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("cliharness: start daemon: %v", err)

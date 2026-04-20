@@ -97,6 +97,8 @@ func New(t *testing.T, opts ...Option) *Harness {
 		"--db", dbPath,
 		"--socket", socketPath,
 		"--workdir-root", workdir,
+		"--network=false", // tests use Unix socket only; avoids port-7777 conflicts
+		"--foreground",    // skip self-daemonize so the child is directly visible
 	}
 	if cfg.firecrackerBin != "" {
 		args = append(args,
@@ -110,6 +112,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 
 	cmd := exec.Command(binPath, args...)
+	cmd.Stdout = os.Stderr // capture parent stdout (daemon ready/error msgs)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("harness: start nexusd: %v", err)
