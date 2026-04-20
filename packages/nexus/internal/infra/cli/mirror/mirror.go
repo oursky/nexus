@@ -27,6 +27,9 @@ type Spec struct {
 	SSHTarget string
 	// SSHPort overrides the SSH port; 0 means use the default (22).
 	SSHPort int
+	// Ignores is a list of paths/globs to exclude from the sync session.
+	// Passed as --ignore flags to mutagen sync create.
+	Ignores []string
 }
 
 // Result holds the outcome of Ensure.
@@ -94,7 +97,7 @@ func Ensure(spec Spec) (*Result, error) {
 	// 4. Create the session if it doesn't already exist.
 	if !sessionExists(mutagenPath, session) {
 		betaURL := spec.SSHTarget + ":" + remoteAbs
-		if err := createSession(mutagenPath, session, spec.LocalPath, betaURL, spec.SSHPort); err != nil {
+		if err := createSession(mutagenPath, session, spec.LocalPath, betaURL, spec.SSHPort, spec.Ignores); err != nil {
 			return nil, fmt.Errorf("mirror: create session: %w", err)
 		}
 	}
@@ -178,7 +181,7 @@ func sessionExists(mutagenPath, sessionName string) bool {
 	return strings.Contains(string(out), sessionName)
 }
 
-func createSession(mutagenPath, sessionName, localPath, betaURL string, sshPort int) error {
+func createSession(mutagenPath, sessionName, localPath, betaURL string, sshPort int, ignores []string) error {
 	args := []string{
 		"sync", "create",
 		"--name", sessionName,
@@ -188,6 +191,9 @@ func createSession(mutagenPath, sessionName, localPath, betaURL string, sshPort 
 	}
 	if sshPort > 0 && sshPort != 22 {
 		args = append(args, "--ssh-port", fmt.Sprintf("%d", sshPort))
+	}
+	for _, ig := range ignores {
+		args = append(args, "--ignore", ig)
 	}
 	args = append(args, localPath, betaURL)
 

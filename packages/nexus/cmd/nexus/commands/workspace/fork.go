@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
@@ -63,12 +64,17 @@ func forkCommand() *cobra.Command {
 			}
 
 			gitRoot := parentRec.GitRoot
-			worktreeDir, err := worktreeRoot()
-			if err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not determine worktree root: %v\n", err)
+			// Worktrees live at <gitRoot>/.worktrees/<name> so they stay
+			// alongside the project rather than in a global ~/nexus-workspaces.
+			worktreesDir := filepath.Join(gitRoot, ".worktrees")
+			worktreePath := filepath.Join(worktreesDir, child.WorkspaceName)
+
+			if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not create .worktrees dir: %v\n", err)
 				return nil
 			}
-			worktreePath := filepath.Join(worktreeDir, child.WorkspaceName)
+			// Keep .worktrees/ out of git status/log without touching .gitignore.
+			addToGitExclude(gitRoot, ".worktrees/")
 
 			fmt.Fprintf(cmd.OutOrStdout(), "creating worktree %s at %s…\n", childRef, worktreePath)
 			if err := gitWorktreeAdd(gitRoot, worktreePath, childRef); err != nil {
@@ -111,18 +117,24 @@ func forkCommand() *cobra.Command {
 	return cmd
 }
 
-// worktreeRoot returns the directory under which fork worktrees are created.
-// Default: ~/nexus-workspaces
-func worktreeRoot() (string, error) {
-	home, err := os.UserHomeDir()
+// addToGitExclude appends entry to <gitRoot>/.git/info/exclude if not already
+// present. This keeps the path out of git status without modifying .gitignore.
+func addToGitExclude(gitRoot, entry string) {
+	excludePath := filepath.Join(gitRoot, ".git", "info", "exclude")
+	_ = os.MkdirAll(filepath.Dir(excludePath), 0o755)
+
+	data, _ := os.ReadFile(excludePath)
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == entry {
+			return // already present
+		}
+	}
+	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return "", err
+		return
 	}
-	dir := filepath.Join(home, "nexus-workspaces")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	return dir, nil
+	defer f.Close()
+	_, _ = fmt.Fprintf(f, "\n# nexus fork worktrees\n%s\n", entry)
 }
 
 // gitWorktreeAdd runs "git worktree add <path> <ref>" from the given git root.

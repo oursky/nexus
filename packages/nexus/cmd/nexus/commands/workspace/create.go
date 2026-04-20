@@ -68,6 +68,9 @@ func createCommand() *cobra.Command {
 						ProjectID: slug,
 						SSHTarget: p.Host,
 						SSHPort:   p.SSHPort,
+						// Exclude fork worktrees — they live in .worktrees/ and
+						// are mirrored independently via their own sync session.
+						Ignores: []string{".worktrees"},
 					})
 					if mirrorErr != nil {
 						return fmt.Errorf("nexus workspace create: mirror local repo: %w", mirrorErr)
