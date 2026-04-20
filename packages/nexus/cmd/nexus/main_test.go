@@ -502,7 +502,7 @@ func TestRunBootstrapInstallCommandVerifiesMakeIsInstalled(t *testing.T) {
 func TestBuildSetupScriptSeedsMakeBinaryIntoRootfs(t *testing.T) {
 	requireLinux(t)
 
-	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
+	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent", "/tmp/nexus-firecracker", "/tmp/nexus-bin")
 	needle := "docker-init docker-proxy iptables ip6tables make; do"
 	if count := strings.Count(script, needle); count != 2 {
 		t.Fatalf("expected setup script to seed runtime helpers (including make) in both binary copy loops, count=%d", count)
@@ -2277,7 +2277,7 @@ func TestApplyFirecrackerAssetDefaultsDoesNotOverrideExistingEnv(t *testing.T) {
 func TestBuildSetupScriptUsesLocalKernelCacheBeforeDownload(t *testing.T) {
 	requireLinux(t)
 
-	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
+	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent", "/tmp/nexus-firecracker", "/tmp/nexus-bin")
 
 	if !strings.Contains(script, "if [ -f /tmp/nexus-vmlinux.bin ]; then") {
 		t.Fatalf("expected setup script to check local kernel cache first, got:\n%s", script)
@@ -2290,7 +2290,7 @@ func TestBuildSetupScriptUsesLocalKernelCacheBeforeDownload(t *testing.T) {
 func TestBuildSetupScriptUsesLocalSquashfsCacheBeforeDownload(t *testing.T) {
 	requireLinux(t)
 
-	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
+	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent", "/tmp/nexus-firecracker", "/tmp/nexus-bin")
 
 	if !strings.Contains(script, "if [ -f /tmp/nexus-ubuntu.squashfs ]; then") {
 		t.Fatalf("expected setup script to check local squashfs cache first, got:\n%s", script)
@@ -2303,7 +2303,7 @@ func TestBuildSetupScriptUsesLocalSquashfsCacheBeforeDownload(t *testing.T) {
 func TestBuildSetupScriptEnsuresSudoUserInKVMGroup(t *testing.T) {
 	requireLinux(t)
 
-	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
+	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent", "/tmp/nexus-firecracker", "/tmp/nexus-bin")
 
 	if !strings.Contains(script, "if [ -n \"${SUDO_USER:-}\" ]; then") {
 		t.Fatalf("expected setup script to check sudo user before kvm group update, got:\n%s", script)
@@ -2316,7 +2316,7 @@ func TestBuildSetupScriptEnsuresSudoUserInKVMGroup(t *testing.T) {
 func TestBuildSetupScriptNormalizesVMAssetOwnershipForSudoUser(t *testing.T) {
 	requireLinux(t)
 
-	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
+	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent", "/tmp/nexus-firecracker", "/tmp/nexus-bin")
 
 	if !strings.Contains(script, "chown \"$SUDO_USER\":\"$SUDO_USER\" /var/lib/nexus/vmlinux.bin") {
 		t.Fatalf("expected setup script to chown kernel to sudo user, got:\n%s", script)
@@ -2332,7 +2332,7 @@ func TestBuildSetupScriptNormalizesVMAssetOwnershipForSudoUser(t *testing.T) {
 func TestBuildSetupScriptUpdatesExistingRootfsAgentPayload(t *testing.T) {
 	requireLinux(t)
 
-	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
+	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent", "/tmp/nexus-firecracker", "/tmp/nexus-bin")
 
 	if !strings.Contains(script, "if [ \"$ROOTFS_REBUILD\" -eq 0 ]; then") {
 		t.Fatalf("expected setup script to handle existing rootfs agent update, got:\n%s", script)
@@ -2357,7 +2357,7 @@ func TestBuildSetupScriptUpdatesExistingRootfsAgentPayload(t *testing.T) {
 func TestBuildSetupScriptChecksBridgeRouteLinkdownNotLinkState(t *testing.T) {
 	requireLinux(t)
 
-	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent")
+	script := buildSetupScript("/tmp/nexus-tap-helper", "/tmp/nexus-firecracker-agent", "/tmp/nexus-firecracker", "/tmp/nexus-bin")
 
 	if !strings.Contains(script, "if ! ip route show dev nexusbr0 | grep -q 'linkdown'; then") {
 		t.Fatalf("expected setup script to check route linkdown status, got:\n%s", script)
