@@ -212,21 +212,6 @@ tasks:
     cmds:
       - nexus daemon profile
 
-  remote:e2e-shell:
-    desc: "Redeploy remote daemon, start workspace, and run interactive workspace shell smoke test"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN: "{{.REMOTE_BIN}}"
-      REMOTE_PORT: "{{.REMOTE_PORT}}"
-      WORKSPACE_ID: "{{.WORKSPACE_ID}}"
-      WORKSPACE_NAME: "{{.WORKSPACE_NAME}}"
-      SKIP_DAEMON_STOP: "{{.SKIP_DAEMON_STOP}}"
-    cmds:
-      - scripts/remote/e2e-shell-workflow.sh
-
   # ── Swift ────────────────────────────────────────────────────────────────
   generate:sdk:
     desc: "Generate NexusRPC.swift from Go daemon RPC types (run after any handler change)"
@@ -264,11 +249,6 @@ tasks:
       - task: generate:sdk
       - task: swift:build
       - task: swift:open
-
-  swift:test:ui:
-    desc: "Run NexusUITests XCUITest suite against the remote daemon (SSH tunnel auto-managed)"
-    cmds:
-      - scripts/test-xcui.sh {{.CLI_ARGS}}
 
   # ── Clean ─────────────────────────────────────────────────────────────────
   clean:
