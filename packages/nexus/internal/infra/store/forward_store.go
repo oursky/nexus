@@ -102,16 +102,9 @@ func (s *ForwardStore) Update(ctx context.Context, fwd *spotlight.Forward) error
 }
 
 func (s *ForwardStore) Delete(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM spotlight_forwards WHERE id=?`, id)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM spotlight_forwards WHERE id=?`, id)
 	if err != nil {
 		return fmt.Errorf("delete forward: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("delete forward rows: %w", err)
-	}
-	if n == 0 {
-		return spotlight.ErrNotFound
 	}
 	return nil
 }

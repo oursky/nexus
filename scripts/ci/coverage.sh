@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")/../../packages/nexus"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$ROOT"
+
+# Ensure embedded binaries are present before compiling on Linux.
+if [[ "$(uname -s)" == "Linux" ]]; then
+  task mutagen:update
+  task firecracker:update
+fi
+
+cd "$ROOT/packages/nexus"
 go test ./... -covermode=atomic -coverprofile=coverage.out
 go tool cover -func=coverage.out | tail -n 1
