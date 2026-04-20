@@ -61,11 +61,16 @@ func (m *Manager) EnsureWithLocalPort(localPort int) (int, error) {
 		m.localPort = localPort
 	}
 
-	args := []string{"-fNL", fmt.Sprintf("localhost:%d:localhost:%d", m.localPort, m.remotePort)}
+	args := []string{"-fNL",
+		fmt.Sprintf("localhost:%d:localhost:%d", m.localPort, m.remotePort),
+		"-o", "ServerAliveInterval=30",
+		"-o", "ServerAliveCountMax=3",
+		"-o", "ExitOnForwardFailure=yes",
+	}
 	if m.sshPort > 0 && m.sshPort != 22 {
 		args = append([]string{"-p", strconv.Itoa(m.sshPort)}, args...)
 	}
-	args = append(args, m.host, "sleep", "300")
+	args = append(args, m.host)
 
 	cmd := exec.Command("ssh", args...)
 	cmd.Stdin = nil

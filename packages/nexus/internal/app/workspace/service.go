@@ -202,14 +202,16 @@ func (s *Service) DiscoverPorts(ctx context.Context, id string) ([]DiscoveredPor
 	}
 
 	// 2. Discover docker-compose ports
-	composeDefaults := make(map[int]DiscoveredPort) // remotePort → port
+	// HostPort is the port published on the daemon host (e.g., 8080 for "8080:80").
+	// Both LocalPort and RemotePort use HostPort since we tunnel to the daemon's published port.
+	composeDefaults := make(map[int]DiscoveredPort) // HostPort → port
 	discoverCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if ports, err := dockercompose.DiscoverPublishedPorts(discoverCtx, ws.Repo); err == nil {
 		for _, p := range ports {
-			composeDefaults[p.TargetPort] = DiscoveredPort{
+			composeDefaults[p.HostPort] = DiscoveredPort{
 				LocalPort:  p.HostPort,
-				RemotePort: p.TargetPort,
+				RemotePort: p.HostPort,
 				Service:    p.Service,
 				Protocol:   p.Protocol,
 				Source:     "compose",
@@ -217,13 +219,13 @@ func (s *Service) DiscoverPorts(ctx context.Context, id string) ([]DiscoveredPor
 		}
 	}
 
-	// 3. Merge: config defaults override compose ports on same remote port
+	// 3. Merge: config defaults override compose ports on same port
 	merged := make(map[int]DiscoveredPort)
-	for remote, p := range composeDefaults {
-		merged[remote] = p
+	for port, p := range composeDefaults {
+		merged[port] = p
 	}
-	for remote, p := range configDefaults {
-		merged[remote] = p
+	for _, p := range configDefaults {
+		merged[p.RemotePort] = p
 	}
 
 	// 4. Build sorted result
