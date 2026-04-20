@@ -33,11 +33,9 @@ func forkCommand() *cobra.Command {
 				Workspace workspace.Workspace `json:"workspace"`
 			}
 			params := map[string]any{
-				"id": id,
-				"spec": map[string]any{
-					"childWorkspaceName": childName,
-					"childRef":           childRef,
-				},
+				"id":                 id,
+				"childWorkspaceName": childName,
+				"childRef":           childRef,
 			}
 			if err := rpc.Do(conn, "workspace.fork", params, &result); err != nil {
 				return fmt.Errorf("workspace fork: %w", err)

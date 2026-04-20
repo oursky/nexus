@@ -2,8 +2,6 @@ module github.com/inizio/nexus/packages/nexus
 
 go 1.21.0
 
-toolchain go1.24.13
-
 require (
 	github.com/creack/pty v1.1.24
 	github.com/golang-jwt/jwt/v5 v5.2.0
@@ -30,6 +28,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/net v0.30.0 // indirect
 	golang.org/x/sync v0.9.0 // indirect
+	golang.org/x/term v0.25.0 // indirect
 	modernc.org/libc v1.55.3 // indirect
 	modernc.org/mathutil v1.6.0 // indirect
 	modernc.org/memory v1.8.0 // indirect
