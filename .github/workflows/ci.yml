@@ -178,6 +178,10 @@ jobs:
           sudo /tmp/nexus-bin daemon stop --socket "$SOCK" 2>/dev/null \
             || kill $DPID 2>/dev/null || true
           wait $DPID 2>/dev/null || true
+          # The provisioning daemon (running as root) creates $HOME/.local as
+          # root:root 755 via resolveInstallBinDir. Fix ownership so the runner
+          # user can subsequently create subdirectories (e.g. .local/share/).
+          sudo chown -R "$USER":"$USER" "$HOME/.local" 2>/dev/null || true
 
       - name: Run CI pipeline
         run: task ci
