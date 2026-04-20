@@ -1,7 +1,6 @@
 package workspace
 
 import (
-	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -53,6 +52,10 @@ func createCommand() *cobra.Command {
 			defer conn.Close()
 
 			resolvedRepo := normalizeRepoForCreate(repo)
+			// originalRepo holds the Mac-local path before any mirroring so we
+			// can record it in the client-side state regardless of what remote
+			// path the daemon ends up using.
+			originalRepo := resolvedRepo
 
 			// When connected to a remote SSH daemon and --repo is a local path,
 			// mirror it to the Linux host via mutagen so the daemon can access it.
@@ -93,25 +96,21 @@ func createCommand() *cobra.Command {
 			ws := result.Workspace
 			fmt.Fprintf(cmd.OutOrStdout(), "created workspace %s  (id: %s)\n", ws.WorkspaceName, ws.ID)
 
-			lwMgr, lwErr := localws.NewManager(localws.Config{})
-			if lwErr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "nexus workspace create: warning: cannot init localws manager: %v\n", lwErr)
-			} else {
-				setupSpec := localws.SetupSpec{
+			// The base workspace uses the original Mac directory as-is (the git
+			// root). Record it so "fork" can locate it later without querying
+			// the daemon (which only stores the mirrored Linux-side path).
+			if !looksLikeRemoteRepo(resolvedRepo) {
+				rec := localws.WorkspaceRecord{
 					WorkspaceID:   ws.ID,
 					WorkspaceName: ws.WorkspaceName,
-					Repo:          ws.Repo,
-					Ref:           ws.Ref,
-					RemotePath:    ws.RootPath,
+					LocalPath:     originalRepo,
+					GitRoot:       originalRepo,
+					IsWorktree:    false,
 				}
-				setupResult, setupErr := lwMgr.Setup(context.Background(), setupSpec)
-				if setupErr != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "nexus workspace create: warning: local worktree setup failed: %v\n", setupErr)
+				if err := localws.SaveRecord(rec); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not save local workspace state: %v\n", err)
 				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "local worktree:   %s\n", setupResult.WorktreePath)
-					if setupResult.MutagenSessionID != "" {
-						fmt.Fprintf(cmd.OutOrStdout(), "mutagen session:  %s\n", setupResult.MutagenSessionID)
-					}
+					fmt.Fprintf(cmd.OutOrStdout(), "local path:  %s\n", originalRepo)
 				}
 			}
 			return nil
