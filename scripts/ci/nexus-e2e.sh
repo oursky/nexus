@@ -16,4 +16,6 @@ if [[ "${CI:-}" == "true" ]] && [[ "$(uname -s)" == "Linux" ]] && [[ "${NEXUS_E2
   exit 1
 fi
 
-go test -tags e2e -count=1 -timeout=35m ./test/e2e/...
+# CI_E2E_BENCH: temporarily run only TestNodeInfo to time the Firecracker
+# daemon start path end-to-end before expanding to the full suite.
+go test -tags e2e -count=1 -timeout=5m -v -run TestNodeInfo ./test/e2e/daemon/
