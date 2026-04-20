@@ -4,7 +4,9 @@ package firecracker
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -13,11 +15,27 @@ const bridgeGatewayIP = "172.26.0.1"
 const guestSubnetCIDR = "172.26.0.0/16"
 const tapHelperBin = "nexus-tap-helper"
 
+// resolveTapHelperPath returns the absolute path to nexus-tap-helper.
+// Checks the user-local install location first (where nexus daemon setup puts
+// it) so the daemon works even when ~/.local/bin is not in PATH.
+func resolveTapHelperPath() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		p := filepath.Join(home, ".local", "bin", "nexus-tap-helper")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	if p, err := exec.LookPath(tapHelperBin); err == nil {
+		return p
+	}
+	return tapHelperBin // unchanged — will fail naturally with a clear message
+}
+
 func checkTapHelper() error {
-	path, err := exec.LookPath(tapHelperBin)
-	if err != nil {
+	path := resolveTapHelperPath()
+	if _, err := os.Stat(path); err != nil && path == tapHelperBin {
 		return fmt.Errorf(
-			"%s not found in PATH\n\nOne-time setup required:\n%s",
+			"%s not found (checked ~/.local/bin and PATH)\n\nOne-time setup required:\n%s",
 			tapHelperBin, tapHelperSetupInstructions(),
 		)
 	}
@@ -53,9 +71,7 @@ func checkBridge() error {
 }
 
 func tapHelperSetupInstructions() string {
-	return "  go build -o /tmp/nexus-tap-helper ./packages/nexus/cmd/nexus-tap-helper/\n" +
-		"  sudo cp /tmp/nexus-tap-helper /usr/local/bin/nexus-tap-helper\n" +
-		"  sudo setcap cap_net_admin=ep /usr/local/bin/nexus-tap-helper"
+	return "  nexus daemon start --network   # auto-provisions on first run"
 }
 
 func bridgeSetupInstructions() string {
@@ -69,7 +85,8 @@ func bridgeSetupInstructions() string {
 }
 
 func realSetupTAP(tapName, hostIP, subnetCIDR string) (any, error) {
-	out, err := exec.Command(tapHelperBin, "create", tapName, bridgeName).CombinedOutput()
+	bin := resolveTapHelperPath()
+	out, err := exec.Command(bin, "create", tapName, bridgeName).CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		// Existing TAPs can race with cleanup; treat EBUSY as idempotent success.
@@ -82,5 +99,5 @@ func realSetupTAP(tapName, hostIP, subnetCIDR string) (any, error) {
 }
 
 func realTeardownTAP(tapName, subnetCIDR string) {
-	_ = exec.Command(tapHelperBin, "delete", tapName).Run()
+	_ = exec.Command(resolveTapHelperPath(), "delete", tapName).Run()
 }

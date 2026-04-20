@@ -61,6 +61,10 @@ func NewCLIHarness(t *testing.T) *CLIHarness {
 		}
 	}
 
+	// All harness-started daemons run Firecracker. macOS cannot run
+	// Firecracker so every test using this harness skips on darwin.
+	RequireFirecracker(t)
+
 	args := []string{
 		"daemon", "start",
 		"--db", dbPath,
@@ -163,6 +167,9 @@ func (c *CLIHarness) Run(t *testing.T, dir string, args ...string) ([]byte, erro
 
 // BinPath returns the nexus binary used for this harness.
 func (c *CLIHarness) BinPath() string { return c.binPath }
+
+// DaemonPort returns the TCP port the daemon's network listener is bound to.
+func (c *CLIHarness) DaemonPort() int { return c.daemonPort }
 
 // WebSocketURL is the ws:// URL subprocesses should use with NEXUS_E2E_DAEMON_WEBSOCKET.
 func (c *CLIHarness) WebSocketURL() string { return c.wsURL }

@@ -13,17 +13,17 @@ func stopCommand() *cobra.Command {
 	var force bool
 
 	cmd := &cobra.Command{
-		Use:   "stop <id>",
-		Short: "Stop a spotlight forward",
+		Use:   "stop <workspace-id>",
+		Short: "Stop spotlight for a workspace (closes all forwarded ports)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id := args[0]
+			workspaceID := args[0]
 
 			if !force {
 				fi, _ := os.Stdin.Stat()
 				isTTY := (fi.Mode() & os.ModeCharDevice) != 0
 				if isTTY {
-					if !rpc.ConfirmPrompt(fmt.Sprintf("stop spotlight forward %s?", id)) {
+					if !rpc.ConfirmPrompt(fmt.Sprintf("stop spotlight for workspace %s?", workspaceID)) {
 						fmt.Fprintln(cmd.OutOrStdout(), "aborted")
 						return nil
 					}
@@ -36,11 +36,12 @@ func stopCommand() *cobra.Command {
 			}
 			defer conn.Close()
 
-			if err := rpc.Do(conn, "spotlight.stop", map[string]any{"id": id}, nil); err != nil {
+			if err := rpc.Do(conn, "spotlight.stop", map[string]any{"workspaceId": workspaceID}, nil); err != nil {
 				return fmt.Errorf("nexus spotlight stop: %w", err)
 			}
-			_ = removeForwardFromClientSpotlightState(id)
-			fmt.Fprintf(cmd.OutOrStdout(), "stopped spotlight forward %s\n", id)
+			clearClientSpotlightState(workspaceID)
+			closeAllCachedTunnels()
+			fmt.Fprintf(cmd.OutOrStdout(), "stopped spotlight for workspace %s\n", workspaceID)
 			return nil
 		},
 	}
@@ -49,31 +50,20 @@ func stopCommand() *cobra.Command {
 	return cmd
 }
 
-func removeForwardFromClientSpotlightState(forwardID string) error {
+// clearClientSpotlightState removes the spotlight state entry for any profile
+// that currently tracks the given workspaceID.
+func clearClientSpotlightState(workspaceID string) {
 	p, err := profile.LoadDefault()
 	if err != nil {
-		return err
+		return
 	}
 	state, err := loadSpotlightClientState()
 	if err != nil {
-		return err
+		return
 	}
 	key := spotlightProfileKey(p)
-	entry, ok := state.Profiles[key]
-	if !ok || len(entry.ForwardIDs) == 0 {
-		return nil
-	}
-	filtered := make([]string, 0, len(entry.ForwardIDs))
-	for _, id := range entry.ForwardIDs {
-		if id != forwardID {
-			filtered = append(filtered, id)
-		}
-	}
-	if len(filtered) == 0 {
+	if entry, ok := state.Profiles[key]; ok && entry.WorkspaceID == workspaceID {
 		delete(state.Profiles, key)
-	} else {
-		entry.ForwardIDs = filtered
-		state.Profiles[key] = entry
+		_ = saveSpotlightClientState(state)
 	}
-	return saveSpotlightClientState(state)
 }

@@ -15,8 +15,7 @@ type spotlightClientState struct {
 }
 
 type spotlightProfileState struct {
-	WorkspaceID string   `json:"workspaceId"`
-	ForwardIDs  []string `json:"forwardIds"`
+	WorkspaceID string `json:"workspaceId"`
 }
 
 func spotlightStatePath() (string, error) {

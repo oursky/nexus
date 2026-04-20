@@ -14,15 +14,19 @@ import (
 func TestCLI_ProjectCreateListGetRemove(t *testing.T) {
 	h := harness.NewCLIHarness(t)
 	root := t.TempDir()
+	base := filepath.Base(root)
+	if len(base) > 8 {
+		base = base[len(base)-8:]
+	}
+	name := "test-proj-" + base
 
-	out, err := h.Run(t, root, "project", "create", ".")
+	out, err := h.Run(t, root, "project", "create", "--name", name)
 	if err != nil {
 		t.Fatalf("project create: %v\n%s", err, out)
 	}
 	if !strings.Contains(string(out), "created project") {
 		t.Fatalf("project create: unexpected output: %s", out)
 	}
-	name := filepath.Base(root)
 
 	out, err = h.Run(t, root, "project", "list")
 	if err != nil {

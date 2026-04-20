@@ -87,6 +87,10 @@ func New(t *testing.T, opts ...Option) *Harness {
 		}
 	}
 
+	// All harness-started daemons run Firecracker. macOS cannot run
+	// Firecracker so every test using this harness skips on darwin.
+	RequireFirecracker(t)
+
 	args := []string{
 		"daemon", "start",
 		"--db", dbPath,

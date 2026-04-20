@@ -61,60 +61,55 @@ func startCommand() *cobra.Command {
 				return fmt.Errorf("nexus spotlight start: stop previous spotlight: %w", err)
 			}
 
-			// Create daemon-side spotlight forwards + SSH tunnels for each port
-			forwarded := 0
-			createdForwardIDs := make([]string, 0, len(ports))
-			for _, port := range ports {
-				// Create daemon-side forward
-				spec := spotlight.ExposeSpec{
-					WorkspaceID: workspaceID,
-					LocalPort:   port.LocalPort,
-					RemotePort:  port.RemotePort,
-					Protocol:    port.Protocol,
-				}
-				var result struct {
-					Forward *spotlight.Forward `json:"forward"`
-				}
-				if err := conn.Call("spotlight.start", map[string]any{
-					"workspaceId": workspaceID,
-					"spec":        spec,
-				}, &result); err != nil {
-					return fmt.Errorf("%d/%s: daemon forward failed: %w", port.LocalPort, port.Service, err)
-				}
-				if result.Forward != nil && result.Forward.ID != "" {
-					createdForwardIDs = append(createdForwardIDs, result.Forward.ID)
-				}
-				targetHost := "127.0.0.1"
-				targetPort := port.RemotePort
-				if result.Forward != nil {
-					if result.Forward.TargetHost != "" {
-						targetHost = result.Forward.TargetHost
-					}
-					if result.Forward.RemotePort > 0 {
-						targetPort = result.Forward.RemotePort
-					}
-				}
-
-				// Open SSH tunnel to client
-				if err := openSSHTunnel(p, port.LocalPort, targetHost, targetPort); err != nil {
-					if result.Forward != nil && result.Forward.ID != "" {
-						_ = conn.Call("spotlight.stop", map[string]any{"id": result.Forward.ID}, nil)
-					}
-					return fmt.Errorf("%d/%s: tunnel failed: %w", port.LocalPort, port.Service, err)
-				}
-
-				label := port.Service
-				if label == "" {
-					label = fmt.Sprintf(":%d", port.RemotePort)
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s → localhost:%d\n", label, port.LocalPort)
-				forwarded++
+		// Create daemon-side spotlight forwards + SSH tunnels for each port.
+		// On any failure, roll back the whole workspace spotlight via spotlight.stop.
+		forwarded := 0
+		for _, port := range ports {
+			spec := spotlight.ExposeSpec{
+				WorkspaceID: workspaceID,
+				LocalPort:   port.LocalPort,
+				RemotePort:  port.RemotePort,
+				Protocol:    port.Protocol,
+			}
+			var result struct {
+				Forward *spotlight.Forward `json:"forward"`
+			}
+			if err := conn.Call("spotlight.start", map[string]any{
+				"workspaceId": workspaceID,
+				"spec":        spec,
+			}, &result); err != nil {
+				_ = conn.Call("spotlight.stop", map[string]any{"workspaceId": workspaceID}, nil)
+				return fmt.Errorf("%d/%s: daemon forward failed: %w", port.LocalPort, port.Service, err)
 			}
 
-			if err := persistClientActiveSpotlight(p, workspaceID, createdForwardIDs); err != nil {
-				return fmt.Errorf("persist spotlight client state: %w", err)
+			targetHost := "127.0.0.1"
+			targetPort := port.RemotePort
+			if result.Forward != nil {
+				if result.Forward.TargetHost != "" {
+					targetHost = result.Forward.TargetHost
+				}
+				if result.Forward.RemotePort > 0 {
+					targetPort = result.Forward.RemotePort
+				}
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "forwarded %d/%d ports\n", forwarded, len(ports))
+
+			if err := openSSHTunnel(p, port.LocalPort, targetHost, targetPort); err != nil {
+				_ = conn.Call("spotlight.stop", map[string]any{"workspaceId": workspaceID}, nil)
+				return fmt.Errorf("%d/%s: tunnel failed: %w", port.LocalPort, port.Service, err)
+			}
+
+			label := port.Service
+			if label == "" {
+				label = fmt.Sprintf(":%d", port.RemotePort)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s → localhost:%d\n", label, port.LocalPort)
+			forwarded++
+		}
+
+		if err := persistClientActiveSpotlight(p, workspaceID); err != nil {
+			return fmt.Errorf("persist spotlight client state: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "forwarded %d/%d ports\n", forwarded, len(ports))
 			return nil
 		},
 	}
@@ -151,34 +146,29 @@ func stopClientActiveSpotlight(conn *rpc.MuxConn, p *profile.Profile, out io.Wri
 	}
 	key := spotlightProfileKey(p)
 	active, ok := state.Profiles[key]
-	if !ok || len(active.ForwardIDs) == 0 {
+	if !ok || active.WorkspaceID == "" {
 		return nil
 	}
 
-	for _, id := range active.ForwardIDs {
-		if err := conn.Call("spotlight.stop", map[string]any{"id": id}, nil); err != nil {
-			fmt.Fprintf(out, "warning: failed to stop previous spotlight %s: %v\n", id, err)
-		}
+	if err := conn.Call("spotlight.stop", map[string]any{"workspaceId": active.WorkspaceID}, nil); err != nil {
+		fmt.Fprintf(out, "warning: failed to stop previous spotlight for %s: %v\n", active.WorkspaceID, err)
 	}
 	delete(state.Profiles, key)
 	closeAllCachedTunnels()
 	return saveSpotlightClientState(state)
 }
 
-func persistClientActiveSpotlight(p *profile.Profile, workspaceID string, forwardIDs []string) error {
+func persistClientActiveSpotlight(p *profile.Profile, workspaceID string) error {
 	state, err := loadSpotlightClientState()
 	if err != nil {
 		return err
 	}
 	key := spotlightProfileKey(p)
-	if len(forwardIDs) == 0 {
+	if workspaceID == "" {
 		delete(state.Profiles, key)
 		return saveSpotlightClientState(state)
 	}
-	state.Profiles[key] = spotlightProfileState{
-		WorkspaceID: workspaceID,
-		ForwardIDs:  append([]string(nil), forwardIDs...),
-	}
+	state.Profiles[key] = spotlightProfileState{WorkspaceID: workspaceID}
 	return saveSpotlightClientState(state)
 }
 

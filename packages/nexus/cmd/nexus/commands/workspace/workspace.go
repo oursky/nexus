@@ -19,7 +19,6 @@ func Command() *cobra.Command {
 		infoCommand(),
 		forkCommand(),
 		restoreCommand(),
-		checkoutCommand(),
 		readyCommand(),
 		shellCommand(),
 		runCommand(),

@@ -2,6 +2,7 @@ package spotlight
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -137,7 +138,7 @@ func (s *Service) ListForwards(ctx context.Context, workspaceID string) ([]*spot
 	return fwds, nil
 }
 
-// CloseForward closes and removes a forward by ID.
+// CloseForward closes and removes a single forward by ID.
 func (s *Service) CloseForward(ctx context.Context, forwardID string) error {
 	if err := s.repo.Delete(ctx, forwardID); err != nil {
 		return fmt.Errorf("delete forward: %w", err)
@@ -150,6 +151,21 @@ func (s *Service) CloseForward(ctx context.Context, forwardID string) error {
 	}
 	s.mu.Unlock()
 
+	return nil
+}
+
+// StopWorkspaceSpotlight closes all active forwards for the given workspace.
+// This is the primary stop path — one spotlight per workspace is the design invariant.
+func (s *Service) StopWorkspaceSpotlight(ctx context.Context, workspaceID string) error {
+	fwds, err := s.repo.ListByWorkspace(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("list forwards for workspace: %w", err)
+	}
+	for _, fwd := range fwds {
+		if err := s.CloseForward(ctx, fwd.ID); err != nil && !errors.Is(err, spotlight.ErrNotFound) {
+			return err
+		}
+	}
 	return nil
 }
 

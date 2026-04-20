@@ -153,31 +153,12 @@ func buildSchema() Schema {
 				}),
 			},
 			{
-				Name: "workspace.checkout",
-				Request: obj(map[string]PropSchema{
-					"id":        str(false),
-					"targetRef": str(false),
-				}),
-				Response: obj(map[string]PropSchema{
-					"workspace": ref("Workspace", false),
-				}),
-			},
-			{
 				Name: "workspace.ready",
 				Request: obj(map[string]PropSchema{
 					"id": str(false),
 				}),
 				Response: obj(map[string]PropSchema{
 					"ready": boolean(false),
-				}),
-			},
-			{
-				Name: "workspace.relations.list",
-				Request: obj(map[string]PropSchema{
-					"repoId": str(true),
-				}),
-				Response: obj(map[string]PropSchema{
-					"relations": ref("Relations", false),
 				}),
 			},
 			{
@@ -201,27 +182,6 @@ func buildSchema() Schema {
 			},
 			{
 				Name: "workspace.ports.remove",
-				Request: obj(map[string]PropSchema{
-					"workspaceId": str(false),
-					"forwardId":   str(false),
-				}),
-				Response: obj(map[string]PropSchema{
-					"closed": boolean(false),
-				}),
-			},
-			{
-				Name: "workspace.tunnels.start",
-				Request: obj(map[string]PropSchema{
-					"workspaceId": str(false),
-					"localPort":   integer(false),
-					"remotePort":  integer(false),
-				}),
-				Response: obj(map[string]PropSchema{
-					"forward": ref("Forward", false),
-				}),
-			},
-			{
-				Name: "workspace.tunnels.stop",
 				Request: obj(map[string]PropSchema{
 					"workspaceId": str(false),
 					"forwardId":   str(false),
@@ -560,10 +520,7 @@ func buildSchema() Schema {
 				"source":      str(true),
 				"workspaceId": str(false),
 			}),
-			"Relations": obj(map[string]PropSchema{
-				"workspaces": arrayOf("Workspace", false),
-			}),
-			"Project": obj(map[string]PropSchema{
+		"Project": obj(map[string]PropSchema{
 				"id":        str(false),
 				"name":      str(false),
 				"repoUrl":   str(false),

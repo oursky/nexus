@@ -60,18 +60,3 @@ func (s *Service) PortsRemove(ctx context.Context, id string, port int) ([]int, 
 	return ws.TunnelPorts, nil
 }
 
-func (s *Service) TunnelsStart(ctx context.Context, id string) error {
-	_, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return workspace.ErrNotFound
-	}
-	return nil
-}
-
-func (s *Service) TunnelsStop(ctx context.Context, id string) error {
-	_, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return workspace.ErrNotFound
-	}
-	return nil
-}
