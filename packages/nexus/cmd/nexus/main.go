@@ -20,11 +20,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/compose"
-	"github.com/inizio/nexus/packages/nexus/pkg/config"
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/compose"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/config"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/firecracker"
 
 	daemoncmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/daemon"
+	projectcmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/project"
+	spotlightcmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/spotlight"
+	workspacecmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/workspace"
 )
 
 type options struct {
@@ -77,13 +80,25 @@ func main() {
 		runExecCommand(args)
 		return
 	case "workspace", "ws":
-		runWorkspaceCommand(args)
+		cmd := workspacecmd.Command()
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			os.Exit(1)
+		}
 		return
 	case "spotlight", "spot":
-		runSpotlightCommand(args)
+		cmd := spotlightcmd.Command()
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			os.Exit(1)
+		}
 		return
 	case "project", "proj":
-		runProjectCommand(args)
+		cmd := projectcmd.Command()
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			os.Exit(1)
+		}
 		return
 	case "doctor":
 		// handled below
@@ -1214,9 +1229,6 @@ func bootstrapContainerExecContext(projectRoot string, execCtx doctorExecContext
 }
 
 func dispatchFirecrackerBootstrap(projectRoot string, execCtx doctorExecContext) error {
-	if firecrackerHostGOOS == "darwin" {
-		return bootstrapFirecrackerExecContextDarwinFn(projectRoot, execCtx)
-	}
 	return bootstrapFirecrackerExecContextNative(projectRoot, execCtx)
 }
 
@@ -1225,9 +1237,6 @@ func bootstrapFirecrackerExecContext(projectRoot string, execCtx doctorExecConte
 }
 
 func runFirecrackerCheckCommandForHost(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-	if firecrackerHostGOOS == "darwin" {
-		return runLimaCheckCommandFn(ctx, projectRoot, command, args)
-	}
 	return firecrackerCheckCommandRunner(ctx, projectRoot, command, args)
 }
 
@@ -1761,9 +1770,6 @@ func selectRuntimeBackend(required []string) string {
 		switch trimmed {
 		case "darwin":
 			if firecrackerHostGOOS == "darwin" {
-				if _, err := exec.LookPath("limactl"); err == nil {
-					return "firecracker"
-				}
 				return "seatbelt"
 			}
 		case "linux":
@@ -1778,9 +1784,6 @@ func selectRuntimeBackend(required []string) string {
 	}
 
 	if firecrackerHostGOOS == "darwin" {
-		if _, err := exec.LookPath("limactl"); err == nil {
-			return "firecracker"
-		}
 		return "seatbelt"
 	}
 	if firecrackerHostGOOS == "linux" {

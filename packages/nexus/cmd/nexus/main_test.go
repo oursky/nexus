@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -15,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/pkg/compose"
-	"github.com/inizio/nexus/packages/nexus/pkg/config"
-	"github.com/inizio/nexus/packages/nexus/pkg/runtime/firecracker"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/compose"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/config"
+	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/firecracker"
 )
 
 type fakeSocketFileInfo struct {
@@ -1899,12 +1898,8 @@ func TestSelectRuntimeBackendLinuxRequirementPrefersFirecrackerOnDarwin(t *testi
 	t.Cleanup(func() { firecrackerHostGOOS = originalGOOS })
 	firecrackerHostGOOS = "darwin"
 
-	want := "seatbelt"
-	if _, err := exec.LookPath("limactl"); err == nil {
-		want = "firecracker"
-	}
-	if got := selectRuntimeBackend([]string{"linux"}); got != want {
-		t.Fatalf("expected linux->%s on darwin, got %q", want, got)
+	if got := selectRuntimeBackend([]string{"linux"}); got != "seatbelt" {
+		t.Fatalf("expected linux->seatbelt on darwin, got %q", got)
 	}
 }
 
@@ -2936,30 +2931,6 @@ func TestBootstrapDoctorExecContextFirecrackerUsesNativeBootstrap(t *testing.T) 
 	}
 }
 
-func TestBootstrapFirecrackerExecContextUsesDarwinBootstrap(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	originalDarwinFn := bootstrapFirecrackerExecContextDarwinFn
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		bootstrapFirecrackerExecContextDarwinFn = originalDarwinFn
-	})
-
-	firecrackerHostGOOS = "darwin"
-	darwinCalled := false
-	bootstrapFirecrackerExecContextDarwinFn = func(projectRoot string, execCtx doctorExecContext) error {
-		darwinCalled = true
-		return nil
-	}
-
-	err := bootstrapFirecrackerExecContext(t.TempDir(), doctorExecContext{backend: "firecracker"})
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if !darwinCalled {
-		t.Fatal("expected darwin bootstrap function to be called on darwin host")
-	}
-}
-
 func TestBootstrapFirecrackerExecContextUsesNativeBootstrapOnLinux(t *testing.T) {
 	originalGOOS := firecrackerHostGOOS
 	originalBootstrapRunner := firecrackerBootstrapRunner
@@ -2981,36 +2952,6 @@ func TestBootstrapFirecrackerExecContextUsesNativeBootstrapOnLinux(t *testing.T)
 	}
 	if !nativeCalled {
 		t.Fatal("expected native bootstrap function to be called on linux host")
-	}
-}
-
-func TestRunFirecrackerCheckCommandForHostDarwin(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	originalLimaFn := runLimaCheckCommandFn
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		runLimaCheckCommandFn = originalLimaFn
-	})
-
-	firecrackerHostGOOS = "darwin"
-	limaCalled := false
-	runLimaCheckCommandFn = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		limaCalled = true
-		if command != "bash" {
-			t.Fatalf("expected bash command, got %q", command)
-		}
-		return "lima-output", nil
-	}
-
-	out, err := runFirecrackerCheckCommandForHost(context.Background(), "/workspace", "bash", []string{"-lc", "echo test"})
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if !limaCalled {
-		t.Fatal("expected lima check command function to be called on darwin host")
-	}
-	if out != "lima-output" {
-		t.Fatalf("expected lima output, got %q", out)
 	}
 }
 
@@ -3044,16 +2985,16 @@ func TestRunFirecrackerCheckCommandForHostLinux(t *testing.T) {
 	}
 }
 
-func TestRunCheckCommandWithExecContextUsesHostDispatchForFirecracker(t *testing.T) {
+func TestRunCheckCommandWithExecContextUsesFirecrackerRunner(t *testing.T) {
 	originalGOOS := firecrackerHostGOOS
-	originalLimaFn := runLimaCheckCommandFn
+	originalNativeFn := firecrackerCheckCommandRunner
 	t.Cleanup(func() {
 		firecrackerHostGOOS = originalGOOS
-		runLimaCheckCommandFn = originalLimaFn
+		firecrackerCheckCommandRunner = originalNativeFn
 	})
 
 	firecrackerHostGOOS = "darwin"
-	runLimaCheckCommandFn = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
+	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
 		if projectRoot != "/tmp/project" {
 			t.Fatalf("expected project root /tmp/project, got %q", projectRoot)
 		}

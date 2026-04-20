@@ -231,16 +231,6 @@ func (s *Service) Ready(ctx context.Context, id string) (bool, error) {
 	return ws.State == workspace.StateRunning, nil
 }
 
-func (s *Service) SetLocalWorktree(ctx context.Context, id, path string) error {
-	ws, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return workspace.ErrNotFound
-	}
-	ws.UpdatedAt = time.Now().UTC()
-	_ = path
-	return s.repo.Update(ctx, ws)
-}
-
 func (s *Service) Relations(ctx context.Context, id string) (*Relations, error) {
 	all, err := s.List(ctx)
 	if err != nil {

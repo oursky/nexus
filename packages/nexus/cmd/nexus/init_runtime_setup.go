@@ -32,5 +32,5 @@ type unsupportedPlatformError struct {
 }
 
 func (e *unsupportedPlatformError) Error() string {
-	return "firecracker is only supported on Linux (with KVM) and macOS (with Lima); current platform is " + e.goos
+	return "firecracker is only supported on Linux (with KVM); current platform is " + e.goos
 }

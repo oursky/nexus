@@ -31,7 +31,6 @@ func (h *Handler) Register(reg registry.Registry) {
 	reg.Register("workspace.restore", h.wrap(h.handleRestore))
 	reg.Register("workspace.fork", h.wrap(h.handleFork))
 	reg.Register("workspace.checkout", h.wrap(h.handleCheckout))
-	reg.Register("workspace.setLocalWorktree", h.wrap(h.handleSetLocalWorktree))
 	reg.Register("workspace.ready", h.wrap(h.handleReady))
 	reg.Register("workspace.ports.list", h.wrap(h.handlePortsList))
 	reg.Register("workspace.ports.add", h.wrap(h.handlePortsAdd))

@@ -79,7 +79,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 		t.Cleanup(func() { os.RemoveAll(tmp) })
 
 		binPath = filepath.Join(tmp, "nexusd")
-		build := exec.Command("go", "build", "-o", binPath, "./cmd/nexusd/")
+		build := exec.Command("go", "build", "-o", binPath, "./cmd/nexus/")
 		build.Dir = moduleRoot
 		build.Stderr = os.Stderr
 		if out, err := build.Output(); err != nil {
@@ -88,20 +88,21 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 
 	args := []string{
-		"-db", dbPath,
-		"-socket", socketPath,
-		"-workdir-root", workdir,
+		"daemon", "start",
+		"--db", dbPath,
+		"--socket", socketPath,
+		"--workdir-root", workdir,
 	}
 	if cfg.firecrackerBin != "" {
 		args = append(args,
-			"-firecracker",
-			"-firecracker-bin", cfg.firecrackerBin,
-			"-kernel", cfg.firecrackerKernel,
-			"-rootfs", cfg.firecrackerRootfs,
+			"--firecracker",
+			"--firecracker-bin", cfg.firecrackerBin,
+			"--kernel", cfg.firecrackerKernel,
+			"--rootfs", cfg.firecrackerRootfs,
 		)
 	}
 	if cfg.nodeName != "" {
-		args = append(args, "-node-name", cfg.nodeName)
+		args = append(args, "--node-name", cfg.nodeName)
 	}
 
 	cmd := exec.Command(binPath, args...)

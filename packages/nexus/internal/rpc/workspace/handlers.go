@@ -87,14 +87,6 @@ type checkoutRes struct {
 	Workspace *workspace.Workspace `json:"workspace"`
 }
 
-type setLocalWorktreeReq struct {
-	ID   string `json:"id"`
-	Path string `json:"path"`
-}
-type setLocalWorktreeRes struct {
-	OK bool `json:"ok"`
-}
-
 type readyReq struct {
 	ID string `json:"id"`
 }
@@ -278,20 +270,6 @@ func (h *Handler) handleCheckout(ctx context.Context, raw json.RawMessage) (any,
 		return nil, mapErr(err)
 	}
 	return &checkoutRes{Workspace: ws}, nil
-}
-
-func (h *Handler) handleSetLocalWorktree(ctx context.Context, raw json.RawMessage) (any, error) {
-	req, err := decode[setLocalWorktreeReq](raw)
-	if err != nil {
-		return nil, err
-	}
-	if req.ID == "" {
-		return nil, rpce.InvalidParams("id is required")
-	}
-	if err := h.svc.SetLocalWorktree(ctx, req.ID, req.Path); err != nil {
-		return nil, mapErr(err)
-	}
-	return &setLocalWorktreeRes{OK: true}, nil
 }
 
 func (h *Handler) handleReady(ctx context.Context, raw json.RawMessage) (any, error) {
