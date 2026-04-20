@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/inizio/nexus/packages/nexus/internal/auth/tokenstore"
@@ -18,7 +20,6 @@ func startCommand() *cobra.Command {
 	var (
 		dbPath      string
 		socketPath  string
-		firecracker bool
 		fcBin       string
 		kernelPath  string
 		rootfsPath  string
@@ -69,13 +70,17 @@ func startCommand() *cobra.Command {
 			cfg := daemon.Config{
 				DBPath:             dbPath,
 				SocketPath:         socketPath,
-				FirecrackerEnabled: firecracker,
+				FirecrackerEnabled: true,
 				FirecrackerBin:     fcBin,
 				KernelPath:         kernelPath,
 				RootFSPath:         rootfsPath,
 				WorkDirRoot:        workDirRoot,
 				NodeName:           nodeName,
 				Network:            netCfg,
+			}
+
+			if err := ensureFirecrackerGuestAgent(cfg.RootFSPath); err != nil {
+				return fmt.Errorf("daemon start: guest agent refresh: %w", err)
 			}
 
 			d, err := daemon.New(cfg)
@@ -98,7 +103,6 @@ func startCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&dbPath, "db", filepath.Join(defaultData, "nexus.db"), "SQLite database path")
 	cmd.Flags().StringVar(&socketPath, "socket", filepath.Join(defaultData, "nexusd.sock"), "Unix socket path")
-	cmd.Flags().BoolVar(&firecracker, "firecracker", false, "Enable Firecracker VM backend")
 	cmd.Flags().StringVar(&fcBin, "firecracker-bin", "firecracker", "Firecracker binary name")
 	cmd.Flags().StringVar(&kernelPath, "kernel", os.Getenv("NEXUS_FIRECRACKER_KERNEL"), "Firecracker kernel image path")
 	cmd.Flags().StringVar(&rootfsPath, "rootfs", os.Getenv("NEXUS_FIRECRACKER_ROOTFS"), "Firecracker rootfs image path")
@@ -129,4 +133,72 @@ func defaultDataDir() string {
 func hostName() string {
 	name, _ := os.Hostname()
 	return name
+}
+
+func ensureFirecrackerGuestAgent(rootfsPath string) error {
+	rootfsPath = strings.TrimSpace(rootfsPath)
+	if rootfsPath == "" {
+		return fmt.Errorf("rootfs path is required")
+	}
+	if _, err := os.Stat(rootfsPath); err != nil {
+		return fmt.Errorf("rootfs not found at %q: %w", rootfsPath, err)
+	}
+	if _, err := exec.LookPath("debugfs"); err != nil {
+		return fmt.Errorf("debugfs is required to refresh guest agent payload: %w", err)
+	}
+
+	agentPath, err := resolveGuestAgentBinary()
+	if err != nil {
+		return err
+	}
+
+	initFile, err := os.CreateTemp("", "nexus-firecracker-init-*")
+	if err != nil {
+		return fmt.Errorf("create temp init script: %w", err)
+	}
+	initPath := initFile.Name()
+	_ = initFile.Close()
+	defer os.Remove(initPath)
+	if err := os.WriteFile(initPath, []byte("#!/bin/sh\nexec /usr/local/bin/nexus-firecracker-agent\n"), 0o755); err != nil {
+		return fmt.Errorf("write temp init script: %w", err)
+	}
+
+	// Best effort fsck to recover from unclean loopback state.
+	_ = exec.Command("e2fsck", "-fy", rootfsPath).Run()
+
+	for _, cmd := range []string{
+		"mkdir /usr/local",
+		"mkdir /usr/local/bin",
+		"mkdir /workspace",
+		"rm /usr/local/bin/nexus-firecracker-agent",
+		"rm /sbin/init",
+	} {
+		_ = exec.Command("debugfs", "-w", "-R", cmd, rootfsPath).Run()
+	}
+
+	if out, err := exec.Command("debugfs", "-w", "-R", fmt.Sprintf("write %s /usr/local/bin/nexus-firecracker-agent", agentPath), rootfsPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("write guest agent into rootfs: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("debugfs", "-w", "-R", fmt.Sprintf("write %s /sbin/init", initPath), rootfsPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("write /sbin/init into rootfs: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func resolveGuestAgentBinary() (string, error) {
+	if raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_AGENT_BIN")); raw != "" {
+		if _, err := os.Stat(raw); err == nil {
+			return raw, nil
+		}
+	}
+	if p, err := exec.LookPath("nexus-firecracker-agent"); err == nil {
+		return p, nil
+	}
+	if exe, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), "nexus-firecracker-agent")
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("nexus-firecracker-agent binary not found (set NEXUS_FIRECRACKER_AGENT_BIN or install under ~/.local/bin)")
 }

@@ -101,8 +101,13 @@ func New(cfg Config) (*Daemon, error) {
 	fwdStore := store.NewForwardStore(db)
 
 	var rtDriver domainruntime.Driver
+	var fcDriver *firecracker.FCDriver
 	if cfg.FirecrackerEnabled {
-		rtDriver = firecracker.NewAdapter(buildFirecrackerDriver(cfg))
+		fcDriver = buildFirecrackerDriver(cfg)
+		if err := fcDriver.CleanupStaleInstances(context.Background()); err != nil {
+			log.Printf("daemon: firecracker stale cleanup warning: %v", err)
+		}
+		rtDriver = firecracker.NewAdapter(fcDriver)
 		log.Printf("daemon: firecracker runtime driver wired")
 	} else {
 		rtDriver = sandbox.NewAdapter(sandbox.NewDriver())
@@ -111,7 +116,11 @@ func New(cfg Config) (*Daemon, error) {
 
 	wsSvc := appworkspace.NewService(wsStore, projStore, rtDriver)
 
-	spotlightSvc := appspotlight.New(fwdStore, wsStore)
+	spotlightOpts := []appspotlight.Option{}
+	if fcDriver != nil {
+		spotlightOpts = append(spotlightOpts, appspotlight.WithEndpointResolver(fcDriver))
+	}
+	spotlightSvc := appspotlight.New(fwdStore, wsStore, spotlightOpts...)
 	ptyReg := apppty.NewRegistry()
 	broker := relay.NewBroker()
 
@@ -122,7 +131,14 @@ func New(cfg Config) (*Daemon, error) {
 		db.Close()
 		return nil, fmt.Errorf("register spotlight rpc: %w", err)
 	}
-	rpcpty.New(ptyReg).Register(reg)
+	ptyHandlerOpts := []rpcpty.HandlerOption{
+		rpcpty.WithWorkspaceRepo(wsStore),
+		rpcpty.WithProjectRepo(projStore),
+	}
+	if fcDriver != nil {
+		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithVsockDialer(fcDriver))
+	}
+	rpcpty.New(ptyReg, ptyHandlerOpts...).Register(reg)
 	rpcfs.New("/").Register(reg)
 	rpcdaemon.New(newNodeInfo(cfg)).Register(reg)
 	rpcproject.New(projStore).Register(reg)
