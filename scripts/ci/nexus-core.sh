@@ -3,7 +3,6 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-task mutagen:update
 task firecracker:update
 # Build embedded agent + tap-helper binaries before compiling the nexus binary.
 # The //go:embed directives in embed_agent_*.go / embed_tap_helper_*.go require

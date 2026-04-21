@@ -56,11 +56,12 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download embedded binaries (mutagen + firecracker + agent + tap-helper)
+      - name: Download embedded binaries (firecracker + agent + tap-helper)
         working-directory: packages/nexus
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd ../..
-          task mutagen:update
           task firecracker:update
           cd packages/nexus
           go generate ./cmd/nexus/
@@ -143,11 +144,12 @@ jobs:
 
       # Download external embedded binaries and build the guest agent + tap-helper
       # so that the //go:embed directives in cmd/nexus are satisfied.
-      - name: Build embedded binaries (mutagen + firecracker + agent + tap-helper)
+      - name: Build embedded binaries (firecracker + agent + tap-helper)
         working-directory: packages/nexus
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd ../..
-          task mutagen:update
           task firecracker:update
           cd packages/nexus
           go generate ./cmd/nexus/

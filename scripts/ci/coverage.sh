@@ -6,7 +6,6 @@ cd "$ROOT"
 
 # Ensure embedded binaries are present before compiling on Linux.
 if [[ "$(uname -s)" == "Linux" ]]; then
-  task mutagen:update
   task firecracker:update
 fi
 
