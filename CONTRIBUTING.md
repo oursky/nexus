@@ -2,87 +2,60 @@
 
 ## Prerequisites
 
-
-| Tool                                          | Version | Install                |
-| --------------------------------------------- | ------- | ---------------------- |
-| [Go](https://go.dev/dl/)                      | ≥ 1.21  | `brew install go`      |
-| [go-task](https://taskfile.dev/installation/) | latest  | `brew install go-task` |
-
+| Tool | Version | Install |
+| --- | --- | --- |
+| [Go](https://go.dev/dl/) | ≥ 1.21 | `brew install go` |
+| [go-task](https://taskfile.dev/installation/) | latest | `brew install go-task` |
+| SSH-accessible Linux host | — | any VPS or bare-metal box |
 
 ## Getting Started
 
 ```sh
 git clone https://github.com/your-org/nexus.git
 cd nexus
-cp .env.local.example .env.local   # edit as needed
-task setup                          # check prereqs + install dependencies
-task build                          # compile all packages
+cp .env.local.example .env.local   # set REMOTE_HOST=user@your-linux-host
+task setup
 ```
 
-## Running Tests
+## Dev Loops
+
+All development targets a remote Linux daemon. Set `REMOTE_HOST` in `.env.local`, then:
+
+| Command | What it does |
+| --- | --- |
+| `task dev:remote` | Cross-compile for linux/amd64, deploy, restart daemon |
+| `task dev:cli` | `dev:remote` + install local CLI binary to `~/.local/bin/nexus` |
+| `task dev:swift` | `dev:remote` + regenerate Swift SDK + build and open NexusApp |
+
+## Other Tasks
 
 ```sh
-task test
+task build    # compile check (local)
+task test     # run Go tests
+task ci       # full CI equivalent (go-fix + coverage + core)
+task clean    # remove build artifacts
 ```
 
-Runs `go test ./...` in `packages/nexus`.
-
-## Local Development
-
-### Daemon (hot-reload)
-
-```sh
-task dev:daemon
-```
-
-Starts the Go daemon via [air](https://github.com/cosmtrek/air). Install air first:
-
-```sh
-go install github.com/cosmtrek/air@latest
-```
-
-## Remote Deployment
-
-Set `REMOTE_HOST` in `.env.local`:
-
-```sh
-REMOTE_HOST=user@your-server
-```
-
-Build, deploy, and restart the daemon in one step:
-
-```sh
-task deploy:remote:restart
-```
-
-Or run steps individually:
-
-```sh
-task deploy:remote   # cross-compile + deploy (build is included)
-task daemon:restart  # restart daemon on remote (no rebuild)
-```
+Run `task --list` for all available tasks.
 
 ## Repository Structure
 
 ```
 packages/
-  nexus/        Go daemon + CLI (workspace lifecycle, RPC, spotlight)
+  nexus/        Go daemon + CLI (workspace lifecycle, RPC, Firecracker, Mutagen)
+scripts/
+  remote/       SSH/SCP scripts called by Taskfile
+  local/        local install scripts
+  ci/           CI scripts
 ```
 
-## Taskfile and Scripting
+## Taskfile Conventions
 
-**Taskfile is an entrypoint only** — it calls scripts, it does not inline logic.
+**Taskfile is an entrypoint only** — it calls scripts under `scripts/`, never inlines SSH or shell logic.
 
-- Shell logic, SSH commands, and multi-step operations go in `scripts/`
-- Remote scripts (SSH/SCP) go in `scripts/remote/`
-- All scripts use `set -euo pipefail` and are executable (`chmod +x`)
-- Taskfile tasks pass variables via `env:` and call the script
-
-**Never inline `ssh` or `scp` commands in Taskfile.** This avoids local-vs-remote shell expansion bugs (e.g. tilde expansion, `$()` running locally) and keeps logic testable and reusable.
-
-## Available Tasks
-
-Run `task --list` to see all available tasks.
+- Shell logic goes in `scripts/`; remote operations go in `scripts/remote/`
+- All scripts use `set -euo pipefail` and are executable
+- Tasks pass config via `env:` and call the script
 
 ## Commit Messages
 

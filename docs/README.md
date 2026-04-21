@@ -17,6 +17,10 @@ nexus workspace start <workspace-id>
 nexus spotlight start <workspace-id>
 ```
 
+## Development
+
+Contributor workflows use [go-task](https://taskfile.dev/) at the repo root: `task setup`, `task dev:remote`, `task dev:cli`, `task dev:swift`, plus `task generate:sdk` and `task ci`. Set `REMOTE_HOST` in `.env.local` (see `.env.local.example`). Details are in [Contributing](../CONTRIBUTING.md).
+
 ## Reference
 
 | Topic | Doc |

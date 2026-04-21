@@ -1,12 +1,12 @@
 site_name: Nexus Documentation
-site_url: https://inizio.github.io/nexus
+site_url: https://oursky.github.io/nexus
 site_author: IniZio
 
 docs_dir: docs
 site_dir: site
 
-repo_name: inizio/nexus
-repo_url: https://github.com/inizio/nexus
+repo_name: oursky/nexus
+repo_url: https://github.com/oursky/nexus
 
 nav:
   - Home: README.md
