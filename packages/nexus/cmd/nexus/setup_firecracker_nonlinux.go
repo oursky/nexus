@@ -76,6 +76,6 @@ func resolvePrivilegeMode() privilegeMode {
 	return privilegeModeManual
 }
 
-func buildSetupScript(tapHelperSrc, agentSrc string) string {
+func buildSetupScript(_ string, _ string, _ string, _ string) string {
 	return "# non-linux stub"
 }
