@@ -1,197 +1,141 @@
 import React from "react";
 import { AbsoluteFill, interpolate, useCurrentFrame } from "remotion";
-import { MacOSWindow } from "../components/MacOSWindow";
+import {
+  NexusAppWindow,
+  AppSidebar,
+  SidebarHeader,
+  ProjectSection,
+  WorkspaceRow,
+  SidebarFooter,
+  SessionInfoStrip,
+  AppTerminal,
+  PortsInspector,
+  C,
+} from "../components/NexusAppWindow";
 
-
-const TOKEN_DISPLAY = "87f1a6fc••••••••";
-
-const WORKSPACES = [
-  { name: "webapp-dev", status: "Running", runtime: "Next.js 14" },
-  { name: "api-server", status: "Running", runtime: "Node 20" },
+const PORT_ROWS = [
+  { local: 3000, remote: 3000, process: "compose: web" },
+  { local: 5432, remote: 5432, process: "compose: db" },
+  { local: 8080, remote: 8080, process: "compose: api" },
 ];
 
 export const MacOSConnectScene: React.FC = () => {
   const frame = useCurrentFrame();
   const f = frame;
 
-  // Beat 1 (0–200): settings panel, profile fades in
-  const profileRowOpacity = interpolate(f, [60, 100], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const profileRowX = interpolate(f, [60, 100], [20, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  // Beat 1 (0–120): app fades in, sidebar shows connecting state
+  const appOpacity = interpolate(f, [0, 40], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const appY = interpolate(f, [0, 40], [30, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
 
-  // Beat 2 (200–400): connect button → status transition
-  const connectBtnGlow = interpolate(f, [200, 230], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const spinnerOpacity = interpolate(f, [240, 260, 320, 340], [0, 1, 1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const connectedOpacity = interpolate(f, [330, 360], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const statusDotColor = f >= 330 ? "#a6e3a1" : "#585b70";
-  const statusDotScale = interpolate(f, [330, 370], [0.5, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  // Beat 2 (100–220): "Connecting…" → "Connected"
+  const connectingOpacity = interpolate(f, [80, 120, 200, 220], [0, 1, 1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  // connectedOpacity drives the footer label via the isConnected flag below
 
-  // Beat 3 (400–900): workspaces list
-  const sidebarWorkspacesOpacity = interpolate(f, [400, 440], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const ws0Opacity = interpolate(f, [440, 480], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const ws0Y = interpolate(f, [440, 480], [20, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const ws1Opacity = interpolate(f, [500, 540], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const ws1Y = interpolate(f, [500, 540], [20, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const wsOpacities = [ws0Opacity, ws1Opacity];
-  const wsYs = [ws0Y, ws1Y];
+  // Beat 3 (240–450): project + workspace appears in sidebar
+  const sidebarProjectOpacity = interpolate(f, [240, 280], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const sidebarProjectY = interpolate(f, [240, 280], [12, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const wsOpacity = interpolate(f, [300, 340], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const wsY = interpolate(f, [300, 340], [8, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+
+  // Beat 4 (400+): main content area fades in (selected workspace)
+  const detailOpacity = interpolate(f, [380, 430], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+
+  // Inspector slides in at 480
+  const inspectorOpacity = interpolate(f, [480, 530], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const inspectorX = interpolate(f, [480, 530], [40, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+
+  const isConnected = f >= 220;
+
+  const Breadcrumb = () => (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, opacity: detailOpacity }}>
+      <span style={{ fontFamily: "-apple-system, sans-serif", fontSize: 13, fontWeight: 600, color: C.label }}>
+        nexus-example
+      </span>
+      <span style={{ color: C.labelTertiary, fontSize: 11 }}>›</span>
+      <span style={{ fontFamily: "monospace", fontSize: 13, color: C.labelSecondary }}>main</span>
+    </div>
+  );
 
   return (
-    <AbsoluteFill style={{ background: "#11111b", padding: 48 }}>
-      <MacOSWindow title="Nexus" width="100%" height="100%">
-        <div style={{ display: "flex", height: "100%" }}>
+    <AbsoluteFill
+      style={{
+        background: "#11111b",
+        display: "flex",
+        flexDirection: "column",
+        padding: 56,
+        gap: 20,
+      }}
+    >
+      <div
+        style={{
+          color: "#a6adc8",
+          fontSize: 20,
+          fontFamily: "sans-serif",
+          letterSpacing: 2,
+          textTransform: "uppercase",
+          opacity: 0.6,
+        }}
+      >
+        macOS app — connect
+      </div>
+
+      <div style={{ flex: 1, opacity: appOpacity, transform: `translateY(${appY}px)` }}>
+        <NexusAppWindow breadcrumb={<Breadcrumb />} width="100%" height="100%">
           {/* Sidebar */}
-          <div style={{ width: 260, background: "#181825", borderRight: "1px solid rgba(255,255,255,0.06)", padding: 24, flexShrink: 0, display: "flex", flexDirection: "column", gap: 24 }}>
-            <div style={{ color: "#6c7086", fontSize: 16, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase" }}>
-              Remote Profiles
-            </div>
+          <AppSidebar>
+            <SidebarHeader />
+
+            {/* Project section */}
             <div
               style={{
-                opacity: profileRowOpacity,
-                transform: `translateX(${profileRowX}px)`,
-                background: "rgba(137,180,250,0.1)",
-                border: "1px solid rgba(137,180,250,0.3)",
-                borderRadius: 8,
-                padding: "10px 14px",
+                opacity: sidebarProjectOpacity,
+                transform: `translateY(${sidebarProjectY}px)`,
+                flex: 1,
               }}
             >
-              <div style={{ color: "#89b4fa", fontFamily: "sans-serif", fontSize: 22, fontWeight: 600 }}>linuxbox</div>
-              <div style={{ color: "#6c7086", fontFamily: "'JetBrains Mono', monospace", fontSize: 16, marginTop: 4 }}>linuxbox:7777</div>
-            </div>
-
-            <div style={{ opacity: sidebarWorkspacesOpacity }}>
-              <div style={{ color: "#6c7086", fontSize: 16, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase", marginBottom: 12 }}>
-                Workspaces
-              </div>
-              {WORKSPACES.map((ws, i) => (
-                <div
-                  key={ws.name}
-                  style={{
-                    opacity: wsOpacities[i],
-                    transform: `translateY(${wsYs[i]}px)`,
-                    padding: "8px 12px",
-                    borderRadius: 8,
-                    marginBottom: 6,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                  }}
-                >
-                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#a6e3a1", flexShrink: 0 }} />
-                  <div>
-                    <div style={{ color: "#cdd6f4", fontFamily: "sans-serif", fontSize: 20, fontWeight: 500 }}>{ws.name}</div>
-                    <div style={{ color: "#6c7086", fontFamily: "sans-serif", fontSize: 16 }}>{ws.runtime}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Main content */}
-          <div style={{ flex: 1, padding: 48, display: "flex", flexDirection: "column", gap: 32 }}>
-            <div style={{ color: "#cdd6f4", fontFamily: "sans-serif", fontSize: 32, fontWeight: 700 }}>
-              Remote Profiles
-            </div>
-
-            {/* Profile card */}
-            <div
-              style={{
-                background: "#1e1e2e",
-                border: "1px solid rgba(255,255,255,0.08)",
-                borderRadius: 12,
-                padding: 28,
-                display: "flex",
-                flexDirection: "column",
-                gap: 14,
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ color: "#a6adc8", fontFamily: "sans-serif", fontSize: 20 }}>Host</span>
-                <span style={{ color: "#cdd6f4", fontFamily: "'JetBrains Mono', monospace", fontSize: 20 }}>linuxbox</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ color: "#a6adc8", fontFamily: "sans-serif", fontSize: 20 }}>Port</span>
-                <span style={{ color: "#cdd6f4", fontFamily: "'JetBrains Mono', monospace", fontSize: 20 }}>7777</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ color: "#a6adc8", fontFamily: "sans-serif", fontSize: 20 }}>Token</span>
-                <span style={{ color: "#f9e2af", fontFamily: "'JetBrains Mono', monospace", fontSize: 20 }}>{TOKEN_DISPLAY}</span>
-              </div>
-
-              <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", paddingTop: 16, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                {/* Status */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <div
-                    style={{
-                      width: 10,
-                      height: 10,
-                      borderRadius: "50%",
-                      background: statusDotColor,
-                      transform: `scale(${statusDotScale})`,
-                      transition: "none",
-                    }}
+              <ProjectSection name="nexus-example">
+                <div style={{ opacity: wsOpacity, transform: `translateY(${wsY}px)` }}>
+                  <WorkspaceRow
+                    name="Base"
+                    badge="root  VM"
+                    isRoot
+                    isSelected
+                    running
                   />
-                  {spinnerOpacity > 0 && (
-                    <span style={{ color: "#6c7086", fontFamily: "sans-serif", fontSize: 20, opacity: spinnerOpacity }}>
-                      Connecting…
-                    </span>
-                  )}
-                  <span style={{ color: "#a6e3a1", fontFamily: "sans-serif", fontSize: 20, fontWeight: 600, opacity: connectedOpacity }}>
-                    Connected
-                  </span>
                 </div>
-
-                {/* Connect button */}
-                <div
-                  style={{
-                    background: connectBtnGlow > 0.5 ? "rgba(137,180,250,0.25)" : "rgba(137,180,250,0.1)",
-                    border: `1px solid rgba(137,180,250,${0.3 + connectBtnGlow * 0.4})`,
-                    borderRadius: 8,
-                    padding: "10px 28px",
-                    color: "#89b4fa",
-                    fontFamily: "sans-serif",
-                    fontSize: 22,
-                    fontWeight: 600,
-                    boxShadow: connectBtnGlow > 0 ? `0 0 16px rgba(137,180,250,${connectBtnGlow * 0.3})` : "none",
-                  }}
-                >
-                  Connect
-                </div>
-              </div>
+              </ProjectSection>
             </div>
 
-            {/* Workspace rows */}
-            <div style={{ opacity: sidebarWorkspacesOpacity }}>
-              <div style={{ color: "#6c7086", fontSize: 16, fontFamily: "sans-serif", letterSpacing: 2, textTransform: "uppercase", marginBottom: 14 }}>
-                Workspaces
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {WORKSPACES.map((ws, i) => (
-                  <div
-                    key={ws.name}
-                    style={{
-                      opacity: wsOpacities[i],
-                      transform: `translateY(${wsYs[i]}px)`,
-                      background: "#313244",
-                      border: "1px solid rgba(255,255,255,0.06)",
-                      borderRadius: 10,
-                      padding: "14px 20px",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 14,
-                    }}
-                  >
-                    <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#a6e3a1", flexShrink: 0 }} />
-                    <div style={{ flex: 1 }}>
-                      <span style={{ color: "#cdd6f4", fontFamily: "sans-serif", fontSize: 24, fontWeight: 600 }}>{ws.name}</span>
-                      <span style={{ color: "#6c7086", fontFamily: "sans-serif", fontSize: 20, marginLeft: 16 }}>● Running</span>
-                      <span style={{ color: "#a6adc8", fontFamily: "'JetBrains Mono', monospace", fontSize: 18, marginLeft: 16 }}>{ws.runtime}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <SidebarFooter
+              connected={isConnected}
+              label={
+                connectingOpacity > 0.1 && !isConnected
+                  ? "Connecting…"
+                  : isConnected
+                  ? "Connected"
+                  : "Offline"
+              }
+            />
+          </AppSidebar>
+
+          {/* Main area */}
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", opacity: detailOpacity }}>
+            <SessionInfoStrip branch="main" runtime="firecracker" path="/workspace" />
+            <AppTerminal />
           </div>
-        </div>
-      </MacOSWindow>
+
+          {/* Inspector */}
+          <div
+            style={{
+              opacity: inspectorOpacity,
+              transform: `translateX(${inspectorX}px)`,
+              display: "flex",
+            }}
+          >
+            <PortsInspector title="Tunnels Inactive" rows={PORT_ROWS} showStart />
+          </div>
+        </NexusAppWindow>
+      </div>
     </AbsoluteFill>
   );
 };

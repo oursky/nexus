@@ -22,6 +22,7 @@ interface TerminalWindowProps {
   frame: number;
   width?: number | string;
   height?: number | string;
+  fontSize?: number;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────
@@ -32,6 +33,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({
   frame,
   width = "100%",
   height = "100%",
+  fontSize = 22,
 }) => {
   return (
     <div
@@ -42,7 +44,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({
         borderRadius: 10,
         overflow: "hidden",
         fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-        fontSize: 22,
+        fontSize,
         boxShadow: "0 20px 60px rgba(0,0,0,0.6)",
         display: "flex",
         flexDirection: "column",

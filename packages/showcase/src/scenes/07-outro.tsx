@@ -2,7 +2,7 @@ import React from "react";
 import { AbsoluteFill, interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion";
 
 
-const FULL_URL = "github.com/inizio/nexus";
+const FULL_URL = "github.com/oursky/nexus";
 
 const BADGES = [
   { label: "Open Source", color: "#89b4fa", frame: 160 },
