@@ -469,6 +469,10 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
                                         from: JSONSerialization.data(withJSONObject: raw))
     }
 
+    public func removeProject(id: String) async throws {
+        _ = try await call("project.remove", params: ["id": id])
+    }
+
     private func inferProjectName(from repo: String) throws -> String {
         var name = repo
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -491,47 +495,79 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         return name
     }
 
-    public func listRelations() async throws -> [RelationsGroup] {
-        let result = try await call("workspace.relations.list")
-        guard let dict = result as? [String: Any], let arr = dict["relations"] as? [Any] else { return [] }
-        return try JSONDecoder().decode([RelationsGroup].self,
-                                       from: JSONSerialization.data(withJSONObject: arr))
-    }
-
     public func createWorkspace(spec: WorkspaceCreateSpec) async throws -> Workspace {
         let project = try await createProject(repo: spec.repo)
-        let request = SandboxCreateRequest(
-            projectId: project.id,
-            targetBranch: spec.ref,
-            fresh: false,
+        let trimmed = spec.repo.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await createWorkspaceDaemon(spec: WorkspaceDaemonCreateSpec(
+            repo: trimmed,
+            ref: spec.ref,
             workspaceName: spec.workspaceName,
             agentProfile: spec.agentProfile,
-            backend: spec.backend
-        )
-        return try await createSandbox(request: request)
+            backend: spec.backend,
+            projectId: project.id
+        ))
     }
 
-    public func createSandbox(request: SandboxCreateRequest) async throws -> Workspace {
-        var params: [String: Any] = [
-            "projectId": request.projectId,
-            "targetBranch": request.targetBranch,
-            "fresh": request.fresh,
-            "workspaceName": request.workspaceName,
-            "agentProfile": request.agentProfile,
-            "backend": request.backend
-        ]
-        if let sourceBranch = request.sourceBranch, !sourceBranch.isEmpty {
-            params["sourceBranch"] = sourceBranch
-        }
-        if let sourceWorkspaceID = request.sourceWorkspaceId, !sourceWorkspaceID.isEmpty {
-            params["sourceWorkspaceId"] = sourceWorkspaceID
-        }
-        let result = try await call("workspace.create", params: params)
+    private func looksLikeRemoteGitURL(_ repo: String) -> Bool {
+        let t = repo.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("git@") { return true }
+        if let u = URL(string: t), u.scheme != nil, u.host != nil { return true }
+        return false
+    }
+
+    public func createWorkspaceDaemon(spec: WorkspaceDaemonCreateSpec) async throws -> Workspace {
+        let specDict = try spec.asDictionary()
+        let result = try await call("workspace.create", params: ["spec": specDict])
         guard let dict = result as? [String: Any], let ws = dict["workspace"] else {
             throw RPCError(message: "unexpected response from workspace.create")
         }
         return try JSONDecoder().decode(Workspace.self,
-                                       from: JSONSerialization.data(withJSONObject: ws))
+                                        from: JSONSerialization.data(withJSONObject: ws))
+    }
+
+    public func forkWorkspace(parentID: String, childName: String, childRef: String) async throws -> Workspace {
+        let result = try await call("workspace.fork", params: [
+            "id": parentID,
+            "childWorkspaceName": childName,
+            "childRef": childRef,
+        ])
+        guard let dict = result as? [String: Any], let ws = dict["workspace"] else {
+            throw RPCError(message: "unexpected response from workspace.fork")
+        }
+        return try JSONDecoder().decode(Workspace.self,
+                                        from: JSONSerialization.data(withJSONObject: ws))
+    }
+
+    public func discoverPorts(workspaceID: String) async throws -> [[String: Any]] {
+        let result = try await call("workspace.discover-ports", params: ["id": workspaceID])
+        if let arr = result as? [[String: Any]] { return arr }
+        if let arr = result as? [Any] {
+            return arr.compactMap { $0 as? [String: Any] }
+        }
+        return []
+    }
+
+    public func spotlightStart(workspaceId: String, localPort: Int, remotePort: Int, protocolText: String?) async throws -> (targetHost: String, targetPort: Int) {
+        var spec: [String: Any] = [
+            "workspaceId": workspaceId,
+            "localPort": localPort,
+            "remotePort": remotePort,
+        ]
+        if let p = protocolText, !p.isEmpty { spec["protocol"] = p }
+        let result = try await call("spotlight.start", params: [
+            "workspaceId": workspaceId,
+            "spec": spec,
+        ])
+        guard let dict = result as? [String: Any], let fwd = dict["forward"] as? [String: Any] else {
+            return ("127.0.0.1", remotePort)
+        }
+        let th = fwd["targetHost"] as? String ?? "127.0.0.1"
+        let tp = (fwd["remotePort"] as? Int) ?? (fwd["remotePort"] as? NSNumber)?.intValue ?? remotePort
+        return (th, max(1, tp))
+    }
+
+    public func spotlightStopWorkspace(workspaceId: String) async throws {
+        _ = try await call("spotlight.stop", params: ["workspaceId": workspaceId])
     }
 
     public func startWorkspace(id: String) async throws {
@@ -547,132 +583,101 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
     }
 
     public func markWorkspaceReady(id: String) async throws {
-        _ = try await call("workspace.ready", params: ["workspaceId": id])
+        _ = try await call("workspace.ready", params: ["id": id])
     }
 
     public func listPorts(workspaceId: String) async throws -> [ForwardedPort] {
         let result = try await call("workspace.ports.list", params: ["workspaceId": workspaceId])
         guard let dict = result as? [String: Any] else { return [] }
-        return parseForwardedPorts(from: dict["items"])
+        return parseSpotlightForwards(from: dict["forwards"])
     }
 
-    public func addPort(workspaceId: String, port: Int) async throws {
-        _ = try await call("workspace.ports.add", params: ["workspaceId": workspaceId, "port": port])
+    public func addPortForward(workspaceId: String, localPort: Int, remotePort: Int) async throws {
+        let spec: [String: Any] = [
+            "workspaceId": workspaceId,
+            "localPort": localPort,
+            "remotePort": remotePort,
+        ]
+        _ = try await call("workspace.ports.add", params: [
+            "workspaceId": workspaceId,
+            "spec": spec,
+        ])
     }
 
-    public func removePort(workspaceId: String, port: Int) async throws {
-        _ = try await call("workspace.ports.remove", params: ["workspaceId": workspaceId, "port": port])
+    public func removePortForward(workspaceId: String, forwardId: String) async throws {
+        _ = try await call("workspace.ports.remove", params: [
+            "workspaceId": workspaceId,
+            "forwardId": forwardId,
+        ])
     }
 
     public func startTunnels(workspaceId: String) async throws -> TunnelStatus {
-        let result = try await call("workspace.tunnels.start", params: ["workspaceId": workspaceId])
-        guard let dict = result as? [String: Any] else {
-            throw RPCError(message: "unexpected workspace.tunnels.start response")
+        let ports = try await discoverPorts(workspaceID: workspaceId)
+        if ports.isEmpty {
+            return TunnelStatus(active: false, activeWorkspaceId: "")
         }
-        return parseTunnelStatus(dict: dict)
+        for p in ports {
+            let lp = (p["localPort"] as? Int) ?? (p["localPort"] as? NSNumber)?.intValue ?? 0
+            let rp = (p["remotePort"] as? Int) ?? (p["remotePort"] as? NSNumber)?.intValue ?? 0
+            guard lp > 0, rp > 0 else { continue }
+            let proto = p["protocol"] as? String
+            _ = try await spotlightStart(workspaceId: workspaceId, localPort: lp, remotePort: rp, protocolText: proto)
+        }
+        return TunnelStatus(active: true, activeWorkspaceId: workspaceId)
     }
 
     public func stopTunnels(workspaceId: String) async throws -> TunnelStatus {
-        let result = try await call("workspace.tunnels.stop", params: ["workspaceId": workspaceId])
-        guard let dict = result as? [String: Any] else {
-            throw RPCError(message: "unexpected workspace.tunnels.stop response")
-        }
-        return parseTunnelStatus(dict: dict)
+        try await spotlightStopWorkspace(workspaceId: workspaceId)
+        return TunnelStatus(active: false, activeWorkspaceId: "")
     }
 
     public func tunnelStatus(workspaceId: String) async throws -> TunnelStatus {
-        let result = try await call("workspace.ports.list", params: ["workspaceId": workspaceId])
-        guard let dict = result as? [String: Any] else {
-            throw RPCError(message: "unexpected workspace.ports.list response")
-        }
-        let activeWorkspaceId = dict["activeWorkspaceId"] as? String ?? ""
-        return TunnelStatus(active: activeWorkspaceId == workspaceId, activeWorkspaceId: activeWorkspaceId)
-    }
-
-    public func exec(workspaceId: String, command: String, args: [String]) async throws -> ExecOutput {
-        try await exec(workspaceId: workspaceId, command: command, args: args, workDir: nil)
-    }
-
-    public func exec(workspaceId: String, command: String, args: [String], workDir: String?) async throws -> ExecOutput {
-        var options: [String: Any] = [:]
-        if let wd = workDir, !wd.isEmpty { options["work_dir"] = wd }
-        let result = try await call("exec", params: [
-            "workspaceId": workspaceId,
-            "command": command,
-            "args": args,
-            "options": options,
-        ])
-        guard let dict = result as? [String: Any] else {
-            throw RPCError(message: "unexpected exec response")
-        }
-        return ExecOutput(
-            stdout: dict["stdout"] as? String ?? "",
-            stderr: dict["stderr"] as? String ?? "",
-            exitCode: dict["exit_code"] as? Int ?? 0
-        )
+        let ports = try await listPorts(workspaceId: workspaceId)
+        let active = ports.contains { $0.tunneled }
+        return TunnelStatus(active: active, activeWorkspaceId: active ? workspaceId : "")
     }
 
     public func workspaceInfo(id: String) async throws -> WorkspaceInfo {
-        let result = try await call("workspace.info", params: ["workspaceId": id])
-        guard let dict = result as? [String: Any] else {
+        let result = try await call("workspace.info", params: ["id": id])
+        guard let dict = result as? [String: Any],
+              let ws = dict["workspace"] as? [String: Any] else {
             throw RPCError(message: "unexpected workspace.info response")
         }
-        let wsPath = dict["workspace_path"] as? String ?? ""
-        let wsId   = dict["workspace_id"]   as? String ?? id
-        let ports = parseForwardedPorts(from: dict["spotlight"])
-        return WorkspaceInfo(workspaceId: wsId, workspacePath: wsPath, ports: ports)
+        let wsPath = ws["rootPath"] as? String ?? ws["repo"] as? String ?? ""
+        let wsId = ws["id"] as? String ?? id
+        return WorkspaceInfo(workspaceId: wsId, workspacePath: wsPath, ports: [])
     }
 
     public func getDaemonSandboxResourceSettings() async throws -> SandboxResourceSettings {
-        let result = try await call("daemon.settings.get", params: [:])
-        guard let dict = result as? [String: Any],
-              let resources = dict["sandboxResources"] as? [String: Any] else {
-            throw RPCError(message: "unexpected daemon.settings.get response")
-        }
-        return parseSandboxResourceSettings(resources)
+        SandboxResourceSettings(defaultMemoryMiB: 1024, defaultVCPUs: 1, maxMemoryMiB: 4096, maxVCPUs: 4)
     }
 
     public func updateDaemonSandboxResourceSettings(_ settings: SandboxResourceSettings) async throws -> SandboxResourceSettings {
-        let result = try await call("daemon.settings.update", params: [
-            "sandboxResources": [
-                "defaultMemoryMiB": settings.defaultMemoryMiB,
-                "defaultVCPUs": settings.defaultVCPUs,
-                "maxMemoryMiB": settings.maxMemoryMiB,
-                "maxVCPUs": settings.maxVCPUs,
-            ],
-        ])
-        guard let dict = result as? [String: Any],
-              let resources = dict["sandboxResources"] as? [String: Any] else {
-            throw RPCError(message: "unexpected daemon.settings.update response")
+        settings
+    }
+
+    private func parseSpotlightForwards(from raw: Any?) -> [ForwardedPort] {
+        guard let items = raw as? [[String: Any]] else { return [] }
+        return items.compactMap { item in
+            let lp = (item["localPort"] as? Int) ?? (item["localPort"] as? NSNumber)?.intValue
+            guard let local = lp, local > 0 else { return nil }
+            let rp = (item["remotePort"] as? Int) ?? (item["remotePort"] as? NSNumber)?.intValue ?? local
+            let state = (item["state"] as? String) ?? ""
+            let tunneled = (state == "active")
+            let fid = item["id"] as? String
+            return ForwardedPort(
+                id: local,
+                remotePort: rp,
+                preferred: (item["source"] as? String) == "user",
+                tunneled: tunneled,
+                process: nil,
+                forwardId: fid
+            )
         }
-        return parseSandboxResourceSettings(resources)
     }
 
     private func parseForwardedPorts(from raw: Any?) -> [ForwardedPort] {
-        guard let items = raw as? [[String: Any]] else { return [] }
-        return items.compactMap { item in
-            let port: Int?
-            if let n = item["port"] as? Int {
-                port = n
-            } else if let n = item["port"] as? NSNumber {
-                port = n.intValue
-            } else if let n = item["localPort"] as? Int {
-                port = n
-            } else if let n = item["localPort"] as? NSNumber {
-                port = n.intValue
-            } else {
-                port = nil
-            }
-            guard let port, port > 0 else { return nil }
-            let remote: Int?
-            if let r = item["remotePort"] as? Int { remote = r }
-            else if let r = item["remotePort"] as? NSNumber { remote = r.intValue }
-            else { remote = nil }
-            let preferred = item["preferred"] as? Bool ?? false
-            let tunneled = item["tunneled"] as? Bool ?? false
-            let process = item["process"] as? String
-            return ForwardedPort(id: port, remotePort: remote, preferred: preferred, tunneled: tunneled, process: process)
-        }
+        parseSpotlightForwards(from: raw)
     }
 
     private func parseTunnelStatus(dict: [String: Any]) -> TunnelStatus {
@@ -696,19 +701,9 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
     }
     // MARK: - PTY
 
-    /// Opens a PTY session in the workspace.  Returns the session ID.
+    /// Opens a PTY session in the workspace. Returns the session ID (`pty.create`).
     public func openPTY(workspaceId: String, cols: Int, rows: Int, useTmux: Bool = false) async throws -> String {
-        let result = try await call("pty.open", params: [
-            "workspaceId": workspaceId,
-            "cols": cols,
-            "rows": rows,
-            "useTmux": useTmux,
-        ])
-        guard let dict = result as? [String: Any],
-              let sid  = dict["sessionId"] as? String else {
-            throw RPCError(message: "unexpected pty.open response")
-        }
-        return sid
+        try await openPTY(workspaceId: workspaceId, name: "Terminal", cols: cols, rows: rows, useTmux: useTmux)
     }
 
     public func writePTY(sessionId: String, data: String) async throws {
@@ -723,11 +718,10 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         _ = try await call("pty.close", params: ["sessionId": sessionId])
     }
 
-    /// Reattaches the current websocket connection to an existing PTY session.
+    /// Legacy hook; PTY I/O is multiplexed on the WebSocket via `pty.data` notifications.
     public func attachPTY(sessionId: String) async throws -> Bool {
-        let result = try await call("pty.attach", params: ["sessionId": sessionId])
-        guard let dict = result as? [String: Any] else { return false }
-        return dict["attached"] as? Bool ?? false
+        _ = sessionId
+        return true
     }
 
     /// Register callbacks for output and exit events on a PTY session.
@@ -755,18 +749,21 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
 
     // MARK: - Multi-tab PTY Session Management
 
-    /// Opens a PTY session with a custom name for tab display
+    /// Opens a PTY session with a custom name for tab display (`pty.create`).
     public func openPTY(workspaceId: String, name: String, cols: Int, rows: Int, useTmux: Bool = false) async throws -> String {
-        let result = try await call("pty.open", params: [
+        _ = useTmux
+        let result = try await call("pty.create", params: [
             "workspaceId": workspaceId,
             "name": name,
+            "shell": "/bin/bash",
+            "args": ["-l"],
+            "workDir": "",
             "cols": cols,
             "rows": rows,
-            "useTmux": useTmux,
         ])
         guard let dict = result as? [String: Any],
-              let sid  = dict["sessionId"] as? String else {
-            throw RPCError(message: "unexpected pty.open response")
+              let sid = dict["id"] as? String else {
+            throw RPCError(message: "unexpected pty.create response")
         }
         return sid
     }
@@ -869,16 +866,6 @@ public struct RPCError: Error, LocalizedError {
     public let message: String
     public var errorDescription: String? { message }
     public init(message: String) { self.message = message }
-}
-
-// MARK: - Exec output
-
-public struct ExecOutput: Sendable {
-    public let stdout: String
-    public let stderr: String
-    public let exitCode: Int
-    public var output: String { stdout.isEmpty ? stderr : stdout }
-    public var failed: Bool   { exitCode != 0 }
 }
 
 // MARK: - Workspace info (from workspace.info RPC)

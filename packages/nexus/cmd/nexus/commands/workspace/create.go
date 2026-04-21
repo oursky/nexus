@@ -1,7 +1,6 @@
 package workspace
 
 import (
-	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	domainworkspace "github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/localws"
 	"github.com/spf13/cobra"
 )
 
@@ -40,6 +38,18 @@ func createCommand() *cobra.Command {
 		Use:   "create",
 		Short: "Create a new workspace",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Accept an optional positional path: `workspace create .` or
+			// `workspace create /path/to/repo` as a shorthand for --repo.
+			if len(args) == 1 && repo == "" {
+				repo = args[0]
+			}
+			// Infer name from the repo directory when not explicitly provided.
+			if repo != "" && name == "" {
+				abs, err := filepath.Abs(repo)
+				if err == nil {
+					name = filepath.Base(abs)
+				}
+			}
 			if repo == "" || name == "" {
 				return fmt.Errorf("--repo and --name are required")
 			}
@@ -50,8 +60,10 @@ func createCommand() *cobra.Command {
 			}
 			defer conn.Close()
 
+			resolvedRepo := normalizeRepoForCreate(repo)
+
 			spec := domainworkspace.CreateSpec{
-				Repo:          normalizeRepoForCreate(repo),
+				Repo:          resolvedRepo,
 				Ref:           ref,
 				WorkspaceName: name,
 				AgentProfile:  profile,
@@ -69,33 +81,11 @@ func createCommand() *cobra.Command {
 
 			ws := result.Workspace
 			fmt.Fprintf(cmd.OutOrStdout(), "created workspace %s  (id: %s)\n", ws.WorkspaceName, ws.ID)
-
-			lwMgr, lwErr := localws.NewManager(localws.Config{})
-			if lwErr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "nexus workspace create: warning: cannot init localws manager: %v\n", lwErr)
-			} else {
-				setupSpec := localws.SetupSpec{
-					WorkspaceID:   ws.ID,
-					WorkspaceName: ws.WorkspaceName,
-					Repo:          ws.Repo,
-					Ref:           ws.Ref,
-					RemotePath:    ws.RootPath,
-				}
-				setupResult, setupErr := lwMgr.Setup(context.Background(), setupSpec)
-				if setupErr != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "nexus workspace create: warning: local worktree setup failed: %v\n", setupErr)
-				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "local worktree:   %s\n", setupResult.WorktreePath)
-					if setupResult.MutagenSessionID != "" {
-						fmt.Fprintf(cmd.OutOrStdout(), "mutagen session:  %s\n", setupResult.MutagenSessionID)
-					}
-				}
-			}
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&repo, "repo", "", "repository URL (required)")
+	cmd.Flags().StringVar(&repo, "repo", "", "repository path or URL on the engine host (required)")
 	cmd.Flags().StringVar(&ref, "ref", "", "branch / ref (default: repo default branch)")
 	cmd.Flags().StringVar(&name, "name", "", "workspace name (required)")
 	cmd.Flags().StringVar(&profile, "profile", "default", "agent profile")

@@ -11,6 +11,7 @@ import (
 )
 
 func TestFS(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 
 	// 1. List /tmp (relative to daemon root /, so path is "tmp")

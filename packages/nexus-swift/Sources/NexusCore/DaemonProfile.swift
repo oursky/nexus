@@ -9,7 +9,7 @@ public enum ProfileStatus: String, Codable, Equatable {
     case protocolMismatch
 }
 
-public struct DaemonProfile: Codable, Equatable, Identifiable {
+public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
     public var id: String { profileId }
     public var profileId: String
     public var name: String

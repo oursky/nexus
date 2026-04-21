@@ -9,7 +9,9 @@ import (
 )
 
 func TestProject(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
+	repo := harness.MakeLocalGitRepo(t, "project")
 
 	// 1. Create a project
 	var createRes struct {
@@ -21,7 +23,7 @@ func TestProject(t *testing.T) {
 	}
 	h.MustCall("project.create", map[string]any{
 		"name":    "e2e-test-project",
-		"repoUrl": "git@github.com:test/e2e-test-project.git",
+		"repoUrl": repo,
 	}, &createRes)
 	id := createRes.Project.ID
 	if id == "" {
@@ -30,8 +32,8 @@ func TestProject(t *testing.T) {
 	if createRes.Project.Name != "e2e-test-project" {
 		t.Fatalf("create: expected name %q, got %q", "e2e-test-project", createRes.Project.Name)
 	}
-	if createRes.Project.RepoURL != "git@github.com:test/e2e-test-project.git" {
-		t.Fatalf("create: expected repoUrl %q, got %q", "git@github.com:test/e2e-test-project.git", createRes.Project.RepoURL)
+	if createRes.Project.RepoURL != repo {
+		t.Fatalf("create: expected repoUrl %q, got %q", repo, createRes.Project.RepoURL)
 	}
 
 	// 2. List and verify the new project is present
@@ -67,8 +69,8 @@ func TestProject(t *testing.T) {
 	if getRes.Project.Name != "e2e-test-project" {
 		t.Fatalf("get: expected name %q, got %q", "e2e-test-project", getRes.Project.Name)
 	}
-	if getRes.Project.RepoURL != "git@github.com:test/e2e-test-project.git" {
-		t.Fatalf("get: expected repoUrl %q, got %q", "git@github.com:test/e2e-test-project.git", getRes.Project.RepoURL)
+	if getRes.Project.RepoURL != repo {
+		t.Fatalf("get: expected repoUrl %q, got %q", repo, getRes.Project.RepoURL)
 	}
 
 	// 4. Delete the project

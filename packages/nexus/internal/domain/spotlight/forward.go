@@ -33,6 +33,7 @@ type Forward struct {
 	WorkspaceID string       `json:"workspaceId"`
 	LocalPort   int          `json:"localPort"`
 	RemotePort  int          `json:"remotePort"`
+	TargetHost  string       `json:"targetHost,omitempty"`
 	Protocol    string       `json:"protocol,omitempty"`
 	State       ForwardState `json:"state"`
 	CreatedAt   time.Time    `json:"created_at,omitempty"`

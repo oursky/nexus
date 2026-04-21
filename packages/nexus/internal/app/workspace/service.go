@@ -135,6 +135,12 @@ func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*works
 			_ = s.repo.Delete(ctx, ws.ID)
 			return nil, fmt.Errorf("runtime create: %w", err)
 		}
+		// Stamp backend so the PTY handler knows which session type to use.
+		if ws.Backend == "" {
+			ws.Backend = s.driver.Backend()
+			ws.UpdatedAt = time.Now().UTC()
+			_ = s.repo.Update(ctx, ws)
+		}
 	}
 
 	return ws, nil
@@ -152,6 +158,10 @@ func (s *Service) Start(ctx context.Context, id string) (*workspace.Workspace, e
 	if s.driver != nil {
 		if err := s.driver.Start(ctx, ws); err != nil {
 			return nil, fmt.Errorf("runtime start: %w", err)
+		}
+		// Backfill backend for workspaces created before the backend field was stamped.
+		if ws.Backend == "" {
+			ws.Backend = s.driver.Backend()
 		}
 	}
 

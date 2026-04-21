@@ -171,7 +171,7 @@ final class WorkspaceModelTests: XCTestCase {
         {
             "id": "proj-1",
             "name": "nexus",
-            "primaryRepo": "git@github.com:inizio/nexus.git",
+            "repoUrl": "git@github.com:inizio/nexus.git",
             "rootPath": "/Users/me/nexus"
         }
         """.data(using: .utf8)!
@@ -204,23 +204,34 @@ final class WorkspaceModelTests: XCTestCase {
 @MainActor
 final class AppStateProjectFlowTests: XCTestCase {
 
+    override func setUp() {
+        super.setUp()
+        DaemonProfileStore().save([
+            DaemonProfile(profileId: "ut", name: "UT", port: 7777, isDefault: true, sshTarget: "test@localhost"),
+        ])
+    }
+
+    override func tearDown() {
+        DaemonProfileStore().save([])
+        super.tearDown()
+    }
+
     func testCreateProjectAutoCreatesRootSandbox() async {
         let client = MockDaemonClient()
         let appState = AppState(client: client)
         _ = await appState.createProject(repo: "/tmp/nexus")
 
         XCTAssertEqual(client.createdProjectRepo, "/tmp/nexus")
-        XCTAssertNotNil(client.createdSandboxRequest)
-        XCTAssertEqual(client.createdSandboxRequest?.projectId, "proj-1")
-        XCTAssertEqual(client.createdSandboxRequest?.targetBranch, "main")
-        XCTAssertEqual(client.createdSandboxRequest?.workspaceName, "nexus")
-        XCTAssertEqual(client.createdSandboxRequest?.fresh, true)
+        XCTAssertNotNil(client.createdDaemonSpec)
+        XCTAssertEqual(client.createdDaemonSpec?.projectId, "proj-1")
+        XCTAssertEqual(client.createdDaemonSpec?.ref, "main")
+        XCTAssertEqual(client.createdDaemonSpec?.workspaceName, "nexus")
         XCTAssertEqual(appState.selectedWorkspaceID, "ws-root")
     }
 
     func testCreateProjectReturnsNilWhenSandboxBootstrapFails() async {
         let client = MockDaemonClient()
-        client.shouldFailCreateSandbox = true
+        client.shouldFailCreateWorkspaceDaemon = true
         let appState = AppState(client: client)
         let created = await appState.createProject(repo: "/tmp/nexus")
 
@@ -238,8 +249,8 @@ final class AppStateProjectFlowTests: XCTestCase {
         let root = await appState.ensureProjectRootSandbox(projectID: "proj-1")
         XCTAssertNotNil(root)
         XCTAssertEqual(root?.projectId, "proj-1")
-        XCTAssertNotNil(client.createdSandboxRequest)
-        XCTAssertEqual(client.createdSandboxRequest?.fresh, true)
+        XCTAssertNotNil(client.createdDaemonSpec)
+        XCTAssertEqual(client.createdDaemonSpec?.ref, "main")
     }
 
     func testEnsureProjectRootSandboxReturnsExistingRootWithoutCreate() async {
@@ -251,7 +262,7 @@ final class AppStateProjectFlowTests: XCTestCase {
 
         let root = await appState.ensureProjectRootSandbox(projectID: "proj-1")
         XCTAssertEqual(root?.id, "ws-existing-root")
-        XCTAssertNil(client.createdSandboxRequest)
+        XCTAssertNil(client.createdDaemonSpec)
     }
 
     func testEnsureProjectRootSandboxCreatesRootWhenOnlyChildrenExist() async {
@@ -274,15 +285,14 @@ final class AppStateProjectFlowTests: XCTestCase {
         XCTAssertNotNil(root)
         XCTAssertEqual(root?.id, "ws-root")
         XCTAssertEqual(root?.parentWorkspaceId, nil)
-        XCTAssertEqual(client.createdSandboxRequest?.projectId, "proj-1")
-        XCTAssertEqual(client.createdSandboxRequest?.fresh, true)
+        XCTAssertEqual(client.createdDaemonSpec?.projectId, "proj-1")
     }
 }
 
 private final class MockDaemonClient: DaemonClient, @unchecked Sendable {
     var createdProjectRepo: String?
-    var createdSandboxRequest: SandboxCreateRequest?
-    var shouldFailCreateSandbox = false
+    var createdDaemonSpec: WorkspaceDaemonCreateSpec?
+    var shouldFailCreateWorkspaceDaemon = false
     var projects: [Project] = []
     var workspaces: [Workspace] = []
 
@@ -293,33 +303,40 @@ private final class MockDaemonClient: DaemonClient, @unchecked Sendable {
         projects = [project]
         return project
     }
+    func removeProject(id: String) async throws {
+        projects.removeAll { $0.id == id }
+    }
     func listWorkspaces() async throws -> [Workspace] { workspaces }
-    func listRelations() async throws -> [RelationsGroup] { [] }
     func createWorkspace(spec: WorkspaceCreateSpec) async throws -> Workspace {
         Workspace(id: "ws-create", workspaceName: spec.workspaceName, repo: spec.repo, ref: spec.ref)
     }
-    func createSandbox(request: SandboxCreateRequest) async throws -> Workspace {
-        createdSandboxRequest = request
-        if shouldFailCreateSandbox {
-            throw NSError(domain: "MockDaemonClient", code: 1, userInfo: [NSLocalizedDescriptionKey: "sandbox create failed"])
+    func createWorkspaceDaemon(spec: WorkspaceDaemonCreateSpec) async throws -> Workspace {
+        createdDaemonSpec = spec
+        if shouldFailCreateWorkspaceDaemon {
+            throw NSError(domain: "MockDaemonClient", code: 1, userInfo: [NSLocalizedDescriptionKey: "workspace create failed"])
         }
-        let ws = Workspace(id: "ws-root", workspaceName: request.workspaceName, projectId: request.projectId)
+        let ws = Workspace(id: "ws-root", workspaceName: spec.workspaceName, projectId: spec.projectId)
         workspaces.append(ws)
         return ws
+    }
+    func forkWorkspace(parentID: String, childName: String, childRef: String) async throws -> Workspace {
+        Workspace(id: "ws-fork", workspaceName: childName, ref: childRef, projectId: "proj-1")
     }
     func startWorkspace(id: String) async throws {}
     func stopWorkspace(id: String) async throws {}
     func removeWorkspace(id: String) async throws {}
     func markWorkspaceReady(id: String) async throws {}
+    func discoverPorts(workspaceID: String) async throws -> [[String: Any]] { [] }
+    func spotlightStart(workspaceId: String, localPort: Int, remotePort: Int, protocolText: String?) async throws -> (targetHost: String, targetPort: Int) {
+        ("127.0.0.1", remotePort)
+    }
+    func spotlightStopWorkspace(workspaceId: String) async throws {}
     func listPorts(workspaceId: String) async throws -> [ForwardedPort] { [] }
-    func addPort(workspaceId: String, port: Int) async throws {}
-    func removePort(workspaceId: String, port: Int) async throws {}
+    func addPortForward(workspaceId: String, localPort: Int, remotePort: Int) async throws {}
+    func removePortForward(workspaceId: String, forwardId: String) async throws {}
     func startTunnels(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
     func stopTunnels(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
     func tunnelStatus(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
-    func exec(workspaceId: String, command: String, args: [String]) async throws -> ExecOutput {
-        ExecOutput(stdout: "", stderr: "", exitCode: 0)
-    }
     func workspaceInfo(id: String) async throws -> WorkspaceInfo {
         WorkspaceInfo(workspaceId: id, workspacePath: "/workspace", ports: [])
     }
@@ -355,25 +372,6 @@ final class DaemonConnectionTests: XCTestCase {
         XCTAssertNotNil(workspaces)
     }
 
-    func testListRelationsReturnsArray() async throws {
-        let relations = try await client.listRelations()
-        XCTAssertNotNil(relations)
-    }
-
-    func testAllRelationWorkspacesAreInWorkspaceList() async throws {
-        async let wsFetch        = client.listWorkspaces()
-        async let relationsFetch = client.listRelations()
-        let workspaces  = try await wsFetch
-        let relations   = try await relationsFetch
-
-        let wsIDs = Set(workspaces.map(\.id))
-        for group in relations {
-            for node in group.nodes {
-                XCTAssertTrue(wsIDs.contains(node.workspaceId),
-                    "Node \(node.workspaceId) from relations not found in workspace list")
-            }
-        }
-    }
 }
 
 final class WorkspaceLifecycleTests: XCTestCase {
@@ -497,25 +495,19 @@ final class RelationsGroupingTests: XCTestCase {
         client = nil
     }
 
-    func testRelationsGroupsMatchWorkspaceIDs() async throws {
-        async let wsFetch        = client.listWorkspaces()
-        async let relationsFetch = client.listRelations()
-        let workspaces  = try await wsFetch
-        let relations   = try await relationsFetch
-        let repos       = Repo.fromRelations(relations, workspaces: workspaces)
-
-        // Every workspace in repos should appear in allWorkspaces
-        let repoWsIDs = repos.flatMap(\.workspaces).map(\.id)
-        let allWsIDs  = workspaces.map(\.id)
-        for id in repoWsIDs {
-            XCTAssertTrue(allWsIDs.contains(id))
+    func testRepoGroupingContainsAllWorkspaceIDs() async throws {
+        let workspaces = try await client.listWorkspaces()
+        let repos = Repo.grouping(workspaces)
+        let groupedIDs = Set(repos.flatMap(\.workspaces).map(\.id))
+        for ws in workspaces {
+            XCTAssertTrue(groupedIDs.contains(ws.id), "grouping should include \(ws.id)")
         }
     }
 
-    func testRepoDisplayNamesAreNonEmpty() async throws {
-        let relations = try await client.listRelations()
+    func testRepoDisplayNamesAreNonEmptyWhenProjectsExist() async throws {
         let workspaces = try await client.listWorkspaces()
-        let repos = Repo.fromRelations(relations, workspaces: workspaces)
+        let projects = try await client.listProjects()
+        let repos = Repo.fromProjects(projects, workspaces: workspaces)
         for repo in repos {
             XCTAssertFalse(repo.name.isEmpty, "Repo '\(repo.id)' should have a non-empty display name")
         }

@@ -3,58 +3,29 @@
 package workspace_test
 
 import (
-	"os"
 	"os/exec"
-	"path/filepath"
 	"testing"
 
 	"github.com/inizio/nexus/packages/nexus/test/e2e/harness"
 )
 
-func makeLocalGitRepo(t *testing.T, name string) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "nexus-e2e-repo-"+name+"-*")
-	if err != nil {
-		t.Fatalf("makeLocalGitRepo: mkdir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-
-	run := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("makeLocalGitRepo %v: %v\n%s", args, err, out)
-		}
-	}
-
-	cmd := exec.Command("git", "init", "-b", "main")
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		cmd2 := exec.Command("git", "init")
-		cmd2.Dir = dir
-		if out2, err2 := cmd2.CombinedOutput(); err2 != nil {
-			t.Fatalf("makeLocalGitRepo git init: %v\n%s", err2, out2)
-		}
-		_ = out
-		run("git", "checkout", "-b", "main")
-	}
-	run("git", "config", "user.email", "test@test.local")
-	run("git", "config", "user.name", "Test")
-	readmePath := filepath.Join(dir, "README.md")
-	if err := os.WriteFile(readmePath, []byte("# test\n"), 0644); err != nil {
-		t.Fatalf("makeLocalGitRepo: write README: %v", err)
-	}
-	run("git", "add", ".")
-	run("git", "commit", "-m", "init")
-
-	return dir
-}
-
 func TestWorkspaceFork(t *testing.T) {
+	t.Parallel()
 	h := harness.New(t)
 
-	repoPath := makeLocalGitRepo(t, "fork")
+	clientRepo := harness.MakeLocalGitRepo(t, "fork")
+	runGit := func(args ...string) {
+		t.Helper()
+		c := exec.Command(args[0], args[1:]...)
+		c.Dir = clientRepo
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("git", "branch", "feature-branch", "main")
+
+	cfg := harness.MirrorProfileConfigHome(t)
+	_, daemonRepo := harness.MirrorGitCheckoutToDaemon(t, h, cfg, clientRepo, "proj-fork")
 
 	// 1. Create base workspace
 	var createRes struct {
@@ -65,7 +36,7 @@ func TestWorkspaceFork(t *testing.T) {
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{
-			"repo":          repoPath,
+			"repo":          daemonRepo,
 			"ref":           "main",
 			"workspaceName": "fork-base",
 		},

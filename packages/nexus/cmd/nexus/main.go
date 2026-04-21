@@ -787,6 +787,7 @@ func validateFirecrackerTapHelper() error {
 func validateFirecrackerBridge() error {
 	const bridge = "nexusbr0"
 	const gatewayCIDR = "172.26.0.1/16"
+	const subnetCIDR = "172.26.0.0/16"
 	out, err := exec.Command("ip", "link", "show", bridge).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf(
@@ -810,6 +811,33 @@ func validateFirecrackerBridge() error {
 			"bridge %s is missing gateway IP %s\n\nRun `nexus init --project-root <abs-path> --force` to refresh host prerequisites",
 			bridge, gatewayCIDR,
 		)
+	}
+
+	routeOut, routeErr := exec.Command("ip", "-4", "route", "show", subnetCIDR).CombinedOutput()
+	if routeErr != nil {
+		return fmt.Errorf("bridge %s route inspection failed: %w", bridge, routeErr)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(routeOut)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		for i := 0; i < len(fields)-1; i++ {
+			if fields[i] != "dev" {
+				continue
+			}
+			dev := fields[i+1]
+			if dev == bridge {
+				break
+			}
+			return fmt.Errorf(
+				"firecracker subnet conflict detected: %s route uses %s (expected %s)\n\n"+
+					"this commonly happens when Docker already owns %s and causes VM outbound DNS/network failures.\n"+
+					"remove the conflicting route/bridge or reconfigure host networking, then re-run `nexus init --project-root <abs-path> --force`",
+				subnetCIDR, dev, bridge, subnetCIDR,
+			)
+		}
 	}
 
 	return nil

@@ -2,11 +2,11 @@ package firecracker
 
 import (
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -72,6 +72,26 @@ func workspaceImageSizeBytes(projectSizeBytes int64) int64 {
 		maxInitial = 20 * giB
 	)
 
+	// Allow CI/test environments to override the minimum image size so that
+	// mkfs.ext4 completes quickly (smaller sparse files = less metadata to init).
+	// Set NEXUS_WORKSPACE_IMAGE_MIN_MIB=512 to use a 512 MiB minimum.
+	if raw := strings.TrimSpace(os.Getenv("NEXUS_WORKSPACE_IMAGE_MIN_MIB")); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+			minVal := n * miB
+			target := projectSizeBytes*2 + minVal/2
+			if target < minVal {
+				target = minVal
+			}
+			if target > maxInitial {
+				target = maxInitial
+			}
+			if rem := target % miB; rem != 0 {
+				target += miB - rem
+			}
+			return target
+		}
+	}
+
 	target := projectSizeBytes*2 + overhead
 	if target < minSize {
 		target = minSize
@@ -85,21 +105,15 @@ func workspaceImageSizeBytes(projectSizeBytes int64) int64 {
 	return target
 }
 
+// copyFile copies src to dst using cp with CoW and sparse-file support.
+// --reflink=auto performs a copy-on-write clone when the filesystem supports it
+// (XFS, btrfs) and falls back to a regular copy otherwise.
+// --sparse=always preserves holes in sparse files such as ext4 VM images,
+// avoiding unnecessary disk writes and keeping the copy fast.
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
+	out, err := exec.Command("cp", "--reflink=auto", "--sparse=always", src, dst).CombinedOutput()
 	if err != nil {
-		return err
+		return fmt.Errorf("cp %s → %s: %w: %s", src, dst, err, strings.TrimSpace(string(out)))
 	}
-	defer in.Close()
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-	return out.Sync()
+	return nil
 }

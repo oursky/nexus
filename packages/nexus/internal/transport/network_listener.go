@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -229,6 +230,9 @@ func (nl *NetworkListener) checkBearer(header string) bool {
 }
 
 func (nl *NetworkListener) serveWSConn(ctx context.Context, conn *websocket.Conn) {
+	var writeMu sync.Mutex
+	ctx = WithNotifier(ctx, wsConnNotifier{conn: conn, writeMu: &writeMu})
+
 	for {
 		msgType, raw, err := conn.ReadMessage()
 		if err != nil {
@@ -247,10 +251,36 @@ func (nl *NetworkListener) serveWSConn(ctx context.Context, conn *websocket.Conn
 			log.Printf("transport: ws marshal response: %v", err)
 			return
 		}
-		if err := conn.WriteMessage(websocket.TextMessage, out); err != nil {
+		writeMu.Lock()
+		err = conn.WriteMessage(websocket.TextMessage, out)
+		writeMu.Unlock()
+		if err != nil {
 			log.Printf("transport: ws write: %v", err)
 			return
 		}
+	}
+}
+
+type wsConnNotifier struct {
+	conn    *websocket.Conn
+	writeMu *sync.Mutex
+}
+
+func (n wsConnNotifier) Notify(method string, params any) {
+	msg := map[string]any{
+		"jsonrpc": "2.0",
+		"method":  method,
+		"params":  params,
+	}
+	out, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("transport: ws notifier marshal: %v", err)
+		return
+	}
+	n.writeMu.Lock()
+	defer n.writeMu.Unlock()
+	if err := n.conn.WriteMessage(websocket.TextMessage, out); err != nil {
+		log.Printf("transport: ws notifier write: %v", err)
 	}
 }
 

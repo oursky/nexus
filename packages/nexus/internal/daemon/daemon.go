@@ -9,12 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 
 	apppty "github.com/inizio/nexus/packages/nexus/internal/app/pty"
 	appspotlight "github.com/inizio/nexus/packages/nexus/internal/app/spotlight"
 	appworkspace "github.com/inizio/nexus/packages/nexus/internal/app/workspace"
 	"github.com/inizio/nexus/packages/nexus/internal/creds/relay"
 	domainruntime "github.com/inizio/nexus/packages/nexus/internal/domain/runtime"
+	domainws "github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/firecracker"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/sandbox"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/store"
@@ -101,8 +104,18 @@ func New(cfg Config) (*Daemon, error) {
 	fwdStore := store.NewForwardStore(db)
 
 	var rtDriver domainruntime.Driver
+	var fcDriver *firecracker.FCDriver
 	if cfg.FirecrackerEnabled {
-		rtDriver = firecracker.NewAdapter(buildFirecrackerDriver(cfg))
+		if err := validateFirecrackerHostRouting(); err != nil {
+			db.Close()
+			return nil, err
+		}
+		fcDriver = buildFirecrackerDriver(cfg)
+		if err := fcDriver.CleanupStaleInstances(context.Background()); err != nil {
+			log.Printf("daemon: firecracker stale cleanup warning: %v", err)
+		}
+		reconcileFirecrackerWorkspaceStates(context.Background(), wsStore)
+		rtDriver = firecracker.NewAdapter(fcDriver)
 		log.Printf("daemon: firecracker runtime driver wired")
 	} else {
 		rtDriver = sandbox.NewAdapter(sandbox.NewDriver())
@@ -111,7 +124,11 @@ func New(cfg Config) (*Daemon, error) {
 
 	wsSvc := appworkspace.NewService(wsStore, projStore, rtDriver)
 
-	spotlightSvc := appspotlight.New(fwdStore, wsStore)
+	spotlightOpts := []appspotlight.Option{}
+	if fcDriver != nil {
+		spotlightOpts = append(spotlightOpts, appspotlight.WithEndpointResolver(fcDriver))
+	}
+	spotlightSvc := appspotlight.New(fwdStore, wsStore, spotlightOpts...)
 	ptyReg := apppty.NewRegistry()
 	broker := relay.NewBroker()
 
@@ -122,7 +139,14 @@ func New(cfg Config) (*Daemon, error) {
 		db.Close()
 		return nil, fmt.Errorf("register spotlight rpc: %w", err)
 	}
-	rpcpty.New(ptyReg).Register(reg)
+	ptyHandlerOpts := []rpcpty.HandlerOption{
+		rpcpty.WithWorkspaceRepo(wsStore),
+		rpcpty.WithProjectRepo(projStore),
+	}
+	if fcDriver != nil {
+		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithVsockDialer(fcDriver))
+	}
+	rpcpty.New(ptyReg, ptyHandlerOpts...).Register(reg)
 	rpcfs.New("/").Register(reg)
 	rpcdaemon.New(newNodeInfo(cfg)).Register(reg)
 	rpcproject.New(projStore).Register(reg)
@@ -154,6 +178,30 @@ func New(cfg Config) (*Daemon, error) {
 	}
 
 	return d, nil
+}
+
+// reconcileFirecrackerWorkspaceStates prevents stale DB state after daemon
+// restarts: if runtime instances are cleaned up, mark previously "running"
+// Firecracker workspaces as stopped so callers trigger a real start path.
+func reconcileFirecrackerWorkspaceStates(ctx context.Context, wsStore *store.WorkspaceStore) {
+	all, err := wsStore.List(ctx)
+	if err != nil {
+		log.Printf("daemon: workspace state reconcile skipped: %v", err)
+		return
+	}
+	for _, ws := range all {
+		if ws == nil {
+			continue
+		}
+		if ws.Backend != "firecracker" || ws.State != domainws.StateRunning {
+			continue
+		}
+		ws.State = domainws.StateStopped
+		ws.UpdatedAt = time.Now().UTC()
+		if err := wsStore.Update(ctx, ws); err != nil {
+			log.Printf("daemon: workspace state reconcile %s: %v", ws.ID, err)
+		}
+	}
 }
 
 // Start begins accepting connections. It blocks until ctx is cancelled or an error occurs.
@@ -207,6 +255,41 @@ func buildFirecrackerDriver(cfg Config) *firecracker.FCDriver {
 		WorkDirRoot:    cfg.WorkDirRoot,
 	})
 	return firecracker.New(execRunner{}, firecracker.WithManager(mgr))
+}
+
+func validateFirecrackerHostRouting() error {
+	const (
+		bridge = "nexusbr0"
+		subnet = "172.26.0.0/16"
+	)
+	out, err := exec.Command("ip", "-4", "route", "show", subnet).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("firecracker host route check failed for %s: %w", subnet, err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		for i := 0; i < len(fields)-1; i++ {
+			if fields[i] != "dev" {
+				continue
+			}
+			dev := fields[i+1]
+			if dev == bridge {
+				break
+			}
+			return fmt.Errorf(
+				"firecracker subnet conflict: route %q uses %s (expected %s)\n"+
+					"another bridge already owns %s, so VM outbound traffic can fail\n"+
+					"remove/reconfigure the conflicting bridge or pick a different firecracker subnet",
+				line, dev, bridge, subnet,
+			)
+		}
+	}
+	return nil
 }
 
 // execRunner satisfies firecracker.CommandRunner using os/exec.

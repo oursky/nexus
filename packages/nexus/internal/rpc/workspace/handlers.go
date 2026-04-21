@@ -32,13 +32,6 @@ type listRes struct {
 	Workspaces []*workspace.Workspace `json:"workspaces"`
 }
 
-type relationsReq struct {
-	RepoID string `json:"repoId,omitempty"`
-}
-type relationsRes struct {
-	Relations *appws.Relations `json:"relations"`
-}
-
 type removeReq struct {
 	ID string `json:"id"`
 }
@@ -79,56 +72,11 @@ type forkRes struct {
 	Workspace *workspace.Workspace `json:"workspace,omitempty"`
 }
 
-type checkoutReq struct {
-	ID        string `json:"id"`
-	TargetRef string `json:"targetRef"`
-}
-type checkoutRes struct {
-	Workspace *workspace.Workspace `json:"workspace"`
-}
-
 type readyReq struct {
 	ID string `json:"id"`
 }
 type readyRes struct {
 	Ready bool `json:"ready"`
-}
-
-type portsListReq struct {
-	ID string `json:"id"`
-}
-type portsListRes struct {
-	Ports []int `json:"ports"`
-}
-
-type portsAddReq struct {
-	ID   string `json:"id"`
-	Port int    `json:"port"`
-}
-type portsAddRes struct {
-	Ports []int `json:"ports"`
-}
-
-type portsRemoveReq struct {
-	ID   string `json:"id"`
-	Port int    `json:"port"`
-}
-type portsRemoveRes struct {
-	Ports []int `json:"ports"`
-}
-
-type tunnelsStartReq struct {
-	ID string `json:"id"`
-}
-type tunnelsStartRes struct {
-	OK bool `json:"ok"`
-}
-
-type tunnelsStopReq struct {
-	ID string `json:"id"`
-}
-type tunnelsStopRes struct {
-	OK bool `json:"ok"`
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -166,18 +114,6 @@ func (h *Handler) handleList(ctx context.Context, raw json.RawMessage) (any, err
 		return nil, rpce.Internal(err.Error())
 	}
 	return &listRes{Workspaces: all}, nil
-}
-
-func (h *Handler) handleRelations(ctx context.Context, raw json.RawMessage) (any, error) {
-	req, err := decode[relationsReq](raw)
-	if err != nil {
-		return nil, err
-	}
-	rels, err := h.svc.Relations(ctx, req.RepoID)
-	if err != nil {
-		return nil, rpce.Internal(err.Error())
-	}
-	return &relationsRes{Relations: rels}, nil
 }
 
 func (h *Handler) handleRemove(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -257,21 +193,6 @@ func (h *Handler) handleFork(ctx context.Context, raw json.RawMessage) (any, err
 	return &forkRes{Forked: true, Workspace: ws}, nil
 }
 
-func (h *Handler) handleCheckout(ctx context.Context, raw json.RawMessage) (any, error) {
-	req, err := decode[checkoutReq](raw)
-	if err != nil {
-		return nil, err
-	}
-	if req.ID == "" {
-		return nil, rpce.InvalidParams("id is required")
-	}
-	ws, err := h.svc.Checkout(ctx, req.ID, appws.CheckoutSpec{TargetRef: req.TargetRef})
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return &checkoutRes{Workspace: ws}, nil
-}
-
 func (h *Handler) handleReady(ctx context.Context, raw json.RawMessage) (any, error) {
 	req, err := decode[readyReq](raw)
 	if err != nil {
@@ -285,64 +206,6 @@ func (h *Handler) handleReady(ctx context.Context, raw json.RawMessage) (any, er
 		return nil, mapErr(err)
 	}
 	return &readyRes{Ready: ready}, nil
-}
-
-func (h *Handler) handlePortsList(ctx context.Context, raw json.RawMessage) (any, error) {
-	req, err := decode[portsListReq](raw)
-	if err != nil {
-		return nil, err
-	}
-	ports, err := h.svc.PortsList(ctx, req.ID)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return &portsListRes{Ports: ports}, nil
-}
-
-func (h *Handler) handlePortsAdd(ctx context.Context, raw json.RawMessage) (any, error) {
-	req, err := decode[portsAddReq](raw)
-	if err != nil {
-		return nil, err
-	}
-	ports, err := h.svc.PortsAdd(ctx, req.ID, req.Port)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return &portsAddRes{Ports: ports}, nil
-}
-
-func (h *Handler) handlePortsRemove(ctx context.Context, raw json.RawMessage) (any, error) {
-	req, err := decode[portsRemoveReq](raw)
-	if err != nil {
-		return nil, err
-	}
-	ports, err := h.svc.PortsRemove(ctx, req.ID, req.Port)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return &portsRemoveRes{Ports: ports}, nil
-}
-
-func (h *Handler) handleTunnelsStart(ctx context.Context, raw json.RawMessage) (any, error) {
-	req, err := decode[tunnelsStartReq](raw)
-	if err != nil {
-		return nil, err
-	}
-	if err := h.svc.TunnelsStart(ctx, req.ID); err != nil {
-		return nil, mapErr(err)
-	}
-	return &tunnelsStartRes{OK: true}, nil
-}
-
-func (h *Handler) handleTunnelsStop(ctx context.Context, raw json.RawMessage) (any, error) {
-	req, err := decode[tunnelsStopReq](raw)
-	if err != nil {
-		return nil, err
-	}
-	if err := h.svc.TunnelsStop(ctx, req.ID); err != nil {
-		return nil, mapErr(err)
-	}
-	return &tunnelsStopRes{OK: true}, nil
 }
 
 func mapErr(err error) error {

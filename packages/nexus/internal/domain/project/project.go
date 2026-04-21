@@ -13,6 +13,7 @@ type Project struct {
 	ID        string        `json:"id"`
 	Name      string        `json:"name"`
 	RepoURL   string        `json:"repoUrl"`
+	RootPath  string        `json:"rootPath,omitempty"`
 	Config    ProjectConfig `json:"config"`
 	CreatedAt time.Time     `json:"created_at,omitempty"`
 	UpdatedAt time.Time     `json:"updated_at,omitempty"`

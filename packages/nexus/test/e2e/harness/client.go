@@ -9,6 +9,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type rpcRequest struct {
@@ -80,6 +81,11 @@ func (c *Client) Call(method string, params, out any) error {
 		return fmt.Errorf("marshal request: %w", err)
 	}
 	b = append(b, '\n')
+
+	// Per-call deadline: prevents indefinite hang when the daemon never responds.
+	// 5 minutes covers slow CI operations like mkfs.ext4 for workspace images.
+	_ = c.conn.SetDeadline(time.Now().Add(5 * time.Minute))
+	defer c.conn.SetDeadline(time.Time{}) //nolint:errcheck
 
 	if _, err := c.conn.Write(b); err != nil {
 		return fmt.Errorf("write: %w", err)

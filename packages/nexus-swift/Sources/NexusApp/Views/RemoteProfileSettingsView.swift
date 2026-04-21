@@ -241,6 +241,8 @@ private struct LabeledField<Content: View>: View {
 // MARK: - Main view
 
 public struct RemoteProfileSettingsView: View {
+    @EnvironmentObject private var appState: AppState
+
     @State private var profiles: [DaemonProfile] = []
     @State private var showSheet = false
     @State private var editingProfile: DaemonProfile = DaemonProfile(name: "")
@@ -311,11 +313,13 @@ public struct RemoteProfileSettingsView: View {
             return copy
         }
         store.save(profiles)
+        Task { await appState.reconnect() }
     }
 
     private func delete(_ target: DaemonProfile) {
         profiles.removeAll { $0.profileId == target.profileId }
         store.save(profiles)
+        Task { await appState.reconnect() }
     }
 
     private func saveProfile(_ profile: DaemonProfile) {
@@ -331,5 +335,6 @@ public struct RemoteProfileSettingsView: View {
             profiles = profiles.map { p in p.profileId == profile.profileId ? profile : p }
         }
         store.save(profiles)
+        Task { await appState.reconnect() }
     }
 }

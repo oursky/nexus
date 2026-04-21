@@ -1,11 +1,14 @@
 package firecracker
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,9 +40,11 @@ type CommandRunner interface {
 type ManagerInterface interface {
 	Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error)
 	Stop(ctx context.Context, workspaceID string) error
+	CleanupWorkspaceByID(ctx context.Context, workspaceID string) error
 	Get(workspaceID string) (*Instance, error)
 	GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error
 	CheckpointForkSnapshot(ctx context.Context, workspaceID, childWorkspaceID string) (string, error)
+	ReconcileOrphans(ctx context.Context, liveWorkspaceIDs map[string]struct{}) error
 }
 
 // FCDriver implements the Firecracker runtime driver.
@@ -47,6 +52,7 @@ type FCDriver struct {
 	runner       CommandRunner
 	manager      ManagerInterface
 	projectRoots map[string]string
+	snapshotIDs  map[string]string // optional lineage snapshot ID per workspace
 	agents       map[string]*AgentClient
 	mu           sync.RWMutex
 }
@@ -66,6 +72,7 @@ func New(runner CommandRunner, opts ...Option) *FCDriver {
 	d := &FCDriver{
 		runner:       runner,
 		projectRoots: make(map[string]string),
+		snapshotIDs:  make(map[string]string),
 		agents:       make(map[string]*AgentClient),
 	}
 	for _, opt := range opts {
@@ -79,9 +86,39 @@ func (d *FCDriver) Backend() string {
 	return "firecracker"
 }
 
+// CleanupStaleInstances removes stale/orphaned VM state on daemon startup.
+func (d *FCDriver) CleanupStaleInstances(ctx context.Context) error {
+	if d.manager == nil {
+		return errors.New("manager is required for firecracker driver")
+	}
+	return d.manager.ReconcileOrphans(ctx, map[string]struct{}{})
+}
+
 // GuestWorkdir returns the in-guest working directory for a workspace.
 func (d *FCDriver) GuestWorkdir(_ string) string {
 	return "/workspace"
+}
+
+// ResolveWorkspaceEndpoint returns the guest-internal endpoint for a workspace service port.
+func (d *FCDriver) ResolveWorkspaceEndpoint(_ context.Context, workspaceID string, remotePort int) (string, int, error) {
+	if remotePort <= 0 {
+		return "", 0, fmt.Errorf("remote port must be > 0")
+	}
+	if d.manager == nil {
+		return "", 0, errors.New("manager is required for firecracker driver")
+	}
+	inst, err := d.manager.Get(workspaceID)
+	if err != nil {
+		return "", 0, fmt.Errorf("workspace instance lookup failed: %w", err)
+	}
+	if inst == nil || inst.CID == 0 {
+		return "", 0, errors.New("workspace instance has no guest CID")
+	}
+	return guestIPForCID(inst.CID), remotePort, nil
+}
+
+func guestIPForCID(cid uint32) string {
+	return fmt.Sprintf("172.26.%d.%d", byte((cid>>8)&0xFF), byte(cid&0xFF))
 }
 
 func (d *FCDriver) workspaceDir(workspaceID string) string {
@@ -105,6 +142,48 @@ func (d *FCDriver) AgentConn(ctx context.Context, workspaceID string) (net.Conn,
 		return nil, errors.New("workspace instance has no guest CID")
 	}
 
+	if strings.TrimSpace(inst.VSockPath) != "" {
+		waitUntil := time.Now().Add(10 * time.Second)
+		if deadline, ok := ctx.Deadline(); ok && deadline.Before(waitUntil) {
+			waitUntil = deadline
+		}
+
+		var lastErr error
+		for time.Now().Before(waitUntil) {
+			netDialer := &net.Dialer{Timeout: 2 * time.Second}
+			conn, err := netDialer.DialContext(ctx, "unix", inst.VSockPath)
+			if err == nil {
+				if _, err := fmt.Fprintf(conn, "CONNECT %d\n", DefaultAgentVSockPort); err == nil {
+					_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+					resp, readErr := bufio.NewReader(conn).ReadString('\n')
+					_ = conn.SetReadDeadline(time.Time{})
+					if readErr == nil && strings.HasPrefix(strings.TrimSpace(resp), "OK") {
+						return conn, nil
+					}
+					if readErr != nil {
+						lastErr = fmt.Errorf("connect handshake read: %w", readErr)
+					} else {
+						lastErr = fmt.Errorf("connect handshake rejected: %s", strings.TrimSpace(resp))
+					}
+				} else {
+					lastErr = fmt.Errorf("connect handshake write: %w", err)
+				}
+				_ = conn.Close()
+			} else {
+				lastErr = err
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(150 * time.Millisecond):
+			}
+		}
+		if lastErr == nil {
+			lastErr = errors.New("timeout waiting for agent vsock socket")
+		}
+		return nil, fmt.Errorf("agent unix-vsock connect failed (%s): %w", inst.VSockPath, lastErr)
+	}
+
 	conn, err := vsock.Dial(inst.CID, DefaultAgentVSockPort, nil)
 	if err != nil {
 		return nil, fmt.Errorf("vsock dial failed: %w", err)
@@ -113,42 +192,25 @@ func (d *FCDriver) AgentConn(ctx context.Context, workspaceID string) (net.Conn,
 	return conn, nil
 }
 
-// Create spawns a new Firecracker VM for the workspace.
-func (d *FCDriver) Create(ctx context.Context, req CreateRequest) error {
+// Create registers a workspace lazily — it records the project root and optional
+// snapshot ID but does NOT spawn the Firecracker VM yet. The VM is started on
+// demand by EnsureStarted (called via workspace.start or pty.create). This keeps
+// workspace.create fast: no mkfs.ext4, no VM boot.
+func (d *FCDriver) Create(_ context.Context, req CreateRequest) error {
 	if req.ProjectRoot == "" {
 		return errors.New("project root is required")
 	}
 
-	if d.manager == nil {
-		return errors.New("manager is required for firecracker driver")
-	}
-
-	memMiB := parsePositiveIntOption(req.Options, "mem_mib", 1024)
-	vcpus := parsePositiveIntOption(req.Options, "vcpus", 1)
-	if vcpus <= 0 {
-		vcpus = parsePositiveIntOption(req.Options, "vcpu_count", 1)
-	}
-
-	spec := SpawnSpec{
-		WorkspaceID: req.WorkspaceID,
-		ProjectRoot: req.ProjectRoot,
-		MemoryMiB:   memMiB,
-		VCPUs:       vcpus,
-	}
-	if req.Options != nil {
-		spec.SnapshotID = strings.TrimSpace(req.Options["lineage_snapshot_id"])
-	}
-
-	inst, err := d.manager.Spawn(ctx, spec)
-	if err != nil {
-		return err
-	}
-
 	d.mu.Lock()
 	d.projectRoots[req.WorkspaceID] = req.ProjectRoot
+	if req.Options != nil {
+		if snap := strings.TrimSpace(req.Options["lineage_snapshot_id"]); snap != "" {
+			d.snapshotIDs[req.WorkspaceID] = snap
+		}
+	}
 	d.mu.Unlock()
 
-	log.Printf("[firecracker] created workspace %s (cid=%d)", req.WorkspaceID, inst.CID)
+	log.Printf("[firecracker] registered workspace %s (lazy; VM starts on first start)", req.WorkspaceID)
 	return nil
 }
 
@@ -207,6 +269,78 @@ func (d *FCDriver) GrowWorkspace(ctx context.Context, workspaceID string, newSiz
 // Start is a no-op: Firecracker VMs start immediately after Spawn.
 func (d *FCDriver) Start(_ context.Context, _ string) error {
 	return nil
+}
+
+// EnsureStarted guarantees there is a live Firecracker instance for workspaceID.
+// This is the real "start" path: it runs mkfs.ext4 (if needed) and boots the VM.
+// Called by Adapter.Start (workspace.start RPC) and AgentConn (pty.create RPC).
+func (d *FCDriver) EnsureStarted(ctx context.Context, workspaceID, projectRoot string) error {
+	if d.manager == nil {
+		return errors.New("manager is required for firecracker driver")
+	}
+
+	if _, err := d.manager.Get(workspaceID); err == nil {
+		return nil // already running
+	}
+
+	root := strings.TrimSpace(projectRoot)
+	if root == "" {
+		d.mu.RLock()
+		root = strings.TrimSpace(d.projectRoots[workspaceID])
+		d.mu.RUnlock()
+	}
+	if root == "" {
+		return fmt.Errorf("workspace %s has no project root for firecracker start", workspaceID)
+	}
+
+	d.mu.RLock()
+	snapshotID := d.snapshotIDs[workspaceID]
+	d.mu.RUnlock()
+
+	memMiB := defaultMemMiB()
+
+	// Build a host config drive (ext4 image) so the guest can access gitconfig,
+	// SSH material, and tool auth without any vsock file-transfer complexity.
+	home, _ := os.UserHomeDir()
+	configDrivePath := filepath.Join(root, ".nexus-host-config.ext4")
+	if err := buildHostConfigDrive(home, configDrivePath); err != nil {
+		log.Printf("[firecracker] warning: host config drive: %v", err)
+		configDrivePath = ""
+	}
+
+	spec := SpawnSpec{
+		WorkspaceID:     workspaceID,
+		ProjectRoot:     root,
+		MemoryMiB:       memMiB,
+		VCPUs:           1,
+		SnapshotID:      snapshotID,
+		HostConfigDrive: configDrivePath,
+	}
+
+	inst, err := d.manager.Spawn(ctx, spec)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("[firecracker] started workspace %s (cid=%d)", workspaceID, inst.CID)
+
+	// Start host-side SSH agent vsock proxy (no private keys in the VM).
+	startSSHAgentProxy(inst.WorkDir)
+
+	return nil
+}
+
+// setupGuestEnvironment syncs the host's git config and SSH keys into the
+// guest and configures safe.directory so git works against /workspace.
+
+// defaultMemMiB returns the VM memory size in MiB, respecting NEXUS_FIRECRACKER_MEM_MIB.
+func defaultMemMiB() int {
+	if raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_MEM_MIB")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 1024
 }
 
 // Stop terminates a running VM.
@@ -289,7 +423,9 @@ func (d *FCDriver) Destroy(ctx context.Context, workspaceID string) error {
 	d.mu.Unlock()
 
 	if d.manager != nil {
-		_ = d.manager.Stop(ctx, workspaceID)
+		if err := d.manager.CleanupWorkspaceByID(ctx, workspaceID); err != nil {
+			log.Printf("[firecracker] warning: cleanup workspace %s: %v", workspaceID, err)
+		}
 	}
 
 	return nil

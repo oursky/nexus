@@ -38,7 +38,7 @@ struct ContentView: View {
                             .inspectorColumnWidth(min: 340, ideal: 420, max: 520)
                     }
             } else {
-                EmptyStateView(state: appState.connectionState, error: appState.error)
+                EmptyStateView(error: appState.error)
             }
         }
     }
@@ -80,12 +80,13 @@ struct InspectorView: View {
 // MARK: - Empty state
 
 private struct EmptyStateView: View {
-    let state: ConnectionState
     let error: String?
 
     var body: some View {
         VStack(spacing: 10) {
-            if state == .disconnected, let msg = error {
+            // Show operational errors whenever set (e.g. Create Base / mirror / RPC failures).
+            // Do not gate on connection state — that hid failures while connected and looked like "no effect".
+            if let msg = error {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.system(size: 24, weight: .ultraLight))
                     .foregroundColor(Theme.labelTertiary)

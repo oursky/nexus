@@ -35,6 +35,10 @@ type SpawnSpec struct {
 	SnapshotID  string
 	MemoryMiB   int
 	VCPUs       int
+	// HostConfigDrive is the path to a pre-built ext4 image containing host
+	// config files (gitconfig, SSH material, tool configs).  When non-empty it
+	// is attached as /dev/vdc inside the guest (read-only).
+	HostConfigDrive string
 }
 
 // Instance represents a running Firecracker VM instance.
@@ -98,7 +102,6 @@ type Manager struct {
 	apiClientFactory APIClientFactory
 	snapshotCache    map[string]*baseSnapshot
 	snapshotMu       sync.RWMutex
-	reflinkAvailable bool
 }
 
 // NewManager creates a new Firecracker manager with the given configuration.
@@ -108,11 +111,8 @@ func NewManager(cfg ManagerConfig) *Manager {
 
 // newManager creates a new Firecracker manager with the given configuration.
 func newManager(cfg ManagerConfig) *Manager {
-	reflink := false
 	if strings.TrimSpace(cfg.WorkDirRoot) != "" {
-		if err := os.MkdirAll(cfg.WorkDirRoot, 0o755); err == nil {
-			reflink = probeReflink(cfg.WorkDirRoot)
-		}
+		_ = os.MkdirAll(cfg.WorkDirRoot, 0o755)
 	}
 	return &Manager{
 		config:           cfg,
@@ -120,7 +120,6 @@ func newManager(cfg ManagerConfig) *Manager {
 		nextCID:          initialCID,
 		apiClientFactory: defaultAPIClientFactory,
 		snapshotCache:    make(map[string]*baseSnapshot),
-		reflinkAvailable: reflink,
 	}
 }
 
@@ -157,24 +156,27 @@ func (m *Manager) cleanup(workDir string, proc *os.Process) {
 
 // Spawn creates and starts a new Firecracker VM instance.
 func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) {
+	// Phase 1: Quick duplicate check and CID allocation (mutex held briefly).
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if _, exists := m.instances[spec.WorkspaceID]; exists {
+		m.mu.Unlock()
 		return nil, fmt.Errorf("workspace already exists: %s", spec.WorkspaceID)
 	}
 
-	// Snapshot restore path (experiment-gated)
+	// Snapshot restore path (experiment-gated).
 	if os.Getenv("NEXUS_FIRECRACKER_SNAPSHOT") == "1" {
 		snap, err := m.ensureBaseSnapshot(ctx, m.config.KernelPath, m.config.RootFSPath)
 		if err != nil {
+			m.mu.Unlock()
 			return nil, fmt.Errorf("ensure base snapshot: %w", err)
 		}
 		if _, statErr := os.Stat(snap.vmstatePath); statErr == nil {
 			m.mu.Unlock()
 			inst, restoreErr := m.restoreFromSnapshot(ctx, spec, snap)
-			m.mu.Lock()
 			if restoreErr == nil {
+				m.mu.Lock()
+				m.instances[spec.WorkspaceID] = inst
+				m.mu.Unlock()
 				return inst, nil
 			}
 			log.Printf("[firecracker] snapshot restore failed, falling back to cold boot: %v", restoreErr)
@@ -182,9 +184,17 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 			m.snapshotMu.Lock()
 			delete(m.snapshotCache, key)
 			m.snapshotMu.Unlock()
+			m.mu.Lock()
 		}
 	}
 
+	cid := m.nextCID
+	m.nextCID++
+	// Release mutex before slow I/O (mkfs.ext4, Firecracker launch, API config).
+	// Other operations (Stop, Get, etc.) can proceed concurrently during image build.
+	m.mu.Unlock()
+
+	// Phase 2: Slow I/O — all of this runs WITHOUT the global mutex.
 	workDir := filepath.Join(m.config.WorkDirRoot, spec.WorkspaceID)
 
 	var projectSizeBytes int64
@@ -216,10 +226,6 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	vsockPath := filepath.Join(workDir, "vsock.sock")
 	serialLog := filepath.Join(workDir, "firecracker.log")
 	workspaceImagePath := filepath.Join(workDir, "workspace.ext4")
-	cleanupTap := true
-
-	cid := m.nextCID
-	m.nextCID++
 
 	// Derive a tap name for this workspace and create it on the host bridge.
 	tap := tapNameForWorkspace(spec.WorkspaceID)
@@ -234,17 +240,13 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	if strings.TrimSpace(spec.SnapshotID) != "" {
 		if err := copyFile(m.snapshotImagePath(spec.SnapshotID), workspaceImagePath); err != nil {
-			if cleanupTap {
-				teardownTAP(tap, subnetCIDR)
-			}
+			teardownTAP(tap, subnetCIDR)
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("failed to restore workspace image from snapshot: %w", err)
 		}
 	} else {
 		if err := workspaceImageBuilderFunc(spec.ProjectRoot, workspaceImagePath); err != nil {
-			if cleanupTap {
-				teardownTAP(tap, subnetCIDR)
-			}
+			teardownTAP(tap, subnetCIDR)
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("failed to build workspace image: %w", err)
 		}
@@ -323,7 +325,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	workspaceDriveConfig := map[string]any{
 		"drive_id":       "workspace",
-		"path_on_host":   workspaceImagePath,
+		"path_on_host":   "workspace.ext4",
 		"is_root_device": false,
 		"is_read_only":   false,
 	}
@@ -331,6 +333,19 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		teardownTAP(tap, subnetCIDR)
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to configure workspace drive: %w", err)
+	}
+
+	// Optional host config drive (/dev/vdc inside the guest).
+	if spec.HostConfigDrive != "" {
+		cfgDrive := map[string]any{
+			"drive_id":       "hostconfig",
+			"path_on_host":   spec.HostConfigDrive,
+			"is_root_device": false,
+			"is_read_only":   true,
+		}
+		if err := client.put(ctx, "/drives/hostconfig", cfgDrive); err != nil {
+			log.Printf("[firecracker] warning: could not attach host config drive: %v", err)
+		}
 	}
 
 	// Configure network interface: Firecracker opens the host tap by name.
@@ -348,7 +363,9 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	vsockConfig := map[string]any{
 		"vsock_id":  "agent",
 		"guest_cid": cid,
-		"uds_path":  vsockPath,
+		// Relative path: Firecracker creates the socket in its working directory.
+		// The host driver dials the absolute vsockPath stored in the Instance.
+		"uds_path": "vsock.sock",
 	}
 	if err := client.put(ctx, "/vsock", vsockConfig); err != nil {
 		teardownTAP(tap, subnetCIDR)
@@ -398,8 +415,18 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		HostIP:         hostIP,
 	}
 
+	// Phase 3: Re-acquire mutex to register the instance.
+	// Guard against the rare case where the workspace was removed and re-created
+	// concurrently while mkfs/VM-boot was in progress.
+	m.mu.Lock()
+	if _, exists := m.instances[spec.WorkspaceID]; exists {
+		m.mu.Unlock()
+		teardownTAP(tap, subnetCIDR)
+		m.cleanup(workDir, cmd.Process)
+		return nil, fmt.Errorf("workspace already exists: %s", spec.WorkspaceID)
+	}
 	m.instances[spec.WorkspaceID] = inst
-	cleanupTap = false
+	m.mu.Unlock()
 	return inst, nil
 }
 
@@ -407,11 +434,15 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 // If NEXUS_FIRECRACKER_BOOT_ARGS is set, it is returned verbatim.
 // Otherwise a standard set is generated. Guest networking is configured
 // by udhcpc (DHCP) inside the VM — no static ip= kernel argument.
+//
+// init= tells the kernel to launch our agent directly instead of the rootfs's
+// default init. This means we never need to patch /sbin/init in the rootfs
+// image (adopted from forgevm).
 func defaultFirecrackerBootArgs() string {
 	if raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_BOOT_ARGS")); raw != "" {
 		return raw
 	}
-	return "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw"
+	return "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/usr/local/bin/nexus-firecracker-agent"
 }
 
 // waitForAPISocket polls for the API socket to exist with the given context.
@@ -477,6 +508,62 @@ func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 	delete(m.instances, workspaceID)
 
 	return nil
+}
+
+// CleanupWorkspaceByID tears down workspace runtime state even when the
+// instance is not currently tracked in-memory (e.g. after daemon restart).
+func (m *Manager) CleanupWorkspaceByID(ctx context.Context, workspaceID string) error {
+	if strings.TrimSpace(workspaceID) == "" {
+		return nil
+	}
+
+	m.mu.RLock()
+	_, tracked := m.instances[workspaceID]
+	m.mu.RUnlock()
+	if tracked {
+		return m.Stop(ctx, workspaceID)
+	}
+
+	workDir := filepath.Join(m.config.WorkDirRoot, workspaceID)
+	tap := tapNameForWorkspace(workspaceID)
+
+	pid := 0
+	if data, err := os.ReadFile(filepath.Join(workDir, "firecracker.pid")); err == nil {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil {
+			pid = parsed
+		}
+	}
+	if pid <= 0 {
+		pid = firecrackerPIDForWorkspace(workspaceID)
+	}
+	if pid > 0 {
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Kill()
+		}
+	}
+
+	teardownTAP(tap, guestSubnetCIDR)
+	if err := os.RemoveAll(workDir); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func firecrackerPIDForWorkspace(workspaceID string) int {
+	pattern := fmt.Sprintf("firecracker --api-sock .*%s/firecracker.sock --id %s", workspaceID, workspaceID)
+	out, err := exec.Command("pgrep", "-f", pattern).CombinedOutput()
+	if err != nil {
+		return 0
+	}
+	line := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	if line == "" {
+		return 0
+	}
+	pid, err := strconv.Atoi(line)
+	if err != nil {
+		return 0
+	}
+	return pid
 }
 
 // GrowWorkspace grows the workspace backing image to newSizeBytes and notifies

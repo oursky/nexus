@@ -14,9 +14,13 @@ import (
 // Note: workspace.restore resumes from a snapshot taken during workspace.stop
 // (the daemon persists VM state on stop). There is no separate snapshot RPC.
 func TestWorkspaceRestore(t *testing.T) {
+	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
 
-	repoPath := makeLocalGitRepo(t, "restore")
+	clientRepo := harness.MakeLocalGitRepo(t, "restore")
+	cfg := harness.MirrorProfileConfigHome(t)
+	_, remoteRepo := harness.MirrorGitCheckoutToDaemon(t, h, cfg, clientRepo, "proj-restore")
 
 	// 1. Create
 	var createRes struct {
@@ -27,7 +31,7 @@ func TestWorkspaceRestore(t *testing.T) {
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{
-			"repo":          repoPath,
+			"repo":          remoteRepo,
 			"ref":           "main",
 			"workspaceName": "restore-test",
 		},

@@ -12,6 +12,6 @@ import _ "embed"
 //
 //	go generate ./cmd/nexus
 //
-//go:generate go build -trimpath -ldflags="-s -w" -o tap-helper-linux-amd64 ../nexus-tap-helper/
+//go:generate sh -c "go build -trimpath -ldflags='-s -w' -o tap-helper-linux-amd64 ../nexus-tap-helper/"
 //go:embed tap-helper-linux-amd64
 var embeddedTapHelper []byte

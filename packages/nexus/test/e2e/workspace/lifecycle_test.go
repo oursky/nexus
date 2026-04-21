@@ -9,7 +9,12 @@ import (
 )
 
 func TestWorkspaceLifecycle(t *testing.T) {
+	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
+	clientRepo := harness.MakeLocalGitRepo(t, "lifecycle")
+	cfg := harness.MirrorProfileConfigHome(t)
+	_, remoteRepo := harness.MirrorGitCheckoutToDaemon(t, h, cfg, clientRepo, "proj-lifecycle")
 
 	// 1. Create
 	var createRes struct {
@@ -20,7 +25,7 @@ func TestWorkspaceLifecycle(t *testing.T) {
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{
-			"repo":          "git@github.com:test/repo.git",
+			"repo":          remoteRepo,
 			"ref":           "main",
 			"workspaceName": "lifecycle-test",
 		},

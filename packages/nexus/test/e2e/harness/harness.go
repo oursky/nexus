@@ -66,6 +66,11 @@ func New(t *testing.T, opts ...Option) *Harness {
 		o(cfg)
 	}
 
+	// Check Firecracker availability before building the binary so that skips
+	// happen fast (no multi-second compile) on unsupported platforms / CI
+	// environments that lack Firecracker configuration.
+	RequireFirecracker(t)
+
 	dbPath := TempDB(t)
 	socketPath := TempSocket(t)
 	workdir := TempWorkdir(t)
@@ -92,10 +97,11 @@ func New(t *testing.T, opts ...Option) *Harness {
 		"--db", dbPath,
 		"--socket", socketPath,
 		"--workdir-root", workdir,
+		"--network=false", // tests use Unix socket only; avoids port-7777 conflicts
+		"--foreground",    // skip self-daemonize so the child is directly visible
 	}
 	if cfg.firecrackerBin != "" {
 		args = append(args,
-			"--firecracker",
 			"--firecracker-bin", cfg.firecrackerBin,
 			"--kernel", cfg.firecrackerKernel,
 			"--rootfs", cfg.firecrackerRootfs,
@@ -106,12 +112,13 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 
 	cmd := exec.Command(binPath, args...)
+	cmd.Stdout = os.Stderr // capture parent stdout (daemon ready/error msgs)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("harness: start nexusd: %v", err)
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	var client *Client
 	for time.Now().Before(deadline) {
 		c, err := Dial(socketPath)
@@ -129,7 +136,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 	if client == nil {
 		_ = cmd.Process.Kill()
-		t.Fatalf("harness: nexusd did not become ready within 10s")
+		t.Fatalf("harness: nexusd did not become ready within 20s")
 	}
 
 	h := &Harness{

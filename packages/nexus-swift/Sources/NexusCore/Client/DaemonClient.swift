@@ -8,30 +8,31 @@ public protocol DaemonClient: Sendable {
     // ── Projects ─────────────────────────────────────────────────────
     func listProjects() async throws -> [Project]
     func createProject(repo: String) async throws -> Project
+    func removeProject(id: String) async throws
 
     // ── Discovery ────────────────────────────────────────────────────
     func listWorkspaces() async throws -> [Workspace]
-    func listRelations() async throws -> [RelationsGroup]
 
     // ── Lifecycle ────────────────────────────────────────────────────
     func createWorkspace(spec: WorkspaceCreateSpec) async throws -> Workspace
-    func createSandbox(request: SandboxCreateRequest) async throws -> Workspace
+    /// Daemon `workspace.create` with a mirrored Linux `repo` path and optional `projectId`.
+    func createWorkspaceDaemon(spec: WorkspaceDaemonCreateSpec) async throws -> Workspace
+    func forkWorkspace(parentID: String, childName: String, childRef: String) async throws -> Workspace
     func startWorkspace(id: String) async throws
     func stopWorkspace(id: String) async throws
     func removeWorkspace(id: String) async throws
 
     // ── Ports ────────────────────────────────────────────────────────
     func markWorkspaceReady(id: String) async throws
+    func discoverPorts(workspaceID: String) async throws -> [[String: Any]]
+    func spotlightStart(workspaceId: String, localPort: Int, remotePort: Int, protocolText: String?) async throws -> (targetHost: String, targetPort: Int)
+    func spotlightStopWorkspace(workspaceId: String) async throws
     func listPorts(workspaceId: String) async throws -> [ForwardedPort]
-    func addPort(workspaceId: String, port: Int) async throws
-    func removePort(workspaceId: String, port: Int) async throws
+    func addPortForward(workspaceId: String, localPort: Int, remotePort: Int) async throws
+    func removePortForward(workspaceId: String, forwardId: String) async throws
     func startTunnels(workspaceId: String) async throws -> TunnelStatus
     func stopTunnels(workspaceId: String) async throws -> TunnelStatus
     func tunnelStatus(workspaceId: String) async throws -> TunnelStatus
-
-    // ── Exec ─────────────────────────────────────────────────────────
-    /// Runs a command in the workspace's root directory and returns buffered output.
-    func exec(workspaceId: String, command: String, args: [String]) async throws -> ExecOutput
 
     // ── Workspace info ────────────────────────────────────────────────
     /// Returns rich workspace metadata including spotlight ports.

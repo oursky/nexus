@@ -55,17 +55,20 @@ func connectCommand() *cobra.Command {
 }
 
 func fetchRemoteToken(host string, sshPort int) (string, error) {
-	args := []string{host, "cat", "$HOME/.config/nexus/daemon-token"}
+	// Use `nexus daemon token` on the remote host so the token is read from
+	// Use the full installed path because non-interactive SSH sessions do not
+	// source shell profiles, so ~/.local/bin is not in $PATH.
+	args := []string{host, "$HOME/.local/bin/nexus", "daemon", "token"}
 	if sshPort > 0 && sshPort != 22 {
 		args = append([]string{"-p", fmt.Sprintf("%d", sshPort)}, args...)
 	}
 	out, err := exec.Command("ssh", args...).Output()
 	if err != nil {
-		return "", fmt.Errorf("ssh %s: %w", host, err)
+		return "", fmt.Errorf("ssh %s nexus daemon token: %w", host, err)
 	}
 	token := strings.TrimSpace(string(out))
 	if token == "" {
-		return "", fmt.Errorf("no token found on remote host")
+		return "", fmt.Errorf("no token found on remote host (is the daemon started?)")
 	}
 	return token, nil
 }

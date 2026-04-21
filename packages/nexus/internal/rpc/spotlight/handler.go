@@ -10,7 +10,7 @@ import (
 	"github.com/inizio/nexus/packages/nexus/internal/rpc/registry"
 )
 
-// Handler handles spotlight and workspace.ports/tunnels RPC methods.
+// Handler handles spotlight RPC methods.
 type Handler struct {
 	svc *appspotlight.Service
 }
@@ -24,12 +24,10 @@ func New(svc *appspotlight.Service) *Handler {
 func (h *Handler) Register(reg registry.Registry) error {
 	reg.Register("spotlight.start", h.HandleStart)
 	reg.Register("spotlight.list", h.HandleList)
-	reg.Register("spotlight.close", h.HandleClose)
+	reg.Register("spotlight.stop", h.HandleStop)
 	reg.Register("workspace.ports.list", h.HandlePortsList)
 	reg.Register("workspace.ports.add", h.HandlePortsAdd)
 	reg.Register("workspace.ports.remove", h.HandlePortsRemove)
-	reg.Register("workspace.tunnels.start", h.HandleTunnelsStart)
-	reg.Register("workspace.tunnels.stop", h.HandleTunnelsStop)
 	return nil
 }
 
@@ -90,26 +88,26 @@ func (h *Handler) HandleList(ctx context.Context, raw json.RawMessage) (any, err
 	return &listResult{Forwards: fwds}, nil
 }
 
-// --- spotlight.close ---
+// --- spotlight.stop ---
 
-type closeParams struct {
-	ID string `json:"id"`
+type stopParams struct {
+	WorkspaceID string `json:"workspaceId"`
 }
 
 type closeResult struct {
 	Closed bool `json:"closed"`
 }
 
-func (h *Handler) HandleClose(ctx context.Context, raw json.RawMessage) (any, error) {
-	var p closeParams
+func (h *Handler) HandleStop(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p stopParams
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, rpcerrors.InvalidParams("invalid params: " + err.Error())
 	}
-	if p.ID == "" {
-		return nil, rpcerrors.InvalidParams("id is required")
+	if p.WorkspaceID == "" {
+		return nil, rpcerrors.InvalidParams("workspaceId is required")
 	}
 
-	if err := h.svc.CloseForward(ctx, p.ID); err != nil {
+	if err := h.svc.StopWorkspaceSpotlight(ctx, p.WorkspaceID); err != nil {
 		return nil, rpcerrors.Internal(err.Error())
 	}
 	return &closeResult{Closed: true}, nil
@@ -186,53 +184,3 @@ func (h *Handler) HandlePortsRemove(ctx context.Context, raw json.RawMessage) (a
 	return &closeResult{Closed: true}, nil
 }
 
-// --- workspace.tunnels.start ---
-
-type tunnelsStartParams struct {
-	WorkspaceID string `json:"workspaceId"`
-	LocalPort   int    `json:"localPort"`
-	RemotePort  int    `json:"remotePort"`
-}
-
-func (h *Handler) HandleTunnelsStart(ctx context.Context, raw json.RawMessage) (any, error) {
-	var p tunnelsStartParams
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, rpcerrors.InvalidParams("invalid params: " + err.Error())
-	}
-	if p.WorkspaceID == "" {
-		return nil, rpcerrors.InvalidParams("workspaceId is required")
-	}
-
-	spec := spotlight.ExposeSpec{
-		WorkspaceID: p.WorkspaceID,
-		LocalPort:   p.LocalPort,
-		RemotePort:  p.RemotePort,
-	}
-	fwd, err := h.svc.StartSpotlight(ctx, p.WorkspaceID, spec)
-	if err != nil {
-		return nil, rpcerrors.Internal(err.Error())
-	}
-	return &startResult{Forward: fwd}, nil
-}
-
-// --- workspace.tunnels.stop ---
-
-type tunnelsStopParams struct {
-	WorkspaceID string `json:"workspaceId"`
-	ForwardID   string `json:"forwardId"`
-}
-
-func (h *Handler) HandleTunnelsStop(ctx context.Context, raw json.RawMessage) (any, error) {
-	var p tunnelsStopParams
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, rpcerrors.InvalidParams("invalid params: " + err.Error())
-	}
-	if p.ForwardID == "" {
-		return nil, rpcerrors.InvalidParams("forwardId is required")
-	}
-
-	if err := h.svc.CloseForward(ctx, p.ForwardID); err != nil {
-		return nil, rpcerrors.Internal(err.Error())
-	}
-	return &closeResult{Closed: true}, nil
-}

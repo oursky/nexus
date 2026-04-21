@@ -206,7 +206,7 @@ print(f"Index: {index_path}")
 # ── Write report markdown ─────────────────────────────────────────────────────
 report_path = os.path.join(build_dir, 'reports', run_id, 'report.md')
 lines = [
-    '# NexusUITests Report',
+    '# UI test report',
     '',
     f'**Run ID:** `{run_id}`  ',
     f'**Time:** {run_time}  ',

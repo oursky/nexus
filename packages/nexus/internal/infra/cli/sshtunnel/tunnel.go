@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -13,6 +14,7 @@ import (
 // Manager manages an SSH port-forward tunnel.
 type Manager struct {
 	host       string
+	remoteHost string
 	sshPort    int
 	remotePort int
 	localPort  int
@@ -29,6 +31,20 @@ type Manager struct {
 func New(host string, remotePort, sshPort int) *Manager {
 	return &Manager{
 		host:       host,
+		remoteHost: "localhost",
+		sshPort:    sshPort,
+		remotePort: remotePort,
+	}
+}
+
+// NewWithTarget creates a tunnel manager that forwards to a specific remote host:port.
+func NewWithTarget(host, remoteHost string, remotePort, sshPort int) *Manager {
+	if strings.TrimSpace(remoteHost) == "" {
+		remoteHost = "localhost"
+	}
+	return &Manager{
+		host:       host,
+		remoteHost: remoteHost,
 		sshPort:    sshPort,
 		remotePort: remotePort,
 	}
@@ -61,12 +77,23 @@ func (m *Manager) EnsureWithLocalPort(localPort int) (int, error) {
 		m.localPort = localPort
 	}
 
-	args := []string{"-fNL",
-		fmt.Sprintf("localhost:%d:localhost:%d", m.localPort, m.remotePort),
+	var args []string
+	if id := strings.TrimSpace(os.Getenv("NEXUS_E2E_SSH_IDENTITY")); id != "" {
+		args = append(args, "-i", id)
+	}
+	if os.Getenv("CI") != "" {
+		args = append(args,
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "BatchMode=yes",
+		)
+	}
+	args = append(args, "-fNL",
+		fmt.Sprintf("localhost:%d:%s:%d", m.localPort, m.remoteHost, m.remotePort),
 		"-o", "ServerAliveInterval=30",
 		"-o", "ServerAliveCountMax=3",
 		"-o", "ExitOnForwardFailure=yes",
-	}
+	)
 	if m.sshPort > 0 && m.sshPort != 22 {
 		args = append([]string{"-p", strconv.Itoa(m.sshPort)}, args...)
 	}

@@ -33,7 +33,10 @@ func (a *Adapter) Create(ctx context.Context, req *domainruntime.CreateRequest) 
 }
 
 func (a *Adapter) Start(ctx context.Context, ws *workspace.Workspace) error {
-	return a.d.Start(ctx, ws.ID)
+	if ws == nil {
+		return errors.New("workspace is required")
+	}
+	return a.d.EnsureStarted(ctx, ws.ID, firecrackerProjectRoot(ws))
 }
 
 func (a *Adapter) Stop(ctx context.Context, ws *workspace.Workspace) error {
@@ -77,4 +80,14 @@ func (a *Adapter) Fork(ctx context.Context, parent *workspace.Workspace, child *
 
 func (a *Adapter) Destroy(ctx context.Context, ws *workspace.Workspace) error {
 	return a.d.Destroy(ctx, ws.ID)
+}
+
+func firecrackerProjectRoot(ws *workspace.Workspace) string {
+	if ws == nil {
+		return ""
+	}
+	if ws.Repo != "" {
+		return ws.Repo
+	}
+	return ws.RootPath
 }

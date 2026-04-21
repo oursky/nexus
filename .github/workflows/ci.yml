@@ -51,6 +51,20 @@ jobs:
         with:
           go-version: '1.24.x'
 
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download embedded binaries (mutagen + firecracker + agent + tap-helper)
+        working-directory: packages/nexus
+        run: |
+          cd ../..
+          task mutagen:update
+          task firecracker:update
+          cd packages/nexus
+          go generate ./cmd/nexus/
+
       - name: Run full Go test coverage
         working-directory: packages/nexus
         run: |
@@ -83,10 +97,102 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Make /dev/kvm accessible to the runner user without needing group
+      # membership. The MODE="0666" rule is sufficient for Firecracker.
+      - name: Enable KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm
+
+      # Tools required by firecracker-setup.sh:
+      #   squashfs-tools  → unsquashfs (squashfs → rootfs tree)
+      #   e2fsprogs       → mkfs.ext4, debugfs (create and modify rootfs image)
+      #   libcap2-bin     → setcap (grant cap_net_admin to nexus-tap-helper)
+      #   rsync           → copy rootfs tree into ext4 image
+      - name: Install Firecracker host prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y squashfs-tools e2fsprogs libcap2-bin rsync
+
+      # Cache the Firecracker kernel — static, changes only with the upstream URL.
+      - name: Cache Firecracker kernel
+        uses: actions/cache@v4
+        with:
+          path: /tmp/nexus-vmlinux.bin
+          key: firecracker-kernel-v1.13-x86_64
+
+      # Cache the squashfs download — large (~200 MB), rarely changes.
+      - name: Cache Ubuntu squashfs
+        uses: actions/cache@v4
+        with:
+          path: /tmp/nexus-ubuntu.squashfs
+          key: firecracker-squashfs-ubuntu24-v1.13-x86_64
+
+      # Cache the pre-built ext4 rootfs — keyed on agent + setup script so it
+      # rebuilds automatically when the guest agent code changes.
+      - name: Cache Firecracker rootfs
+        uses: actions/cache@v4
+        with:
+          path: /tmp/nexus-rootfs.ext4
+          key: firecracker-rootfs-amd64-${{ hashFiles('packages/nexus/cmd/nexus-firecracker-agent/**/*.go', 'packages/nexus/cmd/nexus/scripts/firecracker-setup.sh') }}
+          restore-keys: |
+            firecracker-rootfs-amd64-
+
+      # Download external embedded binaries and build the guest agent + tap-helper
+      # so that the //go:embed directives in cmd/nexus are satisfied.
+      - name: Build embedded binaries (mutagen + firecracker + agent + tap-helper)
+        working-directory: packages/nexus
+        run: |
+          cd ../..
+          task mutagen:update
+          task firecracker:update
+          cd packages/nexus
+          go generate ./cmd/nexus/
+
+      # Pre-provision Firecracker host infrastructure once before the test suite.
+      # daemon start auto-provisions on first run; we start it briefly then stop
+      # it so that every per-test daemon start finds everything already in place
+      # and skips the slow setup path.
+      - name: Build nexus binary
+        working-directory: packages/nexus
+        run: |
+          go build -o /tmp/nexus-bin ./cmd/nexus/
+          echo "NEXUS_E2E_BINARY=/tmp/nexus-bin" >> "$GITHUB_ENV"
+
+      - name: Provision Firecracker host (bridge + kernel + rootfs)
+        run: |
+          SOCK=/tmp/nexus-provision.sock
+          DB=/tmp/nexus-provision.db
+          sudo /tmp/nexus-bin daemon start \
+            --db "$DB" --socket "$SOCK" \
+            --workdir-root /tmp/nexus-provision-work &
+          DPID=$!
+          # Wait up to 300 s for the socket to appear (provisioning completes
+          # before the daemon begins accepting connections).
+          timeout 300 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
+            || { echo "daemon setup timed out after 300s"; kill $DPID; exit 1; }
+          # Gracefully stop the provisioning daemon.
+          sudo /tmp/nexus-bin daemon stop --socket "$SOCK" 2>/dev/null \
+            || kill $DPID 2>/dev/null || true
+          wait $DPID 2>/dev/null || true
+          # The provisioning daemon (running as root) creates $HOME/.local as
+          # root:root 755 via resolveInstallBinDir. Fix ownership so the runner
+          # user can subsequently create subdirectories (e.g. .local/share/).
+          sudo chown -R "$USER":"$USER" "$HOME/.local" 2>/dev/null || true
+
       - name: Run CI pipeline
         run: task ci
         env:
           CI: true
+          NEXUS_FIRECRACKER_KERNEL: /var/lib/nexus/vmlinux.bin
+          NEXUS_FIRECRACKER_ROOTFS: /var/lib/nexus/rootfs.ext4
+          # Use a small workspace image so mkfs.ext4 finishes in seconds on CI.
+          NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
+          # Limit VM memory to reduce peak RSS when tests run in parallel.
+          NEXUS_FIRECRACKER_MEM_MIB: "256"
 
       - name: Upload test results on failure
         if: failure()
@@ -97,4 +203,3 @@ jobs:
             **/test-results/
             **/coverage/
           retention-days: 7
-

@@ -9,18 +9,16 @@ import (
 )
 
 func portRemoveCommand() *cobra.Command {
-	var workspaceID string
-	var forwardID string
 	var force bool
 
 	cmd := &cobra.Command{
-		Use:     "remove",
+		Use:     "remove <workspace-id> <forward-id>",
 		Aliases: []string{"rm"},
 		Short:   "Remove a port forward from a workspace",
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if workspaceID == "" || forwardID == "" {
-				return fmt.Errorf("nexus spotlight port remove: --workspace and --forward-id are required")
-			}
+			workspaceID := args[0]
+			forwardID := args[1]
 
 			if !force {
 				fi, _ := os.Stdin.Stat()
@@ -50,8 +48,6 @@ func portRemoveCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&workspaceID, "workspace", "", "workspace ID (required)")
-	cmd.Flags().StringVar(&forwardID, "forward-id", "", "forward ID to remove (required)")
 	cmd.Flags().BoolVar(&force, "force", false, "skip confirmation prompt")
 	return cmd
 }
