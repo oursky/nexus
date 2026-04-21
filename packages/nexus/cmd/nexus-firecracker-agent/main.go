@@ -90,6 +90,8 @@ func handleExec(req execRequest) execResponse {
 		env = append(env, req.Env...)
 	}
 	env = ensurePathInEnv(env)
+	env = ensureRootIdentityEnv(env)
+	env = ensureSSHAuthSockEnv(env)
 
 	commandPath := req.Command
 	if resolved, err := lookPathInEnv(req.Command, env); err == nil {
@@ -161,6 +163,8 @@ func handleExecStreaming(req execRequest, encoder *json.Encoder) execResponse {
 		env = append(env, req.Env...)
 	}
 	env = ensurePathInEnv(env)
+	env = ensureRootIdentityEnv(env)
+	env = ensureSSHAuthSockEnv(env)
 
 	commandPath := req.Command
 	if resolved, err := lookPathInEnv(req.Command, env); err == nil {
@@ -241,6 +245,29 @@ func ensurePathInEnv(env []string) []string {
 	}
 
 	return append(env, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+}
+
+func ensureSSHAuthSockEnv(env []string) []string {
+	return ensureEnvVar(env, "SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
+}
+
+func ensureRootIdentityEnv(env []string) []string {
+	env = ensureEnvVar(env, "HOME", "/root")
+	env = ensureEnvVar(env, "USER", "root")
+	env = ensureEnvVar(env, "LOGNAME", "root")
+	return env
+}
+
+func ensureEnvVar(env []string, key, value string) []string {
+	prefix := key + "="
+	desired := prefix + value
+	for i, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			env[i] = desired
+			return env
+		}
+	}
+	return append(env, desired)
 }
 
 func lookPathInEnv(command string, env []string) (string, error) {
@@ -337,6 +364,8 @@ func handleShellRequest(req execRequest, encoder *json.Encoder) {
 func handleShellOpen(req execRequest, encoder *json.Encoder) {
 	env := append([]string{}, os.Environ()...)
 	env = ensurePathInEnv(env)
+	env = ensureRootIdentityEnv(env)
+	env = ensureSSHAuthSockEnv(env)
 
 	workDir := workspaceMountPoint
 	if strings.TrimSpace(req.WorkDir) != "" {
@@ -480,6 +509,7 @@ func main() {
 	emitDiagnostic("agent boot pid=%d", os.Getpid())
 
 	bootstrapGuestEnvironment(os.Getpid())
+	startSSHAgentProxy()
 
 	listener, transport, err := resolveListener()
 	if err != nil {
@@ -526,6 +556,13 @@ func bootstrapGuestEnvironment(pid int) {
 		emitDiagnostic("agent workspace mounted")
 	}
 
+	// Mount the host config drive (/dev/vdc) if present and apply configs.
+	if err := applyHostConfigDrive(); err != nil {
+		emitDiagnostic("agent host config drive (non-fatal): %v", err)
+	} else {
+		emitDiagnostic("agent host config applied")
+	}
+
 	if err := setupNetwork(); err != nil {
 		emitDiagnostic("agent network setup failed (non-fatal): %v", err)
 	} else {
@@ -535,11 +572,131 @@ func bootstrapGuestEnvironment(pid int) {
 	setupDNSFunc()
 	emitDiagnostic("agent dns configured")
 
+	// Best-effort tool bootstrap. This runs in background so boot/PTY readiness
+	// is not blocked on npm network operations.
+	go ensureGuestCLITools()
+
 	if pid == 1 {
 		if err := ensureDockerDaemon(); err != nil {
 			emitDiagnostic("agent docker daemon setup failed (non-fatal): %v", err)
 		}
 	}
+}
+
+const hostConfigDevice = "/dev/vdc"
+const hostConfigMount = "/run/nexus-host"
+
+// applyHostConfigDrive mounts the host config ext4 image (attached as
+// /dev/vdc) at /run/nexus-host and copies known config files into place.
+func applyHostConfigDrive() error {
+	if _, err := os.Stat(hostConfigDevice); err != nil {
+		return nil // drive not attached — nothing to do
+	}
+
+	if err := os.MkdirAll(hostConfigMount, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", hostConfigMount, err)
+	}
+
+	if err := unix.Mount(hostConfigDevice, hostConfigMount, "ext4", unix.MS_RDONLY, ""); err != nil {
+		return fmt.Errorf("mount %s: %w", hostConfigDevice, err)
+	}
+
+	type copySpec struct {
+		src, dst string
+		mode     os.FileMode
+	}
+	copies := []copySpec{
+		{".gitconfig", "/root/.gitconfig", 0o644},
+		{".ssh/known_hosts", "/root/.ssh/known_hosts", 0o644},
+		{".ssh/config", "/root/.ssh/config", 0o600},
+		{".resolv.conf", "/etc/resolv.conf", 0o644},
+		{".config/gh/hosts.yml", "/root/.config/gh/hosts.yml", 0o600},
+		{".config/gh/config.yml", "/root/.config/gh/config.yml", 0o600},
+		{".config/opencode/opencode.json", "/root/.config/opencode/opencode.json", 0o644},
+		{".config/opencode/ocx.jsonc", "/root/.config/opencode/ocx.jsonc", 0o644},
+		{".opencode/opencode.json", "/root/.opencode/opencode.json", 0o644},
+		{".opencode/opencode.jsonc", "/root/.opencode/opencode.jsonc", 0o644},
+		{".config/claude/credentials.json", "/root/.config/claude/credentials.json", 0o600},
+		{".config/claude/settings.json", "/root/.config/claude/settings.json", 0o644},
+	}
+
+	_ = os.MkdirAll("/root/.ssh", 0o700)
+
+	for _, c := range copies {
+		src := filepath.Join(hostConfigMount, c.src)
+		data, err := os.ReadFile(src)
+		if err != nil {
+			continue // file not in image — skip
+		}
+		if err := os.MkdirAll(filepath.Dir(c.dst), 0o755); err != nil {
+			continue
+		}
+		_ = os.WriteFile(c.dst, data, c.mode)
+	}
+
+	// Ensure git safe.directory for the workspace.
+	_ = exec.Command("git", "config", "--global", "--add", "safe.directory", "/workspace").Run()
+	_ = exec.Command("git", "config", "--global", "--add", "safe.directory", "*").Run()
+	// Strip platform-specific credential helpers that won't work in the VM.
+	_ = exec.Command("git", "config", "--global", "--unset-all", "credential.helper").Run()
+
+	// Write SSH_AUTH_SOCK to profile so all shells pick it up.
+	profileLine := "\nexport SSH_AUTH_SOCK=/tmp/ssh-agent.sock\n"
+	f, err := os.OpenFile("/root/.profile", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err == nil {
+		_, _ = f.WriteString(profileLine)
+		f.Close()
+	}
+
+	return nil
+}
+
+func ensureGuestCLITools() {
+	npmPath, err := lookPathInEnv("npm", os.Environ())
+	hasNPM := err == nil && strings.TrimSpace(npmPath) != ""
+
+	_, opencodeErr := lookPathInEnv("opencode", os.Environ())
+	_, codexErr := lookPathInEnv("codex", os.Environ())
+
+	if opencodeErr != nil {
+		_ = writeCLIWrapper("/usr/local/bin/opencode", "opencode-ai@latest")
+	}
+	if codexErr != nil {
+		_ = writeCLIWrapper("/usr/local/bin/codex", "@openai/codex@latest")
+	}
+
+	if !hasNPM {
+		emitDiagnostic("agent cli tools: npm not found, wrappers only")
+		return
+	}
+
+	var packages []string
+	if opencodeErr != nil {
+		packages = append(packages, "opencode-ai@latest")
+	}
+	if codexErr != nil {
+		packages = append(packages, "@openai/codex@latest")
+	}
+	if len(packages) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	args := append([]string{"install", "-g"}, packages...)
+	out, err := exec.CommandContext(ctx, npmPath, args...).CombinedOutput()
+	if err != nil {
+		emitDiagnostic("agent cli tools install failed: %v: %s", err, strings.TrimSpace(string(out)))
+		return
+	}
+	emitDiagnostic("agent cli tools installed: %s", strings.Join(packages, ", "))
+}
+
+func writeCLIWrapper(destPath, pkg string) error {
+	content := fmt.Sprintf(`#!/bin/sh
+exec npx -y %s "$@"
+`, pkg)
+	return os.WriteFile(destPath, []byte(content), 0o755)
 }
 
 func ensureAgentProcessPath() {
@@ -868,13 +1025,23 @@ var setupDNSPath = "/etc/resolv.conf"
 func setupDNS() {
 	const content = "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"
 
-	// Only write if missing or empty; respect pre-existing config from the rootfs.
-	if data, err := os.ReadFile(setupDNSPath); err == nil && len(strings.TrimSpace(string(data))) > 0 {
+	// Prefer host-provided resolver config when present and valid.
+	if data, err := os.ReadFile(setupDNSPath); err == nil && dnsConfigLooksUsable(string(data)) {
 		return
 	}
 
 	_ = os.MkdirAll("/etc", 0o755)
 	_ = os.WriteFile(setupDNSPath, []byte(content), 0o644)
+}
+
+func dnsConfigLooksUsable(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) >= 2 && fields[0] == "nameserver" {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveListener() (net.Listener, string, error) {
@@ -955,6 +1122,53 @@ func listenVsock() (net.Listener, error) {
 	}
 
 	return listener, nil
+}
+
+// startSSHAgentProxy creates /tmp/ssh-agent.sock and forwards each connection
+// to the host SSH agent via vsock CID 2 (the hypervisor/host), port 10790.
+// This lets git and ssh inside the VM use the host's SSH agent without any
+// private keys being present in the VM filesystem.
+func startSSHAgentProxy() {
+	const (
+		sockPath  = "/tmp/ssh-agent.sock"
+		hostCID   = uint32(2) // VMADDR_CID_HOST
+		agentPort = uint32(firecracker.VendingVSockPort)
+	)
+
+	_ = os.Setenv("SSH_AUTH_SOCK", sockPath)
+	_ = os.Remove(sockPath)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		emitDiagnostic("ssh-agent proxy: listen %s: %v", sockPath, err)
+		return
+	}
+	if err := os.Chmod(sockPath, 0o600); err != nil {
+		emitDiagnostic("ssh-agent proxy: chmod: %v", err)
+	}
+	emitDiagnostic("ssh-agent proxy: listening on %s → vsock host port %d", sockPath, agentPort)
+
+	go func() {
+		defer ln.Close()
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				host, err := vsock.Dial(hostCID, agentPort, nil)
+				if err != nil {
+					emitDiagnostic("ssh-agent proxy: vsock dial host:%d: %v", agentPort, err)
+					return
+				}
+				defer host.Close()
+				done := make(chan struct{}, 2)
+				go func() { _, _ = io.Copy(host, c); done <- struct{}{} }()
+				go func() { _, _ = io.Copy(c, host); done <- struct{}{} }()
+				<-done
+			}(client)
+		}
+	}()
 }
 
 func emitDiagnostic(format string, args ...any) {
