@@ -43,12 +43,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  test:
-    name: Run CI Tests
+  # Single shell gate: GitHub expression + fromJSON on job outputs is easy to get
+  # wrong; cycjimmy only sets new_release_published when a release is created.
+  release-gate:
+    name: Release gate
     needs: [semantic-release]
-    # semantic-release is skipped on tag pushes; without `always()` + this `if`,
-    # GitHub skips dependents and no binaries ship. `fromJSON` matches the
-    # action's boolean string for new_release_published reliably vs `== 'true'`.
     if: |
       always() &&
       (
@@ -56,15 +55,58 @@ jobs:
         || (
           github.ref == 'refs/heads/main'
           && needs.semantic-release.result == 'success'
-          && fromJSON(needs.semantic-release.outputs.released || 'false')
         )
       )
+    runs-on: ubuntu-latest
+    outputs:
+      do_assets: ${{ steps.gate.outputs.do_assets }}
+      checkout_ref: ${{ steps.gate.outputs.checkout_ref }}
+      version: ${{ steps.gate.outputs.version }}
+      tag: ${{ steps.gate.outputs.tag }}
+    steps:
+      - id: gate
+        env:
+          REF: ${{ github.ref }}
+          RELEASED: ${{ needs.semantic-release.outputs.released }}
+          SR_TAG: ${{ needs.semantic-release.outputs.tag }}
+          SR_VERSION: ${{ needs.semantic-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF" == refs/tags/v* ]]; then
+            tag="${REF#refs/tags/}"
+            echo "do_assets=true" >> "$GITHUB_OUTPUT"
+            echo "checkout_ref=$tag" >> "$GITHUB_OUTPUT"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$RELEASED" == "true" ]]; then
+            echo "do_assets=true" >> "$GITHUB_OUTPUT"
+            if [[ -n "$SR_TAG" ]]; then
+              echo "checkout_ref=$SR_TAG" >> "$GITHUB_OUTPUT"
+              echo "tag=$SR_TAG" >> "$GITHUB_OUTPUT"
+            else
+              echo "checkout_ref=main" >> "$GITHUB_OUTPUT"
+              echo "tag=" >> "$GITHUB_OUTPUT"
+            fi
+            echo "version=$SR_VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo "do_assets=false" >> "$GITHUB_OUTPUT"
+            echo "checkout_ref=main" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    name: Run CI Tests
+    needs: [release-gate]
+    if: needs.release-gate.outputs.do_assets == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.semantic-release.outputs.tag != '' && needs.semantic-release.outputs.tag || github.ref }}
+          ref: ${{ needs.release-gate.outputs.checkout_ref }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -90,18 +132,8 @@ jobs:
 
   build:
     name: Build for ${{ matrix.os }}
-    # Run in parallel with `test` after semantic-release; release waits for both.
-    needs: [semantic-release]
-    if: |
-      always() &&
-      (
-        startsWith(github.ref, 'refs/tags/v')
-        || (
-          github.ref == 'refs/heads/main'
-          && needs.semantic-release.result == 'success'
-          && fromJSON(needs.semantic-release.outputs.released || 'false')
-        )
-      )
+    needs: [release-gate]
+    if: needs.release-gate.outputs.do_assets == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -123,15 +155,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.semantic-release.outputs.tag != '' && needs.semantic-release.outputs.tag || github.ref }}
+          ref: ${{ needs.release-gate.outputs.checkout_ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24.x'
 
-      # Same prep as CI: mutagen + firecracker blobs and Linux guest binaries are
-      # gitignored; //go:embed requires them before go build.
       - name: Install Task
         uses: arduino/setup-task@v2
         env:
@@ -165,9 +195,8 @@ jobs:
         working-directory: packages/nexus
         run: |
           mkdir -p release
-          if [[ -n "${{ needs.semantic-release.outputs.version }}" ]]; then
-            version="${{ needs.semantic-release.outputs.version }}"
-          else
+          version="${{ needs.release-gate.outputs.version }}"
+          if [[ -z "$version" ]]; then
             version="${GITHUB_REF#refs/tags/v}"
           fi
           archive="nexus-${version}-${{ matrix.target }}.tar.gz"
@@ -181,11 +210,12 @@ jobs:
 
   release:
     name: Create Release
-    needs: [semantic-release, test, build]
+    needs: [release-gate, test, build]
     if: |
-      always() &&
-      needs.test.result == 'success' &&
-      needs.build.result == 'success'
+      needs.release-gate.result == 'success'
+      && needs.test.result == 'success'
+      && needs.build.result == 'success'
+      && needs.release-gate.outputs.do_assets == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
@@ -198,7 +228,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
-          name: Nexus v${{ needs.semantic-release.outputs.version != '' && needs.semantic-release.outputs.version || github.ref_name }}
-          tag_name: ${{ needs.semantic-release.outputs.tag != '' && needs.semantic-release.outputs.tag || github.ref_name }}
+          name: Nexus v${{ needs.release-gate.outputs.version != '' && needs.release-gate.outputs.version || github.ref_name }}
+          tag_name: ${{ needs.release-gate.outputs.tag != '' && needs.release-gate.outputs.tag || github.ref_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
