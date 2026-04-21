@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/mirror"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/profile"
 )
 
 // RequireE2EFullStack fails on CI if Mutagen+SSH profile mode is not enabled; otherwise skips.
@@ -37,13 +36,16 @@ func MirrorProfileConfigHome(t *testing.T) string {
 // MirrorGitCheckoutToDaemon runs project.create + mirror.Ensure (embedded Mutagen) exactly like
 // `nexus workspace create`: local checkout → SSH host ~/.local/share/nexus/mirrors/<slug>/.
 // Returns project id and the absolute remote path to pass to workspace.create as spec.repo.
-func MirrorGitCheckoutToDaemon(t *testing.T, h *Harness, configHome, clientCheckout, projectName string) (projectID, remotePath string) {
+//
+// configHome is accepted for API compatibility but is no longer used internally; SSH
+// coordinates are read from the environment directly so this function is safe to call
+// from parallel tests (no t.Setenv).
+func MirrorGitCheckoutToDaemon(t *testing.T, h *Harness, _ string, clientCheckout, projectName string) (projectID, remotePath string) {
 	t.Helper()
 	clientCheckout, err := filepath.Abs(clientCheckout)
 	if err != nil {
 		t.Fatalf("mirror: abs client path: %v", err)
 	}
-	t.Setenv("XDG_CONFIG_HOME", configHome)
 
 	var createRes struct {
 		Project struct {
@@ -59,15 +61,16 @@ func MirrorGitCheckoutToDaemon(t *testing.T, h *Harness, configHome, clientCheck
 		t.Fatal("project.create: empty id")
 	}
 
-	p, err := profile.LoadDefault()
-	if err != nil {
-		t.Fatalf("profile after mirror prep: %v", err)
-	}
+	// Use env-based SSH coordinates directly — avoids profile.LoadDefault() which
+	// would require mutating XDG_CONFIG_HOME via t.Setenv, breaking t.Parallel().
+	sshTarget := sshHostFromEnv()
+	sshPort := sshPortFromEnv()
+
 	res, err := mirror.Ensure(mirror.Spec{
 		LocalPath: clientCheckout,
 		ProjectID: projectID,
-		SSHTarget: p.Host,
-		SSHPort:   p.SSHPort,
+		SSHTarget: sshTarget,
+		SSHPort:   sshPort,
 	})
 	if err != nil {
 		t.Fatalf("mutagen mirror.Ensure: %v", err)
@@ -84,8 +87,8 @@ func MirrorGitCheckoutToDaemon(t *testing.T, h *Harness, configHome, clientCheck
 		_ = mirror.Stop(mirror.Spec{
 			LocalPath: clientCheckout,
 			ProjectID: projectID,
-			SSHTarget: p.Host,
-			SSHPort:   p.SSHPort,
+			SSHTarget: sshTarget,
+			SSHPort:   sshPort,
 		})
 	})
 
