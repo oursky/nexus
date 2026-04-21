@@ -303,6 +303,9 @@ private final class MockDaemonClient: DaemonClient, @unchecked Sendable {
         projects = [project]
         return project
     }
+    func removeProject(id: String) async throws {
+        projects.removeAll { $0.id == id }
+    }
     func listWorkspaces() async throws -> [Workspace] { workspaces }
     func createWorkspace(spec: WorkspaceCreateSpec) async throws -> Workspace {
         Workspace(id: "ws-create", workspaceName: spec.workspaceName, repo: spec.repo, ref: spec.ref)

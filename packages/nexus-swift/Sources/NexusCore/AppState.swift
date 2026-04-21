@@ -489,6 +489,19 @@ public final class AppState: ObservableObject {
         await perform { try await self.client.removeWorkspace(id: workspace.id) }
     }
 
+    /// Removes a daemon project record, clears local mirror/bind state, and refreshes lists.
+    public func removeProject(id: String) async {
+        let wsIds = Set(repos.first(where: { $0.id == id })?.workspaces.map(\.id) ?? [])
+        if let sel = selectedWorkspaceID, wsIds.contains(sel) {
+            selectedWorkspaceID = nil
+        }
+        if let profile = cachedProfile {
+            ProjectMirrorSync.shared.stopMirror(projectId: id, profile: profile)
+        }
+        ProjectRepoBindingStore.setUsesEnginePath(id, false)
+        await perform { try await self.client.removeProject(id: id) }
+    }
+
     public func addPort(_ port: Int, workspace: Workspace) async {
         await perform {
             try await self.client.addPortForward(workspaceId: workspace.id, localPort: port, remotePort: port)

@@ -8,6 +8,7 @@ public protocol DaemonClient: Sendable {
     // ── Projects ─────────────────────────────────────────────────────
     func listProjects() async throws -> [Project]
     func createProject(repo: String) async throws -> Project
+    func removeProject(id: String) async throws
 
     // ── Discovery ────────────────────────────────────────────────────
     func listWorkspaces() async throws -> [Workspace]

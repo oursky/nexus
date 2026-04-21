@@ -8,6 +8,7 @@ public struct NullDaemonClient: DaemonClient {
 
     public func listProjects() async throws -> [Project] { throw Self.err }
     public func createProject(repo: String) async throws -> Project { throw Self.err }
+    public func removeProject(id: String) async throws { throw Self.err }
     public func listWorkspaces() async throws -> [Workspace] { throw Self.err }
     public func createWorkspace(spec: WorkspaceCreateSpec) async throws -> Workspace { throw Self.err }
     public func createWorkspaceDaemon(spec: WorkspaceDaemonCreateSpec) async throws -> Workspace { throw Self.err }

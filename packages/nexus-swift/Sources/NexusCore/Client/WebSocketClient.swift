@@ -469,6 +469,10 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
                                         from: JSONSerialization.data(withJSONObject: raw))
     }
 
+    public func removeProject(id: String) async throws {
+        _ = try await call("project.remove", params: ["id": id])
+    }
+
     private func inferProjectName(from repo: String) throws -> String {
         var name = repo
             .trimmingCharacters(in: .whitespacesAndNewlines)

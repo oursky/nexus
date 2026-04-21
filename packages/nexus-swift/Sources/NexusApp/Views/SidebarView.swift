@@ -93,6 +93,11 @@ private struct RepoSection: View {
     @EnvironmentObject var appState: AppState
     let repo: Repo
     @State private var expanded = true
+    @State private var confirmDeleteProject = false
+
+    private var isRegisteredProject: Bool {
+        appState.projects.contains { $0.id == repo.id }
+    }
     
     private var hasRootWorkspace: Bool {
         repo.workspaces.contains { ($0.parentWorkspaceId ?? "").isEmpty }
@@ -149,6 +154,25 @@ private struct RepoSection: View {
                 .padding(.trailing, 10)
             }
             .padding(.top, 4)
+            .contextMenu {
+                if isRegisteredProject {
+                    Button("Delete Project…", role: .destructive) {
+                        confirmDeleteProject = true
+                    }
+                }
+            }
+            .confirmationDialog(
+                "Delete “\(repo.name)”?",
+                isPresented: $confirmDeleteProject,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    Task { await appState.removeProject(id: repo.id) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes the project from Nexus on the daemon. Workspace VMs are not deleted automatically.")
+            }
 
             if expanded {
                 VStack(alignment: .leading, spacing: 1) {
