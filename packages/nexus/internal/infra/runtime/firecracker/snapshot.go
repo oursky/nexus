@@ -21,7 +21,6 @@ type baseSnapshot struct {
 	rootfsPath  string
 }
 
-
 // snapshotCacheKey returns a deterministic key for a (kernelPath, rootfsPath) pair.
 func snapshotCacheKey(kernelPath, rootfsPath string) string {
 	h := sha256.Sum256([]byte(kernelPath + "|" + rootfsPath))

@@ -35,6 +35,10 @@ type SpawnSpec struct {
 	SnapshotID  string
 	MemoryMiB   int
 	VCPUs       int
+	// HostConfigDrive is the path to a pre-built ext4 image containing host
+	// config files (gitconfig, SSH material, tool configs).  When non-empty it
+	// is attached as /dev/vdc inside the guest (read-only).
+	HostConfigDrive string
 }
 
 // Instance represents a running Firecracker VM instance.
@@ -320,7 +324,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	}
 
 	workspaceDriveConfig := map[string]any{
-		"drive_id": "workspace",
+		"drive_id":       "workspace",
 		"path_on_host":   "workspace.ext4",
 		"is_root_device": false,
 		"is_read_only":   false,
@@ -329,6 +333,19 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		teardownTAP(tap, subnetCIDR)
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to configure workspace drive: %w", err)
+	}
+
+	// Optional host config drive (/dev/vdc inside the guest).
+	if spec.HostConfigDrive != "" {
+		cfgDrive := map[string]any{
+			"drive_id":       "hostconfig",
+			"path_on_host":   spec.HostConfigDrive,
+			"is_root_device": false,
+			"is_read_only":   true,
+		}
+		if err := client.put(ctx, "/drives/hostconfig", cfgDrive); err != nil {
+			log.Printf("[firecracker] warning: could not attach host config drive: %v", err)
+		}
 	}
 
 	// Configure network interface: Firecracker opens the host tap by name.
@@ -491,6 +508,62 @@ func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 	delete(m.instances, workspaceID)
 
 	return nil
+}
+
+// CleanupWorkspaceByID tears down workspace runtime state even when the
+// instance is not currently tracked in-memory (e.g. after daemon restart).
+func (m *Manager) CleanupWorkspaceByID(ctx context.Context, workspaceID string) error {
+	if strings.TrimSpace(workspaceID) == "" {
+		return nil
+	}
+
+	m.mu.RLock()
+	_, tracked := m.instances[workspaceID]
+	m.mu.RUnlock()
+	if tracked {
+		return m.Stop(ctx, workspaceID)
+	}
+
+	workDir := filepath.Join(m.config.WorkDirRoot, workspaceID)
+	tap := tapNameForWorkspace(workspaceID)
+
+	pid := 0
+	if data, err := os.ReadFile(filepath.Join(workDir, "firecracker.pid")); err == nil {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil {
+			pid = parsed
+		}
+	}
+	if pid <= 0 {
+		pid = firecrackerPIDForWorkspace(workspaceID)
+	}
+	if pid > 0 {
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Kill()
+		}
+	}
+
+	teardownTAP(tap, guestSubnetCIDR)
+	if err := os.RemoveAll(workDir); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func firecrackerPIDForWorkspace(workspaceID string) int {
+	pattern := fmt.Sprintf("firecracker --api-sock .*%s/firecracker.sock --id %s", workspaceID, workspaceID)
+	out, err := exec.Command("pgrep", "-f", pattern).CombinedOutput()
+	if err != nil {
+		return 0
+	}
+	line := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	if line == "" {
+		return 0
+	}
+	pid, err := strconv.Atoi(line)
+	if err != nil {
+		return 0
+	}
+	return pid
 }
 
 // GrowWorkspace grows the workspace backing image to newSizeBytes and notifies

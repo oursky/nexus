@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ type CommandRunner interface {
 type ManagerInterface interface {
 	Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error)
 	Stop(ctx context.Context, workspaceID string) error
+	CleanupWorkspaceByID(ctx context.Context, workspaceID string) error
 	Get(workspaceID string) (*Instance, error)
 	GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error
 	CheckpointForkSnapshot(ctx context.Context, workspaceID, childWorkspaceID string) (string, error)
@@ -296,12 +298,23 @@ func (d *FCDriver) EnsureStarted(ctx context.Context, workspaceID, projectRoot s
 	d.mu.RUnlock()
 
 	memMiB := defaultMemMiB()
+
+	// Build a host config drive (ext4 image) so the guest can access gitconfig,
+	// SSH material, and tool auth without any vsock file-transfer complexity.
+	home, _ := os.UserHomeDir()
+	configDrivePath := filepath.Join(root, ".nexus-host-config.ext4")
+	if err := buildHostConfigDrive(home, configDrivePath); err != nil {
+		log.Printf("[firecracker] warning: host config drive: %v", err)
+		configDrivePath = ""
+	}
+
 	spec := SpawnSpec{
-		WorkspaceID: workspaceID,
-		ProjectRoot: root,
-		MemoryMiB:   memMiB,
-		VCPUs:       1,
-		SnapshotID:  snapshotID,
+		WorkspaceID:     workspaceID,
+		ProjectRoot:     root,
+		MemoryMiB:       memMiB,
+		VCPUs:           1,
+		SnapshotID:      snapshotID,
+		HostConfigDrive: configDrivePath,
 	}
 
 	inst, err := d.manager.Spawn(ctx, spec)
@@ -310,8 +323,15 @@ func (d *FCDriver) EnsureStarted(ctx context.Context, workspaceID, projectRoot s
 	}
 
 	log.Printf("[firecracker] started workspace %s (cid=%d)", workspaceID, inst.CID)
+
+	// Start host-side SSH agent vsock proxy (no private keys in the VM).
+	startSSHAgentProxy(inst.WorkDir)
+
 	return nil
 }
+
+// setupGuestEnvironment syncs the host's git config and SSH keys into the
+// guest and configures safe.directory so git works against /workspace.
 
 // defaultMemMiB returns the VM memory size in MiB, respecting NEXUS_FIRECRACKER_MEM_MIB.
 func defaultMemMiB() int {
@@ -403,7 +423,9 @@ func (d *FCDriver) Destroy(ctx context.Context, workspaceID string) error {
 	d.mu.Unlock()
 
 	if d.manager != nil {
-		_ = d.manager.Stop(ctx, workspaceID)
+		if err := d.manager.CleanupWorkspaceByID(ctx, workspaceID); err != nil {
+			log.Printf("[firecracker] warning: cleanup workspace %s: %v", workspaceID, err)
+		}
 	}
 
 	return nil
