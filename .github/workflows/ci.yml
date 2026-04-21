@@ -113,10 +113,23 @@ jobs:
       #   e2fsprogs       → mkfs.ext4, debugfs (create and modify rootfs image)
       #   libcap2-bin     → setcap (grant cap_net_admin to nexus-tap-helper)
       #   rsync           → copy rootfs tree into ext4 image
+      # mutagen is required by e2e mirror harness (MirrorGitCheckoutToDaemon).
       - name: Install Firecracker host prerequisites
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y squashfs-tools e2fsprogs libcap2-bin rsync
+
+      - name: Install mutagen (e2e mirror harness)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+            https://api.github.com/repos/mutagen-io/mutagen/releases/latest \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+          url="https://github.com/mutagen-io/mutagen/releases/download/${tag}/mutagen_linux_amd64_${tag#v}.tar.gz"
+          curl -fsSL "$url" | tar -xz -C /tmp mutagen
+          sudo install -m 0755 /tmp/mutagen /usr/local/bin/mutagen
+          mutagen version
 
       # Cache the Firecracker kernel — static, changes only with the upstream URL.
       - name: Cache Firecracker kernel
