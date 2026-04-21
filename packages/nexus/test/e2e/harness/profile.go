@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inizio/nexus/packages/nexus/internal/auth/tokenstore"
 	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/profile"
 )
 
@@ -44,19 +43,18 @@ func writeE2EProfile(t *testing.T, configHome, sshHost string, daemonPort int, t
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("writeE2EProfile: write: %v", err)
 	}
-	// Token is json:"-" so it is not in the JSON file; persist to the headless
-	// file store so LoadDefault() can retrieve it.
-	//
-	// Set XDG_CONFIG_HOME in the test process to configHome so that
-	// tokenstore.SaveProfileToken → os.UserConfigDir() → $XDG_CONFIG_HOME
-	// writes to the per-test temp dir, not /home/runner/.config (which may be
-	// root-owned when the provisioning daemon ran via sudo).
-	// The CLI subprocess already receives XDG_CONFIG_HOME=configHome via cliEnv,
-	// so both sides use the same writable path.
+	// Token is json:"-" so the JSON file does not carry it. Write it directly to
+	// $configHome/nexus/daemon-token — the exact path that DefaultLinuxFilePath()
+	// resolves to when XDG_CONFIG_HOME=configHome is set in the CLI subprocess
+	// environment (see cliEnv). Writing the file directly avoids t.Setenv, which
+	// is incompatible with t.Parallel().
 	if token != "" {
-		t.Setenv("XDG_CONFIG_HOME", configHome)
-		if err := tokenstore.SaveProfileToken(token); err != nil {
-			t.Fatalf("writeE2EProfile: save token: %v", err)
+		tokenPath := filepath.Join(configHome, "nexus", "daemon-token")
+		if err := os.MkdirAll(filepath.Dir(tokenPath), 0o700); err != nil {
+			t.Fatalf("writeE2EProfile: mkdir token dir: %v", err)
+		}
+		if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
+			t.Fatalf("writeE2EProfile: write token: %v", err)
 		}
 	}
 	t.Logf("e2e: wrote profile at %s (host=%s port=%d sshPort=%d)", path, sshHost, daemonPort, sshPort)
