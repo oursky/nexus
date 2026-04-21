@@ -126,15 +126,9 @@ public final class ConfigSyncManager: Sendable {
             return probe.terminationStatus == 0
         }()
 
+        // Do not stop a running daemon — same as Go mirror.ensureMutagenDaemon; restart races sessions and flush.
         if alreadyRunning {
-            let stop = Process()
-            stop.executableURL = URL(fileURLWithPath: mutagenPath)
-            stop.arguments = ["daemon", "stop"]
-            stop.standardOutput = Pipe()
-            stop.standardError = Pipe()
-            try? stop.run()
-            stop.waitUntilExit()
-            Thread.sleep(forTimeInterval: 0.5)
+            return
         }
 
         let start = Process()

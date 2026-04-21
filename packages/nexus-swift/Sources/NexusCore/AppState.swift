@@ -3,13 +3,13 @@ import Combine
 import os
 
 /// Root app state — owns the daemon client and drives all views.
-/// Always connects to the real daemon. If the daemon isn't running,
-/// connectionState reflects .disconnected and an error message is set.
+/// **Remote daemon only:** connects over SSH (local port forward) + WebSocket to the Linux host.
+/// There is no embedded or localhost daemon path in production.
 @MainActor
 public final class AppState: ObservableObject {
     private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "AppState")
 
-    // MARK: - PTY state (tracked for XCUITest via sidebar accessibility markers)
+    // MARK: - PTY state (sidebar accessibility markers for automation / assistive tech)
 
     public enum PTYState {
         case idle    // workspace stopped / no workspace selected
@@ -19,7 +19,7 @@ public final class AppState: ObservableObject {
 
     @Published public var ptyState: PTYState = .idle
     // Set by DaemonPTYTerminalView to re-focus the terminal NSView when the
-    // sidebar terminal_view button is clicked in XCUITest.
+    // sidebar terminal_view button is activated (e.g. accessibility).
     public var refocusTerminalAction: (() -> Void)?
 
     public func refocusTerminal() { refocusTerminalAction?() }
@@ -57,52 +57,6 @@ public final class AppState: ObservableObject {
         StartupTrace.beginSession()
         StartupTrace.checkpoint("app.init", "before client")
 
-        let procEnv = ProcessInfo.processInfo.environment
-        if let rawURL = procEnv["NEXUS_DAEMON_URL"], !rawURL.isEmpty,
-           let daemonURL = URL(string: rawURL) {
-            // When NEXUS_DAEMON_PORT is also set, use profile-based connection so the
-            // SSH tunnel manager forwards to the correct remote port. This lets tests use
-            // an isolated daemon on a non-default port (e.g. linuxbox:7778) while still
-            // getting the tunnel-managed connection.
-            if let portStr = procEnv["NEXUS_DAEMON_PORT"], !portStr.isEmpty,
-               let remotePort = Int32(portStr) {
-                // SSH target: from NEXUS_DAEMON_SSH_TARGET, daemonURL.host, or default.
-                // For tests: NEXUS_DAEMON_SSH_TARGET=newman@linuxbox,
-                //            NEXUS_DAEMON_URL=ws://localhost:<tunnelPort> (tunnel address).
-                let sshHost = procEnv["NEXUS_DAEMON_SSH_TARGET"]
-                    ?? daemonURL.host
-                    ?? "newman@linuxbox"
-                let profile = DaemonProfile(
-                    profileId: "env-override",
-                    name: "Test Profile",
-                    port: Int(remotePort),
-                    isDefault: true,
-                    sshTarget: sshHost,
-                    sshIdentity: nil
-                )
-                self.cachedProfile = profile
-                self.client = NullDaemonClient()
-                connectionState = .starting
-                StartupTrace.checkpoint("app.init", "env-var+tunnel; ssh=\(sshHost) port=\(remotePort)")
-                Task { await self.connectRemoteAndLoad() }
-                startRefreshLoop()
-                return
-            }
-
-            // Direct bypass: no SSH tunnel, connect straight to the URL.
-            let token: String? = {
-                let t = procEnv["NEXUS_DAEMON_TOKEN"] ?? ""
-                return t.isEmpty ? nil : t
-            }()
-            self.cachedProfile = nil
-            self.client = WebSocketDaemonClient(daemonURL: daemonURL, token: token)
-            connectionState = .connecting
-            StartupTrace.checkpoint("app.init", "env-var bypass; url=\(rawURL)")
-            Task { await self.load() }
-            startRefreshLoop()
-            return
-        }
-
         let profile = DaemonProfileStore().defaultProfile()
         self.cachedProfile = profile
         self.client = NullDaemonClient()
@@ -121,10 +75,10 @@ public final class AppState: ObservableObject {
         Task { await self.load() }
     }
 
-    private func applyLoadedWorkspaces(_ workspaces: [Workspace], relations: [RelationsGroup], projects: [Project]) {
+    private func applyLoadedWorkspaces(_ workspaces: [Workspace], projects: [Project]) {
         self.projects = projects
         let projectRepos = Repo.fromProjects(projects, workspaces: workspaces)
-        repos = projectRepos.isEmpty ? Repo.fromRelations(relations, workspaces: workspaces) : projectRepos
+        repos = projectRepos.isEmpty ? Repo.grouping(workspaces) : projectRepos
         connectionState = .connected
         error = nil
 
@@ -147,8 +101,6 @@ public final class AppState: ObservableObject {
         do {
             StartupTrace.checkpoint("load.rpc.listWorkspaces.start")
             async let wsFetch = client.listWorkspaces()
-            StartupTrace.checkpoint("load.rpc.listRelations.start")
-            async let relationsFetch = client.listRelations()
             var workspaces: [Workspace]
             do {
                 workspaces = try await wsFetch
@@ -156,15 +108,6 @@ public final class AppState: ObservableObject {
             } catch {
                 let nsErr = error as NSError
                 print("[AppState.load] listWorkspaces FAILED domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
-                throw error
-            }
-            let relations: [RelationsGroup]
-            do {
-                relations = try await relationsFetch
-                StartupTrace.checkpoint("load.rpc.listRelations.ok", "count=\(relations.count)")
-            } catch {
-                let nsErr = error as NSError
-                print("[AppState.load] listRelations FAILED domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
                 throw error
             }
             StartupTrace.checkpoint("load.rpc.listProjects.start")
@@ -179,7 +122,7 @@ public final class AppState: ObservableObject {
             }
 
             // Phase 1 — connect the UI as soon as lists return (no per-workspace side effects yet).
-            applyLoadedWorkspaces(workspaces, relations: relations, projects: projects)
+            applyLoadedWorkspaces(workspaces, projects: projects)
             StartupTrace.checkpoint("load.phase1_ok", "workspaces=\(workspaces.count) projects=\(projects.count)")
             // Update daemon status from /version — best-effort, must not block phase 2.
             Task { await self.refreshDaemonStatus() }
@@ -191,7 +134,7 @@ public final class AppState: ObservableObject {
                 workspaces = try await AsyncDeadline.withSecondsOnMainActor(Self.workspaceEnrichmentDeadlineSeconds) {
                     await self.enrichActiveWorkspaceSideEffects(workspaces: workspaces)
                 }
-                applyLoadedWorkspaces(workspaces, relations: relations, projects: projects)
+                applyLoadedWorkspaces(workspaces, projects: projects)
                 StartupTrace.checkpoint("load.phase2_ok")
             } catch {
                 if error is AsyncDeadlineError {
@@ -222,9 +165,11 @@ public final class AppState: ObservableObject {
             for ws in workspaces where ws.state.isActive {
                 group.addTask { [c = self.client] in
                     try? await c.markWorkspaceReady(id: ws.id)
-                    let ports = (try? await c.listPorts(workspaceId: ws.id)) ?? []
+                    let discovered = (try? await c.discoverPorts(workspaceID: ws.id)) ?? []
+                    let spotlight = (try? await c.listPorts(workspaceId: ws.id)) ?? []
+                    let merged = Self.mergeDiscoveredPortsWithSpotlight(discovered: discovered, spotlight: spotlight)
                     let status = (try? await c.tunnelStatus(workspaceId: ws.id))
-                    return (ws.id, ports, status?.activeWorkspaceId ?? "")
+                    return (ws.id, merged, status?.activeWorkspaceId ?? "")
                 }
             }
             for await (id, ports, activeID) in group {
@@ -238,6 +183,38 @@ public final class AppState: ObservableObject {
             workspaces[i].hasActiveTunnels = (workspaces[i].id == activeTunnelWorkspaceID)
         }
         return workspaces
+    }
+
+    /// Compose/config discovery (`workspace.discover-ports`) plus active Spotlight forwards (`workspace.ports.list`).
+    private nonisolated static func mergeDiscoveredPortsWithSpotlight(
+        discovered: [[String: Any]],
+        spotlight: [ForwardedPort]
+    ) -> [ForwardedPort] {
+        var byLocal: [Int: ForwardedPort] = [:]
+        for d in discovered {
+            let lp = (d["localPort"] as? Int) ?? (d["localPort"] as? NSNumber)?.intValue ?? 0
+            guard lp > 0 else { continue }
+            let rp = (d["remotePort"] as? Int) ?? (d["remotePort"] as? NSNumber)?.intValue ?? lp
+            let svc = d["service"] as? String ?? ""
+            let src = d["source"] as? String ?? ""
+            let label: String
+            if !svc.isEmpty, !src.isEmpty { label = "\(src): \(svc)" }
+            else if !svc.isEmpty { label = svc }
+            else if !src.isEmpty { label = src }
+            else { label = "discovered" }
+            byLocal[lp] = ForwardedPort(
+                id: lp,
+                remotePort: rp,
+                preferred: false,
+                tunneled: false,
+                process: label,
+                forwardId: nil
+            )
+        }
+        for s in spotlight {
+            byLocal[s.port] = s
+        }
+        return byLocal.keys.sorted().compactMap { byLocal[$0] }
     }
 
     // MARK: - Background refresh (4 s polling)
@@ -266,20 +243,15 @@ public final class AppState: ObservableObject {
 
     /// Fetches /version from the current client and updates daemonStatus.
     /// Best-effort: silently skips if the client is not a WebSocketDaemonClient.
-    /// If /version is unreachable or returns an incompatible format but load() succeeded,
-    /// falls back to a synthetic .running entry so the UI shows green instead of grey.
     private func refreshDaemonStatus() async {
         guard let wsClient = client as? WebSocketDaemonClient else { return }
         if let info = await wsClient.fetchDaemonInfo() {
             daemonStatus = info.isCompatible ? .running(info: info) : .outdated(running: info)
             StartupTrace.checkpoint("daemon.status.ok", "v=\(info.version) protocol=\(info.protocolVersion)")
         } else {
-            // /version endpoint missing or returned unexpected JSON (e.g. old daemon).
-            // We know the daemon is reachable because load() just succeeded — mark running
-            // with a synthetic info so the status pill shows green.
             let synthetic = DaemonInfo(name: "nexus", version: "unknown", commit: "", builtAt: "", protocolVersion: DaemonInfo.requiredProtocol)
             daemonStatus = .running(info: synthetic)
-            StartupTrace.checkpoint("daemon.status.fallback", "version endpoint unavailable; marking running")
+            StartupTrace.checkpoint("daemon.status.no_http_version", "using placeholder info")
         }
     }
 
@@ -291,9 +263,14 @@ public final class AppState: ObservableObject {
             StartupTrace.checkpoint("remote.noProfile")
             return
         }
-
+        guard let sshTarget = profile.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !sshTarget.isEmpty else {
+            connectionState = .disconnected
+            error = "SSH target is required. This app only connects to a remote Nexus daemon over SSH."
+            StartupTrace.checkpoint("remote.noSshTarget")
+            return
+        }
         connectionState = .connecting
-        StartupTrace.checkpoint("remote.tunnel.start", "sshTarget=\(profile.sshTarget ?? "nil") port=\(profile.port)")
+        StartupTrace.checkpoint("remote.tunnel.start", "sshTarget=\(sshTarget) port=\(profile.port)")
         let mgr = SSHTunnelManager(profile: profile)
         self.tunnelManager = mgr
         let daemonURL: URL
@@ -370,17 +347,6 @@ public final class AppState: ObservableObject {
         await connectRemoteAndLoad()
     }
 
-    /// Fast-path: three list RPCs only (no markWorkspaceReady / ports fan-out).
-    private func attemptLoad() async throws {
-        StartupTrace.checkpoint("attempt_load.enter")
-        async let wsFetch = client.listWorkspaces()
-        async let relationsFetch = client.listRelations()
-        let workspaces = try await wsFetch
-        let relations = try await relationsFetch
-        let projects = try await client.listProjects()
-        applyLoadedWorkspaces(workspaces, relations: relations, projects: projects)
-    }
-
     // MARK: - Workspace actions
 
     public func createWorkspace(spec: WorkspaceCreateSpec) async {
@@ -395,10 +361,35 @@ public final class AppState: ObservableObject {
 
     public func createSandbox(request: SandboxCreateRequest) async {
         do {
-            let ws = try await client.createSandbox(request: request)
+            if projects.isEmpty { await load() }
+            guard let project = projects.first(where: { $0.id == request.projectId }) else {
+                self.error = "Project not found."
+                return
+            }
+            let ws: Workspace
+            if request.fresh {
+                let remote = try workspaceRepositoryPath(for: project)
+                ws = try await client.createWorkspaceDaemon(spec: WorkspaceDaemonCreateSpec(
+                    repo: remote,
+                    ref: request.targetBranch,
+                    workspaceName: request.workspaceName,
+                    agentProfile: request.agentProfile,
+                    backend: request.backend,
+                    projectId: project.id
+                ))
+            } else {
+                guard let parentId = request.sourceWorkspaceId, !parentId.isEmpty else {
+                    self.error = "Choose a fork source or use Fresh."
+                    return
+                }
+                ws = try await client.forkWorkspace(
+                    parentID: parentId,
+                    childName: request.workspaceName,
+                    childRef: request.targetBranch
+                )
+            }
             await load()
             selectedWorkspaceID = ws.id
-            ConfigSyncManager.shared.startConfigSync(workspaceID: ws.id, backend: ws.backend)
         } catch {
             self.error = error.localizedDescription
         }
@@ -406,35 +397,44 @@ public final class AppState: ObservableObject {
 
     public func ensureProjectRootSandbox(projectID: String) async -> Workspace? {
         if let existing = projectRootSandbox(projectID: projectID) {
-            ConfigSyncManager.shared.startConfigSync(workspaceID: existing.id, backend: existing.backend)
             return existing
         }
         if projects.isEmpty || !projects.contains(where: { $0.id == projectID }) {
             await load()
             if let existing = projectRootSandbox(projectID: projectID) {
-                ConfigSyncManager.shared.startConfigSync(workspaceID: existing.id, backend: existing.backend)
                 return existing
             }
         }
         guard let project = projects.first(where: { $0.id == projectID }) else {
             self.error = "Project not found: \(projectID)"
+            Self.logger.warning("ensureProjectRootSandbox: project not in list id=\(projectID, privacy: .public)")
             return nil
         }
         do {
-            _ = try await client.createSandbox(request: SandboxCreateRequest(
-                projectId: projectID,
-                targetBranch: "main",
-                sourceBranch: nil,
-                sourceWorkspaceId: nil,
-                fresh: true,
-                workspaceName: project.name
+            let remote = try workspaceRepositoryPath(for: project)
+            let ws = try await client.createWorkspaceDaemon(spec: WorkspaceDaemonCreateSpec(
+                repo: remote,
+                ref: "main",
+                workspaceName: project.name,
+                agentProfile: "default",
+                backend: "",
+                projectId: project.id
             ))
+            try LocalWorkspaceState.saveRecord(
+                LocalWorkspaceRecord(
+                    workspaceID: ws.id,
+                    workspaceName: ws.workspaceName,
+                    localPath: project.primaryRepo,
+                    gitRoot: project.primaryRepo,
+                    isWorktree: false
+                )
+            )
             await load()
             if let root = projectRootSandbox(projectID: projectID) {
-                ConfigSyncManager.shared.startConfigSync(workspaceID: root.id, backend: root.backend)
                 return root
             }
             self.error = "Project root sandbox creation did not appear in list"
+            Self.logger.error("ensureProjectRootSandbox: workspace list missing new root for project=\(projectID, privacy: .public)")
             return nil
         } catch {
             await load()
@@ -442,8 +442,23 @@ public final class AppState: ObservableObject {
                 return root
             }
             self.error = error.localizedDescription
+            Self.logger.error("ensureProjectRootSandbox failed: \(error.localizedDescription, privacy: .public)")
             return nil
         }
+    }
+
+    /// Returns the repo path to pass to `workspace.create` on the daemon.
+    /// The path must already be an absolute path on the engine host.
+    private func workspaceRepositoryPath(for project: Project) throws -> String {
+        let raw = project.primaryRepo.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard raw.hasPrefix("/") else {
+            throw NSError(
+                domain: "NexusApp",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Repository path must be an absolute path on the daemon host (e.g. /home/you/project)."]
+            )
+        }
+        return raw
     }
 
     public func createProject(repo: String) async -> Project? {
@@ -471,19 +486,22 @@ public final class AppState: ObservableObject {
 
     public func remove(_ workspace: Workspace) async {
         if selectedWorkspaceID == workspace.id { selectedWorkspaceID = nil }
-        ConfigSyncManager.shared.stopConfigSync(workspaceID: workspace.id)
         await perform { try await self.client.removeWorkspace(id: workspace.id) }
     }
 
     public func addPort(_ port: Int, workspace: Workspace) async {
         await perform {
-            try await self.client.addPort(workspaceId: workspace.id, port: port)
+            try await self.client.addPortForward(workspaceId: workspace.id, localPort: port, remotePort: port)
         }
     }
 
     public func removePort(_ port: Int, workspace: Workspace) async {
         await perform {
-            try await self.client.removePort(workspaceId: workspace.id, port: port)
+            let fwdId = workspace.ports.first(where: { $0.port == port })?.forwardId
+            guard let fwdId, !fwdId.isEmpty else {
+                throw RPCError(message: "No spotlight forward id for this port — refresh and try again.")
+            }
+            try await self.client.removePortForward(workspaceId: workspace.id, forwardId: fwdId)
         }
     }
 

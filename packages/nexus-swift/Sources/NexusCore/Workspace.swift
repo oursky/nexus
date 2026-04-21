@@ -56,6 +56,8 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public let currentRef: String?
     public let currentCommit: String?
     public let parentWorkspaceId: String?
+    /// Lineage root workspace id (fork chains); mirrors daemon `lineageRootId`.
+    public let lineageRootId: String?
     public var state: WorkspaceStatus
     public let rootPath: String
     public let agentProfile: String
@@ -104,6 +106,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         case id, workspaceName, repo, ref, state, rootPath, agentProfile
         case targetBranch, currentRef, currentCommit
         case parentWorkspaceId = "parentWorkspaceId"
+        case lineageRootId = "lineageRootId"
         case repoId = "repoId"
         case projectId = "projectId"
         case backend, runtimeLabel
@@ -119,6 +122,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         currentRef   = try c.decodeIfPresent(String.self, forKey: .currentRef)
         currentCommit = try c.decodeIfPresent(String.self, forKey: .currentCommit)
         parentWorkspaceId = try c.decodeIfPresent(String.self, forKey: .parentWorkspaceId)
+        lineageRootId = try c.decodeIfPresent(String.self, forKey: .lineageRootId)
         state        = try c.decodeIfPresent(WorkspaceStatus.self, forKey: .state) ?? .stopped
         rootPath     = try c.decodeIfPresent(String.self, forKey: .rootPath) ?? ""
         agentProfile = try c.decodeIfPresent(String.self, forKey: .agentProfile) ?? ""
@@ -140,6 +144,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         try c.encodeIfPresent(currentRef, forKey: .currentRef)
         try c.encodeIfPresent(currentCommit, forKey: .currentCommit)
         try c.encodeIfPresent(parentWorkspaceId, forKey: .parentWorkspaceId)
+        try c.encodeIfPresent(lineageRootId, forKey: .lineageRootId)
         try c.encode(state, forKey: .state)
         try c.encode(rootPath, forKey: .rootPath)
         try c.encode(agentProfile, forKey: .agentProfile)
@@ -163,6 +168,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         self.currentRef   = nil
         self.currentCommit = nil
         self.parentWorkspaceId = nil
+        self.lineageRootId = nil
         self.state        = state
         self.rootPath     = rootPath
         self.agentProfile = agentProfile
@@ -196,14 +202,55 @@ public struct WorkspaceCreateSpec: Encodable, Sendable {
     public let workspaceName: String
     public let agentProfile: String
     public let backend: String
+    /// When true, `repo` is an absolute path on the daemon host (no Mutagen); must be set before resolving the path.
+    public let engineLocalRepo: Bool
 
-    public init(repo: String, ref: String, workspaceName: String,
-                agentProfile: String = "default", backend: String = "") {
-        self.repo          = repo
-        self.ref           = ref
+    public init(
+        repo: String,
+        ref: String,
+        workspaceName: String,
+        agentProfile: String = "default",
+        backend: String = "",
+        engineLocalRepo: Bool = false
+    ) {
+        self.repo = repo
+        self.ref = ref
         self.workspaceName = workspaceName
-        self.agentProfile  = agentProfile
-        self.backend       = backend
+        self.agentProfile = agentProfile
+        self.backend = backend
+        self.engineLocalRepo = engineLocalRepo
+    }
+}
+
+/// JSON-RPC `workspace.create` `spec` object (daemon `domain/workspace.CreateSpec`).
+public struct WorkspaceDaemonCreateSpec: Encodable, Sendable {
+    public let repo: String
+    public let ref: String
+    public let workspaceName: String
+    public let agentProfile: String
+    public let backend: String
+    public let projectId: String
+
+    public init(
+        repo: String,
+        ref: String,
+        workspaceName: String,
+        agentProfile: String = "default",
+        backend: String = "",
+        projectId: String
+    ) {
+        self.repo = repo
+        self.ref = ref
+        self.workspaceName = workspaceName
+        self.agentProfile = agentProfile
+        self.backend = backend
+        self.projectId = projectId
+    }
+
+    func asDictionary() throws -> [String: Any] {
+        let data = try JSONEncoder().encode(self)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return obj ?? [:]
     }
 }
 
@@ -292,6 +339,8 @@ public struct ForwardedPort: Identifiable, Codable, Equatable, Sendable {
     public let preferred: Bool
     public let tunneled: Bool
     public let process: String?
+    /// Daemon spotlight forward id (`spot-…`), for `workspace.ports.remove`.
+    public let forwardId: String?
     public var port: Int { id }
     public var localURL: URL {
         var components = URLComponents()
@@ -301,11 +350,12 @@ public struct ForwardedPort: Identifiable, Codable, Equatable, Sendable {
         return components.url ?? URL(fileURLWithPath: "/")
     }
 
-    public init(id: Int, remotePort: Int? = nil, preferred: Bool = false, tunneled: Bool = false, process: String? = nil) {
+    public init(id: Int, remotePort: Int? = nil, preferred: Bool = false, tunneled: Bool = false, process: String? = nil, forwardId: String? = nil) {
         self.id = id
         self.remotePort = remotePort ?? id
         self.preferred = preferred
         self.tunneled = tunneled
         self.process = process
+        self.forwardId = forwardId
     }
 }
