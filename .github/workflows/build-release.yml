@@ -90,10 +90,10 @@ jobs:
 
   build:
     name: Build for ${{ matrix.os }}
-    needs: [semantic-release, test]
+    # Run in parallel with `test` after semantic-release; release waits for both.
+    needs: [semantic-release]
     if: |
       always() &&
-      needs.test.result == 'success' &&
       (
         startsWith(github.ref, 'refs/tags/v')
         || (
@@ -181,18 +181,11 @@ jobs:
 
   release:
     name: Create Release
-    needs: [semantic-release, build]
+    needs: [semantic-release, test, build]
     if: |
       always() &&
-      needs.build.result == 'success' &&
-      (
-        startsWith(github.ref, 'refs/tags/v')
-        || (
-          github.ref == 'refs/heads/main'
-          && needs.semantic-release.result == 'success'
-          && fromJSON(needs.semantic-release.outputs.released || 'false')
-        )
-      )
+      needs.test.result == 'success' &&
+      needs.build.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
