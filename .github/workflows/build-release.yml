@@ -167,10 +167,9 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download embedded blobs (mutagen + firecracker)
+      - name: Download Firecracker binaries for embedding
         shell: bash
         run: |
-          task mutagen:update
           task firecracker:update
 
       - name: Generate Linux embeds (agent + tap-helper for target arch)
