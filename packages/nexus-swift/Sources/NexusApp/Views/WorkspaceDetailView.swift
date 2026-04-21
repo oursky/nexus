@@ -121,9 +121,18 @@ private struct SessionInfoStrip: View {
     /// static path fetched from the daemon info.
     private var displayPath: String {
         if let live = appState.terminalDirectory, !live.isEmpty {
-            return live.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
+            return Self.canonicalSandboxPathDisplay(live)
         }
-        return resolvedPath
+        return Self.canonicalSandboxPathDisplay(resolvedPath)
+    }
+
+    /// Daemon `repo` / `rootPath` is the Linux host mirror (e.g. `~/.local/share/nexus/mirrors/…`); the VM shell uses `/workspace`.
+    private static func canonicalSandboxPathDisplay(_ raw: String) -> String {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.contains("/nexus/mirrors/") || t.hasSuffix("/nexus/mirrors") {
+            return "/workspace"
+        }
+        return t.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
     }
 
     var body: some View {
@@ -217,7 +226,7 @@ private struct TerminalCard: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-            .id("terminal-card-\(workspace.id)-\(workspace.state.rawValue)")
+            .id("terminal-card-\(workspace.id)")
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)

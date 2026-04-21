@@ -378,8 +378,8 @@ private struct SidebarFooter: View {
             .padding(.trailing, 4)
 
             // PTY state accessibility markers — placed in the sidebar footer so they
-            // are reachable by XCUITest (the NavigationSplitView detail column is not
-            // accessible via the standard accessibility API on macOS).
+            // stay reachable (the NavigationSplitView detail column is not accessible
+            // via the standard accessibility API on macOS).
             // Each state gets a unique accessibilityIdentifier:
             //   terminal_view        — active PTY session (app.buttons)
             //   terminal_placeholder — workspace stopped (app.buttons)

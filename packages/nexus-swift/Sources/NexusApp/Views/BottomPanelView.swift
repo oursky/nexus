@@ -265,38 +265,21 @@ private struct LogPane: View {
 
     private func load() async {
         state = .loading
-        guard let client = appState.client as? WebSocketDaemonClient else {
-            state = .error("exec not available")
+        guard let rec = LocalWorkspaceState.record(forWorkspaceID: workspace.id) else {
+            state = .error(
+                "No local git path for this workspace. Use the CLI or create/fork from this app so ~/.local/share/nexus/workspaces.json lists this workspace."
+            )
             return
         }
 
-        // Resolve the actual workspace source path so git runs in the right dir.
-        // Falls back to the rootPath stored on the workspace model if info fails.
-        var workDir: String? = nil
-        if let info = try? await client.workspaceInfo(id: workspace.id),
-           !info.workspacePath.isEmpty {
-            workDir = info.workspacePath
-        } else if !workspace.rootPath.isEmpty {
-            workDir = workspace.rootPath
-        }
-
         do {
-            let out = try await client.exec(
-                workspaceId: workspace.id,
-                command: "git",
-                args: ["log", "--format=%h\t%s\t%an\t%ar", "-25"],
-                workDir: workDir
-            )
-            if out.failed {
-                state = .error(out.stderr.isEmpty ? "Not a git repo" : out.stderr)
-                return
-            }
-            if out.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let out = try GitLogReader.recentLogLines(repoDirectory: rec.localPath, limit: 25)
+            if out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 entries = []
                 state = .loaded
                 return
             }
-            entries = out.output.split(separator: "\n", omittingEmptySubsequences: true)
+            entries = out.split(separator: "\n", omittingEmptySubsequences: true)
                 .compactMap { line in
                     let parts = line.split(separator: "\t", maxSplits: 3)
                     guard parts.count >= 2 else { return nil }

@@ -1,10 +1,12 @@
 import NexusCore
+import OSLog
 import SwiftUI
-import AppKit
 
 // MARK: - Sheet root
 
 struct NewWorkspaceSheet: View {
+    private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "remote-folder-picker")
+
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
     let intent: CreateIntent
@@ -21,6 +23,11 @@ struct NewWorkspaceSheet: View {
     @State private var freshSandbox = false
     @State private var isCreating    = false
     @State private var localError: String?
+    /// Absolute repository path on the Linux engine (chosen via remote folder picker).
+    @State private var engineRepoPath = ""
+    /// Tracks current path while remote picker is open so re-renders don't reset navigation.
+    @State private var enginePickerPath = ""
+    @State private var showEngineFolderPicker = false
 
     init(intent: CreateIntent) {
         self.intent = intent
@@ -37,6 +44,8 @@ struct NewWorkspaceSheet: View {
         appState.projects.first { $0.id == selectedProjectID }
     }
 
+
+
     private var projectWorkspaces: [Workspace] {
         guard let pid = selectedProject?.id else { return [] }
         return appState.repos.first(where: { $0.id == pid })?.workspaces ?? []
@@ -51,7 +60,8 @@ struct NewWorkspaceSheet: View {
 
     private var isValid: Bool {
         if createNewProject {
-            return !localPath.trimmingCharacters(in: .whitespaces).isEmpty
+            let t = engineRepoPath.trimmingCharacters(in: .whitespaces)
+            return t.hasPrefix("/") && t.count > 1
         }
         let name = workspaceName.trimmingCharacters(in: .whitespaces)
         if name.isEmpty { return false }
@@ -125,7 +135,12 @@ struct NewWorkspaceSheet: View {
                             }
                     }
 
-                    FormField(label: "Target branch") {
+                    FormField(
+                        label: "Target branch",
+                        hint: sourceMode == .fresh
+                            ? nil
+                            : "Existing branch or tag, or a new branch name (created from the repo's current HEAD if it doesn't exist yet)."
+                    ) {
                         NexusTextField(
                             placeholder: "main",
                             text: $branch,
@@ -171,17 +186,43 @@ struct NewWorkspaceSheet: View {
                 }
 
                 if createNewProject {
-                    FormField(label: "Project directory",
-                              hint: "Pick an existing local repository",
-                              isRequired: true) {
+                    FormField(
+                        label: "Repository on engine",
+                        hint: "Same path the daemon bind-mounts into the sandbox (no Mutagen). Browse the remote machine over SSH, like VS Code Remote.",
+                        isRequired: true
+                    ) {
                         HStack(spacing: 8) {
                             NexusTextField(
-                                placeholder: "/Users/you/projects/my-app",
-                                text: $localPath,
-                                accessibilityID: "project_local_path_field"
+                                placeholder: "/home/you/projects/my-app",
+                                text: $engineRepoPath,
+                                accessibilityID: "project_engine_path_field"
                             )
                             Button {
-                                pickDirectory()
+                                guard let prof = DaemonProfileStore().defaultProfile(),
+                                      let st = prof.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !st.isEmpty else {
+                                    localError = "Configure a remote profile with an SSH target first."
+                                    Self.logger.error("sheet.browse.reject missing sshTarget")
+                                    return
+                                }
+                                localError = nil
+                                let typed = engineRepoPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                                Self.logger.notice("sheet.browse.tap typed=\(typed, privacy: .public) currentPickerPath=\(self.enginePickerPath, privacy: .public)")
+                                if typed.hasPrefix("/") {
+                                    enginePickerPath = typed
+                                    showEngineFolderPicker = true
+                                    Self.logger.notice("sheet.browse.open typedStart=\(typed, privacy: .public)")
+                                    return
+                                }
+                                Task {
+                                    let home = await Task.detached { [prof] in
+                                        (try? EngineRemotePathBrowser.remoteHome(profile: prof)) ?? "/"
+                                    }.value
+                                    await MainActor.run {
+                                        enginePickerPath = home
+                                        showEngineFolderPicker = true
+                                        Self.logger.notice("sheet.browse.open homeStart=\(home, privacy: .public)")
+                                    }
+                                }
                             } label: {
                                 Text("Browse…")
                                     .font(.system(size: 12, weight: .medium))
@@ -250,7 +291,33 @@ struct NewWorkspaceSheet: View {
         }
         .frame(width: 520)
         .background(Theme.bgApp)
+        .sheet(isPresented: $showEngineFolderPicker) {
+            if let profile = DaemonProfileStore().defaultProfile() {
+                RemoteEngineFolderPicker(
+                    profile: profile,
+                    startPath: enginePickerPath,
+                    onPathChange: { path in
+                        enginePickerPath = path
+                        Self.logger.notice("sheet.picker.pathChange path=\(path, privacy: .public)")
+                    },
+                    onChoose: { path in
+                        engineRepoPath = path
+                        enginePickerPath = path
+                        showEngineFolderPicker = false
+                        Self.logger.notice("sheet.picker.choose path=\(path, privacy: .public)")
+                    },
+                    onCancel: {
+                        Self.logger.notice("sheet.picker.cancel lastPath=\(self.enginePickerPath, privacy: .public)")
+                        showEngineFolderPicker = false
+                    }
+                )
+            }
+        }
+        .onChange(of: showEngineFolderPicker) { _, shown in
+            Self.logger.notice("sheet.picker.presented shown=\(shown) pickerPath=\(self.enginePickerPath, privacy: .public)")
+        }
         .onAppear {
+            Self.logger.notice("sheet.onAppear intent=\(String(describing: self.intent), privacy: .public) pickerPath=\(self.enginePickerPath, privacy: .public)")
             switch intent {
             case .newProject:
                 createNewProject = true
@@ -274,20 +341,6 @@ struct NewWorkspaceSheet: View {
         }
     }
 
-    // MARK: - Directory picker
-
-    private func pickDirectory() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles         = false
-        panel.canChooseDirectories   = true
-        panel.allowsMultipleSelection = false
-        panel.prompt                 = "Choose"
-        panel.message                = "Select a project directory for this sandbox"
-        if panel.runModal() == .OK {
-            localPath = panel.url?.path ?? ""
-        }
-    }
-
     // MARK: - Create
 
     private func create() async {
@@ -297,7 +350,7 @@ struct NewWorkspaceSheet: View {
 
         var projectID = selectedProjectID
         if createNewProject {
-            let repo = localPath.trimmingCharacters(in: .whitespaces)
+            let repo = engineRepoPath.trimmingCharacters(in: .whitespaces)
             if let project = await appState.createProject(repo: repo) {
                 projectID = project.id
                 dismiss()
@@ -317,25 +370,25 @@ struct NewWorkspaceSheet: View {
             : branch.trimmingCharacters(in: .whitespaces)
         let explicitSourceID: String?
         switch sourceMode {
-        case .projectRoot:
-            if let root = projectRootWorkspace {
-                explicitSourceID = root.id
-            } else if let root = await appState.ensureProjectRootSandbox(projectID: projectID) {
-                selectedSourceWorkspaceID = root.id
-                explicitSourceID = root.id
-            } else {
-                localError = appState.error ?? "Unable to create project root sandbox."
-                appState.error = nil
-                return
-            }
-        case .specificSandbox:
-            if selectedSourceWorkspaceID.isEmpty {
-                localError = "Select a source sandbox."
-                return
-            }
-            explicitSourceID = selectedSourceWorkspaceID
-        case .fresh:
-            explicitSourceID = nil
+            case .projectRoot:
+                if let root = projectRootWorkspace {
+                    explicitSourceID = root.id
+                } else if let root = await appState.ensureProjectRootSandbox(projectID: projectID) {
+                    selectedSourceWorkspaceID = root.id
+                    explicitSourceID = root.id
+                } else {
+                    localError = appState.error ?? "Unable to create project root sandbox."
+                    appState.error = nil
+                    return
+                }
+            case .specificSandbox:
+                if selectedSourceWorkspaceID.isEmpty {
+                    localError = "Select a source sandbox."
+                    return
+                }
+                explicitSourceID = selectedSourceWorkspaceID
+            case .fresh:
+                explicitSourceID = nil
         }
         let useFresh = sourceMode == .fresh || freshSandbox
 

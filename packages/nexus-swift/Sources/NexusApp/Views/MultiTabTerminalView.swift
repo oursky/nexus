@@ -154,19 +154,44 @@ struct MultiTabTerminalView: View {
 
     @ViewBuilder
     private var terminalContent: some View {
-        if let activeTabId = sessionManager.activeTabId,
-           let activeTab = sessionManager.tabs.first(where: { $0.id == activeTabId }) {
-
+        if sessionManager.tabs.isEmpty {
+            VStack(spacing: 12) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 32, weight: .ultraLight))
+                    .foregroundColor(.gray)
+                Text("No terminal tabs")
+                    .font(.system(size: 13))
+                    .foregroundColor(.gray)
+                Button {
+                    Task {
+                        await sessionManager.createTab(name: "Terminal 1")
+                    }
+                } label: {
+                    Text("Open Terminal")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(hex: "#1A1A1A"))
+        } else {
             ZStack {
-                // Terminal view
                 if workspace.state.isActive {
-                    TabTerminalView(
-                        tab: activeTab,
-                        workspace: workspace,
-                        client: client,
-                        onError: { err in ptyError = err }
-                    )
-                    .id(activeTab.id) // Force recreation when tab changes
+                    // Keep ALL tab NSViews alive simultaneously — switching tabs only
+                    // toggles visibility, preserving each view's scrollback buffer.
+                    ForEach(sessionManager.tabs) { tab in
+                        TabTerminalView(
+                            tab: tab,
+                            workspace: workspace,
+                            client: client,
+                            onError: { err in
+                                if tab.id == sessionManager.activeTabId { ptyError = err }
+                            }
+                        )
+                        .opacity(tab.id == sessionManager.activeTabId ? 1 : 0)
+                        .allowsHitTesting(tab.id == sessionManager.activeTabId)
+                    }
                 } else {
                     TerminalPlaceholderView(workspace: workspace)
                 }
@@ -199,8 +224,10 @@ struct MultiTabTerminalView: View {
                     }
                 }
 
-                // Loading overlay
-                if activeTab.isLoading {
+                // Loading overlay for active tab
+                if let activeTabId = sessionManager.activeTabId,
+                   let activeTab = sessionManager.tabs.first(where: { $0.id == activeTabId }),
+                   activeTab.isLoading {
                     VStack(spacing: 8) {
                         ProgressView()
                             .scaleEffect(0.8)
@@ -212,28 +239,6 @@ struct MultiTabTerminalView: View {
                     .background(Color.black.opacity(0.5))
                 }
             }
-        } else {
-            // No tabs
-            VStack(spacing: 12) {
-                Image(systemName: "terminal")
-                    .font(.system(size: 32, weight: .ultraLight))
-                    .foregroundColor(.gray)
-                Text("No terminal tabs")
-                    .font(.system(size: 13))
-                    .foregroundColor(.gray)
-                Button {
-                    Task {
-                        await sessionManager.createTab(name: "Terminal 1")
-                    }
-                } label: {
-                    Text("Open Terminal")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(hex: "#1A1A1A"))
         }
     }
 
