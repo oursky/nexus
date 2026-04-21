@@ -24,7 +24,13 @@ import urllib.request
 target_dir = sys.argv[1]
 api_url = "https://api.github.com/repos/firecracker-microvm/firecracker/releases/latest"
 
-with urllib.request.urlopen(api_url) as resp:
+req = urllib.request.Request(api_url)
+token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+if token:
+    req.add_header("Authorization", f"Bearer {token}")
+req.add_header("Accept", "application/vnd.github+json")
+
+with urllib.request.urlopen(req) as resp:
     release = json.load(resp)
 
 tag = release["tag_name"]
@@ -45,7 +51,10 @@ def find_asset_url(arch: str) -> str:
 for arch, output_name in targets:
     url = find_asset_url(arch)
     print(f"Downloading {url}")
-    with urllib.request.urlopen(url) as resp:
+    asset_req = urllib.request.Request(url)
+    if token:
+        asset_req.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(asset_req) as resp:
         payload = resp.read()
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".tgz") as tmp:

@@ -167,16 +167,16 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download Firecracker binaries for embedding
-        shell: bash
-        run: |
-          task firecracker:update
-
-      - name: Generate Linux embeds (agent + tap-helper for target arch)
+      - name: Download Firecracker binaries and generate Linux embeds
         if: startsWith(matrix.target, 'linux-')
         shell: bash
         working-directory: packages/nexus
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          cd ../..
+          task firecracker:update
+          cd packages/nexus
           tgt="${{ matrix.target }}"
           GOOS=linux GOARCH="${tgt##linux-}" go generate ./cmd/nexus/
 
