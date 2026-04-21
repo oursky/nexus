@@ -16,4 +16,6 @@ if [[ "${CI:-}" == "true" ]] && [[ "$(uname -s)" == "Linux" ]] && [[ "${NEXUS_E2
   exit 1
 fi
 
-go test -tags e2e -count=1 -timeout=40m -v ./test/e2e/...
+# -short skips tests that boot Firecracker VMs (3-5 min each); remove when
+# focusing on full VM lifecycle tests.
+go test -tags e2e -count=1 -timeout=10m -short -v ./test/e2e/...

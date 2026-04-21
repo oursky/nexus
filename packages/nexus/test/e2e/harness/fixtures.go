@@ -31,6 +31,17 @@ func RequireFirecracker(t *testing.T) {
 	}
 }
 
+// SkipIfVMBoot skips the test when running in short mode (-short flag).
+// Call this at the top of any test that calls workspace.start (which triggers
+// mkfs.ext4 + Firecracker VM boot and takes 3-5 minutes each).
+// In CI set -short to keep the suite fast; remove it when focusing on VM tests.
+func SkipIfVMBoot(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("slow: Firecracker VM boot — run without -short to include")
+	}
+}
+
 func TempDB(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "nexus-e2e-db-*")

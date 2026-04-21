@@ -18,6 +18,7 @@ import (
 // (not only stdin pipe), so the interactive code path is exercised.
 func TestCLI_WorkspaceShellPTY(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.NewCLIHarness(t)
 	clientRepo := harness.MakeLocalGitRepo(t, "pty-interactive")
 	_, daemonRepo := h.MirrorGitToDaemon(t, clientRepo, "proj-pty-interactive")

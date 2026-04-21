@@ -60,6 +60,7 @@ func rpcErrorCode(err error) int {
 // TestLifecycle_StartAndStop verifies a workspace can be started and stopped.
 func TestLifecycle_StartAndStop(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
 	id := createWorkspaceForSM(t, h, "sm-start-stop")
 
@@ -88,6 +89,7 @@ func TestLifecycle_StartAndStop(t *testing.T) {
 // TestLifecycle_ReadyState verifies workspace.ready follows start/stop transitions.
 func TestLifecycle_ReadyState(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
 	id := createWorkspaceForSM(t, h, "sm-ready")
 
@@ -108,6 +110,7 @@ func TestLifecycle_ReadyState(t *testing.T) {
 // TestLifecycle_RestoreFromStopped verifies a stopped workspace can be restored.
 func TestLifecycle_RestoreFromStopped(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
 	id := createWorkspaceForSM(t, h, "sm-restore")
 

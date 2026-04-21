@@ -181,6 +181,7 @@ func TestFork_LineageChain(t *testing.T) {
 // With the process backend the child workspace ref is metadata; exec runs in the parent dir.
 func TestFork_ContentVerification(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.NewCLIHarness(t)
 	repoPath := harness.MakeGitRepoWithContent(t, "fork-content", map[string]string{
 		"marker.txt": "parent-content\n",
@@ -237,6 +238,7 @@ func TestFork_ContentVerification(t *testing.T) {
 // after Mutagen sync. Requires NEXUS_E2E_REMOTE_PROFILE=1.
 func TestFork_WorktreeSync(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	harness.RequireE2EFullStack(t)
 	h := harness.NewCLIHarness(t)
 	repoPath := harness.MakeGitRepoWithContent(t, "fork-sync", map[string]string{

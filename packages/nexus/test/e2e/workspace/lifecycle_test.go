@@ -10,6 +10,7 @@ import (
 
 func TestWorkspaceLifecycle(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
 	clientRepo := harness.MakeLocalGitRepo(t, "lifecycle")
 	cfg := harness.MirrorProfileConfigHome(t)

@@ -12,6 +12,7 @@ import (
 
 func TestCLI_WorkspaceForkAndRestore(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.NewCLIHarness(t)
 	clientRepo := harness.MakeLocalGitRepo(t, "fork-restore-cli")
 

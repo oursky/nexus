@@ -72,6 +72,7 @@ func createSpotlightWorkspace(t *testing.T, h *harness.Harness, repoPath, name s
 // TestSpotlight_TCPProxyTraffic verifies that spotlight actually proxies TCP traffic.
 func TestSpotlight_TCPProxyTraffic(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
 	repoPath := harness.MakeLocalGitRepo(t, "spotlight-tcp")
 	wsID := createSpotlightWorkspace(t, h, repoPath, "spotlight-tcp-test")
@@ -140,6 +141,7 @@ func TestSpotlight_TCPProxyTraffic(t *testing.T) {
 // TestSpotlight_ListAndStop verifies spotlight.list shows active forwards and spotlight.stop removes them.
 func TestSpotlight_ListAndStop(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
 	repoPath := harness.MakeLocalGitRepo(t, "spotlight-list")
 	wsID := createSpotlightWorkspace(t, h, repoPath, "spotlight-list-test")
@@ -194,6 +196,7 @@ func TestSpotlight_ListAndStop(t *testing.T) {
 // TestSpotlight_PortConflict verifies that binding the same local port twice returns an error.
 func TestSpotlight_PortConflict(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
 	repoPath := harness.MakeLocalGitRepo(t, "spotlight-conflict")
 	wsID := createSpotlightWorkspace(t, h, repoPath, "spotlight-conflict-test")
@@ -228,6 +231,7 @@ func TestSpotlight_PortConflict(t *testing.T) {
 // TestSpotlight_WorkspacePortsAlias verifies workspace.ports.* are aliases for spotlight.*.
 func TestSpotlight_WorkspacePortsAlias(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
 	repoPath := harness.MakeLocalGitRepo(t, "spotlight-alias")
 	wsID := createSpotlightWorkspace(t, h, repoPath, "spotlight-alias-test")

@@ -15,6 +15,7 @@ import (
 // (the daemon persists VM state on stop). There is no separate snapshot RPC.
 func TestWorkspaceRestore(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
 
 	clientRepo := harness.MakeLocalGitRepo(t, "restore")

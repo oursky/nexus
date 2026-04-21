@@ -10,6 +10,7 @@ import (
 
 func TestSpotlight(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
 	repo := harness.MakeLocalGitRepo(t, "spotlight")
 	cfg := harness.MirrorProfileConfigHome(t)

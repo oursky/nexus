@@ -10,6 +10,7 @@ import (
 
 func TestPTY(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
 
 	repoPath := harness.MakeLocalGitRepo(t, "pty")

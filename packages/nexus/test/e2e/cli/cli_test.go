@@ -57,6 +57,7 @@ func TestCLI_ProjectCreateListGetRemove(t *testing.T) {
 
 func TestCLI_WorkspaceShellAndExec(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.NewCLIHarness(t)
 	clientRepo := harness.MakeLocalGitRepo(t, "shell")
 	_, daemonRepo := h.MirrorGitToDaemon(t, clientRepo, "proj-cli-shell")

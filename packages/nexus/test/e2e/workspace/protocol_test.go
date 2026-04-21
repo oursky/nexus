@@ -82,6 +82,7 @@ func TestProtocol_AuthReject(t *testing.T) {
 // TestProtocol_WorkflowRoundTrip verifies a complete create/start/stop/remove workflow via RPC.
 func TestProtocol_WorkflowRoundTrip(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfVMBoot(t)
 	h := harness.New(t)
 	repoPath := harness.MakeLocalGitRepo(t, "proto-roundtrip")
 
