@@ -9,8 +9,9 @@ import (
 	"github.com/inizio/nexus/packages/nexus/test/e2e/harness"
 )
 
-// TestCLI_WorkspaceCreate_EndToEnd runs the full production path: project discovery,
-// embedded Mutagen sync to the SSH profile host, then workspace.create — same as developers.
+// TestCLI_WorkspaceCreate_EndToEnd runs workspace create against a real daemon over the
+// SSH profile (same entrypoint developers use). Mirroring may run on the daemon without
+// mutagen lines on the CLI stdout.
 func TestCLI_WorkspaceCreate_EndToEnd(t *testing.T) {
 	t.Parallel()
 	harness.RequireE2EFullStack(t)
@@ -22,10 +23,6 @@ func TestCLI_WorkspaceCreate_EndToEnd(t *testing.T) {
 		t.Fatalf("workspace create: %v\n%s", err, out)
 	}
 	s := string(out)
-	// Mutagen prints "Created session …" or similar during mirror setup.
-	if !strings.Contains(s, "session") && !strings.Contains(s, "sync") {
-		t.Fatalf("expected mutagen session output; got: %s", out)
-	}
 	if !strings.Contains(s, "created workspace") {
 		t.Fatalf("expected workspace created line; got: %s", out)
 	}
