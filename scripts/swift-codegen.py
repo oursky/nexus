@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+import json
+import re
+import sys
+
+
+def to_camel_case(name: str) -> str:
+    parts = re.split(r'[.\-_]', name)
+    return parts[0][0].lower() + parts[0][1:] + ''.join(p.capitalize() for p in parts[1:])
+
+
+# Words that should remain fully uppercase in Swift identifiers
+_ACRONYMS = {'pty', 'fs', 'rpc', 'id', 'url', 'api', 'ui', 'io', 'os', 'sdk'}
+
+
+def _capitalize_part(p: str) -> str:
+    """Capitalize a single part, preserving known acronyms as uppercase."""
+    if p.lower() in _ACRONYMS:
+        return p.upper()
+    if not p:
+        return p
+    # Handle mixed-case parts like "CreateSpec" → keep as-is if already mixed
+    if p[0].isupper() and any(c.isupper() for c in p[1:]):
+        return p
+    return p[0].upper() + p[1:]
+
+
+def to_pascal_case(name: str) -> str:
+    parts = re.split(r'[.\-_]', name)
+    return ''.join(_capitalize_part(p) for p in parts if p)
+
+
+# Swift reserved words that need backtick escaping when used as identifiers
+_SWIFT_RESERVED = {'protocol', 'class', 'struct', 'enum', 'func', 'var', 'let', 'import',
+                   'return', 'true', 'false', 'nil', 'self', 'super', 'init', 'deinit',
+                   'extension', 'where', 'is', 'as', 'in', 'for', 'while', 'if', 'else',
+                   'switch', 'case', 'default', 'break', 'continue', 'fallthrough',
+                   'throw', 'throws', 'rethrows', 'try', 'catch', 'do', 'defer',
+                   'guard', 'repeat', 'operator', 'precedencegroup', 'associativity',
+                   'static', 'dynamic', 'final', 'override', 'open', 'public', 'private',
+                   'internal', 'fileprivate', 'mutating', 'nonmutating', 'lazy', 'weak',
+                   'unowned', 'required', 'convenience', 'indirect', 'typealias', 'associatedtype',
+                   'type', 'some', 'any', 'actor', 'async', 'await'}
+
+
+def safe_swift_name(name: str) -> str:
+    """Escape Swift reserved words with backticks."""
+    if name in _SWIFT_RESERVED:
+        return f'`{name}`'
+    return name
+
+
+def snake_to_camel(name: str) -> str:
+    parts = name.split('_')
+    return parts[0] + ''.join(p.capitalize() for p in parts[1:])
+
+
+def method_struct_prefix(method_name: str) -> str:
+    return to_pascal_case(method_name)
+
+
+def resolve_type(prop: dict, optional: bool = False, indent: str = '') -> str:
+    is_opt = optional or prop.get('optional', False)
+    suffix = '?' if is_opt else ''
+
+    if '$ref' in prop:
+        ref = prop['$ref']
+        def_name = ref.split('/')[-1]
+        return f'Nexus{to_pascal_case(def_name)}{suffix}'
+
+    t = prop.get('type', '')
+
+    if t == 'string':
+        return f'String{suffix}'
+    if t == 'int':
+        return f'Int{suffix}'
+    if t == 'bool':
+        return f'Bool{suffix}'
+    if t == 'time':
+        return f'Date{suffix}'
+    if t == 'array':
+        items = prop.get('items', {})
+        if '$ref' in items:
+            ref = items['$ref']
+            def_name = ref.split('/')[-1]
+            return f'[Nexus{to_pascal_case(def_name)}]{suffix}'
+        item_type = items.get('type', 'String')
+        swift_item = {'string': 'String', 'int': 'Int', 'bool': 'Bool', 'time': 'Date'}.get(item_type, 'String')
+        return f'[{swift_item}]{suffix}'
+    if t == 'object':
+        return f'AnyCodableDict{suffix}'
+
+    if '$ref' in prop:
+        ref = prop['$ref']
+        def_name = ref.split('/')[-1]
+        return f'Nexus{to_pascal_case(def_name)}{suffix}'
+
+    return f'String{suffix}'
+
+
+def needs_coding_keys(properties: dict) -> bool:
+    for json_name in properties:
+        if json_name in _SWIFT_RESERVED:
+            return True
+        swift_name = snake_to_camel(json_name)
+        if swift_name != json_name:
+            return True
+    return False
+
+
+def emit_struct(name: str, properties: dict, lines: list, indent: str = ''):
+    lines.append(f'{indent}struct {name}: Codable {{')
+    sorted_props = sorted(properties.items())
+    for json_name, prop in sorted_props:
+        swift_name = safe_swift_name(snake_to_camel(json_name))
+        swift_type = resolve_type(prop, indent=indent + '    ')
+        lines.append(f'{indent}    let {swift_name}: {swift_type}')
+
+    if needs_coding_keys(properties):
+        lines.append(f'')
+        lines.append(f'{indent}    enum CodingKeys: String, CodingKey {{')
+        for json_name, _ in sorted_props:
+            swift_name = safe_swift_name(snake_to_camel(json_name))
+            raw_name = snake_to_camel(json_name)
+            if raw_name != json_name:
+                lines.append(f'{indent}        case {swift_name} = "{json_name}"')
+            else:
+                lines.append(f'{indent}        case {swift_name}')
+        lines.append(f'{indent}    }}')
+
+    lines.append(f'{indent}}}')
+
+
+def has_properties(obj: dict) -> bool:
+    return bool(obj.get('properties'))
+
+
+def generate(schema: dict) -> str:
+    lines = []
+
+    lines.append('// DO NOT EDIT — generated by scripts/swift-codegen.py from cmd/schema output')
+    lines.append('')
+    lines.append('import Foundation')
+    lines.append('')
+    lines.append('struct EmptyRequest: Codable {}')
+    lines.append('struct EmptyResponse: Codable {}')
+    lines.append('typealias AnyCodableDict = [String: String]')
+    lines.append('')
+
+    lines.append('enum NexusMethod {')
+    for method in schema.get('methods', []):
+        const_name = to_camel_case(method['name'])
+        lines.append(f'    static let {const_name} = "{method["name"]}"')
+    lines.append('}')
+    lines.append('')
+
+    notifications = schema.get('notifications', [])
+    if notifications:
+        lines.append('enum NexusNotification {')
+        for notif in notifications:
+            const_name = to_camel_case(notif['name'])
+            lines.append(f'    static let {const_name} = "{notif["name"]}"')
+        lines.append('}')
+        lines.append('')
+
+    for def_name, definition in sorted(schema.get('definitions', {}).items()):
+        struct_name = f'Nexus{to_pascal_case(def_name)}'
+        props = definition.get('properties', {})
+        if props:
+            emit_struct(struct_name, props, lines)
+        else:
+            lines.append(f'struct {struct_name}: Codable {{}}')
+        lines.append('')
+
+    for method in schema.get('methods', []):
+        prefix = method_struct_prefix(method['name'])
+        req = method.get('request', {})
+        resp = method.get('response', {})
+
+        req_name = f'{prefix}Request'
+        if req.get('$ref'):
+            ref_name = req['$ref'].split('/')[-1]
+            lines.append(f'typealias {req_name} = Nexus{to_pascal_case(ref_name)}')
+        elif has_properties(req):
+            emit_struct(req_name, req['properties'], lines)
+        else:
+            lines.append(f'typealias {req_name} = EmptyRequest')
+        lines.append('')
+
+        resp_name = f'{prefix}Response'
+        if resp.get('$ref'):
+            ref_name = resp['$ref'].split('/')[-1]
+            lines.append(f'typealias {resp_name} = Nexus{to_pascal_case(ref_name)}')
+        elif has_properties(resp):
+            emit_struct(resp_name, resp['properties'], lines)
+        else:
+            lines.append(f'typealias {resp_name} = EmptyResponse')
+        lines.append('')
+
+    return '\n'.join(lines)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print('Usage: swift-codegen.py <schema.json> [output.swift]', file=sys.stderr)
+        sys.exit(1)
+
+    with open(sys.argv[1]) as f:
+        schema = json.load(f)
+
+    output = generate(schema)
+
+    if len(sys.argv) >= 3:
+        with open(sys.argv[2], 'w') as f:
+            f.write(output)
+            f.write('\n')
+    else:
+        print(output)
+
+
+if __name__ == '__main__':
+    main()

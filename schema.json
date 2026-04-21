@@ -1,0 +1,1249 @@
+{
+  "version": "1",
+  "methods": [
+    {
+      "name": "workspace.create",
+      "request": {
+        "type": "object",
+        "properties": {
+          "spec": {
+            "$ref": "#/definitions/CreateSpec"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "$ref": "#/definitions/Workspace"
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.list",
+      "request": {
+        "type": "object"
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "workspaces": {
+            "type": "array",
+            "items": {
+              "type": "",
+              "$ref": "#/definitions/Workspace"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.info",
+      "request": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "$ref": "#/definitions/Workspace"
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.remove",
+      "request": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "bool"
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.start",
+      "request": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "$ref": "#/definitions/Workspace"
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.stop",
+      "request": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "stopped": {
+            "type": "bool"
+          },
+          "workspace": {
+            "$ref": "#/definitions/Workspace",
+            "optional": true
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.restore",
+      "request": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "restored": {
+            "type": "bool"
+          },
+          "workspace": {
+            "$ref": "#/definitions/Workspace",
+            "optional": true
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.fork",
+      "request": {
+        "type": "object",
+        "properties": {
+          "childRef": {
+            "type": "string"
+          },
+          "childWorkspaceName": {
+            "type": "string",
+            "optional": true
+          },
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "forked": {
+            "type": "bool"
+          },
+          "workspace": {
+            "$ref": "#/definitions/Workspace",
+            "optional": true
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.checkout",
+      "request": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "targetRef": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "workspace": {
+            "$ref": "#/definitions/Workspace"
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.ready",
+      "request": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "ready": {
+            "type": "bool"
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.relations.list",
+      "request": {
+        "type": "object",
+        "properties": {
+          "repoId": {
+            "type": "string",
+            "optional": true
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "relations": {
+            "$ref": "#/definitions/Relations"
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.ports.list",
+      "request": {
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "forwards": {
+            "type": "array",
+            "items": {
+              "type": "",
+              "$ref": "#/definitions/Forward"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.ports.add",
+      "request": {
+        "type": "object",
+        "properties": {
+          "spec": {
+            "$ref": "#/definitions/ExposeSpec"
+          },
+          "workspaceId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "forward": {
+            "$ref": "#/definitions/Forward"
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.ports.remove",
+      "request": {
+        "type": "object",
+        "properties": {
+          "forwardId": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "closed": {
+            "type": "bool"
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.tunnels.start",
+      "request": {
+        "type": "object",
+        "properties": {
+          "localPort": {
+            "type": "int"
+          },
+          "remotePort": {
+            "type": "int"
+          },
+          "workspaceId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "forward": {
+            "$ref": "#/definitions/Forward"
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.tunnels.stop",
+      "request": {
+        "type": "object",
+        "properties": {
+          "forwardId": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "closed": {
+            "type": "bool"
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace.discover-ports",
+      "request": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "ports": {
+            "type": "array",
+            "items": {
+              "type": "int"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "pty.create",
+      "request": {
+        "type": "object",
+        "properties": {
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "optional": true
+          },
+          "cols": {
+            "type": "int"
+          },
+          "name": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "int"
+          },
+          "shell": {
+            "type": "string",
+            "optional": true
+          },
+          "workDir": {
+            "type": "string",
+            "optional": true
+          },
+          "workspaceId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "",
+        "$ref": "#/definitions/PTYSessionInfo"
+      }
+    },
+    {
+      "name": "pty.list",
+      "request": {
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "",
+              "$ref": "#/definitions/PTYSessionInfo"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "pty.resize",
+      "request": {
+        "type": "object",
+        "properties": {
+          "cols": {
+            "type": "int"
+          },
+          "rows": {
+            "type": "int"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "bool"
+          }
+        }
+      }
+    },
+    {
+      "name": "pty.rename",
+      "request": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "bool"
+          }
+        }
+      }
+    },
+    {
+      "name": "pty.close",
+      "request": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "bool"
+          }
+        }
+      }
+    },
+    {
+      "name": "pty.write",
+      "request": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object"
+      }
+    },
+    {
+      "name": "spotlight.start",
+      "request": {
+        "type": "object",
+        "properties": {
+          "spec": {
+            "$ref": "#/definitions/ExposeSpec"
+          },
+          "workspaceId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "forward": {
+            "$ref": "#/definitions/Forward"
+          }
+        }
+      }
+    },
+    {
+      "name": "spotlight.list",
+      "request": {
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "forwards": {
+            "type": "array",
+            "items": {
+              "type": "",
+              "$ref": "#/definitions/Forward"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "spotlight.close",
+      "request": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "closed": {
+            "type": "bool"
+          }
+        }
+      }
+    },
+    {
+      "name": "project.list",
+      "request": {
+        "type": "object"
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "projects": {
+            "type": "array",
+            "items": {
+              "type": "",
+              "$ref": "#/definitions/Project"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "project.create",
+      "request": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "repoUrl": {
+            "type": "string"
+          },
+          "rootPath": {
+            "type": "string",
+            "optional": true
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "$ref": "#/definitions/Project"
+          }
+        }
+      }
+    },
+    {
+      "name": "project.get",
+      "request": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "$ref": "#/definitions/Project"
+          }
+        }
+      }
+    },
+    {
+      "name": "project.remove",
+      "request": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "bool"
+          }
+        }
+      }
+    },
+    {
+      "name": "fs.readFile",
+      "request": {
+        "type": "object",
+        "properties": {
+          "encoding": {
+            "type": "string",
+            "optional": true
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "size": {
+            "type": "int"
+          }
+        }
+      }
+    },
+    {
+      "name": "fs.writeFile",
+      "request": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "encoding": {
+            "type": "string",
+            "optional": true
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "bool"
+          },
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "int"
+          }
+        }
+      }
+    },
+    {
+      "name": "fs.exists",
+      "request": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "exists": {
+            "type": "bool"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "fs.readdir",
+      "request": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "",
+              "$ref": "#/definitions/DirEntry"
+            }
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "fs.mkdir",
+      "request": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "recursive": {
+            "type": "bool",
+            "optional": true
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "bool"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "fs.rm",
+      "request": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "recursive": {
+            "type": "bool",
+            "optional": true
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "bool"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "fs.stat",
+      "request": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "isDir": {
+            "type": "bool"
+          },
+          "modTime": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "int"
+          }
+        }
+      }
+    },
+    {
+      "name": "authrelay.mint",
+      "request": {
+        "type": "object",
+        "properties": {
+          "binding": {
+            "type": "string"
+          },
+          "ttlSeconds": {
+            "type": "int",
+            "optional": true
+          },
+          "workspaceId": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "authrelay.revoke",
+      "request": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "revoked": {
+            "type": "bool"
+          }
+        }
+      }
+    },
+    {
+      "name": "node.info",
+      "request": {
+        "type": "object"
+      },
+      "response": {
+        "type": "object",
+        "properties": {
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "",
+              "$ref": "#/definitions/Capability"
+            }
+          },
+          "node": {
+            "$ref": "#/definitions/NodeInfo"
+          }
+        }
+      }
+    }
+  ],
+  "notifications": [
+    {
+      "name": "pty.data",
+      "params": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "name": "pty.exit",
+      "params": {
+        "type": "object",
+        "properties": {
+          "exitCode": {
+            "type": "int"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "Capability": {
+      "type": "object",
+      "properties": {
+        "available": {
+          "type": "bool"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "CreateSpec": {
+      "type": "object",
+      "properties": {
+        "agentProfile": {
+          "type": "string"
+        },
+        "authBinding": {
+          "type": "object",
+          "optional": true
+        },
+        "backend": {
+          "type": "string",
+          "optional": true
+        },
+        "configBundle": {
+          "type": "string",
+          "optional": true
+        },
+        "policy": {
+          "$ref": "#/definitions/Policy"
+        },
+        "projectId": {
+          "type": "string",
+          "optional": true
+        },
+        "ref": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "workspaceName": {
+          "type": "string"
+        }
+      }
+    },
+    "DirEntry": {
+      "type": "object",
+      "properties": {
+        "isDir": {
+          "type": "bool"
+        },
+        "mode": {
+          "type": "string",
+          "optional": true
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "type": "int"
+        }
+      }
+    },
+    "ExposeSpec": {
+      "type": "object",
+      "properties": {
+        "localPort": {
+          "type": "int"
+        },
+        "protocol": {
+          "type": "string",
+          "optional": true
+        },
+        "remotePort": {
+          "type": "int"
+        },
+        "source": {
+          "type": "string",
+          "optional": true
+        },
+        "workspaceId": {
+          "type": "string"
+        }
+      }
+    },
+    "Forward": {
+      "type": "object",
+      "properties": {
+        "created_at": {
+          "type": "time",
+          "optional": true
+        },
+        "id": {
+          "type": "string"
+        },
+        "localPort": {
+          "type": "int"
+        },
+        "protocol": {
+          "type": "string",
+          "optional": true
+        },
+        "remotePort": {
+          "type": "int"
+        },
+        "state": {
+          "type": "string"
+        },
+        "workspaceId": {
+          "type": "string"
+        }
+      }
+    },
+    "NodeInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "optional": true
+        }
+      }
+    },
+    "PTYSessionInfo": {
+      "type": "object",
+      "properties": {
+        "cols": {
+          "type": "int"
+        },
+        "createdAt": {
+          "type": "time"
+        },
+        "id": {
+          "type": "string"
+        },
+        "isRemote": {
+          "type": "bool"
+        },
+        "name": {
+          "type": "string"
+        },
+        "rows": {
+          "type": "int"
+        },
+        "shell": {
+          "type": "string"
+        },
+        "workDir": {
+          "type": "string"
+        },
+        "workspaceId": {
+          "type": "string"
+        }
+      }
+    },
+    "Policy": {
+      "type": "object",
+      "properties": {
+        "autoStop": {
+          "type": "bool",
+          "optional": true
+        },
+        "autoStopDelay": {
+          "type": "int",
+          "optional": true
+        },
+        "isolationLevel": {
+          "type": "string",
+          "optional": true
+        },
+        "maxLifetimeSec": {
+          "type": "int",
+          "optional": true
+        }
+      }
+    },
+    "Project": {
+      "type": "object",
+      "properties": {
+        "createdAt": {
+          "type": "time",
+          "optional": true
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "repoUrl": {
+          "type": "string"
+        },
+        "rootPath": {
+          "type": "string",
+          "optional": true
+        },
+        "updatedAt": {
+          "type": "time",
+          "optional": true
+        }
+      }
+    },
+    "Relations": {
+      "type": "object",
+      "properties": {
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "type": "",
+            "$ref": "#/definitions/Workspace"
+          }
+        }
+      }
+    },
+    "Workspace": {
+      "type": "object",
+      "properties": {
+        "agentProfile": {
+          "type": "string"
+        },
+        "authBinding": {
+          "type": "object",
+          "optional": true
+        },
+        "backend": {
+          "type": "string",
+          "optional": true
+        },
+        "configBundle": {
+          "type": "string",
+          "optional": true
+        },
+        "created_at": {
+          "type": "time",
+          "optional": true
+        },
+        "id": {
+          "type": "string"
+        },
+        "lineageRootId": {
+          "type": "string",
+          "optional": true
+        },
+        "parentWorkspaceId": {
+          "type": "string",
+          "optional": true
+        },
+        "policy": {
+          "$ref": "#/definitions/Policy"
+        },
+        "projectId": {
+          "type": "string",
+          "optional": true
+        },
+        "ref": {
+          "type": "string"
+        },
+        "repo": {
+          "type": "string"
+        },
+        "repoId": {
+          "type": "string",
+          "optional": true
+        },
+        "rootPath": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "tunnelPorts": {
+          "type": "array",
+          "items": {
+            "type": "int"
+          },
+          "optional": true
+        },
+        "updated_at": {
+          "type": "time",
+          "optional": true
+        },
+        "workspaceName": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
