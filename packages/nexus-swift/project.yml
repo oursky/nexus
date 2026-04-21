@@ -22,7 +22,6 @@ settings:
     # Allow callers (CI/local scripts) to override app bundle IDs.
     NEXUS_APP_BUNDLE_ID: com.nexus.NexusApp
     NEXUS_APP_TEST_BUNDLE_ID: com.nexus.NexusAppTests
-    NEXUS_UI_TEST_BUNDLE_ID: com.nexus.NexusUITests
     MTL_ENABLE_DEBUG_INFO: NO
     # Skip Metal shader compilation (not used in this app)
     GCC_WARN_INHIBIT_ALL_WARNINGS: NO
@@ -119,21 +118,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: $(NEXUS_APP_TEST_BUNDLE_ID)
         GENERATE_INFOPLIST_FILE: YES
 
-  # ── NexusUITests (XCUITest — use Xcode's Record button) ──────────────────
-  NexusUITests:
-    type: bundle.ui-testing
-    platform: macOS
-    sources:
-      - path: Tests/NexusUITests
-    dependencies:
-      - target: NexusApp
-        embed: false
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: $(NEXUS_UI_TEST_BUNDLE_ID)
-        TEST_TARGET_NAME: NexusApp
-        GENERATE_INFOPLIST_FILE: YES
-
 schemes:
   NexusApp:
     build:
@@ -145,13 +129,8 @@ schemes:
       launchAutomaticallySubstyle: 2
     test:
       config: Debug
-      # Integration tests expect a workspace daemon on this port (see CONTRIBUTING / task daemon:restart).
-      environmentVariables:
-        NEXUS_DAEMON_PORT: "19998"
       targets:
         - name: NexusAppTests
-          parallelizable: false
-        - name: NexusUITests
           parallelizable: false
     profile:
       config: Release

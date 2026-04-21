@@ -2,10 +2,12 @@
 
 ## Prerequisites
 
-| Tool | Version | Install |
-|------|---------|---------|
-| [Go](https://go.dev/dl/) | ≥ 1.21 | `brew install go` |
-| [go-task](https://taskfile.dev/installation/) | latest | `brew install go-task` |
+
+| Tool                                          | Version | Install                |
+| --------------------------------------------- | ------- | ---------------------- |
+| [Go](https://go.dev/dl/)                      | ≥ 1.21  | `brew install go`      |
+| [go-task](https://taskfile.dev/installation/) | latest  | `brew install go-task` |
+
 
 ## Getting Started
 

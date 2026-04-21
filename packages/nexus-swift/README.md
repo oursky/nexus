@@ -7,38 +7,30 @@ See `[ROADMAP.md](../../ROADMAP.md#native-macos-client-swiftui)` for milestones 
 ## Quick start
 
 ```bash
-# Demo mode — no daemon needed
+# Build / run (connects using the default daemon profile — SSH tunnel + remote WebSocket)
 swift run
-
-# Against a live daemon
-NEXUS_DAEMON_URL=ws://localhost:8080 swift run
 ```
+
+Use `nexus daemon connect <user@host>` on the Mac so the app has a profile with `sshTarget` and token; the app does not read daemon connection settings from environment variables.
 
 ## Structure
 
 ```
 Sources/NexusApp/
 ├── NexusApp.swift           # @main entry, window + commands
-├── AppState.swift           # Root @MainActor state, drives all views
 ├── Theme.swift              # Design tokens (colors, fonts, spacing)
-├── Models/
-│   └── Workspace.swift      # Workspace, Repo, Snapshot, Port models
-├── Client/
-│   ├── DaemonClient.swift   # Protocol — swap mock ↔ real via env var
-│   ├── MockClient.swift     # Offline mock (demo-ready)
-│   └── WebSocketClient.swift # JSON-RPC 2.0 over WebSocket (real daemon)
+├── Models/                  # App-local models if any
 └── Views/
     ├── ContentView.swift        # NavigationSplitView root
     ├── SidebarView.swift        # Repo › Workspace list, ⌘N button
-    ├── WorkspaceDetailView.swift # Top bar + terminal + bottom panel
-    ├── TerminalView.swift       # Mock terminal (→ real PTY in M3)
-    └── BottomPanelView.swift    # Snapshots / Ports / Log tabs
+    └── …
+Sources/NexusCore/           # Shared app logic, `AppState`, daemon client, models
 ```
 
 ## Design principles
 
-- **Mock-first**: `MockDaemonClient` works offline; set `NEXUS_DAEMON_URL` to go live
+- **Remote daemon only**: profile store + SSH tunnel to the Linux host; use `MockDaemonClient` / `AppState(client:)` in unit tests
 - **Theme parity**: `Theme.swift` tokens match the Tauri experiment's CSS variables
 - **No Xcode required**: SPM-only; Xcode is optional for debugging
-- **MVVM**: Views read from `AppState`; mutations go through `AppState.action(_:on:)`
+- **MVVM**: Views read from `AppState`; mutations go through `AppState` APIs
 
