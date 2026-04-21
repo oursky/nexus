@@ -122,8 +122,8 @@ jobs:
 
       - name: Install Task
         uses: arduino/setup-task@v2
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run CI pipeline
         run: task ci
@@ -164,8 +164,8 @@ jobs:
 
       - name: Install Task
         uses: arduino/setup-task@v2
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download embedded blobs (mutagen + firecracker)
         shell: bash
