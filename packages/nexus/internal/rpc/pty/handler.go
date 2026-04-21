@@ -213,9 +213,13 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 			if env.Type == "chunk" {
 				continue
 			}
-			if env.Type == "" || env.Type == "result" {
+			if env.Type == "" {
 				ackCh <- errors.New("firecracker guest agent is outdated: shell.open/shell.write protocol not supported; refresh rootfs agent payload")
 				return
+			}
+			// Accept both "ack" (new protocol) and "result" (legacy protocol).
+			if env.Type != "ack" && env.Type != "result" {
+				continue
 			}
 			if env.ExitCode != 0 {
 				ackCh <- fmt.Errorf("firecracker shell.open failed: %s", env.Stderr)
