@@ -385,7 +385,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "copy_tool() {\n  local src=\"$1\"\n  local dst=\"$2\"\n  local label=\"$3\"\n  if [ -f \"$src\" ]; then\n    mkdir -p \"$(dirname \"$dst\")\"\n    cp \"$src\" \"$dst\"\n    chmod +x \"$dst\"\n    echo \"Bundled ${label} -> ${dst}\"\n  else\n    echo \"warning: ${label} not found at ${src}; run 'task swift:prepare-resources' to stage Resources\"\n  fi\n}\n\ncopy_tool \"${SRCROOT}/Resources/nexus-daemon\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-daemon\" \"nexus-daemon\"\n\nfor tool in nexus nexus-daemon mutagen limactl tmux; do\n  copy_tool \"${SRCROOT}/Resources/tools/${tool}\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/tools/${tool}\" \"${tool}\"\ndone\n";
+			shellScript = "copy_tool() {\n  local src=\"$1\"\n  local dst=\"$2\"\n  local label=\"$3\"\n  if [ -f \"$src\" ]; then\n    mkdir -p \"$(dirname \"$dst\")\"\n    cp \"$src\" \"$dst\"\n    chmod +x \"$dst\"\n    echo \"Bundled ${label} -> ${dst}\"\n  else\n    echo \"warning: ${label} not found at ${src}; stage Resources (see CONTRIBUTING.md, macOS app)\"\n  fi\n}\n\ncopy_tool \"${SRCROOT}/Resources/nexus-daemon\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-daemon\" \"nexus-daemon\"\n\nfor tool in nexus nexus-daemon mutagen limactl tmux; do\n  copy_tool \"${SRCROOT}/Resources/tools/${tool}\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/tools/${tool}\" \"${tool}\"\ndone\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

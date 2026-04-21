@@ -15,14 +15,10 @@ enum NexusMethod {
     static let workspaceStop = "workspace.stop"
     static let workspaceRestore = "workspace.restore"
     static let workspaceFork = "workspace.fork"
-    static let workspaceCheckout = "workspace.checkout"
     static let workspaceReady = "workspace.ready"
-    static let workspaceRelationsList = "workspace.relations.list"
     static let workspacePortsList = "workspace.ports.list"
     static let workspacePortsAdd = "workspace.ports.add"
     static let workspacePortsRemove = "workspace.ports.remove"
-    static let workspaceTunnelsStart = "workspace.tunnels.start"
-    static let workspaceTunnelsStop = "workspace.tunnels.stop"
     static let workspaceDiscoverPorts = "workspace.discover-ports"
     static let ptyCreate = "pty.create"
     static let ptyList = "pty.list"
@@ -32,7 +28,7 @@ enum NexusMethod {
     static let ptyWrite = "pty.write"
     static let spotlightStart = "spotlight.start"
     static let spotlightList = "spotlight.list"
-    static let spotlightClose = "spotlight.close"
+    static let spotlightStop = "spotlight.stop"
     static let projectList = "project.list"
     static let projectCreate = "project.create"
     static let projectGet = "project.get"
@@ -101,6 +97,7 @@ struct NexusForward: Codable {
     let `protocol`: String?
     let remotePort: Int
     let state: String
+    let targetHost: String?
     let workspaceId: String
 
     enum CodingKeys: String, CodingKey {
@@ -110,6 +107,7 @@ struct NexusForward: Codable {
         case `protocol`
         case remotePort
         case state
+        case targetHost
         case workspaceId
     }
 }
@@ -144,10 +142,6 @@ struct NexusProject: Codable {
     let name: String
     let repoUrl: String
     let updatedAt: Date?
-}
-
-struct NexusRelations: Codable {
-    let workspaces: [NexusWorkspace]
 }
 
 struct NexusWorkspace: Codable {
@@ -259,29 +253,12 @@ struct WorkspaceForkResponse: Codable {
     let workspace: NexusWorkspace?
 }
 
-struct WorkspaceCheckoutRequest: Codable {
-    let id: String
-    let targetRef: String
-}
-
-struct WorkspaceCheckoutResponse: Codable {
-    let workspace: NexusWorkspace
-}
-
 struct WorkspaceReadyRequest: Codable {
     let id: String
 }
 
 struct WorkspaceReadyResponse: Codable {
     let ready: Bool
-}
-
-struct WorkspaceRelationsListRequest: Codable {
-    let repoId: String?
-}
-
-struct WorkspaceRelationsListResponse: Codable {
-    let relations: NexusRelations
 }
 
 struct WorkspacePortsListRequest: Codable {
@@ -307,25 +284,6 @@ struct WorkspacePortsRemoveRequest: Codable {
 }
 
 struct WorkspacePortsRemoveResponse: Codable {
-    let closed: Bool
-}
-
-struct WorkspaceTunnelsStartRequest: Codable {
-    let localPort: Int
-    let remotePort: Int
-    let workspaceId: String
-}
-
-struct WorkspaceTunnelsStartResponse: Codable {
-    let forward: NexusForward
-}
-
-struct WorkspaceTunnelsStopRequest: Codable {
-    let forwardId: String
-    let workspaceId: String
-}
-
-struct WorkspaceTunnelsStopResponse: Codable {
     let closed: Bool
 }
 
@@ -408,11 +366,11 @@ struct SpotlightListResponse: Codable {
     let forwards: [NexusForward]
 }
 
-struct SpotlightCloseRequest: Codable {
+struct SpotlightStopRequest: Codable {
     let id: String
 }
 
-struct SpotlightCloseResponse: Codable {
+struct SpotlightStopResponse: Codable {
     let closed: Bool
 }
 

@@ -74,7 +74,7 @@ targets:
               chmod +x "$dst"
               echo "Bundled ${label} -> ${dst}"
             else
-              echo "warning: ${label} not found at ${src}; run 'task swift:prepare-resources' to stage Resources"
+              echo "warning: ${label} not found at ${src}; stage Resources (see CONTRIBUTING.md, macOS app)"
             fi
           }
 

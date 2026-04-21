@@ -171,14 +171,14 @@ final class WorkspaceModelTests: XCTestCase {
         {
             "id": "proj-1",
             "name": "nexus",
-            "repoUrl": "git@github.com:inizio/nexus.git",
+            "repoUrl": "git@github.com:oursky/nexus.git",
             "rootPath": "/Users/me/nexus"
         }
         """.data(using: .utf8)!
         let project = try JSONDecoder().decode(Project.self, from: json)
         XCTAssertEqual(project.id, "proj-1")
         XCTAssertEqual(project.name, "nexus")
-        XCTAssertEqual(project.primaryRepo, "git@github.com:inizio/nexus.git")
+        XCTAssertEqual(project.primaryRepo, "git@github.com:oursky/nexus.git")
     }
 
     func testProjectFirstGrouping() {
