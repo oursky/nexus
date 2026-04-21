@@ -49,16 +49,17 @@ Set `REMOTE_HOST` in `.env.local`:
 REMOTE_HOST=user@your-server
 ```
 
-Then cross-compile and deploy to the remote host:
+Build, deploy, and restart the daemon in one step:
 
 ```sh
-task deploy:remote
+task deploy:remote:restart
 ```
 
-Restart the daemon on the remote:
+Or run steps individually:
 
 ```sh
-task daemon:restart
+task deploy:remote   # cross-compile + deploy (build is included)
+task daemon:restart  # restart daemon on remote (no rebuild)
 ```
 
 ## Repository Structure

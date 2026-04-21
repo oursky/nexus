@@ -147,7 +147,7 @@ tasks:
       - scripts/local/deploy.sh
 
   deploy:remote:
-    desc: "Cross-compile nexus single binary for linux/amd64 and deploy to remote host"
+    desc: "Cross-compile nexus for linux/amd64, deploy to remote host (build included)"
     preconditions:
       - sh: '[ -n "{{.REMOTE_HOST}}" ]'
         msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
@@ -157,15 +157,26 @@ tasks:
     cmds:
       - scripts/remote/deploy.sh
 
-  daemon:restart:
-    desc: "Restart the nexus daemon on the remote host"
+  deploy:remote:restart:
+    desc: "Build, deploy to remote host, and restart the daemon (full iteration loop)"
     preconditions:
       - sh: '[ -n "{{.REMOTE_HOST}}" ]'
         msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
     env:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
       REMOTE_BIN: "{{.REMOTE_BIN}}"
-      REMOTE_PORT: "{{.REMOTE_PORT}}"
+    cmds:
+      - task: deploy:remote
+      - task: daemon:restart
+
+  daemon:restart:
+    desc: "Restart the nexus daemon on the remote host (does not rebuild)"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+      REMOTE_BIN: "{{.REMOTE_BIN}}"
     cmds:
       - scripts/remote/daemon-restart.sh
 
