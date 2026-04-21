@@ -10,8 +10,7 @@ import (
 )
 
 // TestCLI_WorkspaceCreate_EndToEnd runs workspace create against a real daemon over the
-// SSH profile (same entrypoint developers use). Mirroring may run on the daemon without
-// mutagen lines on the CLI stdout.
+// SSH profile (same entrypoint developers use).
 func TestCLI_WorkspaceCreate_EndToEnd(t *testing.T) {
 	t.Parallel()
 	harness.RequireE2EFullStack(t)
