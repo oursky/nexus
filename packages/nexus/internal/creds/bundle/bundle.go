@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/inizio/nexus/packages/nexus/internal/creds/agentprofile"
+	"github.com/oursky/nexus/packages/nexus/internal/creds/agentprofile"
 )
 
 const maxBundledFileBytes = 512 * 1024

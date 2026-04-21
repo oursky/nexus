@@ -21,14 +21,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/inizio/nexus/packages/nexus/internal/infra/config"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/dockercompose"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/firecracker"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/config"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/dockercompose"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/firecracker"
 
-	daemoncmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/daemon"
-	projectcmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/project"
-	spotlightcmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/spotlight"
-	workspacecmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/workspace"
+	daemoncmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon"
+	projectcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/project"
+	spotlightcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/spotlight"
+	workspacecmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/workspace"
 )
 
 type options struct {
@@ -782,12 +782,36 @@ func validateFirecrackerTapHelper() error {
 	return nil
 }
 
+// loadFirecrackerBridgeSubnet returns the bridge subnet CIDR.
+// Priority: NEXUS_BRIDGE_SUBNET env var → persisted file → default.
+func loadFirecrackerBridgeSubnet() string {
+	if s := os.Getenv("NEXUS_BRIDGE_SUBNET"); s != "" {
+		return s
+	}
+	data, err := os.ReadFile("/var/lib/nexus/bridge-subnet")
+	if err == nil {
+		if s := strings.TrimSpace(string(data)); s != "" {
+			return s
+		}
+	}
+	return "172.26.0.0/16"
+}
+
 // validateFirecrackerBridge verifies that the nexusbr0 bridge exists and is UP
 // so that TAP devices can be attached to it at VM spawn time.
 func validateFirecrackerBridge() error {
 	const bridge = "nexusbr0"
-	const gatewayCIDR = "172.26.0.1/16"
-	const subnetCIDR = "172.26.0.0/16"
+	subnetCIDR := loadFirecrackerBridgeSubnet()
+	// Derive gateway: replace network address with .1 suffix.
+	_, ipNet, parseErr := net.ParseCIDR(subnetCIDR)
+	gatewayCIDR := "172.26.0.1/16"
+	if parseErr == nil {
+		ip4 := ipNet.IP.To4()
+		if ip4 != nil {
+			ones, _ := ipNet.Mask.Size()
+			gatewayCIDR = fmt.Sprintf("%d.%d.%d.1/%d", ip4[0], ip4[1], ip4[2], ones)
+		}
+	}
 	out, err := exec.Command("ip", "link", "show", bridge).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf(
@@ -806,7 +830,9 @@ func validateFirecrackerBridge() error {
 	if addrErr != nil {
 		return fmt.Errorf("bridge %s IPv4 inspection failed: %w", bridge, addrErr)
 	}
-	if !strings.Contains(string(addrOut), "172.26.0.1/") {
+	// Derive the bare gateway IP prefix to search for in `ip addr` output.
+	gwPrefix := strings.SplitN(gatewayCIDR, "/", 2)[0] + "/"
+	if !strings.Contains(string(addrOut), gwPrefix) {
 		return fmt.Errorf(
 			"bridge %s is missing gateway IP %s\n\nRun `nexus init --project-root <abs-path> --force` to refresh host prerequisites",
 			bridge, gatewayCIDR,
@@ -832,10 +858,13 @@ func validateFirecrackerBridge() error {
 				break
 			}
 			return fmt.Errorf(
-				"firecracker subnet conflict detected: %s route uses %s (expected %s)\n\n"+
-					"this commonly happens when Docker already owns %s and causes VM outbound DNS/network failures.\n"+
-					"remove the conflicting route/bridge or reconfigure host networking, then re-run `nexus init --project-root <abs-path> --force`",
-				subnetCIDR, dev, bridge, subnetCIDR,
+				"firecracker subnet conflict: %s route is owned by %q (expected %s)\n"+
+					"Docker likely allocated %s for one of its project networks\n"+
+					"to fix: run `sudo nexus init --project-root <abs-path> --force` to configure\n"+
+					"Docker address pools to exclude %s, then remove conflicting networks:\n"+
+					"  docker network ls  # find networks with subnet %s\n"+
+					"  docker network rm <id>",
+				subnetCIDR, dev, bridge, subnetCIDR, subnetCIDR, subnetCIDR,
 			)
 		}
 	}

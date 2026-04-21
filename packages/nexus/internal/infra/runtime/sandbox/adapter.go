@@ -3,8 +3,8 @@ package sandbox
 import (
 	"context"
 
-	domainruntime "github.com/inizio/nexus/packages/nexus/internal/domain/runtime"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
+	domainruntime "github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 )
 
 // Adapter wraps Driver to satisfy domain/runtime.Driver.

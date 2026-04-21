@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/domain/spotlight"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
 )
 
 // ForwardStore implements spotlight.Repository using SQLite.

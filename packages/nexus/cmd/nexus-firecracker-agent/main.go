@@ -20,7 +20,7 @@ import (
 	"time"
 
 	creackpty "github.com/creack/pty"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/firecracker"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/firecracker"
 	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
 )
@@ -383,9 +383,16 @@ func handleShellOpen(req execRequest, encoder *json.Encoder) {
 		shell = "bash"
 	}
 
+	// If args are provided, honour them (e.g. ["-c", "ip route show"] from
+	// `nexus workspace exec`). Otherwise fall back to a login shell.
+	shellArgs := req.Args
+	if len(shellArgs) == 0 {
+		shellArgs = []string{"-l"}
+	}
+
 	// Interactive shell sessions are long-lived; do not tie them to a short-lived
 	// request context that gets canceled when this handler returns.
-	cmd := exec.Command(shell, "-l")
+	cmd := exec.Command(shell, shellArgs...)
 	cmd.Dir = workDir
 	cmd.Env = env
 
@@ -510,6 +517,7 @@ func main() {
 
 	bootstrapGuestEnvironment(os.Getpid())
 	startSSHAgentProxy()
+	go startSpotlightListener()
 
 	listener, transport, err := resolveListener()
 	if err != nil {
@@ -531,6 +539,88 @@ func main() {
 		emitDiagnostic("agent accepted connection")
 		go serveConn(conn)
 	}
+}
+
+// startSpotlightListener starts the spotlight port-forward vsock listener.
+// Each accepted connection reads "FORWARD <port>\n" then proxies raw TCP to
+// 127.0.0.1:<port> inside the guest. This lets the daemon host reach services
+// that only listen on loopback without relying on bridge networking.
+func startSpotlightListener() {
+	port := firecracker.DefaultSpotlightVSockPort
+
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
+	if err != nil {
+		emitDiagnostic("spotlight listener: socket: %v", err)
+		return
+	}
+	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
+		_ = unix.Close(fd)
+		emitDiagnostic("spotlight listener: bind vsock port %d: %v", port, err)
+		return
+	}
+	if err := unix.Listen(fd, 64); err != nil {
+		_ = unix.Close(fd)
+		emitDiagnostic("spotlight listener: listen: %v", err)
+		return
+	}
+	file := os.NewFile(uintptr(fd), "spotlight-vsock-listener")
+	defer file.Close()
+
+	listener, err := vsock.FileListener(file)
+	if err != nil {
+		_ = unix.Close(fd)
+		emitDiagnostic("spotlight listener: FileListener: %v", err)
+		return
+	}
+	defer listener.Close()
+
+	emitDiagnostic("spotlight listener: ready on vsock port %d", port)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			emitDiagnostic("spotlight listener: accept: %v", err)
+			return
+		}
+		go serveSpotlightForward(conn)
+	}
+}
+
+// serveSpotlightForward reads "FORWARD <port>\n" and proxies to 127.0.0.1:<port>.
+func serveSpotlightForward(conn net.Conn) {
+	defer conn.Close()
+
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return
+	}
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "FORWARD ") {
+		_, _ = conn.Write([]byte("ERR invalid command\n"))
+		return
+	}
+	portStr := strings.TrimPrefix(line, "FORWARD ")
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		_, _ = conn.Write([]byte("ERR invalid port\n"))
+		return
+	}
+
+	target, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
+	if err != nil {
+		_, _ = conn.Write([]byte(fmt.Sprintf("ERR %v\n", err)))
+		return
+	}
+	defer target.Close()
+
+	if _, err := conn.Write([]byte("OK\n")); err != nil {
+		return
+	}
+
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(target, reader); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(conn, target); done <- struct{}{} }()
+	<-done
 }
 
 // mountKernelFilesystemsFunc is overridable in tests.
@@ -977,13 +1067,30 @@ func realSetupNetwork() error {
 	return nil
 }
 
+// readNexusGateway returns the bridge gateway IP from the host config drive
+// (.nexus-gateway), falling back to the compiled-in default.
+func readNexusGateway() string {
+	const configDriveMount = "/run/nexus-host"
+	const defaultGW = "172.26.0.1"
+
+	data, err := os.ReadFile(filepath.Join(configDriveMount, ".nexus-gateway"))
+	if err != nil {
+		return defaultGW
+	}
+	if gw := strings.TrimSpace(string(data)); gw != "" {
+		return gw
+	}
+	return defaultGW
+}
+
 func configureStaticGuestNetwork() error {
 	macBytes, err := os.ReadFile("/sys/class/net/eth0/address")
 	if err != nil {
 		return fmt.Errorf("read eth0 mac address: %w", err)
 	}
 
-	ip, err := staticGuestIPForMAC(strings.TrimSpace(string(macBytes)))
+	gateway := readNexusGateway()
+	ip, err := staticGuestIPForMAC(strings.TrimSpace(string(macBytes)), gateway)
 	if err != nil {
 		return err
 	}
@@ -991,14 +1098,17 @@ func configureStaticGuestNetwork() error {
 	if out, err := exec.Command("ip", "addr", "replace", ip+"/16", "dev", "eth0").CombinedOutput(); err != nil {
 		return fmt.Errorf("ip addr replace %s/16 dev eth0: %w: %s", ip, err, strings.TrimSpace(string(out)))
 	}
-	if out, err := exec.Command("ip", "route", "replace", "default", "via", "172.26.0.1", "dev", "eth0").CombinedOutput(); err != nil {
-		return fmt.Errorf("ip route replace default via 172.26.0.1 dev eth0: %w: %s", err, strings.TrimSpace(string(out)))
+	if out, err := exec.Command("ip", "route", "replace", "default", "via", gateway, "dev", "eth0").CombinedOutput(); err != nil {
+		return fmt.Errorf("ip route replace default via %s dev eth0: %w: %s", gateway, err, strings.TrimSpace(string(out)))
 	}
 
 	return nil
 }
 
-func staticGuestIPForMAC(mac string) (string, error) {
+// staticGuestIPForMAC derives a guest IP in the same /16 subnet as the gateway,
+// using the last two MAC octets as the host portion.
+// For gateway "172.20.0.1" and MAC "aa:bb:cc:dd:12:34" → "172.20.18.52".
+func staticGuestIPForMAC(mac, gateway string) (string, error) {
 	parts := strings.Split(strings.ToLower(strings.TrimSpace(mac)), ":")
 	if len(parts) != 6 {
 		return "", fmt.Errorf("invalid mac address format: %q", mac)
@@ -1013,7 +1123,12 @@ func staticGuestIPForMAC(mac string) (string, error) {
 		return "", fmt.Errorf("parse mac byte 6: %w", err)
 	}
 
-	return fmt.Sprintf("172.26.%d.%d", b4, b5), nil
+	// Derive subnet prefix from gateway (first two octets of "a.b.c.d").
+	gwParts := strings.SplitN(gateway, ".", 4)
+	if len(gwParts) < 2 {
+		return fmt.Sprintf("172.26.%d.%d", b4, b5), nil
+	}
+	return fmt.Sprintf("%s.%s.%d.%d", gwParts[0], gwParts[1], b4, b5), nil
 }
 
 // setupDNSPath is the path to /etc/resolv.conf. Overridable in tests.
@@ -1038,7 +1153,11 @@ func dnsConfigLooksUsable(content string) bool {
 	for _, line := range strings.Split(content, "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
 		if len(fields) >= 2 && fields[0] == "nameserver" {
-			return true
+			// Loopback resolvers (127.x.x.x) are host-only stubs like
+			// systemd-resolved that don't exist inside the VM.
+			if !strings.HasPrefix(fields[1], "127.") {
+				return true
+			}
 		}
 	}
 	return false

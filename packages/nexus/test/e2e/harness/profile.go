@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/profile"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
 )
 
 // writeE2EProfile writes default.json under a fresh XDG_CONFIG_HOME so the CLI uses

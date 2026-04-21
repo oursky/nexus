@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/inizio/nexus/packages/nexus/internal/auth/tokenstore"
+	"github.com/oursky/nexus/packages/nexus/internal/auth/tokenstore"
 )
 
 // Profile stores connection details for a remote daemon.

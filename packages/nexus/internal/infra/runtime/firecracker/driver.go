@@ -117,9 +117,85 @@ func (d *FCDriver) ResolveWorkspaceEndpoint(_ context.Context, workspaceID strin
 	return guestIPForCID(inst.CID), remotePort, nil
 }
 
-func guestIPForCID(cid uint32) string {
-	return fmt.Sprintf("172.26.%d.%d", byte((cid>>8)&0xFF), byte(cid&0xFF))
+// DialPort implements app/spotlight.PortDialer so FCDriver can be wired
+// directly into the spotlight service.
+func (d *FCDriver) DialPort(ctx context.Context, workspaceID string, remotePort int) (net.Conn, error) {
+	return d.DialSpotlightPort(ctx, workspaceID, remotePort)
 }
+
+// DialSpotlightPort opens a proxied connection to guestPort inside the
+// Firecracker VM for workspaceID. It connects via the vsock spotlight listener
+// (DefaultSpotlightVSockPort) running inside the guest agent, which then dials
+// 127.0.0.1:guestPort inside the VM. This works even for services that only
+// bind loopback inside the guest.
+func (d *FCDriver) DialSpotlightPort(ctx context.Context, workspaceID string, guestPort int) (net.Conn, error) {
+	if guestPort <= 0 || guestPort > 65535 {
+		return nil, fmt.Errorf("guestPort %d out of range", guestPort)
+	}
+	if d.manager == nil {
+		return nil, errors.New("manager is required for firecracker driver")
+	}
+	inst, err := d.manager.Get(workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("workspace instance lookup: %w", err)
+	}
+	if inst == nil || inst.CID == 0 {
+		return nil, errors.New("workspace instance has no guest CID")
+	}
+
+	var conn net.Conn
+	if strings.TrimSpace(inst.VSockPath) != "" {
+		// Use the Firecracker unix-socket vsock proxy (preferred on Linux hosts).
+		netDialer := &net.Dialer{Timeout: 5 * time.Second}
+		c, dialErr := netDialer.DialContext(ctx, "unix", inst.VSockPath)
+		if dialErr != nil {
+			return nil, fmt.Errorf("vsock unix dial: %w", dialErr)
+		}
+		if _, err := fmt.Fprintf(c, "CONNECT %d\n", DefaultSpotlightVSockPort); err != nil {
+			_ = c.Close()
+			return nil, fmt.Errorf("vsock CONNECT write: %w", err)
+		}
+		_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		resp, readErr := bufio.NewReader(c).ReadString('\n')
+		_ = c.SetReadDeadline(time.Time{})
+		if readErr != nil {
+			_ = c.Close()
+			return nil, fmt.Errorf("vsock CONNECT response: %w", readErr)
+		}
+		if !strings.HasPrefix(strings.TrimSpace(resp), "OK") {
+			_ = c.Close()
+			return nil, fmt.Errorf("vsock CONNECT rejected: %s", strings.TrimSpace(resp))
+		}
+		conn = c
+	} else {
+		// Direct vsock dial (non-Linux or path unavailable).
+		c, dialErr := vsock.Dial(inst.CID, DefaultSpotlightVSockPort, nil)
+		if dialErr != nil {
+			return nil, fmt.Errorf("vsock direct dial: %w", dialErr)
+		}
+		conn = c
+	}
+
+	// Send FORWARD <port> to tell the guest agent which local port to proxy.
+	if _, err := fmt.Fprintf(conn, "FORWARD %d\n", guestPort); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("spotlight FORWARD write: %w", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp, readErr := bufio.NewReader(conn).ReadString('\n')
+	_ = conn.SetReadDeadline(time.Time{})
+	if readErr != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("spotlight FORWARD response: %w", readErr)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(resp), "OK") {
+		_ = conn.Close()
+		return nil, fmt.Errorf("spotlight FORWARD rejected: %s", strings.TrimSpace(resp))
+	}
+
+	return conn, nil
+}
+
 
 func (d *FCDriver) workspaceDir(workspaceID string) string {
 	d.mu.RLock()

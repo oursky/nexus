@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/domain/project"
-	rpce "github.com/inizio/nexus/packages/nexus/internal/rpc/errors"
-	"github.com/inizio/nexus/packages/nexus/internal/rpc/registry"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/project"
+	rpce "github.com/oursky/nexus/packages/nexus/internal/rpc/errors"
+	"github.com/oursky/nexus/packages/nexus/internal/rpc/registry"
 )
 
 // Handler exposes project.* RPC methods.

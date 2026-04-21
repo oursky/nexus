@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/inizio/nexus/packages/nexus/internal/infra/config"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/config"
 )
 
 func TestLoadNodeConfig_Defaults(t *testing.T) {

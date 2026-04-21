@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 
-	appws "github.com/inizio/nexus/packages/nexus/internal/app/workspace"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
-	rpce "github.com/inizio/nexus/packages/nexus/internal/rpc/errors"
+	appws "github.com/oursky/nexus/packages/nexus/internal/app/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	rpce "github.com/oursky/nexus/packages/nexus/internal/rpc/errors"
 )
 
 // ── DTOs ──────────────────────────────────────────────────────────────────────

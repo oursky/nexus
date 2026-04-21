@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	domainproj "github.com/inizio/nexus/packages/nexus/internal/domain/project"
-	domainws "github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/hostpaths"
-	rpcerrors "github.com/inizio/nexus/packages/nexus/internal/rpc/errors"
+	domainproj "github.com/oursky/nexus/packages/nexus/internal/domain/project"
+	domainws "github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/hostpaths"
+	rpcerrors "github.com/oursky/nexus/packages/nexus/internal/rpc/errors"
 )
 
 func workspaceLogicalRoot(ws *domainws.Workspace) string {

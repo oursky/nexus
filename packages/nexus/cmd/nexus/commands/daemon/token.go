@@ -3,7 +3,7 @@ package daemon
 import (
 	"fmt"
 
-	"github.com/inizio/nexus/packages/nexus/internal/auth/tokenstore"
+	"github.com/oursky/nexus/packages/nexus/internal/auth/tokenstore"
 	"github.com/spf13/cobra"
 )
 

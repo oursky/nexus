@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"strings"
 
-	"github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/rpc"
+	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	"github.com/spf13/cobra"
 )
 

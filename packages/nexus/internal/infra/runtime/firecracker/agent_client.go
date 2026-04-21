@@ -11,6 +11,11 @@ import (
 // DefaultAgentVSockPort is the guest-agent vsock port used for host<->guest exec.
 const DefaultAgentVSockPort uint32 = 10789
 
+// DefaultSpotlightVSockPort is the guest-agent vsock port used for spotlight
+// port-forward connections. Each accepted connection reads "FORWARD <port>\n"
+// and proxies to 127.0.0.1:<port> inside the guest.
+const DefaultSpotlightVSockPort uint32 = 10792
+
 // ExecRequest represents a command execution request to the agent
 type ExecRequest struct {
 	ID      string   `json:"id"`

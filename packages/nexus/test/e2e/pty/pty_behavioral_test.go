@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inizio/nexus/packages/nexus/test/e2e/harness"
+	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
 // createWorkspaceLocalRepo creates a workspace with a local repo path (no Mutagen needed).

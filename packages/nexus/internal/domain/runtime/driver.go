@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 
-	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 )
 
 // Driver defines the interface for workspace runtime backends.

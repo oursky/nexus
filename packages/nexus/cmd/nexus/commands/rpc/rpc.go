@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/profile"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/sshtunnel"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/sshtunnel"
 )
 
 type Request struct {

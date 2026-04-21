@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 
-	appspotlight "github.com/inizio/nexus/packages/nexus/internal/app/spotlight"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/spotlight"
-	rpcerrors "github.com/inizio/nexus/packages/nexus/internal/rpc/errors"
-	"github.com/inizio/nexus/packages/nexus/internal/rpc/registry"
+	appspotlight "github.com/oursky/nexus/packages/nexus/internal/app/spotlight"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
+	rpcerrors "github.com/oursky/nexus/packages/nexus/internal/rpc/errors"
+	"github.com/oursky/nexus/packages/nexus/internal/rpc/registry"
 )
 
 // Handler handles spotlight RPC methods.

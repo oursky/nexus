@@ -8,8 +8,6 @@ import (
 )
 
 const bridgeName = "nexusbr0"
-const bridgeGatewayIP = "172.26.0.1"
-const guestSubnetCIDR = "172.26.0.0/16"
 
 func checkTapHelper() error {
 	return errors.New("tap helper is only available on Linux")

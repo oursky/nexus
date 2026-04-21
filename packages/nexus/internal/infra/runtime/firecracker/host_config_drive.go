@@ -9,8 +9,26 @@ import (
 	"strings"
 )
 
+// gatewayTempFile writes the bridge gateway IP to a temp file and returns its
+// path so debugfs can write it into the config drive image.
+func gatewayTempFile() (path string, cleanup func(), err error) {
+	f, err := os.CreateTemp("", "nexus-gateway-*")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("create gateway temp file: %w", err)
+	}
+	gw := bridgeGatewayIP()
+	if _, err := f.WriteString(gw + "\n"); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", func() {}, fmt.Errorf("write gateway temp file: %w", err)
+	}
+	f.Close()
+	return f.Name(), func() { os.Remove(f.Name()) }, nil
+}
+
 // buildHostConfigDrive creates a small ext4 image at destPath populated with
-// the host user's config files (gitconfig, SSH public material, tool configs).
+// the host user's config files (gitconfig, SSH public material, tool configs)
+// and Nexus runtime parameters (gateway IP for guest networking).
 // The image is attached to the VM as /dev/vdc and the guest agent mounts it at
 // /run/nexus-host, then applies the configs to standard paths.
 //
@@ -44,6 +62,13 @@ func buildHostConfigDrive(home, destPath string) error {
 		if _, err := os.Stat(src); err == nil {
 			files = append(files, entry{src, dst})
 		}
+	}
+
+	// Nexus runtime: gateway IP so the guest can configure its default route
+	// even when the bridge subnet differs from the compiled-in default.
+	if gwFile, cleanup, err := gatewayTempFile(); err == nil {
+		defer cleanup()
+		files = append(files, entry{gwFile, ".nexus-gateway"})
 	}
 
 	// Git config.

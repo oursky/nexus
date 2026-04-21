@@ -3,7 +3,7 @@ package relay
 import (
 	"strings"
 
-	"github.com/inizio/nexus/packages/nexus/internal/creds/agentprofile"
+	"github.com/oursky/nexus/packages/nexus/internal/creds/agentprofile"
 )
 
 // RelayEnv builds an environment variable map for the given auth binding.

@@ -230,8 +230,8 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	// Derive a tap name for this workspace and create it on the host bridge.
 	tap := tapNameForWorkspace(spec.WorkspaceID)
 	mac := guestMAC(cid)
-	hostIP := bridgeGatewayIP
-	subnetCIDR := guestSubnetCIDR
+	hostIP := bridgeGatewayIP()
+	subnetCIDR := guestSubnetCIDR()
 
 	if err := setupTAP(tap, hostIP, subnetCIDR); err != nil {
 		os.RemoveAll(workDir)
@@ -500,7 +500,7 @@ func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 
 	// Teardown the tap device after the VM exits.
 	if inst.TAPName != "" {
-		teardownTAP(inst.TAPName, guestSubnetCIDR)
+		teardownTAP(inst.TAPName, guestSubnetCIDR())
 	}
 
 	os.RemoveAll(inst.WorkDir)
@@ -542,7 +542,7 @@ func (m *Manager) CleanupWorkspaceByID(ctx context.Context, workspaceID string) 
 		}
 	}
 
-	teardownTAP(tap, guestSubnetCIDR)
+	teardownTAP(tap, guestSubnetCIDR())
 	if err := os.RemoveAll(workDir); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -649,7 +649,7 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, liveWorkspaceIDs map[str
 			}
 		}
 
-		teardownTAP(tap, guestSubnetCIDR)
+		teardownTAP(tap, guestSubnetCIDR())
 		if removeErr := os.RemoveAll(workDir); removeErr != nil {
 			log.Printf("firecracker reconcile: remove workdir %s: %v", workDir, removeErr)
 		} else {

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 )
 
 // WorkspaceStore implements workspace.Repository using SQLite.

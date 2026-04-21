@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/inizio/nexus/packages/nexus/internal/domain/project"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/store"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/project"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/store"
 )
 
 // openIntegrationDB creates a real SQLite database for integration tests.

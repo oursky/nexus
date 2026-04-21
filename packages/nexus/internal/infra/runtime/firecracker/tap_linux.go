@@ -4,6 +4,7 @@ package firecracker
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,8 +12,6 @@ import (
 )
 
 const bridgeName = "nexusbr0"
-const bridgeGatewayIP = "172.26.0.1"
-const guestSubnetCIDR = "172.26.0.0/16"
 const tapHelperBin = "nexus-tap-helper"
 
 // resolveTapHelperPath returns the absolute path to nexus-tap-helper.
@@ -75,13 +74,19 @@ func tapHelperSetupInstructions() string {
 }
 
 func bridgeSetupInstructions() string {
-	return "  sudo tee /etc/systemd/network/10-nexusbr0.netdev << 'EOF'\n" +
-		"[NetDev]\nName=nexusbr0\nKind=bridge\nEOF\n\n" +
-		"  sudo tee /etc/systemd/network/11-nexusbr0.network << 'EOF'\n" +
-		"[Match]\nName=nexusbr0\n[Network]\nAddress=172.26.0.1/16\nIPForward=yes\nIPMasquerade=ipv4\nEOF\n\n" +
-		"  sudo tee /etc/systemd/network/12-nexus-tap.network << 'EOF'\n" +
-		"[Match]\nName=nexus-*\n[Network]\nBridge=nexusbr0\nEOF\n\n" +
-		"  sudo systemctl enable --now systemd-networkd"
+	gw := bridgeGatewayIP()
+	_, prefix, _ := net.ParseCIDR(guestSubnetCIDR())
+	ones, _ := prefix.Mask.Size()
+	return fmt.Sprintf(
+		"  sudo tee /etc/systemd/network/10-nexusbr0.netdev << 'EOF'\n"+
+			"[NetDev]\nName=nexusbr0\nKind=bridge\nEOF\n\n"+
+			"  sudo tee /etc/systemd/network/11-nexusbr0.network << 'EOF'\n"+
+			"[Match]\nName=nexusbr0\n[Network]\nAddress=%s/%d\nIPForward=yes\nIPMasquerade=ipv4\nEOF\n\n"+
+			"  sudo tee /etc/systemd/network/12-nexus-tap.network << 'EOF'\n"+
+			"[Match]\nName=nexus-*\n[Network]\nBridge=nexusbr0\nEOF\n\n"+
+			"  sudo systemctl enable --now systemd-networkd",
+		gw, ones,
+	)
 }
 
 func realSetupTAP(tapName, hostIP, subnetCIDR string) (any, error) {

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/rpc"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/profile"
+	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
 	"github.com/spf13/cobra"
 )
 

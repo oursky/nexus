@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/domain/project"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/project"
 )
 
 // ProjectStore implements project.Repository using SQLite.

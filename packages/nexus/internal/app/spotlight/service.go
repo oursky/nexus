@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/domain/spotlight"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 )
 
 // PortForwarder creates and manages spotlight port forwards.
@@ -19,9 +19,11 @@ type PortForwarder interface {
 	StartSpotlight(ctx context.Context, workspaceID string, spec spotlight.ExposeSpec) (*spotlight.Forward, error)
 }
 
-// EndpointResolver resolves how to reach a workspace-internal service from the daemon host.
-type EndpointResolver interface {
-	ResolveWorkspaceEndpoint(ctx context.Context, workspaceID string, remotePort int) (host string, port int, err error)
+// PortDialer dials a connection into a workspace on a specific guest port.
+// Used for Firecracker workspaces to reach services via vsock, bypassing the
+// bridge network and supporting loopback-only listeners inside the VM.
+type PortDialer interface {
+	DialPort(ctx context.Context, workspaceID string, remotePort int) (net.Conn, error)
 }
 
 // Service manages port forwards (spotlight) for workspaces.
@@ -30,7 +32,7 @@ var _ PortForwarder = (*Service)(nil)
 type Service struct {
 	repo          spotlight.Repository
 	workspaceRepo workspace.Repository
-	resolver      EndpointResolver
+	portDialer    PortDialer
 
 	mu        sync.RWMutex
 	listeners map[string]net.Listener
@@ -39,9 +41,11 @@ type Service struct {
 // Option configures spotlight service dependencies.
 type Option func(*Service)
 
-// WithEndpointResolver enables internal workspace endpoint routing without daemon-host binds.
-func WithEndpointResolver(r EndpointResolver) Option {
-	return func(s *Service) { s.resolver = r }
+// WithPortDialer sets a PortDialer for workspace backends that need a
+// daemon-side TCP proxy (Firecracker). The daemon binds an ephemeral port and
+// proxies each connection via the dialer so the CLI can SSH-forward to it.
+func WithPortDialer(d PortDialer) Option {
+	return func(s *Service) { s.portDialer = d }
 }
 
 // New creates a Service.
@@ -58,6 +62,19 @@ func New(repo spotlight.Repository, workspaceRepo workspace.Repository, opts ...
 }
 
 // StartSpotlight creates and activates a port forward for the given workspace.
+//
+// Design:
+//   - Non-Firecracker workspaces: the service runs directly on the daemon host.
+//     No TCP proxy is needed — we record the forward and return
+//     targetHost=127.0.0.1 + targetPort=remotePort so the CLI can SSH-forward
+//     directly to the service. Binding a proxy would collide with the service
+//     itself (same port on the same host).
+//
+//   - Firecracker workspaces: the service is inside a VM where loopback is not
+//     reachable from outside. We bind an ephemeral TCP port on the daemon host
+//     and proxy each connection via vsock (PortDialer) to the guest port. The
+//     ephemeral port is returned as targetPort so the CLI SSH-tunnels to it.
+//     Each workspace gets its own ephemeral port → no multi-tenant collision.
 func (s *Service) StartSpotlight(ctx context.Context, workspaceID string, spec spotlight.ExposeSpec) (*spotlight.Forward, error) {
 	if spec.LocalPort <= 0 || spec.RemotePort <= 0 {
 		return nil, fmt.Errorf("localPort and remotePort must be > 0")
@@ -88,43 +105,48 @@ func (s *Service) StartSpotlight(ctx context.Context, workspaceID string, spec s
 	}
 	fwd.TargetHost = "127.0.0.1"
 
-	// Firecracker workspaces should route spotlight directly to guest-internal
-	// service endpoints instead of binding daemon-host ports.
-	if ws.Backend == "firecracker" && s.resolver != nil {
-		targetHost, targetPort, err := s.resolver.ResolveWorkspaceEndpoint(ctx, workspaceID, spec.RemotePort)
+	// Firecracker workspaces: bind an ephemeral host-side TCP port and proxy
+	// each connection via vsock into the VM. The guest agent's spotlight
+	// listener (DefaultSpotlightVSockPort) dials 127.0.0.1:<remotePort> inside
+	// the VM, so this works even for loopback-only services.
+	if ws.Backend == "firecracker" && s.portDialer != nil {
+		guestPort := spec.RemotePort
+		dialer := s.portDialer
+
+		// Bind any free port on the daemon host — this is what the CLI will
+		// SSH-forward to. Using :0 ensures each forward gets a unique port
+		// and multiple workspaces sharing the same remotePort never collide.
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			return nil, fmt.Errorf("resolve workspace endpoint: %w", err)
+			return nil, fmt.Errorf("bind ephemeral port for spotlight: %w", err)
 		}
-		if targetHost == "" || targetPort <= 0 {
-			return nil, fmt.Errorf("invalid workspace endpoint %q:%d", targetHost, targetPort)
-		}
-		fwd.TargetHost = targetHost
-		fwd.RemotePort = targetPort
+		ephemeralPort := listener.Addr().(*net.TCPAddr).Port
+
+		fwd.RemotePort = ephemeralPort // CLI will SSH-forward to this
 		if err := s.repo.Create(ctx, fwd); err != nil {
+			_ = listener.Close()
 			return nil, fmt.Errorf("persist forward: %w", err)
 		}
+
+		s.mu.Lock()
+		s.listeners[id] = listener
+		s.mu.Unlock()
+
+		go serveForwardWithDialer(listener, func(connCtx context.Context) (net.Conn, error) {
+			return dialer.DialPort(connCtx, workspaceID, guestPort)
+		})
+
 		copy := *fwd
 		return &copy, nil
 	}
 
-	host := "127.0.0.1"
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, spec.LocalPort))
-	if err != nil {
-		return nil, fmt.Errorf("bind local port %d: %w", spec.LocalPort, err)
-	}
-
+	// Non-Firecracker workspaces: the service runs on the daemon host itself.
+	// Return targetHost+targetPort so the CLI can SSH-forward directly to it.
+	// No daemon-side proxy — binding the same port would collide with the
+	// service and is redundant since SSH handles the forwarding.
 	if err := s.repo.Create(ctx, fwd); err != nil {
-		_ = listener.Close()
 		return nil, fmt.Errorf("persist forward: %w", err)
 	}
-
-	s.mu.Lock()
-	s.listeners[id] = listener
-	s.mu.Unlock()
-
-	targetAddr := fmt.Sprintf("%s:%d", host, spec.RemotePort)
-	go serveForward(listener, targetAddr)
-
 	copy := *fwd
 	return &copy, nil
 }
@@ -169,33 +191,38 @@ func (s *Service) StopWorkspaceSpotlight(ctx context.Context, workspaceID string
 	return nil
 }
 
-func serveForward(listener net.Listener, targetAddr string) {
+// serveForwardWithDialer accepts TCP connections on listener and proxies each
+// via a fresh connection returned by dial. Used for Firecracker vsock proxying.
+func serveForwardWithDialer(listener net.Listener, dial func(ctx context.Context) (net.Conn, error)) {
 	for {
 		clientConn, err := listener.Accept()
 		if err != nil {
 			return
 		}
-		go proxyTCP(clientConn, targetAddr)
+		go func(c net.Conn) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			upstream, err := dial(ctx)
+			cancel()
+			if err != nil {
+				_ = c.Close()
+				return
+			}
+			proxyConns(c, upstream)
+		}(clientConn)
 	}
 }
 
-func proxyTCP(clientConn net.Conn, targetAddr string) {
-	upstreamConn, err := net.DialTimeout("tcp", targetAddr, 5*time.Second)
-	if err != nil {
-		_ = clientConn.Close()
-		return
-	}
-
+func proxyConns(a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	go func() {
-		_, _ = io.Copy(upstreamConn, clientConn)
+		_, _ = io.Copy(b, a)
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = io.Copy(clientConn, upstreamConn)
+		_, _ = io.Copy(a, b)
 		done <- struct{}{}
 	}()
 	<-done
-	_ = clientConn.Close()
-	_ = upstreamConn.Close()
+	_ = a.Close()
+	_ = b.Close()
 }

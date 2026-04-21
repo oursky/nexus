@@ -17,7 +17,7 @@ func TestReleaseBaseURLPrefersExplicitOverride(t *testing.T) {
 
 func TestReleaseBaseURLUsesPrereleaseChannel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/inizio/nexus/releases" {
+		if r.URL.Path != "/repos/oursky/nexus/releases" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -35,11 +35,11 @@ func TestReleaseBaseURLUsesPrereleaseChannel(t *testing.T) {
 	})
 	githubReleaseAPIBaseURL = server.URL
 	t.Setenv("NEXUS_RELEASE_CHANNEL", "prerelease")
-	t.Setenv("NEXUS_RELEASE_REPO", "inizio/nexus")
+	t.Setenv("NEXUS_RELEASE_REPO", "oursky/nexus")
 	t.Setenv("NEXUS_RELEASE_BASE_URL", "")
 
 	got := releaseBaseURL()
-	want := "https://github.com/inizio/nexus/releases/download/v1.4.0-rc.1"
+	want := "https://github.com/oursky/nexus/releases/download/v1.4.0-rc.1"
 	if got != want {
 		t.Fatalf("expected prerelease URL %s, got %s", want, got)
 	}
@@ -51,7 +51,7 @@ func TestChannelDefaults(t *testing.T) {
 	if got := channelName(); got != "stable" {
 		t.Fatalf("expected default stable channel, got %s", got)
 	}
-	if got := channelRepo(); got != "inizio/nexus" {
+	if got := channelRepo(); got != "oursky/nexus" {
 		t.Fatalf("expected default repo, got %s", got)
 	}
 }

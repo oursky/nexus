@@ -3,8 +3,8 @@ package spotlight
 import (
 	"fmt"
 
-	"github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/rpc"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/spotlight"
+	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
 	"github.com/spf13/cobra"
 )
 

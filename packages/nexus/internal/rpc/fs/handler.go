@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	rpce "github.com/inizio/nexus/packages/nexus/internal/rpc/errors"
-	"github.com/inizio/nexus/packages/nexus/internal/rpc/registry"
+	rpce "github.com/oursky/nexus/packages/nexus/internal/rpc/errors"
+	"github.com/oursky/nexus/packages/nexus/internal/rpc/registry"
 )
 
 // Handler exposes fs.* RPC methods operating within a workspace root directory.

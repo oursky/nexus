@@ -301,17 +301,26 @@ func TestSetupDNSDoesNotOverwriteExisting(t *testing.T) {
 }
 
 func TestStaticGuestIPForMAC(t *testing.T) {
-	ip, err := staticGuestIPForMAC("aa:fc:00:00:03:e8")
+	ip, err := staticGuestIPForMAC("aa:fc:00:00:03:e8", "172.26.0.1")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 	if ip != "172.26.3.232" {
 		t.Fatalf("expected 172.26.3.232, got %q", ip)
 	}
+
+	// With a different gateway the prefix should shift accordingly.
+	ip2, err := staticGuestIPForMAC("aa:fc:00:00:03:e8", "172.20.0.1")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if ip2 != "172.20.3.232" {
+		t.Fatalf("expected 172.20.3.232, got %q", ip2)
+	}
 }
 
 func TestStaticGuestIPForMACInvalid(t *testing.T) {
-	if _, err := staticGuestIPForMAC("invalid-mac"); err == nil {
+	if _, err := staticGuestIPForMAC("invalid-mac", "172.26.0.1"); err == nil {
 		t.Fatal("expected parse error for invalid mac")
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/inizio/nexus/packages/nexus/test/e2e/harness"
+	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
 // TestCLI_WorkspaceShellPTY drives `nexus workspace shell` through a real pseudoterminal

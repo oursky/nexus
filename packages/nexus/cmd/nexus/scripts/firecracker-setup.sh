@@ -19,6 +19,46 @@ set -euo pipefail
 : "${NEXUS_SETUP_FIRECRACKER_SRC:?}"
 : "${NEXUS_INSTALL_BIN_DIR:?}"
 
+# ── 0. Bridge subnet ──────────────────────────────────────────────────────────
+# Use NEXUS_BRIDGE_SUBNET if set, otherwise default to 172.26.0.0/16.
+# If the chosen subnet overlaps an existing route, fail immediately — set
+# NEXUS_BRIDGE_SUBNET to a free /16 before re-running.
+VM_ASSETS_DIR=/var/lib/nexus
+BRIDGE_SUBNET_FILE="$VM_ASSETS_DIR/bridge-subnet"
+mkdir -p "$VM_ASSETS_DIR"
+
+BRIDGE_SUBNET="${NEXUS_BRIDGE_SUBNET:-172.26.0.0/16}"
+echo "==> Bridge subnet: $BRIDGE_SUBNET"
+
+# Fail fast if the subnet overlaps any existing kernel route.
+_conflict=$(python3 - << PYEOF
+import subprocess, ipaddress, sys
+net = ipaddress.ip_network('$BRIDGE_SUBNET', strict=False)
+out = subprocess.check_output(['ip', '-4', 'route', 'show'], text=True, stderr=subprocess.DEVNULL)
+for line in out.splitlines():
+    parts = line.split()
+    if parts and '/' in parts[0]:
+        try:
+            if net.overlaps(ipaddress.ip_network(parts[0], strict=False)):
+                print(parts[0])
+                sys.exit(0)
+        except ValueError:
+            pass
+PYEOF
+)
+if [ -n "$_conflict" ]; then
+  echo "ERROR: $BRIDGE_SUBNET overlaps existing route $_conflict"
+  echo "       Set NEXUS_BRIDGE_SUBNET to a free /16 before running 'nexus daemon start'."
+  echo "       Example: NEXUS_BRIDGE_SUBNET=172.20.0.0/16 nexus daemon start"
+  exit 1
+fi
+
+echo "$BRIDGE_SUBNET" > "$BRIDGE_SUBNET_FILE"
+
+# Derive gateway: first host in the /16 (x.y.0.1)
+BRIDGE_GW=$(python3 -c "import ipaddress; net=ipaddress.ip_network('$BRIDGE_SUBNET',strict=False); print(str(list(net.hosts())[0]))")
+echo "==> Bridge gateway: $BRIDGE_GW"
+
 # ── 1. Install nexus-tap-helper with cap_net_admin ───────────────────────────
 echo "==> Installing nexus-tap-helper to ${NEXUS_INSTALL_BIN_DIR}..."
 mkdir -p "$NEXUS_INSTALL_BIN_DIR"
@@ -32,8 +72,11 @@ cp "$NEXUS_SETUP_FIRECRACKER_SRC" "$NEXUS_INSTALL_BIN_DIR/firecracker"
 chmod 755 "$NEXUS_INSTALL_BIN_DIR/firecracker"
 
 # ── 3. Configure systemd-networkd for the nexusbr0 bridge ────────────────────
-echo "==> Configuring systemd-networkd for nexusbr0..."
+echo "==> Configuring systemd-networkd for nexusbr0 ($BRIDGE_GW)..."
 mkdir -p /etc/systemd/network
+
+# Extract prefix length from BRIDGE_SUBNET (always 16 for /16)
+BRIDGE_PREFIX=$(echo "$BRIDGE_SUBNET" | cut -d'/' -f2)
 
 cat > /etc/systemd/network/10-nexusbr0.netdev << 'NEXUS_EOF'
 [NetDev]
@@ -41,12 +84,12 @@ Name=nexusbr0
 Kind=bridge
 NEXUS_EOF
 
-cat > /etc/systemd/network/11-nexusbr0.network << 'NEXUS_EOF'
+cat > /etc/systemd/network/11-nexusbr0.network << NEXUS_EOF
 [Match]
 Name=nexusbr0
 
 [Network]
-Address=172.26.0.1/16
+Address=${BRIDGE_GW}/${BRIDGE_PREFIX}
 IPForward=yes
 IPMasquerade=ipv4
 ConfigureWithoutCarrier=yes
@@ -65,9 +108,9 @@ systemctl enable systemd-networkd
 systemctl restart systemd-networkd
 
 # ── 4. Bring up the bridge immediately (don't wait for networkd) ──────────────
-echo "==> Bringing up nexusbr0..."
+echo "==> Bringing up nexusbr0 ($BRIDGE_GW/$BRIDGE_PREFIX)..."
 ip link add nexusbr0 type bridge 2>/dev/null || true
-ip addr replace 172.26.0.1/16 dev nexusbr0
+ip addr replace "${BRIDGE_GW}/${BRIDGE_PREFIX}" dev nexusbr0
 ip link set nexusbr0 up
 
 # Wait up to 15 s for the bridge route to become active.
@@ -87,10 +130,10 @@ sysctl -w net.ipv4.ip_forward=1
 printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-nexus-ip-forward.conf
 
 # ── 6. NAT and forwarding iptables rules ─────────────────────────────────────
-echo "==> Configuring iptables..."
+echo "==> Configuring iptables for $BRIDGE_SUBNET..."
 if command -v iptables >/dev/null 2>&1; then
-  iptables -t nat -C POSTROUTING -s 172.26.0.0/16 ! -d 172.26.0.0/16 -j MASQUERADE 2>/dev/null || \
-    iptables -t nat -A POSTROUTING -s 172.26.0.0/16 ! -d 172.26.0.0/16 -j MASQUERADE
+  iptables -t nat -C POSTROUTING -s "$BRIDGE_SUBNET" ! -d "$BRIDGE_SUBNET" -j MASQUERADE 2>/dev/null || \
+    iptables -t nat -A POSTROUTING -s "$BRIDGE_SUBNET" ! -d "$BRIDGE_SUBNET" -j MASQUERADE
   iptables -C FORWARD -i nexusbr0 -j ACCEPT 2>/dev/null || \
     iptables -A FORWARD -i nexusbr0 -j ACCEPT
   iptables -C FORWARD -o nexusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
@@ -98,11 +141,11 @@ if command -v iptables >/dev/null 2>&1; then
 fi
 
 # ── 7. Policy routing (override Tailscale / VPN catch-all rules) ─────────────
-echo "==> Adding policy routing rules..."
-ip rule show | grep -q '^5190:.* to 172.26.0.0/16 .* lookup main' || \
-  ip rule add pref 5190 to 172.26.0.0/16 lookup main
-ip rule show | grep -q '^5191:.* from 172.26.0.0/16 .* lookup main' || \
-  ip rule add pref 5191 from 172.26.0.0/16 lookup main
+echo "==> Adding policy routing rules for $BRIDGE_SUBNET..."
+ip rule show | grep -qF "to $BRIDGE_SUBNET" || \
+  ip rule add pref 5190 to "$BRIDGE_SUBNET" lookup main
+ip rule show | grep -qF "from $BRIDGE_SUBNET" || \
+  ip rule add pref 5191 from "$BRIDGE_SUBNET" lookup main
 
 # ── 8. Add invoking user to kvm group ────────────────────────────────────────
 echo "==> Checking kvm group membership..."
@@ -114,7 +157,6 @@ if getent group kvm >/dev/null 2>&1 && [ -n "${SUDO_USER:-}" ]; then
 fi
 
 # ── 9. Download VM kernel (idempotent) ────────────────────────────────────────
-VM_ASSETS_DIR=/var/lib/nexus
 KERNEL_PATH="$VM_ASSETS_DIR/vmlinux.bin"
 ROOTFS_PATH="$VM_ASSETS_DIR/rootfs.ext4"
 KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/x86_64/vmlinux-5.10.239"
@@ -124,8 +166,6 @@ SQUASHFS_CACHE="/tmp/nexus-ubuntu.squashfs"
 # Direct ext4 rootfs cache: avoids the full squashfs→ext4 conversion.
 # Populated automatically by nexus daemon implode (before wiping /var/lib/nexus).
 ROOTFS_CACHE="/tmp/nexus-rootfs.ext4"
-
-mkdir -p "$VM_ASSETS_DIR"
 
 if [ ! -f "$KERNEL_PATH" ]; then
   if [ -f "$KERNEL_CACHE" ]; then

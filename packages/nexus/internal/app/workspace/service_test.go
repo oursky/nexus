@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/domain/project"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/runtime"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/project"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 )
 
 // ── Fakes ────────────────────────────────────────────────────────────────────

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/test/e2e/harness"
+	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
 // TestProtocol_Healthz verifies the /healthz HTTP endpoint returns 200 OK.

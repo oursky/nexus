@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/infra/config"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/dockercompose"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/firecracker"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/config"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/dockercompose"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/firecracker"
 )
 
 type fakeSocketFileInfo struct {

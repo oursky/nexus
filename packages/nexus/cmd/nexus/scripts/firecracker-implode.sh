@@ -12,6 +12,15 @@ set -euo pipefail
 : "${NEXUS_INSTALL_BIN_DIR:?}"
 
 VM_ASSETS_DIR=/var/lib/nexus
+BRIDGE_SUBNET_FILE="$VM_ASSETS_DIR/bridge-subnet"
+
+# Load the persisted bridge subnet so teardown targets the right CIDR.
+if [ -f "$BRIDGE_SUBNET_FILE" ]; then
+  BRIDGE_SUBNET=$(cat "$BRIDGE_SUBNET_FILE")
+else
+  BRIDGE_SUBNET="172.26.0.0/16"
+fi
+echo "==> Tearing down Firecracker bridge subnet: $BRIDGE_SUBNET"
 
 # ── 1. Remove nexus-* TAP interfaces ─────────────────────────────────────────
 echo "==> Removing nexus TAP interfaces..."
@@ -30,17 +39,17 @@ if ip link show nexusbr0 >/dev/null 2>&1; then
 fi
 
 # ── 3. Remove iptables rules ──────────────────────────────────────────────────
-echo "==> Removing iptables rules..."
+echo "==> Removing iptables rules for $BRIDGE_SUBNET..."
 if command -v iptables >/dev/null 2>&1; then
-  iptables -t nat -D POSTROUTING -s 172.26.0.0/16 ! -d 172.26.0.0/16 -j MASQUERADE 2>/dev/null || true
+  iptables -t nat -D POSTROUTING -s "$BRIDGE_SUBNET" ! -d "$BRIDGE_SUBNET" -j MASQUERADE 2>/dev/null || true
   iptables -D FORWARD -i nexusbr0 -j ACCEPT 2>/dev/null || true
   iptables -D FORWARD -o nexusbr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
 fi
 
 # ── 4. Remove policy routing rules ────────────────────────────────────────────
-echo "==> Removing policy routing rules..."
-ip rule del pref 5190 to 172.26.0.0/16 lookup main 2>/dev/null || true
-ip rule del pref 5191 from 172.26.0.0/16 lookup main 2>/dev/null || true
+echo "==> Removing policy routing rules for $BRIDGE_SUBNET..."
+ip rule del to "$BRIDGE_SUBNET" lookup main 2>/dev/null || true
+ip rule del from "$BRIDGE_SUBNET" lookup main 2>/dev/null || true
 
 # ── 5. Remove systemd-networkd units ─────────────────────────────────────────
 echo "==> Removing systemd-networkd units..."
@@ -76,6 +85,7 @@ fi
 echo "==> Removing VM assets from ${VM_ASSETS_DIR}..."
 rm -f "$VM_ASSETS_DIR/vmlinux.bin"
 rm -f "$VM_ASSETS_DIR/rootfs.ext4"
+rm -f "$VM_ASSETS_DIR/bridge-subnet"
 rmdir "$VM_ASSETS_DIR" 2>/dev/null || true
 
 echo "==> Privileged cleanup complete."

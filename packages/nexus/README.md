@@ -15,6 +15,8 @@ cd packages/nexus
 go build ./cmd/nexus/...
 ```
 
+From the **repository root**, `task build` runs `go build ./...` in this package. Use `task test` and `task ci` for checks; see the root [CONTRIBUTING.md](../../CONTRIBUTING.md) for remote deploy tasks (`dev:remote`, `dev:cli`).
+
 ## Test
 
 ```bash

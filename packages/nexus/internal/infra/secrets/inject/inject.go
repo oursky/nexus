@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/creds/relay"
-	rpcerrors "github.com/inizio/nexus/packages/nexus/internal/rpc/errors"
+	"github.com/oursky/nexus/packages/nexus/internal/creds/relay"
+	rpcerrors "github.com/oursky/nexus/packages/nexus/internal/rpc/errors"
 )
 
 // WorkspaceAuthLookup is satisfied by any store/service that can return an

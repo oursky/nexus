@@ -256,9 +256,15 @@ const DefaultVMRootfsPath = vmAssetsDir + "/rootfs.ext4"
 // /home/user/.local/bin).
 func buildSetupScript(tapHelperSrc, agentSrc, firecrackerSrc, installBinDir string) string {
 	header := fmt.Sprintf(
-		"export NEXUS_SETUP_TAP_HELPER_SRC=%s\nexport NEXUS_SETUP_AGENT_SRC=%s\nexport NEXUS_SETUP_FIRECRACKER_SRC=%s\nexport NEXUS_INSTALL_BIN_DIR=%s\n\n",
+		"export NEXUS_SETUP_TAP_HELPER_SRC=%s\nexport NEXUS_SETUP_AGENT_SRC=%s\nexport NEXUS_SETUP_FIRECRACKER_SRC=%s\nexport NEXUS_INSTALL_BIN_DIR=%s\n",
 		shellQuote(tapHelperSrc), shellQuote(agentSrc), shellQuote(firecrackerSrc), shellQuote(installBinDir),
 	)
+	// Forward NEXUS_BRIDGE_SUBNET into the script so it survives sudo's env
+	// stripping.  This is set by --network-cidr or the user's environment.
+	if s := os.Getenv("NEXUS_BRIDGE_SUBNET"); s != "" {
+		header += fmt.Sprintf("export NEXUS_BRIDGE_SUBNET=%s\n", shellQuote(s))
+	}
+	header += "\n"
 	return header + string(firecrackerSetupScript)
 }
 

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/inizio/nexus/packages/nexus/internal/domain/project"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/hostpaths"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/project"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/hostpaths"
 )
 
 // hostRepoTreePath returns a directory on the daemon host for workspace discovery (compose, config).

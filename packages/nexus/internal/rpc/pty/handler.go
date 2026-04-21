@@ -16,12 +16,12 @@ import (
 	"time"
 
 	creackpty "github.com/creack/pty"
-	appty "github.com/inizio/nexus/packages/nexus/internal/app/pty"
-	domainproj "github.com/inizio/nexus/packages/nexus/internal/domain/project"
-	domainws "github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
-	rpcerrors "github.com/inizio/nexus/packages/nexus/internal/rpc/errors"
-	"github.com/inizio/nexus/packages/nexus/internal/rpc/registry"
-	"github.com/inizio/nexus/packages/nexus/internal/transport"
+	appty "github.com/oursky/nexus/packages/nexus/internal/app/pty"
+	domainproj "github.com/oursky/nexus/packages/nexus/internal/domain/project"
+	domainws "github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	rpcerrors "github.com/oursky/nexus/packages/nexus/internal/rpc/errors"
+	"github.com/oursky/nexus/packages/nexus/internal/rpc/registry"
+	"github.com/oursky/nexus/packages/nexus/internal/transport"
 )
 
 // Handler provides JSON-RPC dispatch for PTY operations.
@@ -142,10 +142,13 @@ func (h *Handler) create(ctx context.Context, raw json.RawMessage) (any, error) 
 }
 
 func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, ws *domainws.Workspace, cols, rows int) (any, error) {
+	log.Printf("pty: createFirecrackerSession: connecting to agent for %s", p.WorkspaceID)
 	conn, err := h.dialer.AgentConn(ctx, p.WorkspaceID)
 	if err != nil {
+		log.Printf("pty: createFirecrackerSession: agent connect failed: %v", err)
 		return nil, fmt.Errorf("firecracker agent connect: %w", err)
 	}
+	log.Printf("pty: createFirecrackerSession: agent connected")
 
 	workDir := h.dialer.GuestWorkdir(p.WorkspaceID)
 	if workDir == "" {
@@ -181,14 +184,16 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 		CreatedAt:   time.Now(),
 	}
 
-	if err := enc.Encode(map[string]any{
+	shellOpenMsg := map[string]any{
 		"id":      sessionID,
 		"type":    "shell.open",
 		"command": shell,
+		"args":    p.Args,
 		"workdir": workDir,
 		"cols":    cols,
 		"rows":    rows,
-	}); err != nil {
+	}
+	if err := enc.Encode(shellOpenMsg); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("firecracker shell.open send: %w", err)
 	}
@@ -233,9 +238,11 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 	select {
 	case err := <-ackCh:
 		if err != nil {
+			log.Printf("pty: createFirecrackerSession: ack error: %v", err)
 			_ = conn.Close()
 			return nil, err
 		}
+		log.Printf("pty: createFirecrackerSession: ack received OK")
 	case <-time.After(8 * time.Second):
 		_ = conn.Close()
 		return nil, errors.New("firecracker shell.open ack timed out")
@@ -243,10 +250,12 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 
 	h.reg.Register(s)
 	go h.streamFirecrackerSession(s, dec, notifier)
+	log.Printf("pty: createFirecrackerSession: session %s registered, streaming", s.ID)
 	return s.Info(), nil
 }
 
 func (h *Handler) streamFirecrackerSession(s *appty.Session, dec *json.Decoder, notifier transport.Notifier) {
+	log.Printf("pty: streamFirecrackerSession: starting for %s", s.ID)
 	defer func() {
 		_ = s.RemoteConn.Close()
 		h.reg.Unregister(s.ID)
@@ -271,10 +280,12 @@ func (h *Handler) streamFirecrackerSession(s *appty.Session, dec *json.Decoder, 
 			}
 			return
 		}
+		log.Printf("pty: streamFirecrackerSession: received type=%q id=%q", env.Type, env.ID)
 		switch env.Type {
 		case "chunk":
 			notifier.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Data})
 		case "result", "":
+			log.Printf("pty: streamFirecrackerSession: sending pty.exit exitCode=%d", env.ExitCode)
 			if env.Stdout != "" {
 				notifier.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Stdout})
 			}

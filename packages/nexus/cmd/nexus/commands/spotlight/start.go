@@ -5,10 +5,10 @@ import (
 	"io"
 	"sync"
 
-	"github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/rpc"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/spotlight"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/profile"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/sshtunnel"
+	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/sshtunnel"
 	"github.com/spf13/cobra"
 )
 
@@ -93,7 +93,8 @@ func startCommand() *cobra.Command {
 				}
 			}
 
-			if err := openSSHTunnel(p, port.LocalPort, targetHost, targetPort); err != nil {
+			boundPort, err := openSSHTunnel(p, port.LocalPort, targetHost, targetPort)
+			if err != nil {
 				_ = conn.Call("spotlight.stop", map[string]any{"workspaceId": workspaceID}, nil)
 				return fmt.Errorf("%d/%s: tunnel failed: %w", port.LocalPort, port.Service, err)
 			}
@@ -102,7 +103,11 @@ func startCommand() *cobra.Command {
 			if label == "" {
 				label = fmt.Sprintf(":%d", port.RemotePort)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "  %s → localhost:%d\n", label, port.LocalPort)
+			if boundPort != port.LocalPort {
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s → localhost:%d (remapped from :%d, port in use)\n", label, boundPort, port.LocalPort)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s → localhost:%d\n", label, boundPort)
+			}
 			forwarded++
 		}
 
@@ -118,7 +123,10 @@ func startCommand() *cobra.Command {
 }
 
 // openSSHTunnel creates an SSH tunnel: client localhost:localPort → daemon targetHost:targetPort.
-func openSSHTunnel(p *profile.Profile, localPort int, targetHost string, targetPort int) error {
+// If localPort is already bound by another spotlight forward (multi-tenant scenario where two
+// workspaces expose the same port), an ephemeral local port is selected instead.
+// Returns the actual local port that was bound.
+func openSSHTunnel(p *profile.Profile, localPort int, targetHost string, targetPort int) (int, error) {
 	tunnelCache.mu.Lock()
 	defer tunnelCache.mu.Unlock()
 
@@ -126,17 +134,28 @@ func openSSHTunnel(p *profile.Profile, localPort int, targetHost string, targetP
 		tunnelCache.forwards = make(map[int]*sshtunnel.Manager)
 	}
 
-	if _, exists := tunnelCache.forwards[localPort]; exists {
-		return nil // already tunnelling
+	if existing, exists := tunnelCache.forwards[localPort]; exists {
+		// Port is already forwarded by another entry in this session — reuse.
+		return existing.LocalPort(), nil
 	}
 
 	tm := sshtunnel.NewWithTarget(p.Host, targetHost, targetPort, p.SSHPort)
-	if _, err := tm.EnsureWithLocalPort(localPort); err != nil {
-		return err
+
+	// Try the desired local port first; fall back to ephemeral if it's in use.
+	bound, err := tm.EnsureWithLocalPort(localPort)
+	if err != nil {
+		// Port likely in use by another process (different workspace/service).
+		// Let the OS pick a free port so this workspace can still be reached.
+		tmFallback := sshtunnel.NewWithTarget(p.Host, targetHost, targetPort, p.SSHPort)
+		bound, err = tmFallback.EnsureWithLocalPort(0)
+		if err != nil {
+			return 0, err
+		}
+		tm = tmFallback
 	}
 
-	tunnelCache.forwards[localPort] = tm
-	return nil
+	tunnelCache.forwards[bound] = tm
+	return bound, nil
 }
 
 func stopClientActiveSpotlight(conn *rpc.MuxConn, p *profile.Profile, out io.Writer) error {

@@ -12,7 +12,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/inizio/nexus/packages/nexus/internal/rpc/registry"
+	"github.com/oursky/nexus/packages/nexus/internal/rpc/registry"
 )
 
 // rpcRequest is the incoming JSON-RPC 2.0 envelope.

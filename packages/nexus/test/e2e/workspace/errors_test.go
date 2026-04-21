@@ -5,7 +5,7 @@ package workspace_test
 import (
 	"testing"
 
-	"github.com/inizio/nexus/packages/nexus/test/e2e/harness"
+	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
 // TestErrors_WorkspaceNotFound verifies workspace operations on unknown IDs return 404.

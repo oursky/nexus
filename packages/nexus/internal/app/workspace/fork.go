@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 )
 
 func (s *Service) Fork(ctx context.Context, parentID string, spec ForkSpec) (*workspace.Workspace, error) {

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 )
 
 func (s *Service) PortsList(ctx context.Context, id string) ([]int, error) {

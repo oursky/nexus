@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 
-	rpce "github.com/inizio/nexus/packages/nexus/internal/rpc/errors"
-	"github.com/inizio/nexus/packages/nexus/internal/rpc/registry"
+	rpce "github.com/oursky/nexus/packages/nexus/internal/rpc/errors"
+	"github.com/oursky/nexus/packages/nexus/internal/rpc/registry"
 )
 
 // NodeInfoProvider supplies node identity and capability data.

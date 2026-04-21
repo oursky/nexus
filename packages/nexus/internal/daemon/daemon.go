@@ -12,24 +12,24 @@ import (
 	"strings"
 	"time"
 
-	apppty "github.com/inizio/nexus/packages/nexus/internal/app/pty"
-	appspotlight "github.com/inizio/nexus/packages/nexus/internal/app/spotlight"
-	appworkspace "github.com/inizio/nexus/packages/nexus/internal/app/workspace"
-	"github.com/inizio/nexus/packages/nexus/internal/creds/relay"
-	domainruntime "github.com/inizio/nexus/packages/nexus/internal/domain/runtime"
-	domainws "github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/firecracker"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/runtime/sandbox"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/store"
-	rpcauth "github.com/inizio/nexus/packages/nexus/internal/rpc/auth"
-	rpcdaemon "github.com/inizio/nexus/packages/nexus/internal/rpc/daemon"
-	rpcfs "github.com/inizio/nexus/packages/nexus/internal/rpc/fs"
-	rpcproject "github.com/inizio/nexus/packages/nexus/internal/rpc/project"
-	rpcpty "github.com/inizio/nexus/packages/nexus/internal/rpc/pty"
-	rpcregistry "github.com/inizio/nexus/packages/nexus/internal/rpc/registry"
-	rpcspotlight "github.com/inizio/nexus/packages/nexus/internal/rpc/spotlight"
-	rpcworkspace "github.com/inizio/nexus/packages/nexus/internal/rpc/workspace"
-	"github.com/inizio/nexus/packages/nexus/internal/transport"
+	apppty "github.com/oursky/nexus/packages/nexus/internal/app/pty"
+	appspotlight "github.com/oursky/nexus/packages/nexus/internal/app/spotlight"
+	appworkspace "github.com/oursky/nexus/packages/nexus/internal/app/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/creds/relay"
+	domainruntime "github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
+	domainws "github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/firecracker"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/sandbox"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/store"
+	rpcauth "github.com/oursky/nexus/packages/nexus/internal/rpc/auth"
+	rpcdaemon "github.com/oursky/nexus/packages/nexus/internal/rpc/daemon"
+	rpcfs "github.com/oursky/nexus/packages/nexus/internal/rpc/fs"
+	rpcproject "github.com/oursky/nexus/packages/nexus/internal/rpc/project"
+	rpcpty "github.com/oursky/nexus/packages/nexus/internal/rpc/pty"
+	rpcregistry "github.com/oursky/nexus/packages/nexus/internal/rpc/registry"
+	rpcspotlight "github.com/oursky/nexus/packages/nexus/internal/rpc/spotlight"
+	rpcworkspace "github.com/oursky/nexus/packages/nexus/internal/rpc/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/transport"
 )
 
 // NetworkConfig holds optional remote-listener settings.
@@ -126,7 +126,7 @@ func New(cfg Config) (*Daemon, error) {
 
 	spotlightOpts := []appspotlight.Option{}
 	if fcDriver != nil {
-		spotlightOpts = append(spotlightOpts, appspotlight.WithEndpointResolver(fcDriver))
+		spotlightOpts = append(spotlightOpts, appspotlight.WithPortDialer(fcDriver))
 	}
 	spotlightSvc := appspotlight.New(fwdStore, wsStore, spotlightOpts...)
 	ptyReg := apppty.NewRegistry()
@@ -257,11 +257,24 @@ func buildFirecrackerDriver(cfg Config) *firecracker.FCDriver {
 	return firecracker.New(execRunner{}, firecracker.WithManager(mgr))
 }
 
+// loadFirecrackerBridgeSubnet returns the bridge subnet CIDR.
+// Priority: NEXUS_BRIDGE_SUBNET env var → persisted file → default.
+func loadFirecrackerBridgeSubnet() string {
+	if s := os.Getenv("NEXUS_BRIDGE_SUBNET"); s != "" {
+		return s
+	}
+	data, err := os.ReadFile("/var/lib/nexus/bridge-subnet")
+	if err == nil {
+		if s := strings.TrimSpace(string(data)); s != "" {
+			return s
+		}
+	}
+	return "172.26.0.0/16"
+}
+
 func validateFirecrackerHostRouting() error {
-	const (
-		bridge = "nexusbr0"
-		subnet = "172.26.0.0/16"
-	)
+	const bridge = "nexusbr0"
+	subnet := loadFirecrackerBridgeSubnet()
 	out, err := exec.Command("ip", "-4", "route", "show", subnet).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("firecracker host route check failed for %s: %w", subnet, err)
@@ -282,10 +295,13 @@ func validateFirecrackerHostRouting() error {
 				break
 			}
 			return fmt.Errorf(
-				"firecracker subnet conflict: route %q uses %s (expected %s)\n"+
-					"another bridge already owns %s, so VM outbound traffic can fail\n"+
-					"remove/reconfigure the conflicting bridge or pick a different firecracker subnet",
-				line, dev, bridge, subnet,
+				"firecracker subnet conflict: %s route is owned by %q (expected %s)\n"+
+					"Docker likely allocated %s for one of its project networks\n"+
+					"to fix: run `sudo nexus init --project-root <path> --force` to configure\n"+
+					"Docker address pools to exclude %s, then remove conflicting networks:\n"+
+					"  docker network ls  # find networks with subnet %s\n"+
+					"  docker network rm <id>",
+				subnet, dev, bridge, subnet, subnet, subnet,
 			)
 		}
 	}

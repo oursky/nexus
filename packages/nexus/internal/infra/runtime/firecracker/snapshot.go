@@ -154,8 +154,8 @@ func (m *Manager) restoreFromSnapshot(ctx context.Context, spec SpawnSpec, snap 
 
 	tap := tapNameForWorkspace(spec.WorkspaceID)
 	mac := guestMAC(cid)
-	hostIP := bridgeGatewayIP
-	subnetCIDR := guestSubnetCIDR
+	hostIP := bridgeGatewayIP()
+	subnetCIDR := guestSubnetCIDR()
 
 	if err := setupTAP(tap, hostIP, subnetCIDR); err != nil {
 		os.RemoveAll(workDir)

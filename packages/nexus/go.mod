@@ -1,4 +1,4 @@
-module github.com/inizio/nexus/packages/nexus
+module github.com/oursky/nexus/packages/nexus
 
 go 1.21.0
 

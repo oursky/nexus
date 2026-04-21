@@ -21,7 +21,7 @@ func channelRepo() string {
 	if v := os.Getenv("NEXUS_RELEASE_REPO"); v != "" {
 		return v
 	}
-	return "inizio/nexus"
+	return "oursky/nexus"
 }
 
 func releaseBaseURL() string {

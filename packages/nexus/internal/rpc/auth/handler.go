@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/creds/relay"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
-	rpce "github.com/inizio/nexus/packages/nexus/internal/rpc/errors"
-	"github.com/inizio/nexus/packages/nexus/internal/rpc/registry"
+	"github.com/oursky/nexus/packages/nexus/internal/creds/relay"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	rpce "github.com/oursky/nexus/packages/nexus/internal/rpc/errors"
+	"github.com/oursky/nexus/packages/nexus/internal/rpc/registry"
 )
 
 // WorkspaceGetter fetches workspace entities by ID.

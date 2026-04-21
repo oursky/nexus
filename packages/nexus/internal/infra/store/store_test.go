@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/domain/project"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/spotlight"
-	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/project"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 )
 
 // openTestDB creates a fresh in-memory SQLite database with migrations applied.

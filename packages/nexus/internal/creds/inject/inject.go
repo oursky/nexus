@@ -1,7 +1,7 @@
 package inject
 
 import (
-	"github.com/inizio/nexus/packages/nexus/internal/creds/relay"
+	"github.com/oursky/nexus/packages/nexus/internal/creds/relay"
 )
 
 // EnvFromBinding builds an env-var map for the given auth binding and secret

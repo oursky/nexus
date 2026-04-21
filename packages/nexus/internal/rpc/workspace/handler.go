@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 
-	appsvc "github.com/inizio/nexus/packages/nexus/internal/app/workspace"
-	rpce "github.com/inizio/nexus/packages/nexus/internal/rpc/errors"
-	"github.com/inizio/nexus/packages/nexus/internal/rpc/registry"
+	appsvc "github.com/oursky/nexus/packages/nexus/internal/app/workspace"
+	rpce "github.com/oursky/nexus/packages/nexus/internal/rpc/errors"
+	"github.com/oursky/nexus/packages/nexus/internal/rpc/registry"
 )
 
 // Handler holds the workspace app service and registers all workspace RPC methods.

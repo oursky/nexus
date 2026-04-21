@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inizio/nexus/packages/nexus/test/e2e/harness"
+	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
 func TestCLI_WorkspaceForkAndRestore(t *testing.T) {

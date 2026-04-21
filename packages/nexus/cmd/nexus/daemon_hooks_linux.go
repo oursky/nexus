@@ -3,7 +3,7 @@
 package main
 
 import (
-	daemoncmd "github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/daemon"
+	daemoncmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon"
 )
 
 func init() {

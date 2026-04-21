@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/inizio/nexus/packages/nexus/internal/auth/tokenstore"
-	"github.com/inizio/nexus/packages/nexus/internal/daemon"
+	"github.com/oursky/nexus/packages/nexus/internal/auth/tokenstore"
+	"github.com/oursky/nexus/packages/nexus/internal/daemon"
 	"github.com/spf13/cobra"
 )
 
@@ -56,8 +56,9 @@ func startCommand() *cobra.Command {
 		token       string
 		tlsCert     string
 		tlsKey      string
-		foreground  bool // --foreground: stay blocking instead of self-daemonizing
-		sandboxMode bool // internal: use process sandbox backend instead of Firecracker
+		foreground  bool   // --foreground: stay blocking instead of self-daemonizing
+		sandboxMode bool   // internal: use process sandbox backend instead of Firecracker
+		networkCIDR string // --network-cidr: bridge subnet for Firecracker VMs
 	)
 
 	defaultData := defaultDataDir()
@@ -67,6 +68,14 @@ func startCommand() *cobra.Command {
 		Short: "Start the Nexus daemon (auto-provisions prerequisites; listens on 127.0.0.1:7777 by default)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			isForegroundChild := os.Getenv(daemonForegroundEnv) == "1"
+
+			// Propagate --network-cidr into the environment so both the setup
+			// script (injected as an export header) and the Go daemon process
+			// (via os.Getenv) use the same subnet.  The background child
+			// inherits it automatically through os.Environ().
+			if networkCIDR != "" {
+				os.Setenv("NEXUS_BRIDGE_SUBNET", networkCIDR)
+			}
 
 			// Auto-provision host prerequisites (Firecracker binary, kernel,
 			// rootfs, networking).  Skipped in the background child process
@@ -170,7 +179,11 @@ func startCommand() *cobra.Command {
 				Network:            netCfg,
 			}
 
-			if firecrackerEnabled {
+			// Inject the guest agent only in the parent (or in foreground mode).
+			// The background child skips this — the parent always completes
+			// injection before launching the child, so the child sees a
+			// consistent rootfs with no concurrent debugfs writes.
+			if firecrackerEnabled && !isForegroundChild {
 				if err := ensureFirecrackerGuestAgent(cfg.RootFSPath); err != nil {
 					return fmt.Errorf("daemon start: guest agent refresh: %w", err)
 				}
@@ -216,6 +229,7 @@ func startCommand() *cobra.Command {
 	cmd.Flags().StringVar(&token, "token", "", "Static bearer token (default: auto-generated and stored)")
 	cmd.Flags().StringVar(&tlsCert, "tls-cert", "", "TLS certificate file (PEM) for required mode")
 	cmd.Flags().StringVar(&tlsKey, "tls-key", "", "TLS key file (PEM) for required mode")
+	cmd.Flags().StringVar(&networkCIDR, "network-cidr", "", "Bridge subnet for Firecracker VMs, e.g. 172.20.0.0/16 (default: 172.26.0.0/16, override with NEXUS_BRIDGE_SUBNET)")
 	cmd.Flags().BoolVar(&sandboxMode, "sandbox", false, "Use process sandbox backend instead of Firecracker (internal/testing)")
 	_ = cmd.Flags().MarkHidden("sandbox")
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Stay in foreground instead of self-daemonizing")
@@ -272,6 +286,13 @@ func launchDaemonBackground(out io.Writer, socketPath string) error {
 	return fmt.Errorf("daemon did not become ready within 30s — check log: %s", logPath)
 }
 
+// agentHashFile returns a user-writable path for the agent SHA-256 cache.
+// Stored under XDG_STATE_HOME so it survives rootfs rebuilds and can be
+// written by the daemon user even when /var/lib/nexus/ is root-owned.
+func agentHashFile() string {
+	return filepath.Join(defaultDataDir(), "rootfs-agent.sha256")
+}
+
 func defaultDataDir() string {
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
 		return filepath.Join(xdg, "nexus")
@@ -316,10 +337,10 @@ func ensureFirecrackerGuestAgent(rootfsPath string) error {
 	}
 
 	// Skip injection when the agent binary hasn't changed since the last time
-	// we wrote it into the rootfs.  The hash is stored in a sidecar file next
-	// to the rootfs so the check is a fast stat + file read with no I/O on the
-	// ext4 image itself.
-	hashFile := rootfsPath + ".agent-sha256"
+	// we wrote it into the rootfs.  The hash is stored in the user state dir
+	// (not next to /var/lib/nexus/rootfs.ext4 which is root-owned) so it
+	// survives daemon restarts and prevents double-injection.
+	hashFile := agentHashFile()
 	if agentHash, hashErr := sha256HexFile(agentPath); hashErr == nil {
 		if stored, readErr := os.ReadFile(hashFile); readErr == nil &&
 			strings.TrimSpace(string(stored)) == agentHash {
@@ -327,6 +348,9 @@ func ensureFirecrackerGuestAgent(rootfsPath string) error {
 		}
 		// Inject and record the new hash on success (below).
 		defer func() {
+			if dir := filepath.Dir(hashFile); dir != "" {
+				_ = os.MkdirAll(dir, 0o755)
+			}
 			_ = os.WriteFile(hashFile, []byte(agentHash+"\n"), 0o644)
 		}()
 	}

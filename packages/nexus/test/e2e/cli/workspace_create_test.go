@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/inizio/nexus/packages/nexus/test/e2e/harness"
+	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
 // TestCLI_WorkspaceCreate_EndToEnd runs workspace create against a real daemon over the
