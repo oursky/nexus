@@ -4,18 +4,17 @@ dotenv: [".env.local"]
 
 vars:
   REMOTE_HOST: '{{.REMOTE_HOST | default ""}}'
-  REMOTE_BIN: '{{.REMOTE_BIN | default "~/.local/bin/nexus"}}'
+  REMOTE_BIN:  '{{.REMOTE_BIN  | default "~/.local/bin/nexus"}}'
   REMOTE_PORT: '{{.REMOTE_PORT | default "7777"}}'
 
 tasks:
   # ── Setup ────────────────────────────────────────────────────────────────
   setup:
-    desc: "Check prerequisites and install dependencies for all packages"
+    desc: "Check prerequisites and install Go dependencies"
     cmds:
       - |
         fail=0
 
-        # Go ≥1.21
         if ! command -v go >/dev/null 2>&1; then
           echo "✗ go not found (need ≥1.21)" && fail=1
         else
@@ -29,24 +28,87 @@ tasks:
           fi
         fi
 
-        # task (go-task)
         if ! command -v task >/dev/null 2>&1; then
-          echo "✗ task (go-task) not found (install: https://taskfile.dev/installation)" && fail=1
+          echo "✗ task not found — install: https://taskfile.dev/installation" && fail=1
         else
           echo "✓ task $(task --version 2>/dev/null | head -1)"
         fi
 
-        [ "$fail" -eq 0 ] || { echo ""; echo "Fix the issues above, then re-run: task setup"; exit 1; }
-      - echo ""
-      - echo "Installing Go dependencies..."
-      - task: setup:go
-      - echo ""
-      - echo "✓ Setup complete!"
-      - echo ""
-      - echo "Next steps:"
-      - echo "  task build        — build all packages"
-      - echo "  task test         — run the test suite"
-      - echo "  task dev:daemon   — start the daemon with hot-reload"
+        [ "$fail" -eq 0 ] || { echo ""; echo "Fix the issues above then re-run: task setup"; exit 1; }
+      - cd packages/nexus && go mod download
+      - 'echo "Setup complete. Next: task dev:remote"'
+
+  # ── Checks ───────────────────────────────────────────────────────────────
+  build:
+    desc: "Compile all Go packages"
+    dir: packages/nexus
+    cmds:
+      - go build ./...
+
+  test:
+    desc: "Run Go tests"
+    dir: packages/nexus
+    cmds:
+      - go test ./...
+
+  ci:
+    desc: "Run local CI equivalent (go-fix + coverage + core)"
+    cmds:
+      - ./scripts/ci/go-fix.sh
+      - ./scripts/ci/coverage.sh
+      - ./scripts/ci/nexus-core.sh
+
+  clean:
+    desc: "Remove build artifacts"
+    cmds:
+      - rm -rf packages/nexus/nexus packages/nexus/tmp packages/nexus/.air-tmp
+
+  # ── Dev loops ─────────────────────────────────────────────────────────────
+  # Set REMOTE_HOST=user@hostname in .env.local (see .env.local.example).
+
+  dev:remote:
+    desc: "Build for linux/amd64, deploy, and restart remote daemon"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+      REMOTE_BIN:  "{{.REMOTE_BIN}}"
+    cmds:
+      - scripts/remote/deploy.sh
+      - scripts/remote/daemon-restart.sh
+
+  dev:cli:
+    desc: "dev:remote + install local CLI binary (for CLI-only changes)"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+      REMOTE_BIN:  "{{.REMOTE_BIN}}"
+    cmds:
+      - task: dev:remote
+      - scripts/local/deploy.sh
+
+  dev:swift:
+    desc: "dev:remote + regenerate Swift SDK + build and open NexusApp"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+      REMOTE_BIN:  "{{.REMOTE_BIN}}"
+    cmds:
+      - task: dev:remote
+      - scripts/generate-sdk.sh
+      - scripts/swift/build.sh
+      - scripts/swift/open.sh
+
+  # ── Maintenance ───────────────────────────────────────────────────────────
+  generate:sdk:
+    desc: "Regenerate NexusRPC.swift from Go RPC types"
+    cmds:
+      - scripts/generate-sdk.sh
 
   firecracker:update:
     desc: "Download latest Firecracker binaries for embedding"
@@ -54,217 +116,6 @@ tasks:
       - scripts/nexus/update-firecracker.sh
 
   mutagen:update:
-    desc: "Download latest Mutagen binaries (Darwin + Linux amd64/arm64) for embedding in the nexus CLI"
+    desc: "Download latest Mutagen binaries for embedding"
     cmds:
       - scripts/nexus/update-mutagen.sh
-
-  setup:go:
-    desc: "Download Go module dependencies"
-    dir: packages/nexus
-    cmds:
-      - go mod download
-
-  # ── Dev ─────────────────────────────────────────────────────────────────
-  dev:daemon:
-    desc: "Hot-reload daemon with air"
-    dir: packages/nexus
-    cmds:
-      - >-
-        air
-        --build.cmd "go build -o ./tmp/main ./cmd/daemon"
-        --build.entrypoint "./tmp/main"
-        --build.args_bin "--token dev-token --workspace-dir $(python3 -c 'import os,tempfile; print(os.path.join(tempfile.gettempdir(),\"nexus-dev-workspace\"))')"
-
-  # ── Build ────────────────────────────────────────────────────────────────
-  build:
-    desc: Build core packages
-    cmds:
-      - task: build:workspace-daemon
-
-  build:workspace-daemon:
-    dir: packages/nexus
-    cmds:
-      - go build ./...
-
-  # ── Test ─────────────────────────────────────────────────────────────────
-  test:
-    desc: Run core tests
-    cmds:
-      - task: test:workspace-daemon
-
-  test:workspace-daemon:
-    dir: packages/nexus
-    cmds:
-      - go test ./...
-
-  test:e2e:
-    desc: "Go e2e suite (test/e2e, -tags e2e): RPC + CLI against local daemon"
-    cmds:
-      - ./scripts/ci/nexus-e2e.sh
-
-  # ── Lint ─────────────────────────────────────────────────────────────────
-  lint:
-    desc: Run core lint checks
-    cmds:
-      - task: lint:workspace-daemon
-
-  lint:workspace-daemon:
-    dir: packages/nexus
-    cmds:
-      - go test ./... -run TestDoesNotExist
-
-  # ── CI ───────────────────────────────────────────────────────────────────
-  ci:
-    desc: Run local equivalent of CI jobs
-    cmds:
-      - task: ci:go-fix
-      - task: ci:coverage
-      - task: ci:core
-
-  ci:core:
-    desc: Run Core CI (linux) equivalent
-    cmds:
-      - ./scripts/ci/nexus-core.sh
-
-  ci:go-fix:
-    desc: Run Go Fix Check equivalent
-    cmds:
-      - ./scripts/ci/go-fix.sh
-
-  ci:coverage:
-    desc: Run Go Coverage (nexus) equivalent
-    cmds:
-      - ./scripts/ci/coverage.sh
-
-  # ── Remote ───────────────────────────────────────────────────────────────
-  # Set REMOTE_HOST=user@hostname in .env.local (see .env.local.example).
-  # Override per-run: task deploy:remote REMOTE_HOST=user@host
-  # Shell logic lives in scripts/remote/ — Taskfile is the entrypoint only.
-
-  deploy:local:
-    desc: "Build nexus for the local OS/arch and install to ~/.local/bin/nexus"
-    cmds:
-      - scripts/local/deploy.sh
-
-  deploy:remote:
-    desc: "Cross-compile nexus for linux/amd64, deploy to remote host (build included)"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN: "{{.REMOTE_BIN}}"
-    cmds:
-      - scripts/remote/deploy.sh
-
-  deploy:remote:restart:
-    desc: "Build, deploy to remote host, and restart the daemon (full iteration loop)"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN: "{{.REMOTE_BIN}}"
-    cmds:
-      - task: deploy:remote
-      - task: daemon:restart
-
-  daemon:restart:
-    desc: "Restart the nexus daemon on the remote host (does not rebuild)"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN: "{{.REMOTE_BIN}}"
-    cmds:
-      - scripts/remote/daemon-restart.sh
-
-  daemon:clean-state:
-    desc: "Clean remote Firecracker runtime artifacts and lingering TAP/process state"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN: "{{.REMOTE_BIN}}"
-      REMOTE_PORT: "{{.REMOTE_PORT}}"
-    cmds:
-      - scripts/remote/daemon-clean-state.sh
-
-  daemon:token:
-    desc: "Print the daemon token from the remote host"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN: "{{.REMOTE_BIN}}"
-    cmds:
-      - scripts/remote/daemon-token.sh
-
-  daemon:logs:
-    desc: "Tail the daemon log on the remote host"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-    cmds:
-      - scripts/remote/daemon-logs.sh
-
-  daemon:connect:
-    desc: "Connect CLI to remote daemon (creates default profile)"
-    cmds:
-      - nexus daemon connect {{.REMOTE_HOST}} --port {{.REMOTE_PORT}}
-
-  daemon:status:
-    desc: "Show current daemon connection profile"
-    cmds:
-      - nexus daemon profile
-
-  # ── Swift ────────────────────────────────────────────────────────────────
-  generate:sdk:
-    desc: "Generate NexusRPC.swift from Go daemon RPC types (run after any handler change)"
-    cmds:
-      - scripts/generate-sdk.sh
-
-  swift:build:
-    desc: "Build the NexusApp macOS app (Debug)"
-    cmds:
-      - scripts/swift/build.sh
-
-  swift:open:
-    desc: "Open (or relaunch) the built NexusApp"
-    cmds:
-      - scripts/swift/open.sh
-
-  swift:rebuild:
-    desc: "Regenerate Swift SDK then rebuild the macOS app"
-    cmds:
-      - task: generate:sdk
-      - task: swift:build
-
-  dev:swift:
-    desc: "Full contributor loop: deploy daemon → restart → regenerate SDK → build app → open"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname or pass it on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN: "{{.REMOTE_BIN}}"
-      REMOTE_PORT: "{{.REMOTE_PORT}}"
-    cmds:
-      - task: deploy:remote
-      - task: daemon:restart
-      - task: generate:sdk
-      - task: swift:build
-      - task: swift:open
-
-  # ── Clean ─────────────────────────────────────────────────────────────────
-  clean:
-    desc: Clean core build artifacts
-    cmds:
-      - rm -rf packages/nexus/nexus
-      - rm -rf packages/nexus/tmp
-      - rm -rf packages/nexus/.air-tmp

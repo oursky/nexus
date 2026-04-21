@@ -207,3 +207,20 @@ jobs:
             **/test-results/
             **/coverage/
           retention-days: 7
+
+  # Matches hkfc-style macOS builds: use repository variable NEXUS_MACOS_DEVELOPER_DIR
+  # (e.g. /Applications/Xcode_16.2.app/Contents/Developer) on self-hosted runners
+  # that install Xcode outside the default path.
+  nexus-swift-macos:
+    name: NexusApp (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode (optional)
+        if: ${{ vars.NEXUS_MACOS_DEVELOPER_DIR != '' }}
+        run: echo "DEVELOPER_DIR=${{ vars.NEXUS_MACOS_DEVELOPER_DIR }}" >> "$GITHUB_ENV"
+
+      - name: Build NexusApp (Debug)
+        run: scripts/swift/build.sh

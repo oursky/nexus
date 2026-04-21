@@ -7,7 +7,7 @@ APP_PATH="$REPO_ROOT/packages/nexus-swift/.build/xcbuild/Build/Products/Debug/Ne
 
 if [ ! -d "$APP_PATH" ]; then
   echo "✗ App bundle not found at $APP_PATH"
-  echo "  Run: task swift:build"
+  echo "  Run: task dev:swift  (or: scripts/swift/build.sh)"
   exit 1
 fi
 

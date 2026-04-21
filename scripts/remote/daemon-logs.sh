@@ -7,4 +7,5 @@ set -euo pipefail
 
 REMOTE_HOST="${REMOTE_HOST:?REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname}"
 
-ssh "$REMOTE_HOST" "tail -100 /tmp/nexus-daemon.log"
+# Log file lives next to the daemon socket under the default state dir (~/.local/state/nexus on Linux).
+ssh "$REMOTE_HOST" 'tail -100 "${XDG_STATE_HOME:-$HOME/.local/state}/nexus/daemon.log"'

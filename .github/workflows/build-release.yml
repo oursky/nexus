@@ -108,27 +108,88 @@ jobs:
         with:
           ref: ${{ needs.release-gate.outputs.checkout_ref }}
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          node-version: '20'
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          go-version: '1.24.x'
 
       - name: Install Task
         uses: arduino/setup-task@v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Enable KVM access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm
+
+      - name: Install Firecracker host prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y squashfs-tools e2fsprogs libcap2-bin rsync
+
+      - name: Cache Firecracker kernel
+        uses: actions/cache@v4
+        with:
+          path: /tmp/nexus-vmlinux.bin
+          key: firecracker-kernel-v1.13-x86_64
+
+      - name: Cache Ubuntu squashfs
+        uses: actions/cache@v4
+        with:
+          path: /tmp/nexus-ubuntu.squashfs
+          key: firecracker-squashfs-ubuntu24-v1.13-x86_64
+
+      - name: Cache Firecracker rootfs
+        uses: actions/cache@v4
+        with:
+          path: /tmp/nexus-rootfs.ext4
+          key: firecracker-rootfs-amd64-${{ hashFiles('packages/nexus/cmd/nexus-firecracker-agent/**/*.go', 'packages/nexus/cmd/nexus/scripts/firecracker-setup.sh') }}
+          restore-keys: |
+            firecracker-rootfs-amd64-
+
+      - name: Build embedded binaries (firecracker + agent + tap-helper)
+        working-directory: packages/nexus
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd ../..
+          task firecracker:update
+          cd packages/nexus
+          go generate ./cmd/nexus/
+
+      - name: Build nexus binary
+        working-directory: packages/nexus
+        run: |
+          go build -o /tmp/nexus-bin ./cmd/nexus/
+          echo "NEXUS_E2E_BINARY=/tmp/nexus-bin" >> "$GITHUB_ENV"
+
+      - name: Provision Firecracker host (bridge + kernel + rootfs)
+        run: |
+          SOCK=/tmp/nexus-provision.sock
+          DB=/tmp/nexus-provision.db
+          sudo /tmp/nexus-bin daemon start \
+            --db "$DB" --socket "$SOCK" \
+            --workdir-root /tmp/nexus-provision-work &
+          DPID=$!
+          timeout 300 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
+            || { echo "daemon setup timed out after 300s"; kill $DPID; exit 1; }
+          sudo /tmp/nexus-bin daemon stop --socket "$SOCK" 2>/dev/null \
+            || kill $DPID 2>/dev/null || true
+          wait $DPID 2>/dev/null || true
+          sudo chown -R "$USER":"$USER" "$HOME/.local" 2>/dev/null || true
+
       - name: Run CI pipeline
         run: task ci
         env:
           CI: true
+          NEXUS_FIRECRACKER_KERNEL: /var/lib/nexus/vmlinux.bin
+          NEXUS_FIRECRACKER_ROOTFS: /var/lib/nexus/rootfs.ext4
+          NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
+          NEXUS_FIRECRACKER_MEM_MIB: "256"
 
   build:
     name: Build for ${{ matrix.os }}
@@ -207,13 +268,47 @@ jobs:
           name: ${{ matrix.artifact }}
           path: packages/nexus/release/*
 
+  build-macos-app:
+    name: Build NexusApp (macOS .app zip)
+    needs: [release-gate]
+    if: needs.release-gate.outputs.do_assets == 'true'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-gate.outputs.checkout_ref }}
+
+      - name: Select Xcode (optional, self-hosted runners)
+        if: ${{ vars.NEXUS_MACOS_DEVELOPER_DIR != '' }}
+        run: echo "DEVELOPER_DIR=${{ vars.NEXUS_MACOS_DEVELOPER_DIR }}" >> "$GITHUB_ENV"
+
+      - name: Set version for artifact name
+        run: |
+          set -euo pipefail
+          v="${{ needs.release-gate.outputs.version }}"
+          if [[ -z "$v" ]]; then
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          echo "NEXUS_VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: Build and zip NexusApp (Release)
+        run: scripts/swift/build-release-ci.sh
+
+      - name: Upload macOS app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-app-macos
+          path: packages/nexus-swift/release/*.zip
+
   release:
     name: Create Release
-    needs: [release-gate, test, build]
+    needs: [release-gate, test, build, build-macos-app]
     if: |
       needs.release-gate.result == 'success'
       && needs.test.result == 'success'
       && needs.build.result == 'success'
+      && needs.build-macos-app.result == 'success'
       && needs.release-gate.outputs.do_assets == 'true'
     runs-on: ubuntu-latest
     steps:

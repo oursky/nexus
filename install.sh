@@ -2,7 +2,7 @@
 set -e
 
 NEXUS_VERSION="${NEXUS_VERSION:-latest}"
-NEXUS_REPO="${NEXUS_REPO:-inizio/nexus}"
+NEXUS_REPO="${NEXUS_REPO:-oursky/nexus}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 BINARY_NAME="nexus"
 DAEMON_BINARY_NAME="nexus-daemon"
@@ -90,7 +90,7 @@ verify_checksum() {
     local checksum_file="$2"
     local version="$3"
 
-    if [ "$NEXUS_REPO" = "inizio/nexus" ]; then
+    if [ "$NEXUS_REPO" = "oursky/nexus" ]; then
         local checksum_url
         if [ "$version" = "latest" ]; then
             checksum_url="https://github.com/${NEXUS_REPO}/releases/latest/download/${checksum_file}"
