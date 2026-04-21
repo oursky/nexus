@@ -30,19 +30,28 @@ struct MultiTabTerminalView: View {
         ))
     }
 
+    // Colours shared by tab bar and terminal so the card is one unified dark surface.
+    private static let termBg   = Color(hex: "#1A1A1A")
+    private static let tabBarBg = Color(hex: "#232323")  // slightly lighter, still dark
+    private static let tabSep   = Color(hex: "#3C3C3C")
+
     var body: some View {
         VStack(spacing: 0) {
-            // Tab Bar
+            // Tab Bar — same dark family as terminal; no light-background "border" at the top.
             tabBar
-                .background(Color(hex: "#F5F5F7"))
+                .background(Self.tabBarBg)
 
-            Divider()
-                .background(Color(hex: "#E2E2E6"))
+            Rectangle()
+                .fill(Self.tabSep)
+                .frame(height: 1)
 
-            // Terminal Content
+            // Terminal Content — must be flexible height so the PTY NSView fills the detail column.
             terminalContent
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                .layoutPriority(1)
         }
-        .background(Color(hex: "#1A1A1A"))
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+        .background(Self.termBg)
         .onAppear {
             sessionManager.startRefreshLoop()
             Task {
@@ -74,25 +83,22 @@ struct MultiTabTerminalView: View {
     // MARK: - Tab Bar
 
     private var tabBar: some View {
+        // Tabs + "+" sit flush left; remaining space is empty (no info button).
         HStack(spacing: 0) {
-            // Scrollable tabs
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 0) {
-                    ForEach(sessionManager.tabs) { tab in
-                        TabButton(
-                            tab: tab,
-                            onSelect: { sessionManager.switchToTab(id: tab.id) },
-                            onClose: { closeTab(tab.id) },
-                            onRename: { startRename(tab) }
-                        )
-                        .id(tab.id)
-                    }
+            HStack(spacing: 0) {
+                ForEach(sessionManager.tabs) { tab in
+                    TabButton(
+                        tab: tab,
+                        onSelect: { sessionManager.switchToTab(id: tab.id) },
+                        onClose: { closeTab(tab.id) },
+                        onRename: { startRename(tab) }
+                    )
+                    .id(tab.id)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
             }
+            .padding(.leading, 8)
 
-            // Add Tab Button
+            // "+" immediately after the last tab.
             Button {
                 Task {
                     let tabNumber = sessionManager.tabs.count + 1
@@ -100,52 +106,16 @@ struct MultiTabTerminalView: View {
                 }
             } label: {
                 Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Color(hex: "#666666"))
-                    .frame(width: 28, height: 28)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Color(hex: "#777777"))
+                    .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 4)
+            .padding(.leading, 2)
             .accessibilityLabel("Add new tab")
 
             Spacer()
-
-            // Session info button (shows active session details)
-            if let activeTab = sessionManager.tabs.first(where: { $0.isActive }) {
-                Menu {
-                    Text("Session: \(activeTab.id.prefix(16))...")
-                        .font(.system(size: 11))
-                    Divider()
-                    Button {
-                        Task {
-                            await sessionManager.renameTab(id: activeTab.id, to: "Main")
-                        }
-                    } label: {
-                        Label("Rename to 'Main'", systemImage: "pencil")
-                    }
-                    Button {
-                        Task {
-                            await sessionManager.renameTab(id: activeTab.id, to: "Server")
-                        }
-                    } label: {
-                        Label("Rename to 'Server'", systemImage: "pencil")
-                    }
-                    Button {
-                        Task {
-                            await sessionManager.renameTab(id: activeTab.id, to: "Tests")
-                        }
-                    } label: {
-                        Label("Rename to 'Tests'", systemImage: "pencil")
-                    }
-                } label: {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 12))
-                        .foregroundColor(Color(hex: "#888888"))
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.plain)
-            }
         }
         .frame(height: 36)
     }
@@ -189,6 +159,7 @@ struct MultiTabTerminalView: View {
                                 if tab.id == sessionManager.activeTabId { ptyError = err }
                             }
                         )
+                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                         .opacity(tab.id == sessionManager.activeTabId ? 1 : 0)
                         .allowsHitTesting(tab.id == sessionManager.activeTabId)
                     }
@@ -239,6 +210,7 @@ struct MultiTabTerminalView: View {
                     .background(Color.black.opacity(0.5))
                 }
             }
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         }
     }
 
@@ -267,12 +239,21 @@ private struct TabButton: View {
 
     @State private var isHovering = false
 
+    // Tab colours live on a dark (#232323) bar.
+    private var labelColor: SwiftUI.Color {
+        tab.isActive ? SwiftUI.Color(hex: "#E8E8E8") : SwiftUI.Color(hex: "#888888")
+    }
+    private var bgColor: SwiftUI.Color {
+        if tab.isActive { return SwiftUI.Color(hex: "#1A1A1A") }
+        return isHovering ? SwiftUI.Color.white.opacity(0.07) : SwiftUI.Color.clear
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             // Tab name (editable on double-click)
             Text(tab.name)
                 .font(.system(size: 12, weight: tab.isActive ? .medium : .regular))
-                .foregroundColor(tab.isActive ? Color(hex: "#1F1F1F") : Color(hex: "#6E6E73"))
+                .foregroundColor(labelColor)
                 .lineLimit(1)
                 .frame(maxWidth: 120, alignment: .leading)
                 .onTapGesture(count: 2, perform: onRename)
@@ -285,36 +266,26 @@ private struct TabButton: View {
                 } label: {
                     Image(systemName: tab.error != nil ? "exclamationmark.circle" : "xmark")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(tab.error != nil ? .orange : Color(hex: "#8E8E93"))
+                        .foregroundColor(tab.error != nil ? .orange : Color(hex: "#999999"))
                         .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.plain)
                 .help(helpText)
             } else {
-                // Spacer for consistent width
-                Color.clear
-                    .frame(width: 16, height: 16)
+                Color.clear.frame(width: 16, height: 16)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
         .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(tab.isActive ? Color.white : Color.clear)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(tab.isActive ? Color(hex: "#D6D6DA") : Color.clear, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 5)
+                .fill(bgColor)
         )
         .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) {
-                isHovering = hovering
-            }
+            withAnimation(.easeInOut(duration: 0.12)) { isHovering = hovering }
         }
         .onTapGesture {
-            if !tab.isActive {
-                onSelect()
-            }
+            if !tab.isActive { onSelect() }
         }
         .contextMenu {
             Button {

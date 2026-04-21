@@ -13,9 +13,10 @@ struct WorkspaceDetailView: View {
             Divider().overlay(Theme.separator)
 
             TerminalCard(workspace: workspace)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 .background(Theme.bgApp)
         }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
         // CRITICAL FIX: Force view recreation when workspace changes
         .id("workspace-detail-\(workspace.id)")
         .background(Theme.bgApp)
@@ -25,17 +26,19 @@ struct WorkspaceDetailView: View {
             ToolbarItem(placement: .navigation) {
                 WorkspaceBreadcrumb(workspace: workspace)
             }
-            ToolbarItemGroup(placement: .primaryAction) {
-                StatusPill(status: workspace.status)
-                Divider().frame(height: 14).opacity(0.35)
-                WorkspaceActionMenu(workspace: workspace)
-                Divider().frame(height: 14).opacity(0.35)
-                ToolbarBtn(
-                    icon: "sidebar.trailing",
-                    active: appState.showInspector
-                ) {
+            // Inspector toggle — trailing icon, standard macOS style.
+            ToolbarItem(placement: .primaryAction) {
+                Button {
                     appState.showInspector.toggle()
+                } label: {
+                    Image(systemName: "sidebar.trailing")
+                        .symbolRenderingMode(.hierarchical)
                 }
+                .help("Toggle Inspector")
+            }
+            // Workspace action menu (start/stop/remove) — icon adapts to state.
+            ToolbarItem(placement: .primaryAction) {
+                WorkspaceActionMenu(workspace: workspace)
             }
         }
     }
@@ -79,15 +82,13 @@ private struct WorkspaceActionMenu: View {
             Button(role: .destructive) {
                 Task { await appState.remove(workspace) }
             } label: {
-                Label("Remove Sandbox…", systemImage: "trash")
+                Label("Remove", systemImage: "trash")
             }
         } label: {
             Image(systemName: primaryIcon)
-                .font(.system(size: 12))
-                .frame(width: 28, height: 28)
+                .symbolRenderingMode(.hierarchical)
         }
         .menuStyle(.borderlessButton)
-        .fixedSize()
     }
 }
 
@@ -107,6 +108,7 @@ private struct WorkspaceBreadcrumb: View {
                 .font(.system(size: 13))
                 .foregroundColor(Theme.labelSecondary)
         }
+        .padding(.horizontal, 8)
     }
 }
 
@@ -215,25 +217,26 @@ private struct TerminalCard: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        // No ScrollView — terminal has its own built-in scrollback.
-        // The NSViewRepresentable must fill its parent directly or it collapses to zero height.
-        Group {
-            if let client = appState.client as? WebSocketDaemonClient {
-                MultiTabTerminalView(workspace: workspace, client: client)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                TerminalView(workspace: workspace)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // GeometryReader: NSViewRepresentable terminals report an intrinsic height (~500pt) unless
+        // we pin them to the detail column’s bounds — otherwise the card leaves empty space below.
+        GeometryReader { proxy in
+            Group {
+                if let client = appState.client as? WebSocketDaemonClient {
+                    MultiTabTerminalView(workspace: workspace, client: client)
+                } else {
+                    TerminalView(workspace: workspace)
+                }
             }
-        }
+            .frame(width: proxy.size.width, height: proxy.size.height)
             .id("terminal-card-\(workspace.id)")
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
                     .stroke(Color.white.opacity(0.06), lineWidth: 1)
             )
-            .padding(12)
-            .background(Theme.bgApp)
+        }
+        .padding(12)
+        .background(Theme.bgApp)
     }
 }
 
@@ -249,9 +252,9 @@ struct StatusPill: View {
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundColor(Theme.labelSecondary)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(RoundedRectangle(cornerRadius: 5).fill(Color.black.opacity(0.05)))
+        .padding(.horizontal, 2)
+        .padding(.vertical, 2)
+        // Unified toolbars already render “glass” capsules; extra rounded fills read as oversized pills.
     }
 }
 
@@ -272,10 +275,6 @@ struct ToolbarBtn: View {
                         : (hover ? Theme.label : Theme.labelSecondary)
                 )
                 .frame(width: 28, height: 28)
-                .background(RoundedRectangle(cornerRadius: 5)
-                    .fill(active
-                          ? Theme.accent.opacity(0.12)
-                          : hover ? Color.black.opacity(0.06) : .clear))
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }

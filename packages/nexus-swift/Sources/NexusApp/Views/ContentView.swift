@@ -31,15 +31,18 @@ struct ContentView: View {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
         } detail: {
-            if let ws = appState.selectedWorkspace {
-                WorkspaceDetailView(workspace: ws)
-                    .inspector(isPresented: $appState.showInspector) {
-                        InspectorView(workspace: ws)
-                            .inspectorColumnWidth(min: 340, ideal: 420, max: 520)
-                    }
-            } else {
-                EmptyStateView(error: appState.error)
+            Group {
+                if let ws = appState.selectedWorkspace {
+                    WorkspaceDetailView(workspace: ws)
+                        .inspector(isPresented: $appState.showInspector) {
+                            InspectorView(workspace: ws)
+                                .inspectorColumnWidth(min: 340, ideal: 420, max: 520)
+                        }
+                } else {
+                    EmptyStateView(error: appState.error)
+                }
             }
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         }
     }
 }
@@ -68,12 +71,11 @@ private struct StartupView: View {
 
 struct InspectorView: View {
     let workspace: Workspace
-    @State private var activeTab: BottomTab = .ports
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        BottomPanelView(workspace: workspace, activeTab: $activeTab)
-            .background(Theme.bgContent)
+        BottomPanelView(workspace: workspace)
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 

@@ -1,74 +1,29 @@
 import NexusCore
 import SwiftUI
 
-// The bottom panel now lives in the sidebar, not the main content area.
-// Tabs: Ports | Log
-
-enum BottomTab: String, CaseIterable {
-    case ports = "Ports"
-    case log   = "Log"
-}
+// The inspector panel shows only the Ports pane.
 
 // MARK: - Panel root
 
 struct BottomPanelView: View {
     let workspace: Workspace
-    @Binding var activeTab: BottomTab
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Tab strip
-            HStack(spacing: 0) {
-                ForEach(BottomTab.allCases, id: \.self) { tab in
-                    TabBtn(tab: tab, active: activeTab == tab) {
-                        withAnimation(.easeInOut(duration: 0.12)) { activeTab = tab }
-                    }
-                }
-                Spacer()
-            }
-            .padding(.leading, 2)
-            .frame(height: 26)
-            .background(SidebarMaterial())
-
-            Divider().overlay(Theme.separator)
-
-            Group {
-                switch activeTab {
-                case .ports: PortsPane(workspace: workspace)
-                case .log:   LogPane(workspace: workspace)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        PortsPane(workspace: workspace)
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+            // Opaque surface: vibrancy behind dense tables causes ghosting on liquid glass styles.
             .background(Theme.bgContent)
-        }
     }
 }
 
-// MARK: - Tab button
+// MARK: - Ports column metrics (header + rows stay aligned; flex goes to Process)
 
-private struct TabBtn: View {
-    let tab: BottomTab; let active: Bool; let action: () -> Void
-    @State private var hover = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(tab.rawValue)
-                .font(.system(size: 11, weight: active ? .medium : .regular))
-                .foregroundColor(active ? Theme.label : hover ? Theme.labelSecondary : Theme.labelTertiary)
-                .padding(.horizontal, 10)
-                .frame(height: 26)
-                .overlay(alignment: .bottom) {
-                    if active {
-                        Rectangle()
-                            .fill(Theme.accent)
-                            .frame(height: 1.5)
-                    }
-                }
-        }
-        .buttonStyle(.plain)
-        .contentShape(Rectangle())
-        .onHover { hover = $0 }
-    }
+private enum PortsColumn {
+    static let local: CGFloat   = 52   // port numbers are ≤5 digits
+    static let remote: CGFloat  = 52
+    static let state: CGFloat   = 44   // "On"/"Off" + dot
+    static let actions: CGFloat = 96   // "Add  Open ↗"
+    // Process column gets remaining flex space; always at least ~80pt at min inspector width
 }
 
 // MARK: - Ports
@@ -76,68 +31,99 @@ private struct TabBtn: View {
 private struct PortsPane: View {
     let workspace: Workspace
     @EnvironmentObject var appState: AppState
+
+    private static let tunnelActionWidth: CGFloat = 56
+
+    private var tunnelsTitle: String {
+        workspace.hasActiveTunnels ? "Tunnels Active" : "Tunnels Inactive"
+    }
+
+    @ViewBuilder
+    private var tunnelActionButton: some View {
+        if workspace.hasActiveTunnels {
+            Button("Stop") { Task { await appState.stopTunnels(workspace) } }
+                .buttonStyle(.plain)
+                .font(.system(size: 10, weight: .medium))
+        } else {
+            Button("Start") { Task { await appState.startTunnels(workspace) } }
+                .buttonStyle(.plain)
+                .font(.system(size: 10, weight: .medium))
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(workspace.hasActiveTunnels ? "Tunnels Active" : "Tunnels Inactive")
-                    .font(Theme.fontSm)
-                    .foregroundColor(workspace.hasActiveTunnels ? Theme.green : Theme.labelTertiary)
-                Spacer()
-                if workspace.hasActiveTunnels {
-                    Button("Stop") { Task { await appState.stopTunnels(workspace) } }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 10, weight: .medium))
-                } else {
-                    Button("Start") { Task { await appState.startTunnels(workspace) } }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 10, weight: .medium))
+            // Fixed vertical envelope + stable primary action width so “Start/Stop” and title changes do not resize the header.
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .center, spacing: 10) {
+                    Text(tunnelsTitle)
+                        .font(Theme.fontSm)
+                        .foregroundColor(workspace.hasActiveTunnels ? Theme.green : Theme.labelSecondary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    tunnelActionButton
+                        .frame(width: Self.tunnelActionWidth, alignment: .center)
                 }
+                .frame(minHeight: 22)
+
+                Text("Only one sandbox can have active tunnels at a time.")
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.labelTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
-            Text("Only one sandbox can have active tunnels at a time.")
-                .font(.system(size: 10))
-                .foregroundColor(Theme.labelTertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
             Divider().overlay(Theme.separator)
 
             if workspace.ports.isEmpty {
                 Text("No detected ports")
                     .font(Theme.fontSm)
                     .foregroundColor(Theme.labelTertiary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else {
-                VStack(spacing: 0) {
-                    HStack(spacing: 8) {
-                        Text("Local")
-                            .frame(width: 64, alignment: .leading)
-                        Text("Remote")
-                            .frame(width: 64, alignment: .leading)
-                        Text("Process")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Text("State")
-                            .frame(width: 56, alignment: .leading)
-                        Text("Actions")
-                            .frame(width: 108, alignment: .trailing)
+                ScrollView {
+                    LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        Section {
+                            ForEach(workspace.ports) { p in
+                                PortRow(port: p, workspace: workspace)
+                                    // Suppress implicit SwiftUI transitions that cause the "flash".
+                                    .animation(.none, value: p.tunneled)
+                                    .animation(.none, value: p.preferred)
+                                Divider().overlay(Theme.separator).padding(.leading, 12)
+                            }
+                        } header: {
+                            HStack(alignment: .center, spacing: 6) {
+                                Text("Local")
+                                    .frame(width: PortsColumn.local, alignment: .leading)
+                                Text("Remote")
+                                    .frame(width: PortsColumn.remote, alignment: .leading)
+                                Text("Process")
+                                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                                    .layoutPriority(1)
+                                Text("State")
+                                    .frame(width: PortsColumn.state, alignment: .leading)
+                        Text("Action")
+                            .frame(width: PortsColumn.actions, alignment: .trailing)
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(Theme.labelSecondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Theme.bgContent)
+                            .overlay(alignment: .bottom) {
+                                Divider().overlay(Theme.separator)
+                            }
+                        }
                     }
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundColor(Theme.labelTertiary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
-                    Divider().overlay(Theme.separator)
-
-                    ForEach(workspace.ports) { p in
-                        PortRow(port: p, workspace: workspace)
-                        Divider().overlay(Theme.separator).padding(.leading, 12)
-                    }
-                    Spacer()
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -147,26 +133,29 @@ private struct PortRow: View {
     @EnvironmentObject var appState: AppState
     @State private var hover = false
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text("\(port.port)")
-                .frame(width: 64, alignment: .leading)
+                .frame(width: PortsColumn.local, alignment: .leading)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundColor(Theme.label)
             Text("\(port.remotePort)")
-                .frame(width: 64, alignment: .leading)
+                .frame(width: PortsColumn.remote, alignment: .leading)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(Theme.labelSecondary)
             if let process = port.process, !process.isEmpty {
                 Text(process)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .font(.system(size: 10))
-                    .foregroundColor(Theme.labelTertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
+                    .font(.system(size: 11))
+                    .foregroundColor(Theme.labelSecondary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .help(process)
             } else {
                 Text("—")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .font(.system(size: 10))
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(1)
+                    .font(.system(size: 11))
                     .foregroundColor(Theme.labelTertiary)
             }
 
@@ -176,7 +165,7 @@ private struct PortRow: View {
                     .font(.system(size: 10))
                     .foregroundColor(port.tunneled ? Theme.green : Theme.labelTertiary)
             }
-            .frame(width: 56, alignment: .leading)
+            .frame(width: PortsColumn.state, alignment: .leading)
 
             HStack(spacing: 8) {
                 if port.preferred {
@@ -196,7 +185,7 @@ private struct PortRow: View {
                     .foregroundColor(hover ? Theme.accent : Theme.labelSecondary)
                     .onHover { hover = $0 }
             }
-            .frame(width: 108, alignment: .trailing)
+            .frame(width: PortsColumn.actions, alignment: .trailing)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -257,9 +246,11 @@ private struct LogPane: View {
                         }
                         .padding(.vertical, 4)
                     }
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 }
             }
         }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .task(id: workspace.id) { await load() }
     }
 

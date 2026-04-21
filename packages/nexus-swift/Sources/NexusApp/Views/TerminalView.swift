@@ -68,6 +68,7 @@ struct TerminalView: View {
                     .accessibilityLabel(err)
                 }
             }
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             .onChange(of: workspace.id) { _ in
                     ptyError = nil
                     appState.terminalTitle = nil
@@ -75,6 +76,7 @@ struct TerminalView: View {
                 }
         } else {
             TerminalPlaceholder(workspace: workspace)
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 .onAppear { appState.ptyState = .idle }
         }
     }

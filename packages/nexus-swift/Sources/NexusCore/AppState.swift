@@ -77,8 +77,25 @@ public final class AppState: ObservableObject {
 
     private func applyLoadedWorkspaces(_ workspaces: [Workspace], projects: [Project]) {
         self.projects = projects
-        let projectRepos = Repo.fromProjects(projects, workspaces: workspaces)
-        repos = projectRepos.isEmpty ? Repo.grouping(workspaces) : projectRepos
+
+        // Carry forward known ports/tunnel state into workspaces that arrive with empty ports
+        // (phase-1 list-only snapshot) so the Ports panel never flashes "No detected ports"
+        // during the gap between phase-1 and phase-2 enrichment every 4-second poll cycle.
+        let existing: [String: Workspace] = repos
+            .flatMap { $0.workspaces }
+            .reduce(into: [:]) { $0[$1.id] = $1 }
+        let carried: [Workspace] = workspaces.map { ws in
+            guard ws.ports.isEmpty,
+                  let prev = existing[ws.id],
+                  !prev.ports.isEmpty else { return ws }
+            var updated = ws
+            updated.ports = prev.ports
+            updated.hasActiveTunnels = prev.hasActiveTunnels
+            return updated
+        }
+
+        let projectRepos = Repo.fromProjects(projects, workspaces: carried)
+        repos = projectRepos.isEmpty ? Repo.grouping(carried) : projectRepos
         connectionState = .connected
         error = nil
 
@@ -212,7 +229,17 @@ public final class AppState: ObservableObject {
             )
         }
         for s in spotlight {
-            byLocal[s.port] = s
+            // Spotlight (active tunnel) entries carry tunneling metadata but no process label.
+            // Preserve the process name from the discovered entry so the column stays populated.
+            let process = s.process ?? byLocal[s.port]?.process
+            byLocal[s.port] = ForwardedPort(
+                id: s.id,
+                remotePort: s.remotePort,
+                preferred: s.preferred,
+                tunneled: s.tunneled,
+                process: process,
+                forwardId: s.forwardId
+            )
         }
         return byLocal.keys.sorted().compactMap { byLocal[$0] }
     }

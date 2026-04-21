@@ -19,11 +19,14 @@ struct SidebarView: View {
                 }
                 .padding(.top, 6)
                 .padding(.bottom, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
 
             Divider().overlay(Theme.separator).opacity(0.6)
             SidebarFooter()
         }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
         .background(SidebarMaterial().ignoresSafeArea())
     }
 }
@@ -272,6 +275,7 @@ private struct WorkspaceRow: View {
             }
             Spacer(minLength: 0)
         }
+        .compositingGroup()
         .padding(.leading, 22)
         .padding(.trailing, 10)
         .frame(height: 28)
@@ -334,7 +338,9 @@ struct StatusDot: View {
                     lineWidth: 1.5))
                 .frame(width: 7)
         }
-        .frame(width: 14)
+        .frame(width: 14, height: 14)
+        // Pulse scales up to 2×; without clipping it paints over the sandbox name (“ghost” text).
+        .clipped()
         .onAppear { if status == .running || status == .restored { pulse = true } }
     }
 }
@@ -344,6 +350,7 @@ struct StatusDot: View {
 private struct SidebarFooter: View {
     @EnvironmentObject var appState: AppState
     @State private var showDaemonPanel = false
+    @State private var hoverConnection = false
 
     private var connectionLabel: String {
         // Outdated overrides connection state — the daemon is reachable but incompatible.
@@ -364,35 +371,42 @@ private struct SidebarFooter: View {
         }
     }
 
+    /// Secondary reads better than tertiary on translucent / “liquid glass” sidebars.
+    private var connectionTextColor: Color {
+        if case .outdated = appState.daemonStatus { return Theme.labelSecondary }
+        switch appState.connectionState {
+        case .connected:             return Theme.labelSecondary
+        case .starting, .connecting: return Theme.labelSecondary
+        case .disconnected:          return Theme.labelTertiary
+        }
+    }
+
     var body: some View {
         HStack(spacing: 2) {
             FooterMenuBtn(showDaemonPanel: $showDaemonPanel)
             Spacer()
 
-            // Clickable pill → opens DaemonSettingsPanel
+            // Clickable pill → opens DaemonSettingsPanel.
             Button {
                 showDaemonPanel.toggle()
             } label: {
                 HStack(spacing: 5) {
-                    if appState.connectionState == .starting {
-                        ProgressView()
-                            .scaleEffect(0.45)
-                            .frame(width: 6, height: 6)
-                    } else {
-                        Circle().fill(dotColor).frame(width: 6)
-                    }
+                    connectionIndicator
                     Text(connectionLabel)
                         .font(.system(size: 10))
-                        .foregroundColor(Theme.labelTertiary)
+                        .foregroundColor(connectionTextColor)
+                        .lineLimit(1)
+                        .fixedSize()
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 7)
                 .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(showDaemonPanel ? Color.primary.opacity(0.08) : .clear)
-                )
+                .background {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(connectionChipBackground)
+                }
             }
             .buttonStyle(.plain)
+            .onHover { hoverConnection = $0 }
             .popover(isPresented: $showDaemonPanel, arrowEdge: .bottom) {
                 DaemonSettingsPanel()
                     .environmentObject(appState)
@@ -404,11 +418,6 @@ private struct SidebarFooter: View {
             // PTY state accessibility markers — placed in the sidebar footer so they
             // stay reachable (the NavigationSplitView detail column is not accessible
             // via the standard accessibility API on macOS).
-            // Each state gets a unique accessibilityIdentifier:
-            //   terminal_view        — active PTY session (app.buttons)
-            //   terminal_placeholder — workspace stopped (app.buttons)
-            //   terminal_error       — PTY error (app.buttons)
-            // terminal_view is a Button so clicking it re-focuses the terminal NSView.
             Group {
                 if appState.ptyState == .active {
                     Button("", action: { appState.refocusTerminal() })
@@ -438,6 +447,27 @@ private struct SidebarFooter: View {
                 showDaemonPanel = true
             }
         }
+    }
+
+
+    private var connectionChipBackground: Color {
+        if showDaemonPanel { return Color.primary.opacity(0.1) }
+        if hoverConnection { return Color.primary.opacity(0.06) }
+        return Color.clear
+    }
+
+    private var connectionIndicator: some View {
+        ZStack {
+            if appState.connectionState == .starting {
+                ProgressView()
+                    .scaleEffect(0.45)
+                    .frame(width: 6, height: 6)
+            } else {
+                Circle()
+                    .fill(dotColor)
+            }
+        }
+        .frame(width: 6, height: 6)
     }
 }
 
