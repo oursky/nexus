@@ -9,9 +9,6 @@ import (
 
 	"github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	"github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/localws"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/mirror"
-	cliprofile "github.com/inizio/nexus/packages/nexus/internal/infra/cli/profile"
 	"github.com/spf13/cobra"
 )
 
@@ -52,63 +49,6 @@ func forkCommand() *cobra.Command {
 
 			child := result.Workspace
 			fmt.Fprintf(cmd.OutOrStdout(), "forked workspace %s  (id: %s)\n", child.WorkspaceName, child.ID)
-
-			// ── Mac-side git worktree ─────────────────────────────────────
-			// Look up the parent's git root from client-side state. If found,
-			// create a new worktree at that ref so the user has a local copy
-			// checked out to the forked branch.
-			parentRec, ok := localws.GetRecord(parentID)
-			if !ok {
-				// No local state for parent — nothing to set up on Mac side.
-				return nil
-			}
-
-			gitRoot := parentRec.GitRoot
-			// Worktrees live at <gitRoot>/.worktrees/<name> so they stay
-			// alongside the project rather than in a global ~/nexus-workspaces.
-			worktreesDir := filepath.Join(gitRoot, ".worktrees")
-			worktreePath := filepath.Join(worktreesDir, child.WorkspaceName)
-
-			if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not create .worktrees dir: %v\n", err)
-				return nil
-			}
-			// Keep .worktrees/ out of git status/log without touching .gitignore.
-			addToGitExclude(gitRoot, ".worktrees/")
-
-			fmt.Fprintf(cmd.OutOrStdout(), "creating worktree %s at %s…\n", childRef, worktreePath)
-			if err := gitWorktreeAdd(gitRoot, worktreePath, childRef); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: git worktree add failed: %v\n", err)
-				return nil
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "local worktree:  %s\n", worktreePath)
-
-			// ── Mirror worktree to remote (if SSH profile) ────────────────
-			if p, err := cliprofile.LoadDefault(); err == nil && p.Host != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "mirroring %s to %s…\n", worktreePath, p.Host)
-				_, mirrorErr := mirror.Ensure(mirror.Spec{
-					LocalPath: worktreePath,
-					ProjectID: filepath.Base(worktreePath),
-					SSHTarget: p.Host,
-					SSHPort:   p.SSHPort,
-				})
-				if mirrorErr != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "warning: mirror failed: %v\n", mirrorErr)
-				}
-			}
-
-			// ── Save client-side state ────────────────────────────────────
-			rec := localws.WorkspaceRecord{
-				WorkspaceID:   child.ID,
-				WorkspaceName: child.WorkspaceName,
-				LocalPath:     worktreePath,
-				GitRoot:       gitRoot,
-				IsWorktree:    true,
-			}
-			if err := localws.SaveRecord(rec); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not save local workspace state: %v\n", err)
-			}
-
 			return nil
 		},
 	}
@@ -153,9 +93,23 @@ func gitWorktreeAdd(gitRoot, worktreePath, ref string) error {
 		}
 	}
 
-	out, err := exec.Command("git", "-C", gitRoot, "worktree", "add", worktreePath, ref).CombinedOutput()
+	var out []byte
+	var err error
+	if gitRefExists(gitRoot, ref) {
+		out, err = exec.Command("git", "-C", gitRoot, "worktree", "add", worktreePath, ref).CombinedOutput()
+	} else {
+		// New branch name: `worktree add <path> <ref>` would fail with "invalid reference".
+		out, err = exec.Command("git", "-C", gitRoot, "worktree", "add", "-b", ref, worktreePath, "HEAD").CombinedOutput()
+	}
 	if err != nil {
 		return fmt.Errorf("git worktree add %s %s: %w\n%s", worktreePath, ref, err, out)
 	}
 	return nil
+}
+
+func gitRefExists(gitRoot, ref string) bool {
+	cmd := exec.Command("git", "-C", gitRoot, "rev-parse", "--verify", ref)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Run() == nil
 }

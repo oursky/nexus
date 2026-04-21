@@ -9,9 +9,6 @@ import (
 
 	"github.com/inizio/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	domainworkspace "github.com/inizio/nexus/packages/nexus/internal/domain/workspace"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/localws"
-	"github.com/inizio/nexus/packages/nexus/internal/infra/cli/mirror"
-	cliprofile "github.com/inizio/nexus/packages/nexus/internal/infra/cli/profile"
 	"github.com/spf13/cobra"
 )
 
@@ -64,32 +61,6 @@ func createCommand() *cobra.Command {
 			defer conn.Close()
 
 			resolvedRepo := normalizeRepoForCreate(repo)
-			// originalRepo holds the Mac-local path before any mirroring so we
-			// can record it in the client-side state regardless of what remote
-			// path the daemon ends up using.
-			originalRepo := resolvedRepo
-
-			// When connected to a remote SSH daemon and --repo is a local path,
-			// mirror it to the Linux host via mutagen so the daemon can access it.
-			if !looksLikeRemoteRepo(resolvedRepo) {
-				if p, err := cliprofile.LoadDefault(); err == nil && p.Host != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "mirroring %s to %s…\n", resolvedRepo, p.Host)
-					slug := filepath.Base(resolvedRepo)
-					result, mirrorErr := mirror.Ensure(mirror.Spec{
-						LocalPath: resolvedRepo,
-						ProjectID: slug,
-						SSHTarget: p.Host,
-						SSHPort:   p.SSHPort,
-						// Exclude fork worktrees — they live in .worktrees/ and
-						// are mirrored independently via their own sync session.
-						Ignores: []string{".worktrees"},
-					})
-					if mirrorErr != nil {
-						return fmt.Errorf("nexus workspace create: mirror local repo: %w", mirrorErr)
-					}
-					resolvedRepo = result.RemotePath
-				}
-			}
 
 			spec := domainworkspace.CreateSpec{
 				Repo:          resolvedRepo,
@@ -110,29 +81,11 @@ func createCommand() *cobra.Command {
 
 			ws := result.Workspace
 			fmt.Fprintf(cmd.OutOrStdout(), "created workspace %s  (id: %s)\n", ws.WorkspaceName, ws.ID)
-
-			// The base workspace uses the original Mac directory as-is (the git
-			// root). Record it so "fork" can locate it later without querying
-			// the daemon (which only stores the mirrored Linux-side path).
-			if !looksLikeRemoteRepo(resolvedRepo) {
-				rec := localws.WorkspaceRecord{
-					WorkspaceID:   ws.ID,
-					WorkspaceName: ws.WorkspaceName,
-					LocalPath:     originalRepo,
-					GitRoot:       originalRepo,
-					IsWorktree:    false,
-				}
-				if err := localws.SaveRecord(rec); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not save local workspace state: %v\n", err)
-				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "local path:  %s\n", originalRepo)
-				}
-			}
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&repo, "repo", "", "repository URL (required)")
+	cmd.Flags().StringVar(&repo, "repo", "", "repository path or URL on the engine host (required)")
 	cmd.Flags().StringVar(&ref, "ref", "", "branch / ref (default: repo default branch)")
 	cmd.Flags().StringVar(&name, "name", "", "workspace name (required)")
 	cmd.Flags().StringVar(&profile, "profile", "default", "agent profile")
