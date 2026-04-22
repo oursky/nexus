@@ -79,7 +79,7 @@ tasks:
       - scripts/remote/daemon-restart.sh
 
   dev:cli:
-    desc: "dev:remote + install local CLI binary (for CLI-only changes)"
+    desc: "install local CLI binary (for CLI-only changes)"
     preconditions:
       - sh: '[ -n "{{.REMOTE_HOST}}" ]'
         msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
@@ -87,11 +87,10 @@ tasks:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
       REMOTE_BIN:  "{{.REMOTE_BIN}}"
     cmds:
-      - task: dev:remote
       - scripts/local/deploy.sh
 
   dev:swift:
-    desc: "dev:remote + regenerate Swift SDK + build and open NexusApp"
+    desc: "dev:cli + stage macOS nexus binary + regenerate Swift SDK + build and open NexusApp"
     preconditions:
       - sh: '[ -n "{{.REMOTE_HOST}}" ]'
         msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
@@ -99,10 +98,23 @@ tasks:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
       REMOTE_BIN:  "{{.REMOTE_BIN}}"
     cmds:
-      - task: dev:remote
+      - task: dev:cli
+      - task: stage:nexus-macos
       - scripts/generate-sdk.sh
       - scripts/swift/build.sh
       - scripts/swift/open.sh
+
+  stage:nexus-macos:
+    desc: "Build macOS arm64 nexus CLI and stage to packages/nexus-swift/Resources/nexus"
+    cmds:
+      - |
+        echo "Staging nexus (darwin/arm64) → packages/nexus-swift/Resources/nexus..."
+        GOOS=darwin GOARCH=arm64 go build \
+          -C packages/nexus \
+          -o ../../packages/nexus-swift/Resources/nexus \
+          ./cmd/nexus
+        chmod +x packages/nexus-swift/Resources/nexus
+        echo "✓ Staged $(ls -lh packages/nexus-swift/Resources/nexus | awk '{print $5}')"
 
   # ── Maintenance ───────────────────────────────────────────────────────────
   generate:sdk:
