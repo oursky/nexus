@@ -79,6 +79,7 @@ func infoCommand() *cobra.Command {
 					ParentWorkspaceID string `json:"parentWorkspaceId"`
 					LineageRootID     string `json:"lineageRootId"`
 					ProjectID         string `json:"projectId"`
+					GuestIP           string `json:"guestIp"`
 				} `json:"workspace"`
 			}
 			if err := rpc.Do(conn, "workspace.info", map[string]any{"id": wsID}, &result); err != nil {
@@ -99,6 +100,9 @@ func infoCommand() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "backend:            %s\n", ws.Backend)
 			fmt.Fprintf(cmd.OutOrStdout(), "rootPath:           %s\n", ws.RootPath)
 			fmt.Fprintf(cmd.OutOrStdout(), "agentProfile:       %s\n", ws.AgentProfile)
+			if ws.GuestIP != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "guestIp:            %s\n", ws.GuestIP)
+			}
 			if ws.ProjectID != "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "projectId:          %s\n", ws.ProjectID)
 			}

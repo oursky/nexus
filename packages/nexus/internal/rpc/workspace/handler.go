@@ -31,6 +31,7 @@ func (h *Handler) Register(reg registry.Registry) {
 	reg.Register("workspace.fork", h.wrap(h.handleFork))
 	reg.Register("workspace.ready", h.wrap(h.handleReady))
 	reg.Register("workspace.discover-ports", h.wrap(h.handleDiscoverPorts))
+	reg.Register("workspace.sshcheck", h.wrap(h.handleSSHCheck))
 }
 
 func (h *Handler) wrap(fn func(ctx context.Context, raw json.RawMessage) (any, error)) registry.HandlerFunc {
