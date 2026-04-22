@@ -9,8 +9,110 @@ import (
 	"strings"
 )
 
+// isSSHPublicKeyLine returns true if line looks like a valid SSH public key
+// (handles all key types: ssh-rsa, ssh-ed25519, ecdsa-sha2-*, sk-ssh-*, etc.).
+func isSSHPublicKeyLine(line string) bool {
+	for _, prefix := range []string{
+		"ssh-rsa ",
+		"ssh-ed25519 ",
+		"ssh-dss ",
+		"ecdsa-sha2-",
+		"sk-ssh-ed25519 ",
+		"sk-ecdsa-sha2-",
+	} {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// hostSSHAuthorizedKeysMaterial builds the authorized_keys content to inject
+// into a guest VM.
+//
+// The primary source is the engine host's own ~/.ssh/authorized_keys — those
+// are the developer keys that are already trusted to SSH into the engine, so
+// they should be trusted to SSH into the VM too (the VM is behind the engine
+// via ProxyJump anyway).
+//
+// Any additional public key files (id_*.pub, *.pub) found in ~/.ssh/ are
+// appended as a fallback so that a freshly-configured host without an
+// authorized_keys still works.
+func hostSSHAuthorizedKeysMaterial(home string) ([]byte, bool) {
+	seen := make(map[string]struct{})
+	var lines []string
+
+	addKeyLine := func(line string) {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || !isSSHPublicKeyLine(line) {
+			return
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return
+		}
+		key := fields[0] + " " + fields[1]
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		lines = append(lines, line)
+	}
+
+	addFile := func(path string) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			addKeyLine(line)
+		}
+	}
+
+	// Primary: the host's authorized_keys carries the developer keys already
+	// trusted to access the engine. This is what we want in the VM.
+	addFile(filepath.Join(home, ".ssh", "authorized_keys"))
+
+	// Fallback: the host's own identity public keys (covers the case where the
+	// engine host is a developer laptop with no authorized_keys of its own).
+	for _, name := range []string{"id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub", "id_ed25519_sk.pub", "id_ecdsa_sk.pub"} {
+		addFile(filepath.Join(home, ".ssh", name))
+	}
+	if entries, err := os.ReadDir(filepath.Join(home, ".ssh")); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".pub") {
+				addFile(filepath.Join(home, ".ssh", e.Name()))
+			}
+		}
+	}
+
+	if len(lines) == 0 {
+		return nil, false
+	}
+	return []byte(strings.Join(lines, "\n") + "\n"), true
+}
+
+func writeTempFileForConfigDrive(pattern string, data []byte) (path string, cleanup func(), err error) {
+	f, err := os.CreateTemp("", pattern)
+	if err != nil {
+		return "", func() {}, err
+	}
+	path = f.Name()
+	cleanup = func() { _ = os.Remove(path) }
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		cleanup()
+		return "", func() {}, err
+	}
+	if err := f.Close(); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	return path, cleanup, nil
+}
+
 // gatewayTempFile writes the bridge gateway IP to a temp file and returns its
-// path so debugfs can write it into the config drive image.
+// path so debugfs can write it into the host config drive image.
 func gatewayTempFile() (path string, cleanup func(), err error) {
 	f, err := os.CreateTemp("", "nexus-gateway-*")
 	if err != nil {
@@ -91,6 +193,14 @@ func buildHostConfigDrive(home, destPath string) error {
 	// Host DNS resolver config so the guest can use the same upstream DNS
 	// servers (important in networks where public DNS is blocked).
 	add("/etc/resolv.conf", ".resolv.conf")
+
+	// Public keys for optional in-VM sshd (Remote-SSH from the Nexus macOS app).
+	if authMaterial, ok := hostSSHAuthorizedKeysMaterial(home); ok {
+		if authPath, cleanup, err := writeTempFileForConfigDrive("nexus-authkeys-*", authMaterial); err == nil {
+			defer cleanup()
+			files = append(files, entry{authPath, ".ssh/authorized_keys"})
+		}
+	}
 
 	if len(files) == 0 {
 		return nil

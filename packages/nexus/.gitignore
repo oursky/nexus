@@ -1,5 +1,5 @@
 nexusd
 tmp/
 # Local build artifacts (wrong-path outputs from 'go build ./...' etc.)
-nexus-firecracker-agent
-packages/
+/nexus-firecracker-agent
+/packages/

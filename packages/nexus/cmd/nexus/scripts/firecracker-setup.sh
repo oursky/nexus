@@ -178,6 +178,65 @@ if [ ! -f "$KERNEL_PATH" ]; then
 fi
 
 # ── 10. Build VM rootfs (idempotent) ──────────────────────────────────────────
+# Write a well-hardened sshd_config that allows root login with keys only.
+_write_sshd_config() {
+  local mount_dir="$1"
+  mkdir -p "$mount_dir/etc/ssh"
+  cat > "$mount_dir/etc/ssh/sshd_config" << 'SSHD_EOF'
+Port 22
+ListenAddress 0.0.0.0
+PermitRootLogin yes
+PubkeyAuthentication yes
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+UsePAM no
+X11Forwarding no
+PrintMotd no
+AcceptEnv LANG LC_* VSCODE_AGENT_FOLDER CURSOR_AGENT_FOLDER
+Subsystem sftp /usr/lib/openssh/sftp-server
+SSHD_EOF
+  mkdir -p "$mount_dir/root/.ssh"
+  chmod 700 "$mount_dir/root/.ssh"
+  # Pre-create the privilege separation dir as a directory with correct
+  # permissions. Ubuntu 24.04 sshd expects /run/sshd (not /var/run/sshd).
+  mkdir -p "$mount_dir/run/sshd"
+  chmod 0755 "$mount_dir/run/sshd"
+}
+
+# Install openssh-server into a mounted rootfs via chroot + apt.
+# Requires proc/dev/sys bind-mounts; the caller sets them up and tears down.
+_install_sshd_in_mounted_rootfs() {
+  local mount_dir="$1"
+
+  if [ -f "$mount_dir/usr/sbin/sshd" ]; then
+    echo "  -> openssh-server already present in rootfs; skipping install."
+    _write_sshd_config "$mount_dir"
+    return 0
+  fi
+
+  echo "  -> Installing openssh-server in rootfs (chroot + apt)..."
+
+  # Bind-mount kernel pseudo-filesystems so apt/dpkg work inside the chroot.
+  mount --bind /proc  "$mount_dir/proc"
+  mount --bind /dev   "$mount_dir/dev"
+  mount --bind /sys   "$mount_dir/sys"
+  cp -f /etc/resolv.conf "$mount_dir/etc/resolv.conf" 2>/dev/null || true
+
+  DEBIAN_FRONTEND=noninteractive chroot "$mount_dir" \
+    apt-get update -qq -o Acquire::ForceIPv4=true
+
+  DEBIAN_FRONTEND=noninteractive chroot "$mount_dir" \
+    apt-get install -y --no-install-recommends openssh-server
+
+  umount "$mount_dir/proc" 2>/dev/null || true
+  umount "$mount_dir/sys"  2>/dev/null || true
+  # /dev may have sub-mounts; unmount lazily so we don't block.
+  umount -l "$mount_dir/dev" 2>/dev/null || true
+
+  _write_sshd_config "$mount_dir"
+  echo "  -> openssh-server installed and configured."
+}
+
 _update_agent_in_rootfs() {
   local rootfs_path="$1"
   local mount_dir
@@ -190,6 +249,8 @@ _update_agent_in_rootfs() {
   printf '#!/bin/sh\nexec /usr/local/bin/nexus-firecracker-agent\n' > "$mount_dir/sbin/init"
   chmod 755 "$mount_dir/sbin/init"
   ln -sf /sbin/init "$mount_dir/init" 2>/dev/null || cp "$mount_dir/sbin/init" "$mount_dir/init"
+  # Ensure openssh-server is present and correctly configured.
+  _install_sshd_in_mounted_rootfs "$mount_dir"
   umount "$mount_dir"
   trap - RETURN
   rm -rf "$mount_dir"
@@ -237,6 +298,8 @@ if [ ! -f "$ROOTFS_PATH" ]; then
     printf '#!/bin/sh\nexec /usr/local/bin/nexus-firecracker-agent\n' > "$ROOTFS_MOUNT/sbin/init"
     chmod 755 "$ROOTFS_MOUNT/sbin/init"
     ln -sf /sbin/init "$ROOTFS_MOUNT/init" 2>/dev/null || cp "$ROOTFS_MOUNT/sbin/init" "$ROOTFS_MOUNT/init"
+    echo "  -> Installing and configuring openssh-server in rootfs..."
+    _install_sshd_in_mounted_rootfs "$ROOTFS_MOUNT"
     umount "$ROOTFS_MOUNT"
     trap - EXIT
     rm -rf "$SQUASHFS_TMP" "$ROOTFS_MOUNT"

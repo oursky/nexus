@@ -20,8 +20,8 @@ import (
 	"time"
 
 	creackpty "github.com/creack/pty"
-	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/firecracker"
 	"github.com/mdlayher/vsock"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/firecracker"
 	"golang.org/x/sys/unix"
 )
 
@@ -659,11 +659,15 @@ func bootstrapGuestEnvironment(pid int) {
 		emitDiagnostic("agent network configured")
 	}
 
+	if pid == 1 {
+		maybeStartSSHDInGuest()
+	}
+
 	setupDNSFunc()
 	emitDiagnostic("agent dns configured")
 
-	// Best-effort tool bootstrap. This runs in background so boot/PTY readiness
-	// is not blocked on npm network operations.
+	// Install CLI tools in the background so boot/PTY readiness is not blocked
+	// on npm network operations (which can also fill the rootfs if run synchronously).
 	go ensureGuestCLITools()
 
 	if pid == 1 {
@@ -699,6 +703,7 @@ func applyHostConfigDrive() error {
 		{".gitconfig", "/root/.gitconfig", 0o644},
 		{".ssh/known_hosts", "/root/.ssh/known_hosts", 0o644},
 		{".ssh/config", "/root/.ssh/config", 0o600},
+		{".ssh/authorized_keys", "/root/.ssh/authorized_keys", 0o600},
 		{".resolv.conf", "/etc/resolv.conf", 0o644},
 		{".config/gh/hosts.yml", "/root/.config/gh/hosts.yml", 0o600},
 		{".config/gh/config.yml", "/root/.config/gh/config.yml", 0o600},
@@ -742,51 +747,110 @@ func applyHostConfigDrive() error {
 }
 
 func ensureGuestCLITools() {
+	type cliSpec struct {
+		binary string
+		pkg    string
+	}
+
+	tools := []cliSpec{
+		{binary: "opencode", pkg: "opencode-ai@latest"},
+		{binary: "codex", pkg: "@openai/codex@latest"},
+		{binary: "claude", pkg: "@anthropic-ai/claude-code@latest"},
+	}
+
 	npmPath, err := lookPathInEnv("npm", os.Environ())
 	hasNPM := err == nil && strings.TrimSpace(npmPath) != ""
 
-	_, opencodeErr := lookPathInEnv("opencode", os.Environ())
-	_, codexErr := lookPathInEnv("codex", os.Environ())
-
-	if opencodeErr != nil {
-		_ = writeCLIWrapper("/usr/local/bin/opencode", "opencode-ai@latest")
+	missing := make([]cliSpec, 0, len(tools))
+	for _, tool := range tools {
+		if err := writeCLIWrapper(filepath.Join("/usr/local/bin", tool.binary), tool.pkg); err != nil {
+			emitDiagnostic("agent cli wrapper write failed for %s: %v", tool.binary, err)
+		}
+		if guestCLIAvailable(tool.binary) {
+			continue
+		}
+		missing = append(missing, tool)
 	}
-	if codexErr != nil {
-		_ = writeCLIWrapper("/usr/local/bin/codex", "@openai/codex@latest")
+	if len(missing) == 0 {
+		return
 	}
 
 	if !hasNPM {
-		emitDiagnostic("agent cli tools: npm not found, wrappers only")
+		names := make([]string, 0, len(missing))
+		for _, tool := range missing {
+			names = append(names, tool.binary)
+		}
+		emitDiagnostic("agent cli tools: npm not found, wrappers only (missing=%s)", strings.Join(names, ", "))
 		return
 	}
+
+	// Redirect npm cache to /workspace to avoid filling the small rootfs.
+	npmCacheDir := workspaceMountPoint + "/.npm-cache"
+	_ = os.MkdirAll(npmCacheDir, 0o755)
 
 	var packages []string
-	if opencodeErr != nil {
-		packages = append(packages, "opencode-ai@latest")
+	for _, tool := range missing {
+		packages = append(packages, tool.pkg)
 	}
-	if codexErr != nil {
-		packages = append(packages, "@openai/codex@latest")
-	}
-	if len(packages) == 0 {
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
-	args := append([]string{"install", "-g"}, packages...)
+	args := append([]string{"install", "-g", "--force", "--cache", npmCacheDir}, packages...)
 	out, err := exec.CommandContext(ctx, npmPath, args...).CombinedOutput()
 	if err != nil {
 		emitDiagnostic("agent cli tools install failed: %v: %s", err, strings.TrimSpace(string(out)))
 		return
 	}
-	emitDiagnostic("agent cli tools installed: %s", strings.Join(packages, ", "))
+
+	stillMissing := make([]string, 0, len(missing))
+	for _, tool := range missing {
+		if !guestCLIAvailable(tool.binary) {
+			stillMissing = append(stillMissing, tool.binary)
+		}
+	}
+	if len(stillMissing) > 0 {
+		emitDiagnostic("agent cli tools install incomplete (missing=%s)", strings.Join(stillMissing, ", "))
+		return
+	}
+
+	emitDiagnostic("agent cli tools installed and verified: %s", strings.Join(packages, ", "))
 }
 
 func writeCLIWrapper(destPath, pkg string) error {
 	content := fmt.Sprintf(`#!/bin/sh
 exec npx -y %s "$@"
 `, pkg)
-	return os.WriteFile(destPath, []byte(content), 0o755)
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(destPath), ".nexus-wrapper-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o755); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, destPath)
+}
+
+func guestCLIAvailable(binary string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "--version")
+	cmd.Env = ensurePathInEnv(os.Environ())
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
 }
 
 func ensureAgentProcessPath() {
@@ -1037,6 +1101,47 @@ var setupNetworkFunc = realSetupNetwork
 // It is called at PID1 boot before setupDNS so that DNS resolution works.
 func setupNetwork() error {
 	return setupNetworkFunc()
+}
+
+// maybeStartSSHDInGuest launches OpenSSH sshd when the rootfs provides it.
+// The rootfs is built by firecracker-setup.sh which installs openssh-server,
+// so sshd should always be present. Host keys are generated on first boot.
+// This enables VS Code / Cursor Remote-SSH to attach directly to the micro-VM.
+func maybeStartSSHDInGuest() {
+	const sshdPath = "/usr/sbin/sshd"
+	if _, err := os.Stat(sshdPath); err != nil {
+		emitDiagnostic("sshd: %s not found in rootfs — rebuild rootfs with 'nexus daemon start' to install openssh-server", sshdPath)
+		return
+	}
+
+	// Generate any missing host keys so sshd starts cleanly.
+	for _, keyType := range []string{"rsa", "ecdsa", "ed25519"} {
+		keyPath := "/etc/ssh/ssh_host_" + keyType + "_key"
+		if _, err := os.Stat(keyPath); err != nil {
+			out, kErr := exec.Command("ssh-keygen", "-q", "-N", "", "-t", keyType, "-f", keyPath).CombinedOutput()
+			if kErr != nil {
+				emitDiagnostic("sshd: generate %s host key failed (non-fatal): %v: %s", keyType, kErr, strings.TrimSpace(string(out)))
+			} else {
+				emitDiagnostic("sshd: generated %s host key", keyType)
+			}
+		}
+	}
+
+	// /run/sshd must be a directory (privilege separation chroot) — not a file.
+	// Remove any stale file that may exist (e.g. from a previous bad attempt)
+	// and re-create as a directory.
+	const sshdRunDir = "/run/sshd"
+	if info, err := os.Lstat(sshdRunDir); err == nil && !info.IsDir() {
+		_ = os.Remove(sshdRunDir)
+	}
+	_ = os.MkdirAll(sshdRunDir, 0o755)
+
+	cmd := exec.Command(sshdPath)
+	if err := cmd.Start(); err != nil {
+		emitDiagnostic("sshd: start failed (non-fatal): %v", err)
+		return
+	}
+	emitDiagnostic("sshd: started (pid=%d)", cmd.Process.Pid)
 }
 
 func realSetupNetwork() error {
