@@ -36,11 +36,11 @@ func (c *apiClient) patch(ctx context.Context, path string, body any) error {
 }
 
 func (c *apiClient) PauseVM(ctx context.Context) error {
-	return c.put(ctx, "/vm", map[string]any{"state": "Paused"})
+	return c.patch(ctx, "/vm", map[string]any{"state": "Paused"})
 }
 
 func (c *apiClient) ResumeVM(ctx context.Context) error {
-	return c.put(ctx, "/vm", map[string]any{"state": "Resumed"})
+	return c.patch(ctx, "/vm", map[string]any{"state": "Resumed"})
 }
 
 func (c *apiClient) CreateSnapshot(ctx context.Context, vmstatePath, memFilePath string) error {
