@@ -656,6 +656,19 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         settings
     }
 
+    public func checkVMSSH(workspaceId: String) async throws -> VMSSHCheckResult {
+        let result = try await call("workspace.sshcheck", params: ["id": workspaceId])
+        guard let dict = result as? [String: Any] else {
+            throw RPCError(message: "unexpected workspace.sshcheck response")
+        }
+        let ok = dict["ok"] as? Bool ?? false
+        let guestIP = dict["guestIp"] as? String ?? ""
+        let whoami = dict["whoami"] as? String ?? ""
+        let error = dict["error"] as? String ?? ""
+        let stderr = dict["stderr"] as? String ?? ""
+        return VMSSHCheckResult(ok: ok, guestIP: guestIP, whoami: whoami, error: error, stderr: stderr)
+    }
+
     private func parseSpotlightForwards(from raw: Any?) -> [ForwardedPort] {
         guard let items = raw as? [[String: Any]] else { return [] }
         return items.compactMap { item in

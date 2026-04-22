@@ -27,6 +27,7 @@
 		7E776D62015DFBCF25EEE644 /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6231766FDA3F470858042A87 /* TerminalView.swift */; };
 		80CE1FC1D1DC6ED9FA1B0B3D /* NexusApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 804B2FADD0C5143C198F46DA /* NexusApp.swift */; };
 		8831D4FD2BE4EC9CA00D54D9 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 659564BF098092F19E1351D0 /* AppState.swift */; };
+		A1DD90E12B3C4D5E8F901113 /* RemoteEditorURL.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1DD90E12B3C4D5E8F901112 /* RemoteEditorURL.swift */; };
 		A512F81B9A51ED222CBECA5F /* WebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BFDE21D93B71D9558A8EB6 /* WebSocketClient.swift */; };
 		A774123997F078D6CD0C11BA /* WorkspaceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E59BFA6CB8B1E9F66EE1247E /* WorkspaceDetailView.swift */; };
 		A9273E20904D087845541518 /* DaemonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9C948C4674F0FD006FCE84F /* DaemonClient.swift */; };
@@ -36,7 +37,6 @@
 		BDC55CBE4A8A0411ED521DA7 /* GitLogReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADCBCD9E06B53B830CCD0102 /* GitLogReader.swift */; };
 		BFA6AE086469802D3B4DB201 /* LocalWorkspaceState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 005481512D95B12DFBE232BB /* LocalWorkspaceState.swift */; };
 		C1C7D99C12055E99522AC87F /* SSHTunnelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4813F94247C8246742DEA82F /* SSHTunnelManager.swift */; };
-		CA97140DFA9661F38F425E4B /* ConfigSyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C35EE5C1D87F8B4C3189948F /* ConfigSyncManager.swift */; };
 		CBD8EF15A85756F63CF36229 /* AsyncDeadline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E4D7D285580F1646BA523C0 /* AsyncDeadline.swift */; };
 		DA15791279FE3FB2D12D1CC2 /* AsyncDeadlineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1299EB3EDDA3B0AD4AA85C6 /* AsyncDeadlineTests.swift */; };
 		DCD55CD52BA08D65FF1A4C57 /* PTYSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE2B07751BE8ACCB41EBA453 /* PTYSessionManager.swift */; };
@@ -94,13 +94,13 @@
 		85417139225FD79454603276 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		88535B8DEC2991EA5557D322 /* EngineRemotePathBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineRemotePathBrowser.swift; sourceTree = "<group>"; };
 		9A570BFC62A722A8BE1F84B9 /* NexusAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NexusAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1DD90E12B3C4D5E8F901112 /* RemoteEditorURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteEditorURL.swift; sourceTree = "<group>"; };
 		A1299EB3EDDA3B0AD4AA85C6 /* AsyncDeadlineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncDeadlineTests.swift; sourceTree = "<group>"; };
 		A2BFDE21D93B71D9558A8EB6 /* WebSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketClient.swift; sourceTree = "<group>"; };
 		ADCBCD9E06B53B830CCD0102 /* GitLogReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLogReader.swift; sourceTree = "<group>"; };
 		B13EB4886DD523ACF011861C /* NewWorkspaceSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewWorkspaceSheet.swift; sourceTree = "<group>"; };
 		BA9C9A878181FBC6C382D9F0 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
 		BE2B07751BE8ACCB41EBA453 /* PTYSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PTYSessionManager.swift; sourceTree = "<group>"; };
-		C35EE5C1D87F8B4C3189948F /* ConfigSyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigSyncManager.swift; sourceTree = "<group>"; };
 		CBE87649ADC2236DDDD799E3 /* StartupTrace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartupTrace.swift; sourceTree = "<group>"; };
 		D8BD091C6D75E7BF48014347 /* NexusApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NexusApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E3045A4B1F455132950EB624 /* libNexusCore.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libNexusCore.a; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -197,7 +197,6 @@
 			children = (
 				659564BF098092F19E1351D0 /* AppState.swift */,
 				0E4D7D285580F1646BA523C0 /* AsyncDeadline.swift */,
-				C35EE5C1D87F8B4C3189948F /* ConfigSyncManager.swift */,
 				5600243E10A19C71DA84256F /* DaemonLogStream.swift */,
 				EE93856B0461004CF52C7968 /* DaemonProfile.swift */,
 				52D96DD4872B23F7851C58FC /* debug_pty.swift */,
@@ -211,6 +210,7 @@
 				BE2B07751BE8ACCB41EBA453 /* PTYSessionManager.swift */,
 				4F536D8D8113B5D7DEAFEEFC /* RemoteProvisioner.swift */,
 				4813F94247C8246742DEA82F /* SSHTunnelManager.swift */,
+				A1DD90E12B3C4D5E8F901112 /* RemoteEditorURL.swift */,
 				CBE87649ADC2236DDDD799E3 /* StartupTrace.swift */,
 				14DE7269B3B6401897CF20B5 /* TerminalRegistry.swift */,
 				2E3741BD5102248BC1C00360 /* Workspace.swift */,
@@ -391,12 +391,7 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(SRCROOT)/Resources/nexus-daemon",
-				"$(SRCROOT)/Resources/tools/nexus",
-				"$(SRCROOT)/Resources/tools/nexus-daemon",
-				"$(SRCROOT)/Resources/tools/mutagen",
-				"$(SRCROOT)/Resources/tools/limactl",
-				"$(SRCROOT)/Resources/tools/tmux",
+				"$(SRCROOT)/Resources/nexus",
 				"$(SRCROOT)/Resources/nexus-linux-amd64",
 				"$(SRCROOT)/Resources/nexus-linux-arm64",
 			);
@@ -404,18 +399,13 @@
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-daemon",
-				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/nexus",
-				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/nexus-daemon",
-				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/mutagen",
-				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/limactl",
-				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/tools/tmux",
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus",
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-linux-amd64",
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-linux-arm64",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "copy_tool() {\n  local src=\"$1\"\n  local dst=\"$2\"\n  local label=\"$3\"\n  if [ -f \"$src\" ]; then\n    mkdir -p \"$(dirname \"$dst\")\"\n    cp \"$src\" \"$dst\"\n    chmod +x \"$dst\"\n    echo \"Bundled ${label} -> ${dst}\"\n  else\n    echo \"warning: ${label} not found at ${src}; stage Resources (see CONTRIBUTING.md, macOS app)\"\n  fi\n}\n\ncopy_tool \"${SRCROOT}/Resources/nexus-daemon\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-daemon\" \"nexus-daemon\"\n\nfor tool in nexus nexus-daemon mutagen limactl tmux; do\n  copy_tool \"${SRCROOT}/Resources/tools/${tool}\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/tools/${tool}\" \"${tool}\"\ndone\n\n# Linux nexus binaries for remote provisioning (auto-setup on fresh Linux hosts).\n# These contain the embedded smolvm bundle — no separate smolvm install needed.\n# Stage via: scripts/swift/build-nexus-linux.sh (or copy manually to Resources/).\nfor arch in amd64 arm64; do\n  copy_tool \"${SRCROOT}/Resources/nexus-linux-${arch}\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-linux-${arch}\" \"nexus-linux-${arch}\"\ndone\n";
+			shellScript = "copy_tool() {\n  local src=\"$1\"\n  local dst=\"$2\"\n  local label=\"$3\"\n  if [ -f \"$src\" ]; then\n    mkdir -p \"$(dirname \"$dst\")\"\n    cp \"$src\" \"$dst\"\n    chmod +x \"$dst\"\n    echo \"Bundled ${label} -> ${dst}\"\n  else\n    echo \"warning: ${label} not found at ${src}; run 'go build -o packages/nexus-swift/Resources/nexus ./packages/nexus/cmd/nexus'\"\n  fi\n}\n\n# macOS nexus CLI — used by the app for workspace open-editor and daemon operations.\ncopy_tool \"${SRCROOT}/Resources/nexus\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus\" \"nexus\"\n\n# Linux nexus binaries for remote provisioning (uploading to fresh Linux hosts).\nfor arch in amd64 arm64; do\n  copy_tool \"${SRCROOT}/Resources/nexus-linux-${arch}\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-linux-${arch}\" \"nexus-linux-${arch}\"\ndone\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -454,7 +444,6 @@
 			files = (
 				8831D4FD2BE4EC9CA00D54D9 /* AppState.swift in Sources */,
 				CBD8EF15A85756F63CF36229 /* AsyncDeadline.swift in Sources */,
-				CA97140DFA9661F38F425E4B /* ConfigSyncManager.swift in Sources */,
 				A9273E20904D087845541518 /* DaemonClient.swift in Sources */,
 				F81E5DCB46A4A329A68C993D /* DaemonLogStream.swift in Sources */,
 				66EBFC88F463C187C400B0A2 /* DaemonProfile.swift in Sources */,
@@ -469,6 +458,7 @@
 				34050728C546080F0F59F339 /* ProjectMirrorSync.swift in Sources */,
 				B1C2A5C2E164B1357F511E43 /* ProjectRepoBindingStore.swift in Sources */,
 				2837D8E1C547498450A97FFE /* RemoteProvisioner.swift in Sources */,
+				A1DD90E12B3C4D5E8F901113 /* RemoteEditorURL.swift in Sources */,
 				C1C7D99C12055E99522AC87F /* SSHTunnelManager.swift in Sources */,
 				5142C089169B296EB634FB67 /* StartupTrace.swift in Sources */,
 				E339CD09AB98290F2BD040F1 /* TerminalRegistry.swift in Sources */,

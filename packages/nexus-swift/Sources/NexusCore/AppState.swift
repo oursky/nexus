@@ -45,9 +45,21 @@ public final class AppState: ObservableObject {
     @Published public var error: String?
     /// Human-readable progress message during auto-provisioning (nil when not provisioning).
     @Published public var provisioningMessage: String?
+    /// Per-workspace in-flight operation state (start / stop / remove).
+    /// Views observe this to show spinners and disable action buttons.
+    @Published public var workspaceOps: [String: WorkspaceOpState] = [:]
 
     // MARK: - Client
     public private(set) var client: any DaemonClient
+
+    /// Daemon profile used for the current remote connection (SSH target, tunnel port, etc.).
+    public var activeDaemonProfile: DaemonProfile? { cachedProfile }
+
+    /// Active daemon WebSocket URL (e.g. `ws://127.0.0.1:<port>`).
+    /// Set after the SSH tunnel is established; nil before connecting.
+    private var daemonWebSocketURL: URL?
+    /// Bearer token for the active daemon connection.
+    private var daemonToken: String?
 
     private var refreshTask: Task<Void, Never>?
     private var isLoadInProgress = false
@@ -101,8 +113,13 @@ public final class AppState: ObservableObject {
             return updated
         }
 
+        // Project-linked workspaces appear under their project group.
+        // Unlinked workspaces (created via CLI, no projectId) fall back to
+        // path-based grouping and are appended so they always stay visible.
         let projectRepos = Repo.fromProjects(projects, workspaces: carried)
-        repos = projectRepos.isEmpty ? Repo.grouping(carried) : projectRepos
+        let projectWorkspaceIDs = Set(projectRepos.flatMap { $0.workspaces.map(\.id) })
+        let unlinked = carried.filter { !projectWorkspaceIDs.contains($0.id) }
+        repos = projectRepos + Repo.grouping(unlinked)
         connectionState = .connected
         error = nil
 
@@ -287,8 +304,92 @@ public final class AppState: ObservableObject {
         let server = HeadlessRPCServer(clientProvider: { [weak self] in
             self?.client as? WebSocketDaemonClient
         })
+        server.openEditorAction = { [weak self] workspaceID, app, checkOnly in
+            guard let self else { return (false, "AppState deallocated") }
+            return await self.openEditorViaCLI(workspaceID: workspaceID, app: app, checkOnly: checkOnly)
+        }
         rpcServer = server
         server.start()
+    }
+
+    // MARK: - Editor open via CLI
+
+    private static let openEditorLogger = Logger(subsystem: "com.nexus.NexusApp", category: "OpenEditor")
+
+    /// Spawns `nexus workspace open-editor <id> [--check]` and returns (ok, combinedOutput).
+    /// Passes the app's current daemon WebSocket URL + token so the subprocess reuses
+    /// the existing SSH tunnel without needing its own profile or SSH agent.
+    public func openEditorViaCLI(workspaceID: String, app: String, checkOnly: Bool) async -> (Bool, String) {
+        let log = Self.openEditorLogger
+        let wsURL = daemonWebSocketURL?.absoluteString
+        let tok = daemonToken
+        let sshHost = cachedProfile?.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        log.info("open-editor start workspaceID=\(workspaceID, privacy: .public) app=\(app, privacy: .public) checkOnly=\(checkOnly, privacy: .public)")
+        log.debug("open-editor daemonURL=\(wsURL ?? "(nil)", privacy: .public) hasToken=\(tok != nil, privacy: .public)")
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let nexusBin = Self.nexusBinaryPath()
+                log.info("open-editor binary=\(nexusBin, privacy: .public)")
+
+                var env = ProcessInfo.processInfo.environment
+                env["SHELL"] = "/bin/sh"
+                if let u = wsURL    { env["NEXUS_E2E_DAEMON_WEBSOCKET"] = u }
+                if let t = tok      { env["NEXUS_DAEMON_TOKEN"] = t }
+                if let h = sshHost, !h.isEmpty { env["NEXUS_DAEMON_SSH_HOST"] = h }
+
+                var args = ["workspace", "open-editor", workspaceID, "--app", app]
+                if checkOnly { args.append("--check") }
+                log.info("open-editor running: \(nexusBin) \(args.joined(separator: " "), privacy: .public)")
+
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: nexusBin)
+                proc.arguments = args
+                proc.environment = env
+
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                proc.standardOutput = outPipe
+                proc.standardError  = errPipe
+
+                do {
+                    try proc.run()
+                } catch {
+                    log.error("open-editor launch failed: \(error.localizedDescription, privacy: .public)")
+                    continuation.resume(returning: (false, "Could not launch nexus: \(error.localizedDescription)"))
+                    return
+                }
+                proc.waitUntilExit()
+
+                let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let combined = [out, err].filter { !$0.isEmpty }.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let ok = proc.terminationStatus == 0
+
+                if ok {
+                    log.info("open-editor succeeded workspaceID=\(workspaceID, privacy: .public)")
+                    continuation.resume(returning: (true, combined))
+                } else {
+                    log.error("open-editor failed (exit \(proc.terminationStatus, privacy: .public)): \(combined, privacy: .public)")
+                    continuation.resume(returning: (false, combined))
+                }
+            }
+        }
+    }
+
+    private static func nexusBinaryPath() -> String {
+        // Prefer the binary bundled inside the app bundle.
+        if let url = Bundle.main.url(forResource: "nexus", withExtension: nil) {
+            return url.path
+        }
+        // Development fallback when running without a full app bundle.
+        let devPaths = [
+            "/Users/\(NSUserName())/.local/bin/nexus",
+            "/usr/local/bin/nexus",
+        ]
+        return devPaths.first { FileManager.default.isExecutableFile(atPath: $0) } ?? devPaths[0]
     }
 
     private func startRefreshLoop() {
@@ -401,6 +502,8 @@ public final class AppState: ObservableObject {
                 return
             }
             daemonURL = url
+            daemonWebSocketURL = url
+            daemonToken = resolvedToken.isEmpty ? nil : resolvedToken
         } catch {
             connectionState = .disconnected
             self.error = "SSH tunnel failed: \(error.localizedDescription)"
@@ -631,16 +734,22 @@ public final class AppState: ObservableObject {
     }
 
     public func start(_ workspace: Workspace) async {
-        await perform { try await self.client.startWorkspace(id: workspace.id) }
+        await perform(workspaceID: workspace.id, opState: .starting) {
+            try await self.client.startWorkspace(id: workspace.id)
+        }
     }
 
     public func stop(_ workspace: Workspace) async {
-        await perform { try await self.client.stopWorkspace(id: workspace.id) }
+        await perform(workspaceID: workspace.id, opState: .stopping) {
+            try await self.client.stopWorkspace(id: workspace.id)
+        }
     }
 
     public func remove(_ workspace: Workspace) async {
         if selectedWorkspaceID == workspace.id { selectedWorkspaceID = nil }
-        await perform { try await self.client.removeWorkspace(id: workspace.id) }
+        await perform(workspaceID: workspace.id, opState: .removing) {
+            try await self.client.removeWorkspace(id: workspace.id)
+        }
     }
 
     /// Removes a daemon project record, clears local mirror/bind state, and refreshes lists.
@@ -684,7 +793,15 @@ public final class AppState: ObservableObject {
         }
     }
 
-    private func perform(_ op: @escaping () async throws -> Void) async {
+    private func perform(workspaceID: String? = nil, opState: WorkspaceOpState? = nil, _ op: @escaping () async throws -> Void) async {
+        if let id = workspaceID, let state = opState {
+            workspaceOps[id] = state
+        }
+        defer {
+            if let id = workspaceID {
+                workspaceOps.removeValue(forKey: id)
+            }
+        }
         do {
             try await op()
             await load()

@@ -479,6 +479,112 @@ final class PortDetectionTests: XCTestCase {
     }
 }
 
+final class RemoteEditorURLTests: XCTestCase {
+
+    func testFolderURLCursor() {
+        let u = RemoteEditorURLBuilder.folderURL(app: .cursor, sshTarget: "dev@box", absoluteRemotePath: "/home/dev/proj")
+        XCTAssertEqual(u?.absoluteString, "cursor://vscode-remote/ssh-remote+dev@box/home/dev/proj")
+    }
+
+    func testFolderURLVSCode() {
+        let u = RemoteEditorURLBuilder.folderURL(app: .vscode, sshTarget: "dev@box", absoluteRemotePath: "/home/dev/proj")
+        XCTAssertEqual(u?.absoluteString, "vscode://vscode-remote/ssh-remote+dev@box/home/dev/proj")
+    }
+
+    func testAllowsWorkspacePathForVMAlias() {
+        let u = RemoteEditorURLBuilder.folderURL(app: .cursor, sshTarget: "nexus-vm-ws-1", absoluteRemotePath: "/workspace")
+        XCTAssertEqual(u?.absoluteString, "cursor://vscode-remote/ssh-remote+nexus-vm-ws-1/workspace")
+    }
+
+    func testRejectsEmptySSH() {
+        XCTAssertNil(RemoteEditorURLBuilder.folderURL(app: .cursor, sshTarget: " ", absoluteRemotePath: "/a"))
+    }
+
+    func testEncodesSpaceInPath() {
+        let u = RemoteEditorURLBuilder.folderURL(app: .cursor, sshTarget: "u@h", absoluteRemotePath: "/a/b c/d")
+        XCTAssertNotNil(u)
+        XCTAssertTrue(u?.absoluteString.contains("b%20c") ?? false, "got \(u?.absoluteString ?? "")")
+    }
+}
+
+final class WorkspaceRemoteSSHPathTests: XCTestCase {
+
+    func testRemoteSSHRepoPathPrefersRepo() {
+        let ws = Workspace(
+            id: "ws-1",
+            workspaceName: "w",
+            repo: "/home/u/mirror",
+            ref: "main",
+            state: .running,
+            rootPath: "/alt",
+            agentProfile: "default"
+        )
+        XCTAssertEqual(ws.remoteSSHRepoPath, "/home/u/mirror")
+    }
+
+    func testRemoteSSHRepoPathFallsBackToRootPath() {
+        let ws = Workspace(
+            id: "ws-1",
+            workspaceName: "w",
+            repo: "",
+            ref: "main",
+            state: .running,
+            rootPath: "/var/repo",
+            agentProfile: "default"
+        )
+        XCTAssertEqual(ws.remoteSSHRepoPath, "/var/repo")
+    }
+
+    func testRemoteSSHRepoPathSkipsVMWorkspace() {
+        let ws = Workspace(
+            id: "ws-1",
+            workspaceName: "w",
+            repo: "/workspace",
+            ref: "main",
+            state: .running,
+            rootPath: "",
+            agentProfile: "default"
+        )
+        XCTAssertNil(ws.remoteSSHRepoPath)
+    }
+
+    func testRemoteSSHFolderOpenUsesGuestForFirecracker() {
+        let ws = Workspace(
+            id: "ws-abc",
+            workspaceName: "w",
+            repo: "/home/u/mirror",
+            ref: "main",
+            state: .running,
+            rootPath: "",
+            agentProfile: "default",
+            backend: "firecracker",
+            guestIp: "172.26.1.2"
+        )
+        let spec = ws.remoteSSHFolderOpen(jumpHost: "dev@linux", identityFile: nil)
+        XCTAssertEqual(spec?.remotePath, "/workspace")
+        XCTAssertEqual(spec?.vmGuestIP, "172.26.1.2")
+        XCTAssertEqual(spec?.sshHostForURI, "nexus-vm-ws-abc")
+        XCTAssertEqual(spec?.proxyJump, "dev@linux")
+    }
+
+    func testRemoteSSHFolderOpenUsesHostPathForProcess() {
+        let ws = Workspace(
+            id: "ws-1",
+            workspaceName: "w",
+            repo: "/home/u/proj",
+            ref: "main",
+            state: .running,
+            rootPath: "",
+            agentProfile: "default",
+            backend: "process"
+        )
+        let spec = ws.remoteSSHFolderOpen(jumpHost: "dev@linux", identityFile: nil)
+        XCTAssertEqual(spec?.remotePath, "/home/u/proj")
+        XCTAssertNil(spec?.vmGuestIP)
+        XCTAssertEqual(spec?.sshHostForURI, "dev@linux")
+    }
+}
+
 final class RelationsGroupingTests: XCTestCase {
 
     var client: WebSocketDaemonClient!

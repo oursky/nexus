@@ -2,16 +2,19 @@ import Foundation
 import Network
 import OSLog
 
-/// A minimal local HTTP/1.1 server that exposes headless control over terminal tabs.
+/// A minimal local HTTP/1.1 server that exposes headless control over terminal tabs
+/// and workspace editor actions.
 /// Only active when the environment variable NEXUS_HEADLESS_RPC=1 is set.
 ///
 /// Endpoints:
 ///   GET  /status
 ///   GET  /terminal/tabs
-///   POST /terminal/open   { workspaceID, name? }
-///   POST /terminal/write  { tabID, text }
+///   POST /terminal/open         { workspaceID, name? }
+///   POST /terminal/write        { tabID, text }
 ///   GET  /terminal/read?tabID=...
-///   POST /terminal/clear  { tabID }
+///   POST /terminal/clear        { tabID }
+///   POST /workspace/ssh-check   { workspaceID }  → { ok, detail }
+///   POST /workspace/open-editor { workspaceID, app? }  → { ok, detail }
 @MainActor
 public final class HeadlessRPCServer {
     private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "HeadlessRPCServer")
@@ -20,6 +23,10 @@ public final class HeadlessRPCServer {
     private var listener: NWListener?
     private let port: UInt16
     private let clientProvider: () -> WebSocketDaemonClient?
+
+    /// Called by /workspace/ssh-check and /workspace/open-editor.
+    /// (workspaceID, app, checkOnly) → (ok, detail)
+    public var openEditorAction: ((String, String, Bool) async -> (Bool, String))?
 
     public init(
         port: UInt16 = HeadlessRPCServer.defaultPort,
@@ -160,6 +167,10 @@ public final class HeadlessRPCServer {
             return await handleRead(query: query)
         case ("POST", "/terminal/clear"):
             return await handleClear(body: bodyString)
+        case ("POST", "/workspace/ssh-check"):
+            return await handleSSHCheck(body: bodyString)
+        case ("POST", "/workspace/open-editor"):
+            return await handleOpenEditor(body: bodyString)
         default:
             return (404, jsonError("not found"))
         }
@@ -269,6 +280,43 @@ public final class HeadlessRPCServer {
         }
         TerminalRegistry.shared.clearOutput(for: tabID)
         return (200, #"{"ok":true}"#)
+    }
+
+    private func handleSSHCheck(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let workspaceID = dict["workspaceID"] as? String else {
+            return (400, jsonError("missing workspaceID"))
+        }
+        guard let action = openEditorAction else {
+            return (503, jsonError("open-editor action not registered"))
+        }
+        Self.logger.info("rpc /workspace/ssh-check workspaceID=\(workspaceID, privacy: .public)")
+        let (ok, detail) = await action(workspaceID, "cursor", true)
+        let payload: [String: Any] = ["ok": ok, "detail": detail]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (ok ? 200 : 500, str)
+    }
+
+    private func handleOpenEditor(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let workspaceID = dict["workspaceID"] as? String else {
+            return (400, jsonError("missing workspaceID"))
+        }
+        let app = dict["app"] as? String ?? "cursor"
+        guard let action = openEditorAction else {
+            return (503, jsonError("open-editor action not registered"))
+        }
+        Self.logger.info("rpc /workspace/open-editor workspaceID=\(workspaceID, privacy: .public) app=\(app, privacy: .public)")
+        let (ok, detail) = await action(workspaceID, app, false)
+        let payload: [String: Any] = ["ok": ok, "detail": detail]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (ok ? 200 : 500, str)
     }
 
     // MARK: - Helpers

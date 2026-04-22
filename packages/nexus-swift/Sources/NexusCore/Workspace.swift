@@ -44,6 +44,22 @@ public enum WorkspaceAction: String, Sendable {
     case start, stop, remove, fork, create
 }
 
+// MARK: - In-flight operation state (transient UI state, set by AppState)
+
+public enum WorkspaceOpState: Sendable, Equatable {
+    case starting
+    case stopping
+    case removing
+
+    public var label: String {
+        switch self {
+        case .starting: return "Starting…"
+        case .stopping: return "Stopping…"
+        case .removing: return "Removing…"
+        }
+    }
+}
+
 // MARK: - Workspace
 // Field names match workspacemgr.Workspace JSON keys exactly.
 
@@ -67,6 +83,8 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public let backend: String?
     /// Human-readable summary from daemon (`runtimeLabel` JSON), e.g. backend + isolation.
     public let runtimeLabel: String?
+    /// Firecracker guest IPv4 on the engine bridge (`guestIp` in daemon JSON) when the VM is running.
+    public var guestIp: String?
     public var ports: [ForwardedPort]
     public var hasActiveTunnels: Bool
 
@@ -102,6 +120,62 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         return b
     }
 
+    /// Absolute path on the engine host for Remote SSH editor links (not the VM-only `/workspace` path).
+    public var remoteSSHRepoPath: String? {
+        for candidate in [repo, rootPath].map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }) {
+            guard candidate.hasPrefix("/"), candidate != "/workspace" else { continue }
+            return candidate
+        }
+        return nil
+    }
+
+    private var isFirecrackerVMBridgeGuest: Bool {
+        let b = (backend ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard b == "firecracker" else { return false }
+        guard state.isActive else { return false }
+        let g = (guestIp ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return !g.isEmpty
+    }
+
+    /// Stable `Host` alias for `~/.ssh/config.d` when opening a Firecracker workspace in an external editor.
+    public static func nexusSSHHostAlias(for workspaceID: String) -> String {
+        let safe = workspaceID.replacingOccurrences(
+            of: "[^a-zA-Z0-9-]+",
+            with: "-",
+            options: .regularExpression
+        )
+        return "nexus-vm-\(safe)"
+    }
+
+    /// Resolves Remote-SSH parameters: Firecracker guests use `/workspace` and a `Host` alias + ProxyJump; process sandboxes use the engine repo path.
+    public func remoteSSHFolderOpen(jumpHost: String, identityFile: String?) -> RemoteSSHFolderOpenSpec? {
+        let jump = jumpHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !jump.isEmpty else { return nil }
+        let idf = identityFile?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let idfOrNil = (idf?.isEmpty ?? true) ? nil : idf
+
+        if isFirecrackerVMBridgeGuest {
+            let ip = (guestIp ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let alias = Self.nexusSSHHostAlias(for: id)
+            return RemoteSSHFolderOpenSpec(
+                sshHostForURI: alias,
+                remotePath: "/workspace",
+                vmGuestIP: ip,
+                proxyJump: jump,
+                identityFile: idfOrNil
+            )
+        }
+
+        guard let path = remoteSSHRepoPath else { return nil }
+        return RemoteSSHFolderOpenSpec(
+            sshHostForURI: jump,
+            remotePath: path,
+            vmGuestIP: nil,
+            proxyJump: jump,
+            identityFile: idfOrNil
+        )
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, workspaceName, repo, ref, state, rootPath, agentProfile
         case targetBranch, currentRef, currentCommit
@@ -110,6 +184,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         case repoId = "repoId"
         case projectId = "projectId"
         case backend, runtimeLabel
+        case guestIp
     }
 
     public init(from decoder: Decoder) throws {
@@ -130,6 +205,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         projectId    = try c.decodeIfPresent(String.self, forKey: .projectId)
         backend      = try c.decodeIfPresent(String.self, forKey: .backend)
         runtimeLabel = try c.decodeIfPresent(String.self, forKey: .runtimeLabel)
+        guestIp      = try c.decodeIfPresent(String.self, forKey: .guestIp)
         ports        = []
         hasActiveTunnels = false
     }
@@ -152,6 +228,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         try c.encodeIfPresent(projectId, forKey: .projectId)
         try c.encodeIfPresent(backend, forKey: .backend)
         try c.encodeIfPresent(runtimeLabel, forKey: .runtimeLabel)
+        try c.encodeIfPresent(guestIp, forKey: .guestIp)
     }
 
     public init(id: String, workspaceName: String, repo: String = "",
@@ -159,7 +236,8 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
                 rootPath: String = "", agentProfile: String = "default",
                 repoId: String? = nil, projectId: String? = nil,
                 ports: [ForwardedPort] = [], hasActiveTunnels: Bool = false,
-                backend: String? = nil, runtimeLabel: String? = nil) {
+                backend: String? = nil, runtimeLabel: String? = nil,
+                guestIp: String? = nil) {
         self.id           = id
         self.workspaceName = workspaceName
         self.repo         = repo
@@ -176,6 +254,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         self.projectId    = projectId
         self.backend      = backend
         self.runtimeLabel = runtimeLabel
+        self.guestIp      = guestIp
         self.ports        = ports
         self.hasActiveTunnels = hasActiveTunnels
     }
@@ -287,8 +366,11 @@ public struct Repo: Identifiable, Sendable {
 
     public static func fromProjects(_ projects: [Project], workspaces: [Workspace]) -> [Repo] {
         guard !projects.isEmpty else { return [] }
-        return projects.map { project in
+        // Only include projects that have at least one workspace — stale project
+        // records (e.g. after workspace deletion) would otherwise show empty groups.
+        return projects.compactMap { project in
             let wsInProject = workspaces.filter { $0.projectId == project.id }
+            guard !wsInProject.isEmpty else { return nil }
             return Repo(
                 id: project.id,
                 name: project.name,
@@ -302,7 +384,17 @@ public struct Repo: Identifiable, Sendable {
         var map: [String: [Workspace]] = [:]
         var order: [String] = []
         for ws in workspaces {
-            let key = ws.repoId ?? "nexus"
+            // Group by repoId when present; fall back to the repo path so that
+            // workspaces created via the CLI (no repoId) appear under their
+            // project folder rather than a generic bucket.
+            let key: String
+            if let rid = ws.repoId, !rid.isEmpty {
+                key = rid
+            } else if !ws.repo.isEmpty {
+                key = ws.repo
+            } else {
+                key = "nexus"
+            }
             if map[key] == nil { order.append(key) }
             map[key, default: []].append(ws)
         }
