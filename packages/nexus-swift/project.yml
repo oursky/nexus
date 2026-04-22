@@ -1,7 +1,7 @@
 name: NexusApp
 
 options:
-  bundleIdPrefix: com.nexus
+  bundleIdPrefix: com.oursky
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
@@ -20,8 +20,8 @@ settings:
     DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
     ENABLE_TESTABILITY: YES
     # Allow callers (CI/local scripts) to override app bundle IDs.
-    NEXUS_APP_BUNDLE_ID: com.nexus.NexusApp
-    NEXUS_APP_TEST_BUNDLE_ID: com.nexus.NexusAppTests
+    NEXUS_APP_BUNDLE_ID: com.oursky.nexus.local
+    NEXUS_APP_TEST_BUNDLE_ID: com.oursky.nexus.local.tests
     MTL_ENABLE_DEBUG_INFO: NO
     # Skip Metal shader compilation (not used in this app)
     GCC_WARN_INHIBIT_ALL_WARNINGS: NO
@@ -97,12 +97,14 @@ targets:
         LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
         NSHumanReadableCopyright: ""
         NSPrincipalClass: NSApplication
+        LSApplicationCategoryType: public.app-category.developer-tools
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(NEXUS_APP_BUNDLE_ID)
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: Sources/NexusApp/NexusApp.entitlements
 
   # ── NexusAppTests (unit / integration) ───────────────────────────────────
   NexusAppTests:

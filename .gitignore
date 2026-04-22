@@ -54,6 +54,7 @@ Thumbs.db
 
 # Dependencies (if vendoring)
 vendor/
+.bundle/
 
 # Local config
 .nexus/pulse.db

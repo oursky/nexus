@@ -181,7 +181,7 @@ func runInit(opts initOptions) error {
 	}
 
 	workspaceCfg := config.WorkspaceConfig{
-		Schema:  "https://raw.githubusercontent.com/IniZio/nexus/main/schemas/workspace.v1.schema.json",
+		Schema:  "https://raw.githubusercontent.com/oursky/nexus/main/schemas/workspace.v1.schema.json",
 		Version: 1,
 		Doctor: config.DoctorConfig{
 			Probes: []config.DoctorCommandProbe{{

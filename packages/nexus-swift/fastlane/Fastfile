@@ -1,0 +1,112 @@
+default_platform(:mac)
+
+def get_git_commit_info
+  {
+    commit_hash: last_git_commit[:abbreviated_commit_hash],
+    commit_message: last_git_commit[:message]
+  }
+end
+
+platform :mac do
+  variant = {
+    'team_id' => 'M7HB6C3N6X',
+    'apple_id' => '6762775351',
+    'app_identifier' => 'com.oursky.nexus',
+    'provisioning_profile' => 'signing/Nexus.provisionprofile',
+    'provisioning_profile_name' => 'Nexus',
+    'code_sign_identity' => 'Apple Distribution: Oursky Limited',
+    'installer_sign_identity' => '3rd Party Mac Developer Installer: Oursky Limited (M7HB6C3N6X)',
+    'project' => 'NexusApp.xcodeproj',
+    'scheme' => 'NexusApp',
+    'keychain_name' => 'nexus-build',
+  }
+
+  desc 'Build and upload the macOS app to TestFlight'
+  lane :app_deploy do |options|
+    app_build(options)
+    app_testflight(options)
+  end
+
+  desc 'Build the macOS app for TestFlight'
+  lane :app_build do |options|
+    build_number = options[:build_number]
+    git_info = get_git_commit_info
+
+    UI.message "Building Nexus macOS app"
+    UI.message "Build: #{build_number}"
+    UI.message "Commit: #{git_info[:commit_hash]}"
+    UI.message "Message: #{git_info[:commit_message]}"
+
+    keychain_password = SecureRandom.hex(16)
+
+    create_keychain(
+      name: variant['keychain_name'],
+      password: keychain_password,
+      default_keychain: true,
+      unlock: true,
+      timeout: 0,
+    )
+
+    import_certificate(
+      certificate_path: 'signing/mac_installer.p12',
+      certificate_password: '',
+      keychain_name: variant['keychain_name'],
+      keychain_password: keychain_password,
+    )
+
+    install_provisioning_profile(
+      path: variant['provisioning_profile']
+    )
+
+    build_mac_app(
+      project: variant['project'],
+      scheme: variant['scheme'],
+      configuration: 'Release',
+      export_method: 'app-store',
+      installer_cert_name: variant['installer_sign_identity'],
+      skip_package_pkg: false,
+      export_options: {
+        provisioningProfiles: {
+          variant['app_identifier'] => variant['provisioning_profile_name'],
+        },
+      },
+      xcargs: "CURRENT_PROJECT_VERSION=#{build_number} MARKETING_VERSION=#{get_version_number(xcodeproj: variant['project'], target: variant['scheme'])} SWIFT_STRICT_CONCURRENCY=minimal NEXUS_APP_BUNDLE_ID=#{variant['app_identifier']} CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=#{variant['team_id']} CODE_SIGN_IDENTITY='#{variant['code_sign_identity']}'"
+    )
+  end
+
+  desc 'Upload the macOS app to TestFlight'
+  lane :app_testflight do |options|
+    build_number = options[:build_number]
+    git_info = get_git_commit_info
+    pkg_path = options[:pkg] || Actions.lane_context[SharedValues::PKG_OUTPUT_PATH] || Dir[File.join(File.dirname(__dir__), '*.pkg')].max_by { |f| File.mtime(f) }
+
+    UI.user_error!('APP_STORE_CONNECT_API_KEY_FILE is not set') if ENV['APP_STORE_CONNECT_API_KEY_FILE'].to_s.empty?
+    UI.user_error!('No macOS package found for TestFlight upload') if pkg_path.nil?
+
+    UI.message "Uploading Nexus macOS app to TestFlight"
+    UI.message "Build: #{build_number}"
+    UI.message "Commit: #{git_info[:commit_hash]}"
+    UI.message "Message: #{git_info[:commit_message]}"
+
+    changelog = "Build #{build_number}\nCommit: #{git_info[:commit_hash]}\nMessage: #{git_info[:commit_message]}"
+
+    upload_to_testflight(
+      pkg: pkg_path,
+      apple_id: variant['apple_id'],
+      app_identifier: variant['app_identifier'],
+      team_id: variant['team_id'],
+      api_key_path: ENV['APP_STORE_CONNECT_API_KEY_FILE'],
+      skip_waiting_for_build_processing: true,
+      beta_app_description: changelog,
+      changelog: changelog
+    )
+  end
+
+  after_all do |lane, options|
+    delete_keychain(name: variant['keychain_name']) rescue nil
+  end
+
+  error do |lane, exception, options|
+    delete_keychain(name: variant['keychain_name']) rescue nil
+  end
+end

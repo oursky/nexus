@@ -3,7 +3,7 @@
 **Remote Firecracker workspaces for Mac developers.**  
 Run your dev stack inside an isolated Linux VM on a remote host — reach it from your Mac in one command.
 
-![demo](https://raw.githubusercontent.com/IniZio/nexus/main/docs/assets/demo.gif)
+![demo](https://raw.githubusercontent.com/oursky/nexus/main/docs/assets/demo.gif)
 
 ---
 
@@ -25,7 +25,7 @@ Run your dev stack inside an isolated Linux VM on a remote host — reach it fro
 Run this on **both** your Mac and your Linux host:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/IniZio/nexus/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/oursky/nexus/main/install.sh | sh
 ```
 
 This installs the `nexus` CLI and `nexus-daemon` binaries for your platform.
@@ -54,9 +54,9 @@ nexus workspace shell <workspace-id>
 
 ## macOS App
 
-![app](https://raw.githubusercontent.com/IniZio/nexus/main/docs/assets/app-screenshot.png)
+![app](https://raw.githubusercontent.com/oursky/nexus/main/docs/assets/app-screenshot.png)
 
-The companion app shows connected workspaces, detected ports, and tunnel status. Download from [Releases](https://github.com/IniZio/nexus/releases) or build from source:
+The companion app shows connected workspaces, detected ports, and tunnel status. Download from TestFlight or build from source:
 
 ```bash
 cd packages/nexus-swift && xcodebuild
@@ -97,4 +97,3 @@ Your containers  (web · api · db · …)
 - [CLI reference](docs/reference/cli.md)
 - [Daemon setup](docs/guides/daemon-setup.md)
 - [Contributing](CONTRIBUTING.md)
-

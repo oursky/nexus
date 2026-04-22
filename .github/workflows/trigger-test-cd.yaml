@@ -1,0 +1,14 @@
+name: Trigger - Test CD
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches:
+      - test-cd
+
+jobs:
+  cd:
+    uses: ./.github/workflows/job-cd.yaml
