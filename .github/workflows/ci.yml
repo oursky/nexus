@@ -52,9 +52,7 @@ jobs:
           go-version: '1.24.x'
 
       - name: Install Task
-        uses: arduino/setup-task@v2
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        run: go install github.com/go-task/task/v3/cmd/task@latest
 
       - name: Download embedded binaries (firecracker + agent + tap-helper)
         working-directory: packages/nexus
@@ -94,9 +92,7 @@ jobs:
           go-version: '1.24.x'
 
       - name: Install Task
-        uses: arduino/setup-task@v2
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        run: go install github.com/go-task/task/v3/cmd/task@latest
 
       # Make /dev/kvm accessible to the runner user without needing group
       # membership. The MODE="0666" rule is sufficient for Firecracker.
