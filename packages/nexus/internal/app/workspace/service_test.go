@@ -131,6 +131,8 @@ type fakeDriver struct {
 	backend   string
 	createErr error
 	forkErr   error
+	ready     *bool
+	readyErr  error
 }
 
 func (d *fakeDriver) Backend() string { return d.backend }
@@ -174,14 +176,14 @@ func (d *fakeDriver) Restore(_ context.Context, ws *workspace.Workspace, _ *runt
 	return nil
 }
 
-func (d *fakeDriver) Fork(_ context.Context, parent *workspace.Workspace, child *workspace.Workspace) error {
+func (d *fakeDriver) Fork(_ context.Context, parent *workspace.Workspace, child *workspace.Workspace) (string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.forkErr != nil {
-		return d.forkErr
+		return "", d.forkErr
 	}
 	d.forks = append(d.forks, parent.ID+"->"+child.ID)
-	return nil
+	return "", nil
 }
 
 func (d *fakeDriver) Destroy(_ context.Context, ws *workspace.Workspace) error {
@@ -189,6 +191,20 @@ func (d *fakeDriver) Destroy(_ context.Context, ws *workspace.Workspace) error {
 	defer d.mu.Unlock()
 	d.destroys = append(d.destroys, ws.ID)
 	return nil
+}
+
+func (d *fakeDriver) GuestSSHHost(_ context.Context, _ string) (string, bool) {
+	return "", false
+}
+
+func (d *fakeDriver) WorkspaceReady(_ context.Context, _ *workspace.Workspace) (bool, error) {
+	if d.readyErr != nil {
+		return false, d.readyErr
+	}
+	if d.ready == nil {
+		return true, nil
+	}
+	return *d.ready, nil
 }
 
 // newTestService creates a Service with fakes and a driver.
@@ -585,6 +601,39 @@ func TestService_Ready_Stopped(t *testing.T) {
 	}
 	if ready {
 		t.Error("expected false for stopped workspace")
+	}
+}
+
+func TestService_Ready_UsesDriverReadinessCheck(t *testing.T) {
+	svc, repo, _, driver := newTestService()
+	ctx := context.Background()
+	readyFlag := false
+	driver.ready = &readyFlag
+
+	createAndStore(t, repo, "ws-ready-check", workspace.StateRunning)
+
+	ready, err := svc.Ready(ctx, "ws-ready-check")
+	if err != nil {
+		t.Fatalf("ready: %v", err)
+	}
+	if ready {
+		t.Fatal("expected false when runtime driver marks workspace not ready")
+	}
+}
+
+func TestService_Ready_PropagatesDriverReadinessError(t *testing.T) {
+	svc, repo, _, driver := newTestService()
+	ctx := context.Background()
+	driver.readyErr = fmt.Errorf("probe failed")
+
+	createAndStore(t, repo, "ws-ready-error", workspace.StateRunning)
+
+	_, err := svc.Ready(ctx, "ws-ready-error")
+	if err == nil {
+		t.Fatal("expected readiness error")
+	}
+	if got := err.Error(); got != "probe failed" {
+		t.Fatalf("unexpected error: %q", got)
 	}
 }
 

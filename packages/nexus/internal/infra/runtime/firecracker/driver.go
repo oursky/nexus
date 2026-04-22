@@ -25,7 +25,8 @@ type Driver interface {
 	Stop(ctx context.Context, workspaceID string) error
 	Pause(ctx context.Context, workspaceID string) error
 	Resume(ctx context.Context, workspaceID string) error
-	Fork(ctx context.Context, workspaceID, childWorkspaceID string) error
+	// ForkWithRoot registers a child workspace with a pre-created project root.
+	ForkWithRoot(ctx context.Context, workspaceID, childWorkspaceID, childRoot string) error
 	Destroy(ctx context.Context, workspaceID string) error
 }
 
@@ -45,6 +46,7 @@ type ManagerInterface interface {
 	GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error
 	CheckpointForkSnapshot(ctx context.Context, workspaceID, childWorkspaceID string) (string, error)
 	ReconcileOrphans(ctx context.Context, liveWorkspaceIDs map[string]struct{}) error
+	ForkWorkspaceImage(ctx context.Context, parentWorkspaceID, childSnapshotID string) error
 }
 
 // FCDriver implements the Firecracker runtime driver.
@@ -54,6 +56,7 @@ type FCDriver struct {
 	projectRoots map[string]string
 	snapshotIDs  map[string]string // optional lineage snapshot ID per workspace
 	agents       map[string]*AgentClient
+	readyTools   map[string]bool
 	mu           sync.RWMutex
 }
 
@@ -74,6 +77,7 @@ func New(runner CommandRunner, opts ...Option) *FCDriver {
 		projectRoots: make(map[string]string),
 		snapshotIDs:  make(map[string]string),
 		agents:       make(map[string]*AgentClient),
+		readyTools:   make(map[string]bool),
 	}
 	for _, opt := range opts {
 		opt(d)
@@ -84,6 +88,19 @@ func New(runner CommandRunner, opts ...Option) *FCDriver {
 // Backend returns the driver backend name.
 func (d *FCDriver) Backend() string {
 	return "firecracker"
+}
+
+// GuestSSHHost implements [runtime.Driver] for Remote-SSH into the micro-VM.
+func (d *FCDriver) GuestSSHHost(ctx context.Context, workspaceID string) (string, bool) {
+	_ = ctx
+	if d.manager == nil {
+		return "", false
+	}
+	inst, err := d.manager.Get(workspaceID)
+	if err != nil || inst == nil || inst.CID == 0 {
+		return "", false
+	}
+	return guestIPForCID(inst.CID), true
 }
 
 // CleanupStaleInstances removes stale/orphaned VM state on daemon startup.
@@ -195,7 +212,6 @@ func (d *FCDriver) DialSpotlightPort(ctx context.Context, workspaceID string, gu
 
 	return conn, nil
 }
-
 
 func (d *FCDriver) workspaceDir(workspaceID string) string {
 	d.mu.RLock()
@@ -368,6 +384,12 @@ func (d *FCDriver) EnsureStarted(ctx context.Context, workspaceID, projectRoot s
 	if root == "" {
 		return fmt.Errorf("workspace %s has no project root for firecracker start", workspaceID)
 	}
+	// Write back so Fork and other callers can find this workspace even if
+	// Create was never called in this process lifetime (e.g. after a daemon
+	// restart where EnsureStarted is the first call for this workspace).
+	d.mu.Lock()
+	d.projectRoots[workspaceID] = root
+	d.mu.Unlock()
 
 	d.mu.RLock()
 	snapshotID := d.snapshotIDs[workspaceID]
@@ -393,6 +415,10 @@ func (d *FCDriver) EnsureStarted(ctx context.Context, workspaceID, projectRoot s
 		HostConfigDrive: configDrivePath,
 	}
 
+	d.mu.Lock()
+	delete(d.readyTools, workspaceID)
+	d.mu.Unlock()
+
 	inst, err := d.manager.Spawn(ctx, spec)
 	if err != nil {
 		return err
@@ -404,6 +430,82 @@ func (d *FCDriver) EnsureStarted(ctx context.Context, workspaceID, projectRoot s
 	startSSHAgentProxy(inst.WorkDir)
 
 	return nil
+}
+
+func (d *FCDriver) WorkspaceReady(ctx context.Context, workspaceID string) (bool, error) {
+	if strings.TrimSpace(workspaceID) == "" {
+		return false, errors.New("workspace ID is required")
+	}
+
+	d.mu.RLock()
+	if d.readyTools[workspaceID] {
+		d.mu.RUnlock()
+		return true, nil
+	}
+	d.mu.RUnlock()
+
+	probeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	const attempts = 3
+	for attempt := 1; attempt <= attempts; attempt++ {
+		attemptCtx, cancelAttempt := context.WithTimeout(probeCtx, 20*time.Second)
+		conn, err := d.AgentConn(attemptCtx, workspaceID)
+		if err != nil {
+			cancelAttempt()
+			log.Printf("[firecracker] readiness probe connect failed for %s (attempt %d/%d): %v", workspaceID, attempt, attempts, err)
+			if attempt < attempts {
+				select {
+				case <-probeCtx.Done():
+					return false, nil
+				case <-time.After(300 * time.Millisecond):
+				}
+			}
+			continue
+		}
+
+		client := NewAgentClient(conn)
+		result, err := client.Exec(attemptCtx, ExecRequest{
+			ID:      fmt.Sprintf("workspace-ready-tools-%d", time.Now().UnixNano()),
+			Command: "sh",
+			Args: []string{
+				"-lc",
+				"codex --version >/dev/null 2>&1 && opencode --version >/dev/null 2>&1 && claude --version >/dev/null 2>&1",
+			},
+			WorkDir: "/workspace",
+		})
+		_ = conn.Close()
+		cancelAttempt()
+		if err != nil {
+			log.Printf("[firecracker] readiness probe exec failed for %s (attempt %d/%d): %v", workspaceID, attempt, attempts, err)
+			if attempt < attempts {
+				select {
+				case <-probeCtx.Done():
+					return false, nil
+				case <-time.After(300 * time.Millisecond):
+				}
+			}
+			continue
+		}
+		if result.ExitCode != 0 {
+			log.Printf("[firecracker] readiness probe non-zero for %s (attempt %d/%d): exit=%d stderr=%q", workspaceID, attempt, attempts, result.ExitCode, strings.TrimSpace(result.Stderr))
+			if attempt < attempts {
+				select {
+				case <-probeCtx.Done():
+					return false, nil
+				case <-time.After(300 * time.Millisecond):
+				}
+			}
+			continue
+		}
+
+		d.mu.Lock()
+		d.readyTools[workspaceID] = true
+		d.mu.Unlock()
+
+		return true, nil
+	}
+
+	return false, nil
 }
 
 // setupGuestEnvironment syncs the host's git config and SSH keys into the
@@ -427,6 +529,7 @@ func (d *FCDriver) Stop(ctx context.Context, workspaceID string) error {
 
 	d.mu.Lock()
 	delete(d.agents, workspaceID)
+	delete(d.readyTools, workspaceID)
 	d.mu.Unlock()
 
 	return d.manager.Stop(ctx, workspaceID)
@@ -463,19 +566,25 @@ func (d *FCDriver) Resume(ctx context.Context, workspaceID string) error {
 	return nil
 }
 
-// Fork records the parent root for a new child workspace ID.
-func (d *FCDriver) Fork(_ context.Context, workspaceID, childWorkspaceID string) error {
+// ForkWithRoot registers the child workspace, pointing it at childRoot and
+// seeding it from the snapshot image that ForkWorkspaceImage already placed
+// at snapshotImagePath(childWorkspaceID). EnsureStarted will copy that image
+// instead of building a fresh workspace from the project root.
+func (d *FCDriver) ForkWithRoot(_ context.Context, workspaceID, childWorkspaceID, childRoot string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	parentProjectRoot := strings.TrimSpace(d.projectRoots[workspaceID])
-	if parentProjectRoot == "" {
+	if _, exists := d.projectRoots[workspaceID]; !exists {
 		return fmt.Errorf("parent workspace %s not found", workspaceID)
 	}
 	if _, exists := d.projectRoots[childWorkspaceID]; exists {
 		return fmt.Errorf("workspace %s already exists", childWorkspaceID)
 	}
-	d.projectRoots[childWorkspaceID] = parentProjectRoot
+	d.projectRoots[childWorkspaceID] = childRoot
+	// Tell EnsureStarted to seed /workspace from the copied image rather than
+	// rebuilding from the project root. The snapshot was written by
+	// ForkWorkspaceImage to snapshotImagePath(childWorkspaceID).
+	d.snapshotIDs[childWorkspaceID] = childWorkspaceID
 	return nil
 }
 
@@ -496,6 +605,7 @@ func (d *FCDriver) Destroy(ctx context.Context, workspaceID string) error {
 	d.mu.Lock()
 	delete(d.projectRoots, workspaceID)
 	delete(d.agents, workspaceID)
+	delete(d.readyTools, workspaceID)
 	d.mu.Unlock()
 
 	if d.manager != nil {

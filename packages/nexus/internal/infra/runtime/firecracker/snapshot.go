@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type baseSnapshot struct {
@@ -283,4 +285,132 @@ func (m *Manager) restoreFromSnapshot(ctx context.Context, spec SpawnSpec, snap 
 // CheckpointForkSnapshot; this covers the legacy flat .ext4 format.
 func (m *Manager) snapshotImagePath(snapshotID string) string {
 	return filepath.Join(m.config.WorkDirRoot, ".snapshots", strings.TrimSpace(snapshotID)+".ext4")
+}
+
+// ForkWorkspaceImage copies the parent's workspace.ext4 into the snapshot store
+// under childSnapshotID so the child VM boots with identical /workspace content.
+//
+// For a running parent VM the procedure is:
+//  1. Run `sync` inside the guest so all dirty page-cache writes are flushed
+//     to the virtio-blk device before we touch the image.
+//  2. Pause the VM so no further writes can race with the copy.
+//  3. Copy workspace.ext4 to the snapshot store.
+//  4. Resume the VM.  Resume is always called, even on error.
+//
+// For a stopped parent the image is copied directly from its workdir.
+// The result is stored at snapshotImagePath(childSnapshotID) so that Spawn()
+// picks it up via the SnapshotID field of SpawnSpec.
+func (m *Manager) ForkWorkspaceImage(ctx context.Context, parentWorkspaceID, childSnapshotID string) error {
+	m.mu.RLock()
+	parentInst, running := m.instances[parentWorkspaceID]
+	m.mu.RUnlock()
+
+	// Determine source path and API client for live VMs.
+	var srcPath string
+	var apiClient apiClientInterface
+
+	if running && parentInst.WorkspaceImage != "" {
+		if _, err := os.Stat(parentInst.WorkspaceImage); err == nil {
+			srcPath = parentInst.WorkspaceImage
+			apiClient = m.apiClientFactory(parentInst.APISocket)
+		}
+	}
+	if srcPath == "" {
+		// Parent VM is stopped — use the workdir image directly.
+		candidate := filepath.Join(m.config.WorkDirRoot, parentWorkspaceID, "workspace.ext4")
+		if _, err := os.Stat(candidate); err == nil {
+			srcPath = candidate
+		}
+	}
+	if srcPath == "" {
+		return fmt.Errorf("no workspace image found for parent %s", parentWorkspaceID)
+	}
+
+	if apiClient != nil {
+		// Step 1: flush guest page cache to the virtio-blk device.
+		// If sync fails we log and continue — a partial flush is better than none.
+		m.mu.RLock()
+		vsockPath := parentInst.VSockPath
+		m.mu.RUnlock()
+		if vsockPath != "" {
+			if err := syncGuestFilesystem(ctx, vsockPath); err != nil {
+				log.Printf("[firecracker] ForkWorkspaceImage: guest sync warning (%s): %v", parentWorkspaceID, err)
+			}
+		}
+
+		// Step 2: pause the VM so no writes race with the copy.
+		if err := apiClient.PauseVM(ctx); err != nil {
+			return fmt.Errorf("pause parent VM for fork: %w", err)
+		}
+		// Step 4 (deferred): always resume, even on error.
+		defer func() {
+			if err := apiClient.ResumeVM(ctx); err != nil {
+				log.Printf("[firecracker] WARNING: resume parent %s after fork failed: %v", parentWorkspaceID, err)
+			}
+		}()
+	}
+
+	// Step 3: copy the image.
+	dst := m.snapshotImagePath(childSnapshotID)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("create snapshot dir: %w", err)
+	}
+	if err := copyFile(srcPath, dst); err != nil {
+		return fmt.Errorf("copy workspace image for fork: %w", err)
+	}
+
+	fi, _ := os.Stat(dst)
+	sz := int64(0)
+	if fi != nil {
+		sz = fi.Size()
+	}
+	log.Printf("[firecracker] ForkWorkspaceImage: %s → %s (%.1f GiB)", srcPath, dst, float64(sz)/(1<<30))
+	return nil
+}
+
+// syncGuestFilesystem dials the guest agent over the Firecracker vsock proxy
+// and runs `sync` to flush all dirty page-cache entries to the virtio-blk
+// device.  This must be called before pausing the VM to ensure the workspace
+// image on the host is fully up-to-date.
+//
+// The Firecracker vsock multiplexer requires a CONNECT <port> handshake over
+// the host-side Unix socket before the connection is forwarded to the guest.
+func syncGuestFilesystem(ctx context.Context, vsockPath string) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	dialer := &net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(timeoutCtx, "unix", vsockPath)
+	if err != nil {
+		return fmt.Errorf("dial vsock for sync: %w", err)
+	}
+	defer conn.Close() //nolint:errcheck
+
+	// Firecracker vsock handshake: write CONNECT <port>\n, expect OK <port>\n.
+	if _, err := fmt.Fprintf(conn, "CONNECT %d\n", DefaultAgentVSockPort); err != nil {
+		return fmt.Errorf("vsock handshake write: %w", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 32)
+	n, err := conn.Read(buf)
+	_ = conn.SetReadDeadline(time.Time{})
+	if err != nil {
+		return fmt.Errorf("vsock handshake read: %w", err)
+	}
+	if resp := strings.TrimSpace(string(buf[:n])); !strings.HasPrefix(resp, "OK") {
+		return fmt.Errorf("vsock handshake rejected: %s", resp)
+	}
+
+	client := NewAgentClient(conn)
+	result, err := client.Exec(timeoutCtx, ExecRequest{
+		ID:      "fork-sync",
+		Command: "sync",
+	})
+	if err != nil {
+		return fmt.Errorf("exec sync: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("sync exited %d: %s", result.ExitCode, result.Stderr)
+	}
+	return nil
 }

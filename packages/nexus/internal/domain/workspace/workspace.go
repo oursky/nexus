@@ -19,6 +19,9 @@ type Workspace struct {
 	ParentWorkspaceID string            `json:"parentWorkspaceId,omitempty"`
 	LineageRootID     string            `json:"lineageRootId,omitempty"`
 	Backend           string            `json:"backend,omitempty"`
+	// GuestIP is the micro-VM address on the engine bridge (Firecracker only).
+	// Populated for API responses when the VM is running; not persisted in the workspace store.
+	GuestIP           string            `json:"guestIp,omitempty"`
 	ConfigBundle      string            `json:"configBundle,omitempty"`
 	CreatedAt         time.Time         `json:"created_at,omitempty"`
 	UpdatedAt         time.Time         `json:"updated_at,omitempty"`

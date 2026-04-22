@@ -36,6 +36,17 @@ func (d *Driver) Backend() string {
 	return "process"
 }
 
+// ProjectRoot returns the project root path registered for the given workspace,
+// or an empty string if not found.
+func (d *Driver) ProjectRoot(workspaceID string) string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if ws, ok := d.workspaces[workspaceID]; ok {
+		return ws.projectRoot
+	}
+	return ""
+}
+
 func (d *Driver) Create(_ context.Context, req CreateRequest) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -118,7 +129,7 @@ func (d *Driver) Fork(_ context.Context, workspaceID, childWorkspaceID string) e
 	d.mu.Unlock()
 
 	childRoot := parentRoot + "-fork-" + childWorkspaceID
-	if err := ForkWorktree(parentRoot, childRoot); err != nil {
+	if err := ForkWorktree(parentRoot, childRoot, ""); err != nil {
 		return fmt.Errorf("fork workspace %s -> %s: %w", workspaceID, childWorkspaceID, err)
 	}
 

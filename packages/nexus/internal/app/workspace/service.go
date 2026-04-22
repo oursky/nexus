@@ -21,6 +21,10 @@ type Service struct {
 	driver      runtime.Driver
 }
 
+type runtimeReadinessDriver interface {
+	WorkspaceReady(ctx context.Context, ws *workspace.Workspace) (bool, error)
+}
+
 // NewService constructs a Service. driver may be nil if no runtime backend is available.
 func NewService(repo workspace.Repository, projectRepo project.Repository, driver runtime.Driver) *Service {
 	return &Service{repo: repo, projectRepo: projectRepo, driver: driver}
@@ -68,7 +72,7 @@ func (s *Service) Info(ctx context.Context, id string) (*workspace.Workspace, er
 	if err != nil {
 		return nil, workspace.ErrNotFound
 	}
-	return ws, nil
+	return s.cloneWithGuestIP(ctx, ws), nil
 }
 
 func (s *Service) List(ctx context.Context) ([]*workspace.Workspace, error) {
@@ -82,7 +86,11 @@ func (s *Service) List(ctx context.Context) ([]*workspace.Workspace, error) {
 		}
 		return all[i].CreatedAt.Before(all[j].CreatedAt)
 	})
-	return all, nil
+	out := make([]*workspace.Workspace, len(all))
+	for i, ws := range all {
+		out[i] = s.cloneWithGuestIP(ctx, ws)
+	}
+	return out, nil
 }
 
 func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*workspace.Workspace, error) {
@@ -174,7 +182,7 @@ func (s *Service) Start(ctx context.Context, id string) (*workspace.Workspace, e
 		return nil, fmt.Errorf("persist start: %w", err)
 	}
 
-	return ws, nil
+	return s.cloneWithGuestIP(ctx, ws), nil
 }
 
 // DiscoveredPort is a port discovered from docker-compose or workspace config.
@@ -272,7 +280,7 @@ func (s *Service) Stop(ctx context.Context, id string) (*workspace.Workspace, er
 	if err := s.repo.Update(ctx, ws); err != nil {
 		return nil, fmt.Errorf("persist stop: %w", err)
 	}
-	return ws, nil
+	return s.cloneWithGuestIP(ctx, ws), nil
 }
 
 func (s *Service) Remove(ctx context.Context, id string) error {
@@ -319,7 +327,14 @@ func (s *Service) Ready(ctx context.Context, id string) (bool, error) {
 	if err != nil {
 		return false, workspace.ErrNotFound
 	}
-	return ws.State == workspace.StateRunning, nil
+	if ws.State != workspace.StateRunning {
+		return false, nil
+	}
+	checker, ok := s.driver.(runtimeReadinessDriver)
+	if !ok || checker == nil {
+		return true, nil
+	}
+	return checker.WorkspaceReady(ctx, ws)
 }
 
 func (s *Service) Relations(ctx context.Context, id string) (*Relations, error) {
@@ -375,6 +390,35 @@ func (s *Service) Relations(ctx context.Context, id string) (*Relations, error) 
 		return result.Groups[i].RepoID < result.Groups[j].RepoID
 	})
 	return result, nil
+}
+
+func (s *Service) cloneWithGuestIP(ctx context.Context, ws *workspace.Workspace) *workspace.Workspace {
+	if ws == nil {
+		return nil
+	}
+	out := *ws
+	s.attachGuestIP(ctx, &out)
+	return &out
+}
+
+func (s *Service) attachGuestIP(ctx context.Context, ws *workspace.Workspace) {
+	ws.GuestIP = ""
+	if s.driver == nil {
+		return
+	}
+	if ws.State != workspace.StateRunning && ws.State != workspace.StateRestored {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(ws.Backend), "firecracker") {
+		return
+	}
+	ip, ok := s.driver.GuestSSHHost(ctx, ws.ID)
+	if ok {
+		ip = strings.TrimSpace(ip)
+		if ip != "" {
+			ws.GuestIP = ip
+		}
+	}
 }
 
 func normalizeRef(ref string) string {

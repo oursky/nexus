@@ -7,21 +7,29 @@ import (
 )
 
 // ForkWorktree creates a new git worktree at childPath from the repository
-// rooted at parentPath. The child worktree starts at the same commit as the
-// parent's current HEAD and includes all staged and unstaged working-tree
-// changes so the fork is a faithful replica of the parent's in-progress state.
+// rooted at parentPath. When ref is non-empty the worktree checks out that
+// branch/ref; otherwise it is detached at HEAD.
+//
+// In both cases the parent's uncommitted working-tree changes (staged +
+// unstaged) are applied on top via a 3-way patch so the fork is a faithful
+// replica of in-progress state.
 //
 // Implementation:
-//  1. Create a detached worktree at HEAD (committed state).
-//  2. Generate a unified diff of all working-tree changes (staged + unstaged).
+//  1. Create worktree at ref (or detached HEAD when ref is empty).
+//  2. Generate a unified diff of parent's working-tree changes.
 //  3. Apply the diff in the child worktree (3-way merge, ignore whitespace).
 //
-// New/untracked files that are NOT git-tracked are intentionally excluded
-// because git diff only covers tracked files.  This matches the behaviour most
-// developers would expect for a "fork this branch" operation.
-func ForkWorktree(parentPath, childPath string) error {
-	// Step 1: create the worktree at HEAD.
-	addCmd := exec.Command("git", "worktree", "add", "--detach", childPath, "HEAD") //nolint:gosec
+// Untracked files are intentionally excluded (git diff only covers tracked
+// files), matching the behaviour developers expect for a "fork" operation.
+func ForkWorktree(parentPath, childPath, ref string) error {
+	// Step 1: create the worktree at the target ref or detached HEAD.
+	var addCmd *exec.Cmd
+	ref = strings.TrimSpace(ref)
+	if ref == "" || ref == "HEAD" {
+		addCmd = exec.Command("git", "worktree", "add", "--detach", childPath, "HEAD") //nolint:gosec
+	} else {
+		addCmd = exec.Command("git", "worktree", "add", childPath, ref) //nolint:gosec
+	}
 	addCmd.Dir = parentPath
 	out, err := addCmd.CombinedOutput()
 	if err != nil {
