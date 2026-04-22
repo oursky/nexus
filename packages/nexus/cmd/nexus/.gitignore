@@ -10,3 +10,4 @@ firecracker-linux-arm64
 # Guest agent binaries (go generate ./cmd/nexus builds ../nexus-firecracker-agent)
 agent-linux-amd64
 agent-linux-arm64
+smolvm-linux-amd64

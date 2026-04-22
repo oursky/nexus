@@ -43,14 +43,20 @@ public final class AppState: ObservableObject {
     @Published public var sidebarVisible = true
     @Published public var showInspector = true
     @Published public var error: String?
+    /// Human-readable progress message during auto-provisioning (nil when not provisioning).
+    @Published public var provisioningMessage: String?
 
     // MARK: - Client
     public private(set) var client: any DaemonClient
 
     private var refreshTask: Task<Void, Never>?
+    private var isLoadInProgress = false
     private var cachedProfile: DaemonProfile?
     private var tunnelManager: SSHTunnelManager?
     private var daemonLogStream: DaemonLogStream?
+
+    /// Headless HTTP RPC server for terminal automation (active when NEXUS_HEADLESS_RPC=1).
+    public private(set) var rpcServer: HeadlessRPCServer?
 
 
     public init() {
@@ -64,6 +70,7 @@ public final class AppState: ObservableObject {
         StartupTrace.checkpoint("app.init", "after client; scheduling load")
         Task { await self.connectRemoteAndLoad() }
         startRefreshLoop()
+        startRPCServer()
     }
 
     // Designated for dependency injection in tests only
@@ -108,10 +115,20 @@ public final class AppState: ObservableObject {
 
     /// Wall-clock cap for markWorkspaceReady / ports / tunnel fan-out (many actives can wedge the daemon).
     private static let workspaceEnrichmentDeadlineSeconds: UInt64 = 35
+    /// Upper bound on active workspaces to enrich per load cycle.
+    private static let workspaceEnrichmentMaxWorkspaces = 8
     /// Hard cap for the entire auto-start + first successful data fetch (independent of per-RPC timeouts).
     private static let startupDeadlineSeconds: UInt64 = 120
 
     public func load() async {
+        if isLoadInProgress {
+            StartupTrace.checkpoint("load.skip.inflight")
+            Self.logger.debug("load() skipped: already in progress")
+            return
+        }
+        isLoadInProgress = true
+        defer { isLoadInProgress = false }
+
         connectionState = .connecting
         Self.logger.debug("load() started")
         StartupTrace.checkpoint("load.enter")
@@ -178,8 +195,26 @@ public final class AppState: ObservableObject {
     private func enrichActiveWorkspaceSideEffects(workspaces: [Workspace]) async -> [Workspace] {
         var workspaces = workspaces
         var activeTunnelWorkspaceID = ""
+        let active = workspaces.filter { $0.state.isActive }
+        if active.isEmpty {
+            return workspaces
+        }
+
+        let selectedID = selectedWorkspaceID
+        let prioritized = active.sorted { lhs, rhs in
+            let l = (lhs.id == selectedID)
+            let r = (rhs.id == selectedID)
+            if l != r { return l && !r }
+            return lhs.id < rhs.id
+        }
+        let target = Array(prioritized.prefix(Self.workspaceEnrichmentMaxWorkspaces))
+        if active.count > target.count {
+            StartupTrace.checkpoint("load.phase2.trimmed", "active=\(active.count) cap=\(Self.workspaceEnrichmentMaxWorkspaces)")
+            Self.logger.notice("load() enrichment trimmed: active=\(active.count, privacy: .public) cap=\(Self.workspaceEnrichmentMaxWorkspaces, privacy: .public)")
+        }
+
         await withTaskGroup(of: (String, [ForwardedPort], String).self) { group in
-            for ws in workspaces where ws.state.isActive {
+            for ws in target {
                 group.addTask { [c = self.client] in
                     try? await c.markWorkspaceReady(id: ws.id)
                     let discovered = (try? await c.discoverPorts(workspaceID: ws.id)) ?? []
@@ -196,8 +231,10 @@ public final class AppState: ObservableObject {
                 if !activeID.isEmpty { activeTunnelWorkspaceID = activeID }
             }
         }
-        for i in workspaces.indices {
-            workspaces[i].hasActiveTunnels = (workspaces[i].id == activeTunnelWorkspaceID)
+        if !activeTunnelWorkspaceID.isEmpty {
+            for i in workspaces.indices {
+                workspaces[i].hasActiveTunnels = (workspaces[i].id == activeTunnelWorkspaceID)
+            }
         }
         return workspaces
     }
@@ -246,6 +283,14 @@ public final class AppState: ObservableObject {
 
     // MARK: - Background refresh (4 s polling)
 
+    private func startRPCServer() {
+        let server = HeadlessRPCServer(clientProvider: { [weak self] in
+            self?.client as? WebSocketDaemonClient
+        })
+        rpcServer = server
+        server.start()
+    }
+
     private func startRefreshLoop() {
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
@@ -255,6 +300,16 @@ public final class AppState: ObservableObject {
                 // Never poll `load()` during initial handshake — it stacks concurrent RPCs,
                 // duplicates WebSocket work, and grows memory while the UI stays on "Starting…".
                 if self.connectionState == .starting || self.connectionState == .connecting {
+                    continue
+                }
+                // Auto-heal transient tunnel/bootstrap failures. If we are disconnected
+                // and still on a null client, re-run full remote connect flow instead
+                // of repeatedly polling load() against a known-disconnected client.
+                if self.connectionState == .disconnected,
+                   self.client is NullDaemonClient,
+                   self.tunnelManager == nil {
+                    StartupTrace.checkpoint("remote.autoReconnect.tick")
+                    await self.connectRemoteAndLoad()
                     continue
                 }
                 // Avoid hammering JSON-RPC when the daemon is too old (handled by restart/upgrade flows).
@@ -298,6 +353,39 @@ public final class AppState: ObservableObject {
         }
         connectionState = .connecting
         StartupTrace.checkpoint("remote.tunnel.start", "sshTarget=\(sshTarget) port=\(profile.port)")
+
+        // ── Auto-provision: ensure the remote has a running nexus daemon ──
+        // provision() returns only when daemon is provably ready (healthz passes).
+        let provisioner = RemoteProvisioner(profile: profile)
+        do {
+            try await provisioner.provision { [weak self] step in
+                guard let self else { return }
+                let msg: String
+                switch step {
+                case .checkingHost:
+                    msg = "Checking remote host…"
+                case .uploadingBinary(let pct):
+                    msg = String(format: "Uploading Nexus (%.0f%%)…", pct * 100)
+                case .startingDaemon:
+                    msg = "Starting daemon…"
+                case .waitingForDaemon(let attempt):
+                    msg = attempt <= 1 ? "Waiting for daemon…" : "Waiting for daemon (attempt \(attempt))…"
+                case .ready:
+                    msg = "Daemon ready"
+                }
+                await MainActor.run { [weak self] in
+                    self?.connectionState = .provisioning(step: msg)
+                    self?.provisioningMessage = msg
+                }
+            }
+            Self.logger.info("connectRemoteAndLoad: provisioning complete for \(sshTarget, privacy: .public)")
+        } catch {
+            // If daemon is already running (provisioning skipped), this succeeds silently.
+            // Only surface provision errors if they actually prevent connection.
+            Self.logger.warning("connectRemoteAndLoad: provision step failed (\(error.localizedDescription, privacy: .public)); attempting connection anyway")
+        }
+        provisioningMessage = nil
+
         let mgr = SSHTunnelManager(profile: profile)
         self.tunnelManager = mgr
         let daemonURL: URL
@@ -372,6 +460,45 @@ public final class AppState: ObservableObject {
         self.cachedProfile = profile
         connectionState = .starting
         await connectRemoteAndLoad()
+    }
+
+    /// Manually trigger remote daemon provisioning (upload binary + start daemon).
+    /// Useful after changing the host profile or when the automatic provisioning at
+    /// connect-time failed. The full connection is re-established afterward.
+    public func installDaemon() {
+        Task {
+            guard let profile = cachedProfile, profile.sshTarget != nil else {
+                error = "No SSH host configured. Open daemon settings to add one."
+                return
+            }
+            connectionState = .provisioning(step: "Provisioning daemon…")
+            provisioningMessage = "Provisioning daemon…"
+            let provisioner = RemoteProvisioner(profile: profile)
+            do {
+                try await provisioner.provision { [weak self] step in
+                    guard let self else { return }
+                    let msg: String
+                    switch step {
+                    case .checkingHost:                msg = "Checking remote host…"
+                    case .uploadingBinary(let pct):   msg = String(format: "Uploading Nexus (%.0f%%)…", pct * 100)
+                    case .startingDaemon:             msg = "Starting daemon…"
+                    case .waitingForDaemon(let n):    msg = n <= 1 ? "Waiting for daemon…" : "Waiting (\(n))…"
+                    case .ready:                      msg = "Daemon ready"
+                    }
+                    await MainActor.run { [weak self] in
+                        self?.connectionState = .provisioning(step: msg)
+                        self?.provisioningMessage = msg
+                    }
+                }
+                Self.logger.info("installDaemon: provisioning succeeded")
+            } catch {
+                Self.logger.error("installDaemon: \(error.localizedDescription, privacy: .public)")
+                self.error = "Daemon installation failed: \(error.localizedDescription)"
+            }
+            provisioningMessage = nil
+            // Re-connect after provisioning completes (success or failure).
+            await reconnect()
+        }
     }
 
     // MARK: - Workspace actions
@@ -584,6 +711,8 @@ public final class AppState: ObservableObject {
 
 public enum ConnectionState: Equatable {
     case starting, disconnected, connecting, connected
+    /// Auto-provisioning a fresh remote host (uploading binary, starting daemon).
+    case provisioning(step: String)
 }
 
 /// The compatibility status of the running daemon.

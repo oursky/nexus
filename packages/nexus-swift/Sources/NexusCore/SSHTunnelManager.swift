@@ -26,13 +26,37 @@ public actor SSHTunnelManager {
 
     public func start() async throws -> Int {
         _state = .connecting
-        let port = try allocateLocalPort()
-        _localPort = port
-        try launchSSH(localPort: port)
-        try await waitForHealthz(localPort: port)
-        _state = .connected
-        startRestartLoop(localPort: port)
-        return port
+        let maxAttempts = 5
+        var lastError: Error = TunnelError.portAllocation(operation: "start", errnoCode: nil)
+
+        for attempt in 1...maxAttempts {
+            do {
+                let port = try allocateLocalPort()
+                _localPort = port
+                try launchSSH(localPort: port)
+                try await waitForHealthz(localPort: port)
+                _state = .connected
+                startRestartLoop(localPort: port)
+                return port
+            } catch {
+                lastError = error
+                logger.error("tunnel start attempt \(attempt, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                process?.terminate()
+                process = nil
+                stderrPipe = nil
+
+                if case TunnelError.noTarget = error {
+                    break
+                }
+                if attempt < maxAttempts {
+                    let delay = UInt64(attempt) * 300_000_000
+                    try? await Task.sleep(nanoseconds: delay)
+                }
+            }
+        }
+
+        _state = .failed(lastError)
+        throw lastError
     }
 
     /// Fetches the daemon token from the remote host via SSH.
@@ -43,7 +67,7 @@ public actor SSHTunnelManager {
             throw TunnelError.noTarget
         }
 
-        let remoteBin = "/home/newman/magic/bin/nexus"
+        let remoteBin = "/home/newman/.local/bin/nexus"
         let token = try runSSH(sshTarget: sshTarget, command: [remoteBin, "daemon", "token"])
         if token.isEmpty { throw TunnelError.tokenFetchFailed }
         return token
@@ -51,7 +75,14 @@ public actor SSHTunnelManager {
 
     private func runSSH(sshTarget: String, command: [String]) throws -> String {
         let sshPort = profile.sshPort ?? 22
-        var args = ["-p", "\(sshPort)", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no"]
+        var args = [
+            "-p", "\(sshPort)",
+            "-F", "/dev/null",
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "GlobalKnownHostsFile=/dev/null"
+        ]
         if let identity = profile.sshIdentity, !identity.isEmpty {
             args += ["-i", identity]
         }
@@ -90,25 +121,44 @@ public actor SSHTunnelManager {
 
     private func allocateLocalPort() throws -> Int {
         let sock = socket(AF_INET, SOCK_STREAM, 0)
-        guard sock >= 0 else { throw TunnelError.portAllocation }
+        guard sock >= 0 else {
+            let err = errno
+            logger.error("allocateLocalPort socket() failed errno=\(err, privacy: .public)")
+            throw TunnelError.portAllocation(operation: "socket", errnoCode: err)
+        }
         defer { close(sock) }
+
+        var reuse: Int32 = 1
+        _ = setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+
         var addr = sockaddr_in()
+#if os(macOS)
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+#endif
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = 0
-        addr.sin_addr.s_addr = INADDR_ANY
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
         let bindResult = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-        guard bindResult == 0 else { throw TunnelError.portAllocation }
+        guard bindResult == 0 else {
+            let err = errno
+            logger.error("allocateLocalPort bind() failed errno=\(err, privacy: .public)")
+            throw TunnelError.portAllocation(operation: "bind", errnoCode: err)
+        }
         var len = socklen_t(MemoryLayout<sockaddr_in>.size)
         let nameResult = withUnsafeMutablePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 getsockname(sock, $0, &len)
             }
         }
-        guard nameResult == 0 else { throw TunnelError.portAllocation }
+        guard nameResult == 0 else {
+            let err = errno
+            logger.error("allocateLocalPort getsockname() failed errno=\(err, privacy: .public)")
+            throw TunnelError.portAllocation(operation: "getsockname", errnoCode: err)
+        }
         return Int(addr.sin_port.bigEndian)
     }
 
@@ -121,8 +171,12 @@ public actor SSHTunnelManager {
 
         var args = [
             "-N",
+            "-F", "/dev/null",
             "-o", "ExitOnForwardFailure=yes",
             "-o", "ServerAliveInterval=10",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "GlobalKnownHostsFile=/dev/null",
             "-L", "\(localPort):127.0.0.1:\(remotePort)",
             "-p", "\(sshPort)"
         ]
@@ -231,7 +285,7 @@ public actor SSHTunnelManager {
 }
 
 public enum TunnelError: Error, LocalizedError {
-    case portAllocation
+    case portAllocation(operation: String, errnoCode: Int32?)
     case noTarget
     case processDied
     case timeout
@@ -239,7 +293,15 @@ public enum TunnelError: Error, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .portAllocation: return "Failed to allocate local port"
+        case let .portAllocation(operation, errnoCode):
+            if let errnoCode {
+                if let cString = strerror(errnoCode) {
+                    let message = String(cString: cString)
+                    return "Failed to allocate local port (\(operation), errno=\(errnoCode): \(message))"
+                }
+                return "Failed to allocate local port (\(operation), errno=\(errnoCode))"
+            }
+            return "Failed to allocate local port"
         case .noTarget: return "No SSH target configured"
         case .processDied: return "SSH process exited unexpectedly"
         case .timeout: return "Tunnel did not become ready within 15 seconds"

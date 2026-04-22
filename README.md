@@ -3,7 +3,7 @@
 **Remote Firecracker workspaces for Mac developers.**  
 Run your dev stack inside an isolated Linux VM on a remote host — reach it from your Mac in one command.
 
-![demo](https://raw.githubusercontent.com/oursky/nexus/main/docs/assets/demo.gif)
+demo
 
 ---
 
@@ -54,7 +54,7 @@ nexus workspace shell <workspace-id>
 
 ## macOS App
 
-![app](https://raw.githubusercontent.com/oursky/nexus/main/docs/assets/app-screenshot.png)
+app
 
 The companion app shows connected workspaces, detected ports, and tunnel status. Download from TestFlight or build from source:
 

@@ -755,7 +755,7 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         let result = try await call("pty.create", params: [
             "workspaceId": workspaceId,
             "name": name,
-            "shell": "/bin/bash",
+            "shell": "bash",
             "args": ["-l"],
             "workDir": "",
             "cols": cols,

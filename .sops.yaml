@@ -1,0 +1,4 @@
+creation_rules:
+  - pgp:
+    - "5CA268BCF128BADDE07BBDEF924ACDCE3A116014" # faseng@oursky.com
+    - "33606C479B14ECFE60813E72A90C985622FD8990" # newman@oursky.com

@@ -131,11 +131,24 @@ func (h *Handler) create(ctx context.Context, raw json.RawMessage) (any, error) 
 		rows = 24
 	}
 
-	if h.dialer != nil && h.ws != nil {
-		ws, err := h.ws.Get(ctx, p.WorkspaceID)
-		if err == nil && ws != nil && ws.Backend == "firecracker" {
-			return h.createFirecrackerSession(ctx, p, ws, cols, rows)
+	// Look up workspace once; used for both the state guard and session routing.
+	var ws *domainws.Workspace
+	if h.ws != nil {
+		if found, err := h.ws.Get(ctx, p.WorkspaceID); err == nil && found != nil {
+			ws = found
 		}
+	}
+
+	// Guard: reject PTY connections until the workspace is fully running.
+	// The workspace transitions to StateRunning only after driver.Start()
+	// completes (including any guest toolchain bootstrap).  Enforcing this here
+	// prevents the UI from opening a terminal into a partially-started workspace.
+	if ws != nil && ws.State != domainws.StateRunning {
+		return nil, fmt.Errorf("workspace %s is not ready (state: %s); wait for it to finish starting", p.WorkspaceID, ws.State)
+	}
+
+	if h.dialer != nil && ws != nil && backendUsesGuestControlChannel(ws.Backend) {
+		return h.createFirecrackerSession(ctx, p, ws, cols, rows)
 	}
 
 	return h.createLocalSession(ctx, p, cols, rows)
@@ -252,6 +265,15 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 	go h.streamFirecrackerSession(s, dec, notifier)
 	log.Printf("pty: createFirecrackerSession: session %s registered, streaming", s.ID)
 	return s.Info(), nil
+}
+
+func backendUsesGuestControlChannel(backend string) bool {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "", "firecracker":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *Handler) streamFirecrackerSession(s *appty.Session, dec *json.Decoder, notifier transport.Notifier) {
@@ -483,11 +505,10 @@ func (h *Handler) write(_ context.Context, raw json.RawMessage) (any, error) {
 		return nil, rpcerrors.NotFound("session not found")
 	}
 	if s.Remote && s.Enc != nil {
-		data := strings.ReplaceAll(p.Data, "\r", "\n")
 		if err := s.Enc.Encode(map[string]any{
 			"id":   p.SessionID,
 			"type": "shell.write",
-			"data": data,
+			"data": p.Data,
 		}); err != nil {
 			return nil, fmt.Errorf("write to remote shell: %w", err)
 		}

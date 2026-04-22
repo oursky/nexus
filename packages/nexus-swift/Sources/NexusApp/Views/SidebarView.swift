@@ -99,7 +99,20 @@ private struct RepoSection: View {
     @State private var confirmDeleteProject = false
 
     private var isRegisteredProject: Bool {
-        appState.projects.contains { $0.id == repo.id }
+        resolvedProjectID != nil
+    }
+
+    private var resolvedProjectID: String? {
+        if appState.projects.contains(where: { $0.id == repo.id }) {
+            return repo.id
+        }
+        for ws in repo.workspaces {
+            let pid = (ws.projectId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !pid.isEmpty, appState.projects.contains(where: { $0.id == pid }) {
+                return pid
+            }
+        }
+        return nil
     }
     
     private var hasRootWorkspace: Bool {
@@ -143,7 +156,7 @@ private struct RepoSection: View {
                 .accessibilityIdentifier("project_header_\(repo.id)")
 
                 Button {
-                    appState.createIntent = .newSandbox(projectID: repo.id)
+                    appState.createIntent = .newSandbox(projectID: resolvedProjectID ?? repo.id)
                     appState.showNewWorkspace = true
                 } label: {
                     Image(systemName: "plus")
@@ -170,7 +183,8 @@ private struct RepoSection: View {
                 titleVisibility: .visible
             ) {
                 Button("Delete", role: .destructive) {
-                    Task { await appState.removeProject(id: repo.id) }
+                    guard let projectID = resolvedProjectID else { return }
+                    Task { await appState.removeProject(id: projectID) }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -356,10 +370,11 @@ private struct SidebarFooter: View {
         // Outdated overrides connection state — the daemon is reachable but incompatible.
         if case .outdated = appState.daemonStatus { return "Outdated" }
         switch appState.connectionState {
-        case .starting:     return "Starting…"
-        case .connecting:   return "Connecting…"
-        case .connected:    return "Connected"
-        case .disconnected: return "Offline"
+        case .starting:               return "Starting…"
+        case .connecting:             return "Connecting…"
+        case .provisioning(let step): return step
+        case .connected:              return "Connected"
+        case .disconnected:           return "Offline"
         }
     }
 
@@ -375,9 +390,10 @@ private struct SidebarFooter: View {
     private var connectionTextColor: Color {
         if case .outdated = appState.daemonStatus { return Theme.labelSecondary }
         switch appState.connectionState {
-        case .connected:             return Theme.labelSecondary
-        case .starting, .connecting: return Theme.labelSecondary
-        case .disconnected:          return Theme.labelTertiary
+        case .connected:                         return Theme.labelSecondary
+        case .starting, .connecting:             return Theme.labelSecondary
+        case .provisioning:                      return Theme.labelSecondary
+        case .disconnected:                      return Theme.labelTertiary
         }
     }
 
@@ -487,6 +503,10 @@ private struct FooterMenuBtn: View {
 
             Button("Connect to Daemon…") {
                 showDaemonPanel = true
+            }
+
+            Button("Install / Update Daemon…") {
+                appState.installDaemon()
             }
 
             Divider()

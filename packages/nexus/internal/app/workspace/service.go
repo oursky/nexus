@@ -77,6 +77,9 @@ func (s *Service) List(ctx context.Context) ([]*workspace.Workspace, error) {
 		return nil, fmt.Errorf("list workspaces: %w", err)
 	}
 	sort.Slice(all, func(i, j int) bool {
+		if all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].ID < all[j].ID
+		}
 		return all[i].CreatedAt.Before(all[j].CreatedAt)
 	})
 	return all, nil
