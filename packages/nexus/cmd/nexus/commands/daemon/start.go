@@ -341,19 +341,18 @@ func ensureFirecrackerGuestAgent(rootfsPath string) error {
 	// (not next to /var/lib/nexus/rootfs.ext4 which is root-owned) so it
 	// survives daemon restarts and prevents double-injection.
 	hashFile := agentHashFile()
-	if agentHash, hashErr := sha256HexFile(agentPath); hashErr == nil {
+	agentHash, hashErr := sha256HexFile(agentPath)
+	if hashErr == nil {
 		if stored, readErr := os.ReadFile(hashFile); readErr == nil &&
 			strings.TrimSpace(string(stored)) == agentHash {
 			return nil
 		}
-		// Inject and record the new hash on success (below).
-		defer func() {
-			if dir := filepath.Dir(hashFile); dir != "" {
-				_ = os.MkdirAll(dir, 0o755)
-			}
-			_ = os.WriteFile(hashFile, []byte(agentHash+"\n"), 0o644)
-		}()
 	}
+
+	// Run e2fsck to repair any dirty journal state left by a previously-running VM
+	// before writing with debugfs.  Ignore errors — e2fsck exits non-zero when it
+	// makes repairs, and we proceed regardless.
+	_ = exec.Command("e2fsck", "-f", "-y", rootfsPath).Run()
 
 	for _, cmd := range []string{
 		"mkdir /usr/local",
@@ -371,6 +370,14 @@ func ensureFirecrackerGuestAgent(rootfsPath string) error {
 	// 0100755 = S_IFREG | 0755 (regular file, rwxr-xr-x).
 	if out, err := exec.Command("debugfs", "-w", "-R", "sif /usr/local/bin/nexus-firecracker-agent mode 0100755", rootfsPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("set mode on guest agent in rootfs: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	// Record the new hash only after a successful injection.
+	if hashErr == nil {
+		if dir := filepath.Dir(hashFile); dir != "" {
+			_ = os.MkdirAll(dir, 0o755)
+		}
+		_ = os.WriteFile(hashFile, []byte(agentHash+"\n"), 0o644)
 	}
 	return nil
 }
