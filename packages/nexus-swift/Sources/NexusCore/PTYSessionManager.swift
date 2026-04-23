@@ -58,9 +58,10 @@ public final class PTYSessionManager: ObservableObject {
 
     /// Create a new terminal tab
     public func createTab(name: String? = nil) async {
+        let t0 = Date()
         // Prevent concurrent creation (e.g. SwiftUI calling onAppear multiple times).
         guard !isCreatingTab else {
-            Self.logger.warning("pty.tab.create skipped (already creating) workspace=\(self.workspaceId, privacy: .public)")
+            Self.logger.warning("pty.tab.create SKIPPED-BUSY workspace=\(self.workspaceId, privacy: .public) existing_tabs=\(self.tabs.count, privacy: .public)")
             return
         }
         isCreatingTab = true
@@ -76,13 +77,13 @@ public final class PTYSessionManager: ObservableObject {
             guard let index = self.tabs.firstIndex(where: { $0.id == tempId }), self.tabs[index].isLoading else {
                 return
             }
-            Self.logger.error("pty.tab.create ui-timeout workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public)")
+            Self.logger.error("pty.tab.create UI-TIMEOUT workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public)")
             self.tabs[index].isLoading = false
             self.tabs[index].error = "Timed out opening terminal (\(loadingTimeoutSeconds)s)."
         }
         defer { timeoutTask.cancel() }
 
-        Self.logger.notice("pty.tab.create start workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public)")
+        Self.logger.notice("pty.tab.create ENTER workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) guard_wait_ms=\(Int(Date().timeIntervalSince(t0)*1000), privacy: .public)")
 
         // Add loading tab
         await MainActor.run {
@@ -96,6 +97,8 @@ public final class PTYSessionManager: ObservableObject {
             let cols = 120
             let rows = 40
 
+            let tOpenPTY = Date()
+            Self.logger.notice("pty.tab.create CALLING-openPTY workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) ms_since_enter=\(Int(Date().timeIntervalSince(startedAt)*1000), privacy: .public)")
             let sessionId = try await AsyncDeadline.withSeconds(20) {
                 try await self.client.openPTY(
                     workspaceId: self.workspaceId,
@@ -105,9 +108,10 @@ public final class PTYSessionManager: ObservableObject {
                     useTmux: true
                 )
             }
+            let openPTYMs = Int(Date().timeIntervalSince(tOpenPTY) * 1000)
 
             let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
-            Self.logger.notice("pty.tab.create success workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) session=\(sessionId, privacy: .public) elapsed_ms=\(elapsedMs, privacy: .public)")
+            Self.logger.notice("pty.tab.create SUCCESS workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) session=\(sessionId, privacy: .public) openPTY_ms=\(openPTYMs, privacy: .public) total_ms=\(elapsedMs, privacy: .public)")
 
             // Update with real session ID
             await MainActor.run {
@@ -128,9 +132,9 @@ public final class PTYSessionManager: ObservableObject {
         } catch {
             let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
             if case let AsyncDeadlineError.exceeded(seconds) = error {
-                Self.logger.error("pty.tab.create timeout workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) timeout_s=\(seconds, privacy: .public) elapsed_ms=\(elapsedMs, privacy: .public)")
+                Self.logger.error("pty.tab.create TIMEOUT workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) timeout_s=\(seconds, privacy: .public) elapsed_ms=\(elapsedMs, privacy: .public)")
             } else {
-                Self.logger.error("pty.tab.create failed workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) elapsed_ms=\(elapsedMs, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                Self.logger.error("pty.tab.create FAILED workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) elapsed_ms=\(elapsedMs, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             }
             await MainActor.run {
                 if let index = tabs.firstIndex(where: { $0.id == tempId }) {

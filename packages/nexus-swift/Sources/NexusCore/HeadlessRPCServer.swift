@@ -46,6 +46,9 @@ public final class HeadlessRPCServer {
     /// (workspaceID, app, checkOnly) → (ok, detail)
     public var openEditorAction: ((String, String, Bool) async -> (Bool, String))?
 
+    /// Called by /daemon/check. (driver?) → (allPassed, output)
+    public var daemonCheckAction: ((String?) async -> (Bool, String))?
+
     /// Returns the active daemon client (any protocol) for workspace lifecycle calls.
     public var daemonClientProvider: (() -> (any DaemonClient)?)?
 
@@ -221,6 +224,8 @@ public final class HeadlessRPCServer {
             return await handleDaemonProvision(body: bodyString)
         case ("POST", "/daemon/connect"):
             return await handleDaemonConnect(body: bodyString)
+        case ("POST", "/daemon/check"):
+            return await handleDaemonCheck(body: bodyString)
 
         // ── Linuxbox clean-room ───────────────────────────────────────────────
         case ("POST", "/linuxbox/clean-room"):
@@ -616,6 +621,26 @@ public final class HeadlessRPCServer {
             return (500, jsonError("serialization failed"))
         }
         return (200, str)
+    }
+
+    // MARK: - Daemon health-check handler
+
+    /// Runs `nexus daemon check [--driver <driver>]` and returns all check results.
+    ///   POST /daemon/check  { driver? }  → { ok, output }
+    private func handleDaemonCheck(body: String) async -> (Int, String) {
+        let dict = parseJSON(body)
+        let driver = dict?["driver"] as? String
+        guard let action = daemonCheckAction else {
+            return (503, jsonError("daemon check action not registered"))
+        }
+        Self.logger.info("rpc /daemon/check driver=\(driver ?? "(auto)", privacy: .public)")
+        let (ok, output) = await action(driver)
+        let payload: [String: Any] = ["ok": ok, "output": output]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (ok ? 200 : 500, str)
     }
 
     // MARK: - Linuxbox clean-room handler

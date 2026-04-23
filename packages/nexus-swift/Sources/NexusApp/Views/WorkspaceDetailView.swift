@@ -62,6 +62,12 @@ private struct RemoteEditorOpenMenu: View {
         appState.activeDaemonProfile?.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
 
+    /// Whether the workspace uses a VM backend (Firecracker or libkrun).
+    private var isVMBackend: Bool {
+        let b = (workspace.backend ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return b == "firecracker" || b == "libkrun"
+    }
+
     private var isVMWorkspace: Bool {
         guard let ip = workspace.guestIp else { return false }
         return !ip.isEmpty
@@ -78,10 +84,13 @@ private struct RemoteEditorOpenMenu: View {
 
     private var help: String {
         guard canOpen else {
+            if isVMBackend && !workspace.state.isActive {
+                return "Start the VM workspace first, then open it in an editor."
+            }
             return "Requires a connected daemon, SSH host, and a running VM (or host repo path for process sandboxes)."
         }
         if isVMWorkspace {
-            return "Open /workspace inside the Firecracker VM. Runs an SSH connectivity check first."
+            return "Open /workspace inside the VM. Runs an SSH connectivity check first."
         }
         if let port = appState.activeDaemonProfile?.sshPort, port != 22 {
             return "Open this repo on the SSH host in Cursor or VS Code. Non-default SSH ports need a matching Host in ~/.ssh/config."

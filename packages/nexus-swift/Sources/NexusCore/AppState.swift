@@ -308,6 +308,10 @@ public final class AppState: ObservableObject {
             guard let self else { return (false, "AppState deallocated") }
             return await self.openEditorViaCLI(workspaceID: workspaceID, app: app, checkOnly: checkOnly)
         }
+        server.daemonCheckAction = { [weak self] driver in
+            guard let self else { return (false, "AppState deallocated") }
+            return await self.runDaemonCheckViaCLI(driver: driver)
+        }
         // Wire workspace lifecycle + provisioning providers for headless RPC.
         server.daemonClientProvider = { [weak self] in
             guard let self else { return nil }
@@ -383,6 +387,84 @@ public final class AppState: ObservableObject {
                     log.error("open-editor failed (exit \(proc.terminationStatus, privacy: .public)): \(combined, privacy: .public)")
                     continuation.resume(returning: (false, combined))
                 }
+            }
+        }
+    }
+
+    // MARK: - Daemon health check (runs on daemon host via SSH)
+
+    private static let daemonCheckLogger = Logger(subsystem: "com.nexus.NexusApp", category: "DaemonCheck")
+
+    /// Runs `nexus daemon check [--driver <driver>]` **on the daemon host** via SSH and
+    /// returns (allPassed, combinedOutput).
+    ///
+    /// The checks verify the daemon host's environment (KVM access, kernel image, rootfs,
+    /// guest agent, SSH keys, auth tokens, etc.) so they must run on the remote machine,
+    /// not locally on the Mac.
+    public func runDaemonCheckViaCLI(driver: String? = nil) async -> (Bool, String) {
+        let log = Self.daemonCheckLogger
+        log.info("daemon check start driver=\(driver ?? "(auto)", privacy: .public)")
+
+        guard let profile = cachedProfile,
+              let sshTarget = profile.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sshTarget.isEmpty else {
+            return (false, "No daemon profile configured — connect to a daemon host first.")
+        }
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                // Build the remote nexus command.
+                var remoteCmd = "~/.local/bin/nexus daemon check"
+                if let d = driver, !d.isEmpty { remoteCmd += " --driver \(d)" }
+                log.info("daemon check ssh target=\(sshTarget, privacy: .public) cmd=\(remoteCmd, privacy: .public)")
+
+                // Build ssh arguments.
+                let sshBin = "/usr/bin/ssh"
+                var sshArgs: [String] = [
+                    "-o", "BatchMode=yes",
+                    "-o", "ConnectTimeout=15",
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "UserKnownHostsFile=/dev/null",
+                    "-o", "GlobalKnownHostsFile=/dev/null",
+                    "-o", "LogLevel=ERROR",
+                ]
+                if let port = profile.sshPort, port != 22 {
+                    sshArgs += ["-p", "\(port)"]
+                }
+                if let identity = profile.sshIdentity, !identity.isEmpty {
+                    sshArgs += ["-i", identity]
+                }
+                sshArgs += [sshTarget, remoteCmd]
+
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: sshBin)
+                proc.arguments = sshArgs
+
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                proc.standardOutput = outPipe
+                proc.standardError  = errPipe
+
+                var env = ProcessInfo.processInfo.environment
+                env["SHELL"] = "/bin/sh"
+                proc.environment = env
+
+                do {
+                    try proc.run()
+                } catch {
+                    log.error("daemon check ssh failed: \(error.localizedDescription, privacy: .public)")
+                    continuation.resume(returning: (false, "SSH launch failed: \(error.localizedDescription)"))
+                    return
+                }
+                proc.waitUntilExit()
+
+                let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let combined = [out, err].filter { !$0.isEmpty }.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let ok = proc.terminationStatus == 0
+                log.info("daemon check finished ok=\(ok, privacy: .public)")
+                continuation.resume(returning: (ok, combined))
             }
         }
     }

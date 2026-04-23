@@ -131,15 +131,17 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         return nil
     }
 
-    private var isFirecrackerVMBridgeGuest: Bool {
+    /// Returns true for any backend that runs a guest VM (Firecracker or libkrun)
+    /// and currently has an SSH host available.
+    private var isGuestVMBackend: Bool {
         let b = (backend ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard b == "firecracker" else { return false }
+        guard b == "firecracker" || b == "libkrun" else { return false }
         guard state.isActive else { return false }
         let g = (guestIp ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return !g.isEmpty
     }
 
-    /// Stable `Host` alias for `~/.ssh/config.d` when opening a Firecracker workspace in an external editor.
+    /// Stable `Host` alias for `~/.ssh/config.d` when opening a VM workspace in an external editor.
     public static func nexusSSHHostAlias(for workspaceID: String) -> String {
         let safe = workspaceID.replacingOccurrences(
             of: "[^a-zA-Z0-9-]+",
@@ -149,14 +151,31 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         return "nexus-vm-\(safe)"
     }
 
-    /// Resolves Remote-SSH parameters: Firecracker guests use `/workspace` and a `Host` alias + ProxyJump; process sandboxes use the engine repo path.
+    /// Returns true if this workspace uses a VM backend (Firecracker or libkrun),
+    /// regardless of its current run state.
+    private var isVMBackend: Bool {
+        let b = (backend ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return b == "firecracker" || b == "libkrun"
+    }
+
+    /// Resolves Remote-SSH parameters: VM guests (Firecracker/libkrun) use
+    /// `/workspace` via a ProxyJump to the guest IP; process sandboxes use the
+    /// engine repo path directly.
+    ///
+    /// Returns `nil` when the workspace cannot be opened (no valid path, or a VM
+    /// backend that is not currently running — opening it would resolve to the
+    /// daemon host folder, which is always wrong for VM workspaces).
     public func remoteSSHFolderOpen(jumpHost: String, identityFile: String?) -> RemoteSSHFolderOpenSpec? {
         let jump = jumpHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !jump.isEmpty else { return nil }
         let idf = identityFile?.trimmingCharacters(in: .whitespacesAndNewlines)
         let idfOrNil = (idf?.isEmpty ?? true) ? nil : idf
 
-        if isFirecrackerVMBridgeGuest {
+        if isVMBackend {
+            // VM workspaces must be actively running to be opened in an editor.
+            // Return nil when stopped so callers can show a "start the VM first"
+            // prompt instead of silently opening the daemon-host folder.
+            guard isGuestVMBackend else { return nil }
             let ip = (guestIp ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let alias = Self.nexusSSHHostAlias(for: id)
             return RemoteSSHFolderOpenSpec(
