@@ -1,0 +1,386 @@
+//go:build linux
+
+package libkrun
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Driver implements the libkrun runtime driver.
+// It mirrors FCDriver from the firecracker package.
+type Driver struct {
+	manager      *Manager
+	basesDir     string
+	projectRoots map[string]string
+	snapshotIDs  map[string]string
+	readyTools   map[string]bool
+	mu           sync.RWMutex
+}
+
+// NewDriver creates a new libkrun Driver.
+func NewDriver(cfg ManagerConfig, opts ...DriverOption) *Driver {
+	mgr := NewManager(cfg)
+	d := &Driver{
+		manager:      mgr,
+		basesDir:     cfg.BasesDir,
+		projectRoots: make(map[string]string),
+		snapshotIDs:  make(map[string]string),
+		readyTools:   make(map[string]bool),
+	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
+}
+
+// DriverOption is a functional option for Driver.
+type DriverOption func(*Driver)
+
+// Backend returns the driver backend identifier.
+func (d *Driver) Backend() string { return "libkrun" }
+
+// GuestSSHHost returns the SSH address for a running workspace VM.
+func (d *Driver) GuestSSHHost(_ context.Context, workspaceID string) (string, bool) {
+	inst, err := d.manager.Get(workspaceID)
+	if err != nil || inst == nil {
+		return "", false
+	}
+	if ip := strings.TrimSpace(inst.GuestIP); ip != "" {
+		return ip, true
+	}
+	return "", false
+}
+
+// CleanupStaleInstances removes orphaned state on daemon startup.
+func (d *Driver) CleanupStaleInstances(ctx context.Context) error {
+	return d.manager.ReconcileOrphans(ctx, map[string]struct{}{})
+}
+
+// GuestWorkdir returns the in-guest working directory for a workspace.
+func (d *Driver) GuestWorkdir(_ string) string { return "/workspace" }
+
+// ResolveWorkspaceEndpoint returns the host:port for a service inside a workspace.
+func (d *Driver) ResolveWorkspaceEndpoint(_ context.Context, workspaceID string, remotePort int) (string, int, error) {
+	if remotePort <= 0 {
+		return "", 0, fmt.Errorf("remote port must be > 0")
+	}
+	inst, err := d.manager.Get(workspaceID)
+	if err != nil || inst == nil {
+		return "", 0, fmt.Errorf("workspace not running: %s", workspaceID)
+	}
+	// With libkrun+passt, we proxy ports via the agent spotlight protocol,
+	// not via direct IP routing to the guest.
+	return "127.0.0.1", remotePort, nil
+}
+
+// DialPort connects to a service port inside the workspace VM.
+func (d *Driver) DialPort(ctx context.Context, workspaceID string, remotePort int) (net.Conn, error) {
+	return d.dialSpotlightPort(ctx, workspaceID, remotePort)
+}
+
+// dialSpotlightPort uses the spotlight vsock proxy to reach a service inside the VM.
+func (d *Driver) dialSpotlightPort(ctx context.Context, workspaceID string, guestPort int) (net.Conn, error) {
+	if guestPort <= 0 || guestPort > 65535 {
+		return nil, fmt.Errorf("guestPort %d out of range", guestPort)
+	}
+	inst, err := d.manager.Get(workspaceID)
+	if err != nil || inst == nil {
+		return nil, fmt.Errorf("workspace not running: %s", workspaceID)
+	}
+
+	spotlightSock := filepath.Join(inst.WorkDir, fmt.Sprintf("vsock_%d.sock", DefaultSpotlightVSockPort))
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dialer.DialContext(ctx, "unix", spotlightSock)
+	if err != nil {
+		return nil, fmt.Errorf("spotlight dial: %w", err)
+	}
+
+	if _, err := fmt.Fprintf(conn, "FORWARD %d\n", guestPort); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("spotlight FORWARD write: %w", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp, err := bufio.NewReader(conn).ReadString('\n')
+	_ = conn.SetReadDeadline(time.Time{})
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("spotlight FORWARD response: %w", err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(resp), "OK") {
+		_ = conn.Close()
+		return nil, fmt.Errorf("spotlight FORWARD rejected: %s", strings.TrimSpace(resp))
+	}
+	return conn, nil
+}
+
+// AgentConn opens a connection to the guest agent for the given workspace.
+// libkrun creates the vsock_10789.sock Unix socket (listen=true); we dial it.
+func (d *Driver) AgentConn(ctx context.Context, workspaceID string) (net.Conn, error) {
+	inst, err := d.manager.Get(workspaceID)
+	if err != nil || inst == nil {
+		return nil, fmt.Errorf("workspace not running: %s", workspaceID)
+	}
+
+	agentSock := filepath.Join(inst.WorkDir, fmt.Sprintf("vsock_%d.sock", DefaultAgentVSockPort))
+
+	// Wait for libkrun to create the agent socket (VM may still be booting).
+	deadline := time.Now().Add(15 * time.Second)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+
+	var lastErr error
+	for time.Now().Before(deadline) {
+		dialer := &net.Dialer{Timeout: 2 * time.Second}
+		conn, dialErr := dialer.DialContext(ctx, "unix", agentSock)
+		if dialErr == nil {
+			return conn, nil
+		}
+		lastErr = dialErr
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return nil, fmt.Errorf("agent socket %s not ready: %w", agentSock, lastErr)
+}
+
+// Create registers a workspace (lazy — no VM start yet).
+func (d *Driver) Create(_ context.Context, workspaceID, projectRoot string, options map[string]string) error {
+	if projectRoot == "" {
+		return errors.New("project root is required")
+	}
+	d.mu.Lock()
+	d.projectRoots[workspaceID] = projectRoot
+	if options != nil {
+		if snap := strings.TrimSpace(options["lineage_snapshot_id"]); snap != "" {
+			d.snapshotIDs[workspaceID] = snap
+		}
+	}
+	d.mu.Unlock()
+	log.Printf("[libkrun] registered workspace %s (lazy start)", workspaceID)
+	return nil
+}
+
+// EnsureStarted starts the VM if not already running.
+func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot string) error {
+	if _, err := d.manager.Get(workspaceID); err == nil {
+		return nil // already running
+	}
+
+	root := strings.TrimSpace(projectRoot)
+	if root == "" {
+		d.mu.RLock()
+		root = strings.TrimSpace(d.projectRoots[workspaceID])
+		d.mu.RUnlock()
+	}
+	if root == "" {
+		return fmt.Errorf("workspace %s has no project root", workspaceID)
+	}
+
+	d.mu.Lock()
+	d.projectRoots[workspaceID] = root
+	d.mu.Unlock()
+
+	d.mu.RLock()
+	snapshotID := d.snapshotIDs[workspaceID]
+	d.mu.RUnlock()
+
+	memMiB := defaultMemMiB()
+
+	// Build host config drive (gitconfig, SSH keys, tool auth).
+	home, _ := os.UserHomeDir()
+	configDrivePath := filepath.Join(root, ".nexus-host-config.ext4")
+	if err := buildHostConfigDriveLibkrun(home, configDrivePath); err != nil {
+		log.Printf("[libkrun] warning: host config drive: %v", err)
+		configDrivePath = ""
+	}
+
+	spec := SpawnSpec{
+		WorkspaceID:     workspaceID,
+		ProjectRoot:     root,
+		BasesDir:        d.basesDir,
+		MemoryMiB:       memMiB,
+		VCPUs:           1,
+		SnapshotID:      snapshotID,
+		HostConfigDrive: configDrivePath,
+	}
+
+	d.mu.Lock()
+	delete(d.readyTools, workspaceID)
+	d.mu.Unlock()
+
+	if _, err := d.manager.Spawn(ctx, spec); err != nil {
+		return err
+	}
+	return nil
+}
+
+// WorkspaceReady probes the guest agent to verify tools are installed.
+func (d *Driver) WorkspaceReady(ctx context.Context, workspaceID string) (bool, error) {
+	if strings.TrimSpace(workspaceID) == "" {
+		return false, errors.New("workspace ID is required")
+	}
+
+	d.mu.RLock()
+	ready := d.readyTools[workspaceID]
+	d.mu.RUnlock()
+	if ready {
+		return true, nil
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		attemptCtx, cancelAttempt := context.WithTimeout(probeCtx, 20*time.Second)
+		conn, err := d.AgentConn(attemptCtx, workspaceID)
+		if err != nil {
+			cancelAttempt()
+			if attempt < 3 {
+				select {
+				case <-probeCtx.Done():
+					return false, nil
+				case <-time.After(300 * time.Millisecond):
+				}
+			}
+			continue
+		}
+
+		req := AgentExecRequest{
+			ID:      fmt.Sprintf("ready-%d", time.Now().UnixNano()),
+			Command: "sh",
+			Args:    []string{"-lc", "codex --version >/dev/null 2>&1 && opencode --version >/dev/null 2>&1 && claude --version >/dev/null 2>&1"},
+			WorkDir: "/workspace",
+		}
+		result, err := agentExec(attemptCtx, conn, req)
+		_ = conn.Close()
+		cancelAttempt()
+
+		if err != nil || result.ExitCode != 0 {
+			if attempt < 3 {
+				select {
+				case <-probeCtx.Done():
+					return false, nil
+				case <-time.After(300 * time.Millisecond):
+				}
+			}
+			continue
+		}
+
+		d.mu.Lock()
+		d.readyTools[workspaceID] = true
+		d.mu.Unlock()
+		return true, nil
+	}
+	return false, nil
+}
+
+// GrowWorkspace grows the workspace disk image and notifies the guest.
+func (d *Driver) GrowWorkspace(ctx context.Context, workspaceID string, newSizeBytes int64) error {
+	if err := d.manager.GrowWorkspace(ctx, workspaceID, newSizeBytes); err != nil {
+		return err
+	}
+
+	conn, err := d.AgentConn(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("agent connect for disk.grow: %w", err)
+	}
+	defer conn.Close()
+
+	result, err := agentExec(ctx, conn, AgentExecRequest{
+		ID:   fmt.Sprintf("disk-grow-%d", time.Now().UnixNano()),
+		Type: "disk.grow",
+	})
+	if err != nil {
+		return fmt.Errorf("disk.grow exec: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("resize2fs failed: %s", strings.TrimSpace(result.Stderr))
+	}
+	return nil
+}
+
+// Stop terminates a running VM.
+func (d *Driver) Stop(ctx context.Context, workspaceID string) error {
+	d.mu.Lock()
+	delete(d.readyTools, workspaceID)
+	d.mu.Unlock()
+	return d.manager.Stop(ctx, workspaceID)
+}
+
+// Pause is implemented as Stop for libkrun (no pause/resume support).
+func (d *Driver) Pause(ctx context.Context, workspaceID string) error {
+	return d.Stop(ctx, workspaceID)
+}
+
+// Resume re-registers the workspace so it restarts on next EnsureStarted.
+func (d *Driver) Resume(_ context.Context, workspaceID string) error {
+	d.mu.RLock()
+	root := d.projectRoots[workspaceID]
+	d.mu.RUnlock()
+	if root == "" {
+		return fmt.Errorf("workspace %s has no recorded project root", workspaceID)
+	}
+	return nil
+}
+
+// ForkWithRoot registers the child workspace pointing at childRoot.
+func (d *Driver) ForkWithRoot(_ context.Context, parentID, childID, childRoot string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.projectRoots[parentID]; !ok {
+		return fmt.Errorf("parent workspace %s not found", parentID)
+	}
+	if _, ok := d.projectRoots[childID]; ok {
+		return fmt.Errorf("workspace %s already exists", childID)
+	}
+	d.projectRoots[childID] = childRoot
+	d.snapshotIDs[childID] = childID
+	return nil
+}
+
+// CheckpointFork copies the parent's workspace image for the child.
+func (d *Driver) CheckpointFork(_ context.Context, parentID, childID string) (string, error) {
+	if err := d.manager.ForkWorkspaceImage(context.Background(), parentID, childID); err != nil {
+		return "", fmt.Errorf("fork workspace image: %w", err)
+	}
+	return childID, nil
+}
+
+// Destroy stops the VM and removes all state.
+func (d *Driver) Destroy(ctx context.Context, workspaceID string) error {
+	d.mu.Lock()
+	delete(d.projectRoots, workspaceID)
+	delete(d.snapshotIDs, workspaceID)
+	delete(d.readyTools, workspaceID)
+	d.mu.Unlock()
+	return d.manager.CleanupWorkspaceByID(ctx, workspaceID)
+}
+
+func defaultMemMiB() int {
+	if raw := strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_MEM_MIB")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	// Also respect the Firecracker env for compatibility.
+	if raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_MEM_MIB")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 1024
+}
