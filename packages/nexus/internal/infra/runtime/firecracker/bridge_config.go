@@ -4,22 +4,43 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
 const (
 	defaultBridgeSubnet  = "172.26.0.0/16"
 	defaultBridgeGateway = "172.26.0.1"
-	bridgeSubnetFile     = "/var/lib/nexus/bridge-subnet"
+
+	// legacyBridgeSubnetFile is the old privileged-setup path (no longer written).
+	legacyBridgeSubnetFile = "/var/lib/nexus/bridge-subnet"
 )
 
+// bridgeSubnetFile returns the user-scoped subnet file path under XDG_DATA_HOME.
+func bridgeSubnetFile() string {
+	if s := os.Getenv("XDG_DATA_HOME"); s != "" {
+		return filepath.Join(s, "nexus", "rootless", "bridge-subnet")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return legacyBridgeSubnetFile
+	}
+	return filepath.Join(home, ".local", "share", "nexus", "rootless", "bridge-subnet")
+}
+
 // bridgeSubnet returns the configured bridge subnet CIDR.
-// Priority: NEXUS_BRIDGE_SUBNET env var → persisted file → compiled default.
+// Priority: NEXUS_BRIDGE_SUBNET env var → user-scoped state file → legacy file → compiled default.
 func bridgeSubnet() string {
 	if s := os.Getenv("NEXUS_BRIDGE_SUBNET"); s != "" {
 		return s
 	}
-	if data, err := os.ReadFile(bridgeSubnetFile); err == nil {
+	if data, err := os.ReadFile(bridgeSubnetFile()); err == nil {
+		if s := strings.TrimSpace(string(data)); s != "" {
+			return s
+		}
+	}
+	// Migration: read legacy /var/lib/nexus location if present.
+	if data, err := os.ReadFile(legacyBridgeSubnetFile); err == nil {
 		if s := strings.TrimSpace(string(data)); s != "" {
 			return s
 		}
@@ -45,9 +66,16 @@ func guestSubnetCIDR() string {
 	return bridgeSubnet()
 }
 
-// guestIPForCID derives a guest VM IP from the vsock CID within the bridge subnet.
+// vmNetworkGatewayIP returns the gateway IP that the guest VM should use as its
+// default route. In rootless (slirp4netns) mode this is "10.0.2.2" (the gateway
+// that slirp4netns always places at <cidr>.2 of its default 10.0.2.0/24 subnet).
+// On non-Linux hosts the bridge gateway is used for consistency with tests.
+var vmNetworkGatewayIP = defaultVMNetworkGatewayIP
+
+// guestIPForCID derives a guest VM IP within the active network's subnet,
+// using the first two octets of the gateway and the CID as the host portion.
 func guestIPForCID(cid uint32) string {
-	gw := bridgeGatewayIP()
+	gw := vmNetworkGatewayIP()
 	parts := strings.SplitN(gw, ".", 4)
 	if len(parts) >= 2 {
 		return fmt.Sprintf("%s.%s.%d.%d", parts[0], parts[1],

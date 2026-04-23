@@ -53,6 +53,7 @@ type ManagerInterface interface {
 type FCDriver struct {
 	runner       CommandRunner
 	manager      ManagerInterface
+	basesDir     string // overlay base image cache directory; enables overlay mode when non-empty
 	projectRoots map[string]string
 	snapshotIDs  map[string]string // optional lineage snapshot ID per workspace
 	agents       map[string]*AgentClient
@@ -67,6 +68,14 @@ type Option func(*FCDriver)
 func WithManager(manager ManagerInterface) Option {
 	return func(d *FCDriver) {
 		d.manager = manager
+	}
+}
+
+// WithBasesDir enables overlay mode and sets the directory where shared
+// per-repo base images are cached.
+func WithBasesDir(dir string) Option {
+	return func(d *FCDriver) {
+		d.basesDir = dir
 	}
 }
 
@@ -91,6 +100,9 @@ func (d *FCDriver) Backend() string {
 }
 
 // GuestSSHHost implements [runtime.Driver] for Remote-SSH into the micro-VM.
+// In rootless mode it returns "127.0.0.1:PORT" (slirp4netns port-forward target)
+// so the macOS SSH client can jump through the engine host and land on the VM's
+// SSH daemon without needing direct L3 access to the VM's IP.
 func (d *FCDriver) GuestSSHHost(ctx context.Context, workspaceID string) (string, bool) {
 	_ = ctx
 	if d.manager == nil {
@@ -99,6 +111,10 @@ func (d *FCDriver) GuestSSHHost(ctx context.Context, workspaceID string) (string
 	inst, err := d.manager.Get(workspaceID)
 	if err != nil || inst == nil || inst.CID == 0 {
 		return "", false
+	}
+	// Prefer the host-accessible target stored on the instance (set during Spawn).
+	if ip := strings.TrimSpace(inst.GuestIP); ip != "" {
+		return ip, true
 	}
 	return guestIPForCID(inst.CID), true
 }
@@ -409,6 +425,7 @@ func (d *FCDriver) EnsureStarted(ctx context.Context, workspaceID, projectRoot s
 	spec := SpawnSpec{
 		WorkspaceID:     workspaceID,
 		ProjectRoot:     root,
+		BasesDir:        d.basesDir,
 		MemoryMiB:       memMiB,
 		VCPUs:           1,
 		SnapshotID:      snapshotID,

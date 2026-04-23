@@ -122,7 +122,7 @@ func New(cfg Config) (*Daemon, error) {
 		log.Printf("daemon: sandbox (process) runtime driver wired")
 	}
 
-	wsSvc := appworkspace.NewService(wsStore, projStore, rtDriver)
+	wsSvc := appworkspace.NewService(wsStore, projStore, rtDriver, context.Background())
 
 	spotlightOpts := []appspotlight.Option{}
 	if fcDriver != nil {
@@ -181,8 +181,9 @@ func New(cfg Config) (*Daemon, error) {
 }
 
 // reconcileFirecrackerWorkspaceStates prevents stale DB state after daemon
-// restarts: if runtime instances are cleaned up, mark previously "running"
-// Firecracker workspaces as stopped so callers trigger a real start path.
+// restarts: if runtime instances are cleaned up, mark previously "running" or
+// "starting" Firecracker workspaces as stopped/created so callers trigger a
+// real start path.
 func reconcileFirecrackerWorkspaceStates(ctx context.Context, wsStore *store.WorkspaceStore) {
 	all, err := wsStore.List(ctx)
 	if err != nil {
@@ -193,10 +194,18 @@ func reconcileFirecrackerWorkspaceStates(ctx context.Context, wsStore *store.Wor
 		if ws == nil {
 			continue
 		}
-		if ws.Backend != "firecracker" || ws.State != domainws.StateRunning {
+		if ws.Backend != "firecracker" {
 			continue
 		}
-		ws.State = domainws.StateStopped
+		switch ws.State {
+		case domainws.StateRunning:
+			ws.State = domainws.StateStopped
+		case domainws.StateStarting:
+			// Start was interrupted mid-flight; reset so user can retry.
+			ws.State = domainws.StateCreated
+		default:
+			continue
+		}
 		ws.UpdatedAt = time.Now().UTC()
 		if err := wsStore.Update(ctx, ws); err != nil {
 			log.Printf("daemon: workspace state reconcile %s: %v", ws.ID, err)
@@ -245,16 +254,21 @@ func (d *Daemon) Stop() error {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func buildFirecrackerDriver(cfg Config) *firecracker.FCDriver {
-	type runner struct{}
-	// CommandRunner is satisfied by a local exec-based runner.
-	// This wraps exec.CommandContext inline.
+	// BasesDir sits alongside WorkDirRoot: <state>/firecracker-bases
+	// It holds shared per-repo base images that are reused across workspaces.
+	basesDir := ""
+	if cfg.WorkDirRoot != "" {
+		basesDir = filepath.Join(filepath.Dir(cfg.WorkDirRoot), "firecracker-bases")
+	}
+
 	mgr := firecracker.NewManager(firecracker.ManagerConfig{
 		FirecrackerBin: orDefault(cfg.FirecrackerBin, "firecracker"),
 		KernelPath:     orDefault(cfg.KernelPath, os.Getenv("NEXUS_FIRECRACKER_KERNEL")),
 		RootFSPath:     orDefault(cfg.RootFSPath, os.Getenv("NEXUS_FIRECRACKER_ROOTFS")),
 		WorkDirRoot:    cfg.WorkDirRoot,
+		BasesDir:       basesDir,
 	})
-	return firecracker.New(execRunner{}, firecracker.WithManager(mgr))
+	return firecracker.New(execRunner{}, firecracker.WithManager(mgr), firecracker.WithBasesDir(basesDir))
 }
 
 // loadFirecrackerBridgeSubnet returns the bridge subnet CIDR.

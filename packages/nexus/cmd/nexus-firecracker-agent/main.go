@@ -640,13 +640,28 @@ func bootstrapGuestEnvironment(pid int) {
 		emitDiagnostic("agent pid1 kernel filesystems mounted")
 	}
 
-	if err := setupWorkspaceMountFunc(); err != nil {
-		emitDiagnostic("agent workspace mount failed (non-fatal): %v", err)
+	if overlayMode() {
+		// Overlay mode: /dev/vdb = shared base (ro), /dev/vdc = writable overlay.
+		// Set up overlayfs at /workspace combining both.
+		if err := setupWorkspaceOverlay(); err != nil {
+			emitDiagnostic("agent workspace overlay mount failed (non-fatal): %v", err)
+		} else {
+			emitDiagnostic("agent workspace overlay mounted")
+			// Replace the global workspace-mount helpers so that on-demand
+			// mount checks in handleExec (WorkDir=/workspace) verify the overlay
+			// rather than trying to re-mount /dev/vdb directly.
+			setupWorkspaceMountFunc = ensureWorkspaceOverlayMounted
+			setupWorkspaceMountRequiredFunc = ensureWorkspaceOverlayMounted
+		}
 	} else {
-		emitDiagnostic("agent workspace mounted")
+		if err := setupWorkspaceMountFunc(); err != nil {
+			emitDiagnostic("agent workspace mount failed (non-fatal): %v", err)
+		} else {
+			emitDiagnostic("agent workspace mounted")
+		}
 	}
 
-	// Mount the host config drive (/dev/vdc) if present and apply configs.
+	// Mount the host config drive and apply configs.
 	if err := applyHostConfigDrive(); err != nil {
 		emitDiagnostic("agent host config drive (non-fatal): %v", err)
 	} else {
@@ -677,12 +692,37 @@ func bootstrapGuestEnvironment(pid int) {
 	}
 }
 
-const hostConfigDevice = "/dev/vdc"
 const hostConfigMount = "/run/nexus-host"
 
-// applyHostConfigDrive mounts the host config ext4 image (attached as
-// /dev/vdc) at /run/nexus-host and copies known config files into place.
+// overlayMode reports whether the kernel was booted with nexus.overlay=1,
+// which means /dev/vdb is a read-only base image and /dev/vdc is the writable
+// overlay. The host config drive is at /dev/vdd in this mode.
+func overlayMode() bool {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return false
+	}
+	for _, field := range strings.Fields(string(data)) {
+		if field == "nexus.overlay=1" {
+			return true
+		}
+	}
+	return false
+}
+
+// hostConfigDevicePath returns the block device that carries the host config
+// drive. In overlay mode it shifts to /dev/vdd (vdc is the overlay drive).
+func hostConfigDevicePath() string {
+	if overlayMode() {
+		return "/dev/vdd"
+	}
+	return "/dev/vdc"
+}
+
+// applyHostConfigDrive mounts the host config ext4 image at /run/nexus-host
+// and copies known config files into place.
 func applyHostConfigDrive() error {
+	hostConfigDevice := hostConfigDevicePath()
 	if _, err := os.Stat(hostConfigDevice); err != nil {
 		return nil // drive not attached — nothing to do
 	}
@@ -784,8 +824,13 @@ func ensureGuestCLITools() {
 		return
 	}
 
-	// Redirect npm cache to /workspace to avoid filling the small rootfs.
+	// Redirect npm cache off the rootfs to avoid filling it.
+	// In overlay mode use the raw ext4 store directly so npm lock/cache
+	// operations happen on a native filesystem rather than through overlayfs.
 	npmCacheDir := workspaceMountPoint + "/.npm-cache"
+	if overlayMode() {
+		npmCacheDir = "/mnt/nexus-overlay/.npm-cache"
+	}
 	_ = os.MkdirAll(npmCacheDir, 0o755)
 
 	var packages []string
@@ -857,6 +902,89 @@ func ensureAgentProcessPath() {
 	if strings.TrimSpace(os.Getenv("PATH")) == "" {
 		_ = os.Setenv("PATH", defaultAgentPath)
 	}
+}
+
+// setupWorkspaceOverlay sets up an overlayfs at /workspace using:
+//   - /dev/vdb as the read-only lower layer (shared base image with repo files)
+//   - /dev/vdc as the read-write upper+work store (per-workspace writable overlay)
+//
+// This is used when the kernel was booted with nexus.overlay=1.
+func setupWorkspaceOverlay() error {
+	const (
+		baseDevice   = "/dev/vdb"
+		overlayDev   = "/dev/vdc"
+		baseMnt      = "/mnt/nexus-base"
+		overlayStore = "/mnt/nexus-overlay"
+	)
+
+	// Wait for both block devices to appear.
+	for _, dev := range []string{baseDevice, overlayDev} {
+		for i := 0; i < 300; i++ {
+			if _, err := os.Stat(dev); err == nil {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if _, err := os.Stat(dev); err != nil {
+			return fmt.Errorf("device %s not available after 30s", dev)
+		}
+	}
+
+	// Mount base read-only.
+	if err := os.MkdirAll(baseMnt, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", baseMnt, err)
+	}
+	if err := unix.Mount(baseDevice, baseMnt, "ext4", unix.MS_RDONLY, ""); err != nil && !errors.Is(err, unix.EBUSY) {
+		return fmt.Errorf("mount base %s: %w", baseDevice, err)
+	}
+
+	// Mount overlay store read-write.
+	if err := os.MkdirAll(overlayStore, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", overlayStore, err)
+	}
+	if err := unix.Mount(overlayDev, overlayStore, "ext4", 0, ""); err != nil && !errors.Is(err, unix.EBUSY) {
+		return fmt.Errorf("mount overlay store %s: %w", overlayDev, err)
+	}
+
+	// Create upper and work directories inside the overlay store.
+	upperDir := overlayStore + "/upper"
+	workDir := overlayStore + "/work"
+	if err := os.MkdirAll(upperDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir upper: %w", err)
+	}
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir work: %w", err)
+	}
+
+	// Set up overlayfs at /workspace.
+	if err := os.MkdirAll(workspaceMountPoint, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", workspaceMountPoint, err)
+	}
+	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", baseMnt, upperDir, workDir)
+	if err := unix.Mount("overlay", workspaceMountPoint, "overlay", 0, opts); err != nil && !errors.Is(err, unix.EBUSY) {
+		return fmt.Errorf("mount overlayfs at %s: %w", workspaceMountPoint, err)
+	}
+
+	return nil
+}
+
+// ensureWorkspaceOverlayMounted verifies that /workspace is already mounted as
+// an overlayfs. If not, it attempts to mount it. Used in overlay mode as the
+// replacement for setupWorkspaceMountRequiredFunc so that WorkDir=/workspace
+// requests in handleExec don't try to re-mount /dev/vdb directly.
+func ensureWorkspaceOverlayMounted() error {
+	data, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return fmt.Errorf("read /proc/mounts: %w", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[1] == workspaceMountPoint && fields[2] == "overlay" {
+			return nil // already mounted
+		}
+	}
+	// Not yet mounted — run the full overlay setup.
+	return setupWorkspaceOverlay()
 }
 
 func setupWorkspaceMount() error {
@@ -1020,11 +1148,23 @@ func ensureDockerDaemon() error {
 		return nil
 	}
 
+	// In overlay mode /workspace is an overlayfs mount. Docker's overlay2
+	// storage driver cannot create overlayfs mounts inside an overlayfs
+	// directory. Store Docker data directly on the underlying ext4 so that
+	// overlay2 works. The data persists across VM restarts because it lives
+	// inside workspace-overlay.ext4.
+	dataRoot := "/workspace/.nexus-docker"
+	execRoot := "/workspace/.nexus-docker-exec"
+	if overlayMode() {
+		dataRoot = "/mnt/nexus-overlay/.nexus-docker"
+		execRoot = "/mnt/nexus-overlay/.nexus-docker-exec"
+	}
+
 	_ = os.Remove("/var/run/docker.pid")
-	if err := os.MkdirAll("/workspace/.nexus-docker", 0o755); err != nil {
+	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
 		return fmt.Errorf("mkdir docker data root: %w", err)
 	}
-	if err := os.MkdirAll("/workspace/.nexus-docker-exec", 0o755); err != nil {
+	if err := os.MkdirAll(execRoot, 0o755); err != nil {
 		return fmt.Errorf("mkdir docker exec root: %w", err)
 	}
 
@@ -1044,8 +1184,8 @@ func ensureDockerDaemon() error {
 	cmd := exec.Command(
 		"dockerd",
 		"--host=unix:///var/run/docker.sock",
-		"--data-root=/workspace/.nexus-docker",
-		"--exec-root=/workspace/.nexus-docker-exec",
+		"--data-root="+dataRoot,
+		"--exec-root="+execRoot,
 		"--storage-driver=overlay2",
 		iptablesFlag,
 	)

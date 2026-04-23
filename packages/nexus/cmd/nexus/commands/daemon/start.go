@@ -27,18 +27,52 @@ const daemonForegroundEnv = "NEXUS_DAEMON_FOREGROUND"
 
 // StartSetupFn, if non-nil, is called once before the daemon starts to
 // provision host prerequisites (Firecracker binary, kernel, rootfs, networking).
-// On Linux this is wired to runSetupFirecracker by the main package.
+// On Linux this is wired to RunRootlessBootstrap by the main package.
 var StartSetupFn func(w io.Writer) error
+
+// StartSetupFnJSON, if non-nil, is the JSON-output variant of StartSetupFn.
+// Used when --json is passed to emit structured phase events.
+var StartSetupFnJSON func(w io.Writer) error
 
 // EmbeddedAgentFn, if non-nil, returns the embedded nexus-firecracker-agent
 // binary bytes.  On Linux builds this is always set by daemon_hooks_linux.go.
 var EmbeddedAgentFn func() []byte
 
-// defaultVMKernelPath is the canonical kernel location after daemon setup.
-const defaultVMKernelPath = "/var/lib/nexus/vmlinux.bin"
+// DefaultVMKernelPath is the canonical kernel location after rootless daemon setup.
+// Uses the XDG user data path; the old /var/lib/nexus path is no longer written by default.
+var DefaultVMKernelPath = defaultVMKernelPath()
 
-// defaultVMRootfsPath is the canonical rootfs location after daemon setup.
-const defaultVMRootfsPath = "/var/lib/nexus/rootfs.ext4"
+// DefaultVMRootfsPath is the canonical rootfs location after rootless daemon setup.
+var DefaultVMRootfsPath = defaultVMRootfsPath()
+
+// defaultVMKernelPath returns the user-scoped kernel path under XDG_DATA_HOME.
+func defaultVMKernelPath() string {
+	return xdgVMAsset("vmlinux.bin")
+}
+
+// defaultVMRootfsPath returns the user-scoped rootfs path under XDG_DATA_HOME.
+func defaultVMRootfsPath() string {
+	return xdgVMAsset("rootfs.ext4")
+}
+
+// xdgVMAsset returns the path to a VM asset under ~/.local/share/nexus/vm/
+// or the legacy /var/lib/nexus/ path if the legacy file still exists and the
+// XDG file does not, providing seamless migration for existing setups.
+func xdgVMAsset(name string) string {
+	home, _ := os.UserHomeDir()
+	xdgPath := filepath.Join(home, ".local", "share", "nexus", "vm", name)
+	legacyPath := "/var/lib/nexus/" + name
+
+	// Prefer the XDG path; fall back to legacy only when it exists and XDG
+	// file doesn't (migration: host was provisioned with old sudo setup).
+	if _, err := os.Stat(xdgPath); err == nil {
+		return xdgPath
+	}
+	if _, err := os.Stat(legacyPath); err == nil {
+		return legacyPath
+	}
+	return xdgPath
+}
 
 func startCommand() *cobra.Command {
 	var (
@@ -59,6 +93,7 @@ func startCommand() *cobra.Command {
 		foreground  bool   // --foreground: stay blocking instead of self-daemonizing
 		sandboxMode bool   // internal: use process sandbox backend instead of Firecracker
 		networkCIDR string // --network-cidr: bridge subnet for Firecracker VMs
+		jsonOutput  bool   // --json: emit structured phase events (rootless bootstrap)
 	)
 
 	defaultData := defaultDataDir()
@@ -81,7 +116,15 @@ func startCommand() *cobra.Command {
 			// rootfs, networking).  Skipped in the background child process
 			// since the parent already ran it interactively.
 			if !isForegroundChild && StartSetupFn != nil {
-				if err := StartSetupFn(cmd.ErrOrStderr()); err != nil {
+				setupOut := cmd.ErrOrStderr()
+				if StartSetupFnJSON != nil && jsonOutput {
+					setupOut = cmd.OutOrStdout()
+				}
+				setupFn := StartSetupFn
+				if StartSetupFnJSON != nil && jsonOutput {
+					setupFn = StartSetupFnJSON
+				}
+				if err := setupFn(setupOut); err != nil {
 					return fmt.Errorf("daemon start: host setup: %w", err)
 				}
 			}
@@ -92,10 +135,10 @@ func startCommand() *cobra.Command {
 			// in sandbox mode when no explicit paths are provided.
 			if StartSetupFn != nil && runtime.GOOS != "darwin" {
 				if kernelPath == "" {
-					kernelPath = defaultVMKernelPath
+					kernelPath = DefaultVMKernelPath
 				}
 				if rootfsPath == "" {
-					rootfsPath = defaultVMRootfsPath
+					rootfsPath = DefaultVMRootfsPath
 				}
 			}
 
@@ -233,6 +276,7 @@ func startCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&sandboxMode, "sandbox", false, "Use process sandbox backend instead of Firecracker (internal/testing)")
 	_ = cmd.Flags().MarkHidden("sandbox")
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Stay in foreground instead of self-daemonizing")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON phase events during bootstrap (for RemoteProvisioner / CI)")
 
 	return cmd
 }

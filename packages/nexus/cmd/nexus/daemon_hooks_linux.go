@@ -3,13 +3,20 @@
 package main
 
 import (
+	"io"
+
 	daemoncmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon"
 )
 
 func init() {
-	// Wire the Firecracker host-setup function so `nexus daemon start`
-	// auto-provisions prerequisites on fresh Linux machines.
-	daemoncmd.StartSetupFn = runSetupFirecracker
+	// Wire the rootless bootstrap as the setup function for `nexus daemon start`.
+	// This replaces the old privileged runSetupFirecracker path.
+	daemoncmd.StartSetupFn = func(w io.Writer) error {
+		return RunRootlessBootstrap(w, false)
+	}
+	daemoncmd.StartSetupFnJSON = func(w io.Writer) error {
+		return RunRootlessBootstrap(w, true)
+	}
 
 	// Expose the embedded agent bytes for agent injection.
 	daemoncmd.EmbeddedAgentFn = func() []byte { return embeddedAgent }

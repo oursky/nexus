@@ -118,7 +118,7 @@ func gatewayTempFile() (path string, cleanup func(), err error) {
 	if err != nil {
 		return "", func() {}, fmt.Errorf("create gateway temp file: %w", err)
 	}
-	gw := bridgeGatewayIP()
+	gw := vmNetworkGatewayIP()
 	if _, err := f.WriteString(gw + "\n"); err != nil {
 		f.Close()
 		os.Remove(f.Name())

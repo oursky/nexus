@@ -5,6 +5,7 @@ type State string
 
 const (
 	StateCreated  State = "created"
+	StateStarting State = "starting"
 	StateRunning  State = "running"
 	StatePaused   State = "paused"
 	StateStopped  State = "stopped"
@@ -19,13 +20,15 @@ func (s State) CanTransitionTo(next State) bool {
 	}
 	switch s {
 	case StateCreated:
-		return next == StateRunning
+		return next == StateStarting || next == StateRunning
+	case StateStarting:
+		return next == StateRunning || next == StateCreated // running on success, created on failure/rollback
 	case StateRunning:
 		return next == StatePaused || next == StateStopped
 	case StatePaused:
 		return next == StateRunning || next == StateStopped
 	case StateStopped:
-		return next == StateRunning || next == StateRestored
+		return next == StateStarting || next == StateRunning || next == StateRestored
 	case StateRestored:
 		return next == StateRunning
 	}

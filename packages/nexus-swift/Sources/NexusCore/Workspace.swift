@@ -19,6 +19,7 @@ public enum CreateIntent: Identifiable {
 
 /// Maps workspacemgr.WorkspaceState values from the daemon.
 public enum WorkspaceStatus: String, Codable, Equatable, Sendable {
+    case starting  = "starting"
     case running   = "running"
     case paused    = "paused"
     case stopped   = "stopped"
@@ -29,6 +30,7 @@ public enum WorkspaceStatus: String, Codable, Equatable, Sendable {
 
     public var displayName: String {
         switch self {
+        case .starting: "Starting…"
         case .running:  "Running"
         case .paused:   "Paused"
         case .stopped:  "Stopped"

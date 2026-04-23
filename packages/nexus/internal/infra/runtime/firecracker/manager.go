@@ -23,6 +23,24 @@ var tapSetupFunc func(tapName, hostIP, subnetCIDR string) (any, error) = realSet
 // Overridable in tests.
 var tapTeardownFunc func(tapName, subnetCIDR string) = realTeardownTAP
 
+// tapPrepareFunc, if non-nil, is called before Firecracker starts to configure
+// the exec.Cmd for user+network namespace isolation (rootless networking).
+// Signature: (tapName string, cmd *exec.Cmd)
+var tapPrepareFunc func(tapName string, cmd *exec.Cmd) = defaultTapPrepare
+
+// tapAttachFunc, if non-nil, is called after Firecracker starts to attach
+// userspace networking to its namespace.
+// Signature: (workspaceID string, firecrackerPid int, workDir string, cid uint32) → error
+var tapAttachFunc func(workspaceID string, firecrackerPid int, workDir string, cid uint32) error = defaultTapAttach
+
+// tapNetTeardownFunc, if non-nil, tears down the per-VM network backend.
+var tapNetTeardownFunc func(workspaceID string) = defaultTapNetTeardown
+
+// tapHostDevNameFunc returns the device name that Firecracker's API expects for
+// the network interface.  In rootless (slirp4netns) mode this is always "tap0"
+// inside the VM's own netns; in legacy bridge mode it is the host tap name.
+var tapHostDevNameFunc func(tap string) string = defaultHostDevName
+
 // initialCID is the starting CID for guest VMs.
 const initialCID uint32 = 1000
 
@@ -32,12 +50,18 @@ const VendingVSockPort uint32 = 10790
 type SpawnSpec struct {
 	WorkspaceID string
 	ProjectRoot string
+	// BasesDir enables overlay mode when non-empty.
+	// A shared base image (built once per repo) is mounted read-only as /dev/vdb.
+	// A thin per-workspace writable overlay is mounted as /dev/vdc.
+	// The host config drive shifts to /dev/vdd.
+	// When empty, legacy mode is used (full repo copy → /dev/vdb).
+	BasesDir    string
 	SnapshotID  string
 	MemoryMiB   int
 	VCPUs       int
 	// HostConfigDrive is the path to a pre-built ext4 image containing host
-	// config files (gitconfig, SSH material, tool configs).  When non-empty it
-	// is attached as /dev/vdc inside the guest (read-only).
+	// config files (gitconfig, SSH material, tool configs).
+	// Overlay mode: attached as /dev/vdd.  Legacy mode: attached as /dev/vdc.
 	HostConfigDrive string
 }
 
@@ -45,7 +69,8 @@ type SpawnSpec struct {
 type Instance struct {
 	WorkspaceID    string
 	WorkDir        string
-	WorkspaceImage string
+	WorkspaceImage string // writable image: overlay in overlay mode, full image in legacy mode
+	BaseImage      string // shared read-only base image path (overlay mode only; empty in legacy)
 	APISocket      string
 	VSockPath      string
 	SerialLog      string
@@ -62,6 +87,9 @@ type ManagerConfig struct {
 	KernelPath     string
 	RootFSPath     string
 	WorkDirRoot    string
+	// BasesDir is where shared per-repo base images are cached.
+	// When non-empty, overlay mode is used for new workspaces.
+	BasesDir string
 }
 
 // APIClientFactory creates API clients for instances.
@@ -197,23 +225,25 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	// Phase 2: Slow I/O — all of this runs WITHOUT the global mutex.
 	workDir := filepath.Join(m.config.WorkDirRoot, spec.WorkspaceID)
 
-	var projectSizeBytes int64
-	if strings.TrimSpace(spec.SnapshotID) != "" {
-		snapPath := m.snapshotImagePath(spec.SnapshotID)
-		info, statErr := os.Stat(snapPath)
+	// Disk-space pre-flight: estimate how much space we need.
+	const miB = int64(1024 * 1024)
+	const overlayReserve = 512 * miB // just the sparse overlay header
+	var neededBytes int64
+	if spec.BasesDir != "" {
+		neededBytes = overlayReserve // overlay itself is sparse; base is shared
+	} else if strings.TrimSpace(spec.SnapshotID) != "" {
+		info, statErr := os.Stat(m.snapshotImagePath(spec.SnapshotID))
 		if statErr != nil {
 			return nil, fmt.Errorf("stat snapshot image: %w", statErr)
 		}
-		projectSizeBytes = info.Size()
+		neededBytes = info.Size() + 512*miB
 	} else {
 		size, sizeErr := directorySizeBytes(spec.ProjectRoot)
 		if sizeErr != nil {
 			return nil, fmt.Errorf("compute project size: %w", sizeErr)
 		}
-		projectSizeBytes = size
+		neededBytes = workspaceImageSizeBytes(size) + 512*miB
 	}
-	const miB = int64(1024 * 1024)
-	neededBytes := workspaceImageSizeBytes(projectSizeBytes) + 512*miB
 	if err := checkDiskSpace(m.config.WorkDirRoot, neededBytes); err != nil {
 		return nil, fmt.Errorf("insufficient disk space for workspace: %w", err)
 	}
@@ -225,45 +255,67 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	apiSocket := filepath.Join(workDir, "firecracker.sock")
 	vsockPath := filepath.Join(workDir, "vsock.sock")
 	serialLog := filepath.Join(workDir, "firecracker.log")
-	workspaceImagePath := filepath.Join(workDir, "workspace.ext4")
+	workspaceImagePath := filepath.Join(workDir, "workspace.ext4")         // legacy path
+	workspaceOverlayPath := filepath.Join(workDir, "workspace-overlay.ext4") // overlay mode
 
-	// Derive a tap name for this workspace and create it on the host bridge.
+	// Derive a workspace-scoped tap name (used as registry key and for logging).
+	// The actual TAP device inside the VM's user netns is always "tap0".
 	tap := tapNameForWorkspace(spec.WorkspaceID)
 	mac := guestMAC(cid)
-	hostIP := bridgeGatewayIP()
-	subnetCIDR := guestSubnetCIDR()
 
-	if err := setupTAP(tap, hostIP, subnetCIDR); err != nil {
-		os.RemoveAll(workDir)
-		return nil, fmt.Errorf("failed to setup tap %s: %w", tap, err)
-	}
+	// Overlay mode: build/cache the shared base once, then create a thin per-workspace overlay.
+	// Legacy mode: build a full workspace image from the project root.
+	overlayMode := spec.BasesDir != ""
+	var baseImagePath string // only set in overlay mode
 
-	if strings.TrimSpace(spec.SnapshotID) != "" {
+	if overlayMode {
+		bp, err := EnsureBaseImage(spec.ProjectRoot, spec.BasesDir)
+		if err != nil {
+			os.RemoveAll(workDir)
+			return nil, fmt.Errorf("ensure base image: %w", err)
+		}
+		baseImagePath = bp
+
+		if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
+			// Fork path: seed from parent's overlay snapshot (inherits all parent writes).
+			if err := copyFile(m.snapshotImagePath(snapID), workspaceOverlayPath); err != nil {
+				os.RemoveAll(workDir)
+				return nil, fmt.Errorf("restore overlay from fork snapshot: %w", err)
+			}
+		} else {
+			// Fresh workspace: empty sparse overlay (seconds to create).
+			if err := createWorkspaceOverlay(workspaceOverlayPath); err != nil {
+				os.RemoveAll(workDir)
+				return nil, fmt.Errorf("create workspace overlay: %w", err)
+			}
+		}
+	} else if strings.TrimSpace(spec.SnapshotID) != "" {
 		if err := copyFile(m.snapshotImagePath(spec.SnapshotID), workspaceImagePath); err != nil {
-			teardownTAP(tap, subnetCIDR)
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("failed to restore workspace image from snapshot: %w", err)
 		}
 	} else {
 		if err := workspaceImageBuilderFunc(spec.ProjectRoot, workspaceImagePath); err != nil {
-			teardownTAP(tap, subnetCIDR)
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("failed to build workspace image: %w", err)
 		}
 	}
 
-	// Launch Firecracker directly in the host network namespace.
-	// The tap device was created on the host, so Firecracker opens it by name
-	// without any namespace wrapper — no EBUSY.
+	// Launch Firecracker. tapPrepareFunc may configure a user+network namespace
+	// so that Firecracker can create its own TAP device without host privileges.
 	cmd := exec.Command(
 		m.config.FirecrackerBin,
 		"--api-sock", apiSocket,
 		"--id", spec.WorkspaceID,
 	)
 	cmd.Dir = workDir
+
+	// Let the networking backend prepare the Firecracker command (e.g. set
+	// CLONE_NEWUSER | CLONE_NEWNET so it gets its own unprivileged netns).
+	tapPrepareFunc(tap, cmd)
+
 	logFile, err := os.OpenFile(serialLog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		teardownTAP(tap, subnetCIDR)
 		os.RemoveAll(workDir)
 		return nil, fmt.Errorf("failed to create firecracker log file: %w", err)
 	}
@@ -272,17 +324,25 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
-		teardownTAP(tap, subnetCIDR)
 		os.RemoveAll(workDir)
 		return nil, fmt.Errorf("failed to start firecracker: %w", err)
 	}
 	_ = logFile.Close()
 
+	firecrackerPid := cmd.Process.Pid
 	pidPath := filepath.Join(workDir, "firecracker.pid")
-	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0o600)
+	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(firecrackerPid)), 0o600)
+
+	// Attach userspace networking (slirp4netns or legacy tap-helper) AFTER
+	// Firecracker starts, since slirp4netns needs the process PID to locate
+	// its network namespace.
+	if err := tapAttachFunc(spec.WorkspaceID, firecrackerPid, workDir, cid); err != nil {
+		m.cleanup(workDir, cmd.Process)
+		return nil, fmt.Errorf("failed to attach network for %s: %w", tap, err)
+	}
 
 	if err := m.waitForAPISocket(ctx, apiSocket); err != nil {
-		teardownTAP(tap, subnetCIDR)
+		tapNetTeardownFunc(spec.WorkspaceID)
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to wait for API socket: %w", err)
 	}
@@ -295,18 +355,20 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		"smt":               false,
 		"track_dirty_pages": false,
 	}
+	netTeardown := func() { tapNetTeardownFunc(spec.WorkspaceID) }
+
 	if err := client.put(ctx, "/machine-config", machineConfig); err != nil {
-		teardownTAP(tap, subnetCIDR)
+		netTeardown()
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to configure machine: %w", err)
 	}
 
 	bootSource := map[string]any{
 		"kernel_image_path": m.config.KernelPath,
-		"boot_args":         defaultFirecrackerBootArgs(),
+		"boot_args":         defaultFirecrackerBootArgs(overlayMode),
 	}
 	if err := client.put(ctx, "/boot-source", bootSource); err != nil {
-		teardownTAP(tap, subnetCIDR)
+		netTeardown()
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to configure boot source: %w", err)
 	}
@@ -318,24 +380,54 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		"is_read_only":   false,
 	}
 	if err := client.put(ctx, "/drives/rootfs", driveConfig); err != nil {
-		teardownTAP(tap, subnetCIDR)
+		netTeardown()
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to configure drive: %w", err)
 	}
 
-	workspaceDriveConfig := map[string]any{
-		"drive_id":       "workspace",
-		"path_on_host":   "workspace.ext4",
-		"is_root_device": false,
-		"is_read_only":   false,
-	}
-	if err := client.put(ctx, "/drives/workspace", workspaceDriveConfig); err != nil {
-		teardownTAP(tap, subnetCIDR)
-		m.cleanup(workDir, cmd.Process)
-		return nil, fmt.Errorf("failed to configure workspace drive: %w", err)
+	if overlayMode {
+		// Overlay mode:
+		//   /dev/vdb = shared base image (read-only, contains repo files)
+		//   /dev/vdc = per-workspace overlay (read-write, sparse, only writes)
+		//   /dev/vdd = host config drive (if present)
+		baseDrive := map[string]any{
+			"drive_id":       "workspace_base",
+			"path_on_host":   baseImagePath,
+			"is_root_device": false,
+			"is_read_only":   true,
+		}
+		if err := client.put(ctx, "/drives/workspace_base", baseDrive); err != nil {
+			netTeardown()
+			m.cleanup(workDir, cmd.Process)
+			return nil, fmt.Errorf("failed to configure base drive: %w", err)
+		}
+		overlayDrive := map[string]any{
+			"drive_id":       "workspace_overlay",
+			"path_on_host":   "workspace-overlay.ext4",
+			"is_root_device": false,
+			"is_read_only":   false,
+		}
+		if err := client.put(ctx, "/drives/workspace_overlay", overlayDrive); err != nil {
+			netTeardown()
+			m.cleanup(workDir, cmd.Process)
+			return nil, fmt.Errorf("failed to configure overlay drive: %w", err)
+		}
+	} else {
+		// Legacy mode: /dev/vdb = full workspace image (read-write)
+		workspaceDriveConfig := map[string]any{
+			"drive_id":       "workspace",
+			"path_on_host":   "workspace.ext4",
+			"is_root_device": false,
+			"is_read_only":   false,
+		}
+		if err := client.put(ctx, "/drives/workspace", workspaceDriveConfig); err != nil {
+			netTeardown()
+			m.cleanup(workDir, cmd.Process)
+			return nil, fmt.Errorf("failed to configure workspace drive: %w", err)
+		}
 	}
 
-	// Optional host config drive (/dev/vdc inside the guest).
+	// Host config drive: /dev/vdd in overlay mode, /dev/vdc in legacy mode.
 	if spec.HostConfigDrive != "" {
 		cfgDrive := map[string]any{
 			"drive_id":       "hostconfig",
@@ -348,14 +440,16 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		}
 	}
 
-	// Configure network interface: Firecracker opens the host tap by name.
+	// Configure network interface: Firecracker opens the tap by name.
+	// In rootless (slirp4netns) mode this is always "tap0" inside the VM's own
+	// netns; in legacy mode it is the host-side tap name.
 	netIfaceConfig := map[string]any{
 		"iface_id":      "eth0",
-		"host_dev_name": tap,
+		"host_dev_name": tapHostDevNameFunc(tap),
 		"guest_mac":     mac,
 	}
 	if err := client.put(ctx, "/network-interfaces/eth0", netIfaceConfig); err != nil {
-		teardownTAP(tap, subnetCIDR)
+		netTeardown()
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to configure network interface: %w", err)
 	}
@@ -368,7 +462,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		"uds_path": "vsock.sock",
 	}
 	if err := client.put(ctx, "/vsock", vsockConfig); err != nil {
-		teardownTAP(tap, subnetCIDR)
+		netTeardown()
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to configure vsock: %w", err)
 	}
@@ -377,7 +471,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		"action_type": "InstanceStart",
 	}
 	if err := client.put(ctx, "/actions", action); err != nil {
-		teardownTAP(tap, subnetCIDR)
+		netTeardown()
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("failed to start instance: %w", err)
 	}
@@ -401,18 +495,32 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		}
 	}
 
+	// Prefer the host-accessible SSH target from slirp4netns port forwarding.
+	// Falls back to the VM's actual IP (only reachable inside the namespace).
+	guestIPOrTarget := getSlirpSSHTarget(spec.WorkspaceID)
+	if guestIPOrTarget == "" {
+		guestIPOrTarget = guestIPForCID(cid)
+	}
+
+	// In overlay mode the writable image is the overlay; in legacy it's the full workspace image.
+	activeImage := workspaceImagePath
+	if overlayMode {
+		activeImage = workspaceOverlayPath
+	}
+
 	inst := &Instance{
 		WorkspaceID:    spec.WorkspaceID,
 		WorkDir:        workDir,
-		WorkspaceImage: workspaceImagePath,
+		WorkspaceImage: activeImage,
+		BaseImage:      baseImagePath, // non-empty only in overlay mode
 		APISocket:      apiSocket,
 		VSockPath:      vsockPath,
 		SerialLog:      serialLog,
 		CID:            cid,
 		Process:        cmd.Process,
 		TAPName:        tap,
-		GuestIP:        "", // assigned by DHCP at boot
-		HostIP:         hostIP,
+		GuestIP:        guestIPOrTarget,
+		HostIP:         bridgeGatewayIP(),
 	}
 
 	// Phase 3: Re-acquire mutex to register the instance.
@@ -421,7 +529,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	m.mu.Lock()
 	if _, exists := m.instances[spec.WorkspaceID]; exists {
 		m.mu.Unlock()
-		teardownTAP(tap, subnetCIDR)
+		netTeardown()
 		m.cleanup(workDir, cmd.Process)
 		return nil, fmt.Errorf("workspace already exists: %s", spec.WorkspaceID)
 	}
@@ -432,17 +540,17 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 // defaultFirecrackerBootArgs returns the kernel command line for a VM.
 // If NEXUS_FIRECRACKER_BOOT_ARGS is set, it is returned verbatim.
-// Otherwise a standard set is generated. Guest networking is configured
-// by udhcpc (DHCP) inside the VM — no static ip= kernel argument.
-//
-// init= tells the kernel to launch our agent directly instead of the rootfs's
-// default init. This means we never need to patch /sbin/init in the rootfs
-// image (adopted from forgevm).
-func defaultFirecrackerBootArgs() string {
+// When overlayMode is true, "nexus.overlay=1" is appended so the agent
+// sets up overlayfs instead of mounting /dev/vdb directly.
+func defaultFirecrackerBootArgs(overlayMode bool) string {
 	if raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_BOOT_ARGS")); raw != "" {
 		return raw
 	}
-	return "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/usr/local/bin/nexus-firecracker-agent"
+	base := "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/usr/local/bin/nexus-firecracker-agent"
+	if overlayMode {
+		base += " nexus.overlay=1"
+	}
+	return base
 }
 
 // waitForAPISocket polls for the API socket to exist with the given context.
@@ -498,10 +606,8 @@ func (m *Manager) Stop(ctx context.Context, workspaceID string) error {
 		}
 	}
 
-	// Teardown the tap device after the VM exits.
-	if inst.TAPName != "" {
-		teardownTAP(inst.TAPName, guestSubnetCIDR())
-	}
+	// Teardown the network backend after the VM exits.
+	tapNetTeardownFunc(workspaceID)
 
 	os.RemoveAll(inst.WorkDir)
 
@@ -525,7 +631,6 @@ func (m *Manager) CleanupWorkspaceByID(ctx context.Context, workspaceID string) 
 	}
 
 	workDir := filepath.Join(m.config.WorkDirRoot, workspaceID)
-	tap := tapNameForWorkspace(workspaceID)
 
 	pid := 0
 	if data, err := os.ReadFile(filepath.Join(workDir, "firecracker.pid")); err == nil {
@@ -542,7 +647,7 @@ func (m *Manager) CleanupWorkspaceByID(ctx context.Context, workspaceID string) 
 		}
 	}
 
-	teardownTAP(tap, guestSubnetCIDR())
+	tapNetTeardownFunc(workspaceID)
 	if err := os.RemoveAll(workDir); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -625,7 +730,6 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, liveWorkspaceIDs map[str
 		}
 
 		workDir := filepath.Join(m.config.WorkDirRoot, wsID)
-		tap := tapNameForWorkspace(wsID)
 
 		pidData, readErr := os.ReadFile(filepath.Join(workDir, "firecracker.pid"))
 		pid := 0
@@ -649,7 +753,7 @@ func (m *Manager) ReconcileOrphans(ctx context.Context, liveWorkspaceIDs map[str
 			}
 		}
 
-		teardownTAP(tap, guestSubnetCIDR())
+		tapNetTeardownFunc(wsID)
 		if removeErr := os.RemoveAll(workDir); removeErr != nil {
 			log.Printf("firecracker reconcile: remove workdir %s: %v", workDir, removeErr)
 		} else {

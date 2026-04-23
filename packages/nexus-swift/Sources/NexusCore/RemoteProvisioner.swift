@@ -10,14 +10,16 @@ import os
 ///   1. SSH: check if daemon is already running (fast-path)
 ///   2. SSH: check if nexus binary exists
 ///   3. If missing: upload the bundled Linux binary via stdin pipe
-///   4. SSH: launch `nexus daemon start` in background with a persistent SSH agent
-///   5. Poll daemon healthz (locally via SSH) until ready or timeout
+///   4. SSH: launch `nexus daemon start --json` — emits structured phase events
+///   5. Parse rootless bootstrap phases: preflight → asset-install → runtime-verify → daemon-launch
+///   6. Poll daemon healthz until ready or timeout
 public actor RemoteProvisioner {
     /// Progress step reported to the UI during provisioning.
     public enum Step: Sendable, Equatable {
         case checkingHost
         case uploadingBinary(progress: Double)  // 0.0–1.0
         case startingDaemon
+        case bootstrapPhase(phase: String, message: String)
         case waitingForDaemon(attempt: Int)
         case ready
     }
@@ -28,7 +30,6 @@ public actor RemoteProvisioner {
     private let logger = Logger(subsystem: "com.nexus.NexusApp", category: "RemoteProvisioner")
 
     /// Minimum daemon version we require on the remote.
-    /// Change this to force re-upload when a breaking change is released.
     static let minimumVersion = "0.0.1"
 
     public init(profile: DaemonProfile) {
@@ -63,9 +64,9 @@ public actor RemoteProvisioner {
             logger.info("provision: nexus binary already present on \(sshTarget, privacy: .public)")
         }
 
-        // ── 3. Start daemon ──
+        // ── 3. Start daemon with rootless bootstrap (streaming --json events) ──
         await progress?(.startingDaemon)
-        try await startDaemon(sshTarget: sshTarget)
+        try await startDaemonWithPhaseEvents(sshTarget: sshTarget, progress: progress)
 
         // ── 4. Poll until daemon healthz responds ──────────────────────────────
         try await waitForDaemon(sshTarget: sshTarget, progress: progress)
@@ -91,9 +92,6 @@ public actor RemoteProvisioner {
     }
 
     /// Uploads the bundled Linux nexus binary to the remote via SSH stdin pipe.
-    ///
-    /// We stream from the local app bundle to the remote over the existing SSH connection
-    /// — no scp daemon or agent forwarding required, just `ssh user@host 'cat > file'`.
     private func uploadNexusBinary(sshTarget: String, progress: ProgressHandler?) async throws {
         guard let binaryURL = bundledLinuxBinary() else {
             throw ProvisionError.bundledBinaryMissing
@@ -103,8 +101,6 @@ public actor RemoteProvisioner {
         logger.info("provision: uploading \(binaryURL.lastPathComponent, privacy: .public) (\(totalBytes, privacy: .public) bytes) to \(sshTarget, privacy: .public)")
         await progress?(.uploadingBinary(progress: 0.0))
 
-        // Stream the binary over SSH stdin: `ssh user@host 'bash -c ...'` reads
-        // the nexus binary from stdin and atomically installs it.
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         proc.arguments = buildSSHArgs(sshTarget: sshTarget) + [
@@ -129,7 +125,6 @@ public actor RemoteProvisioner {
 
         try proc.run()
 
-        // Stream the binary from the bundle to SSH stdin
         let fileHandle = try FileHandle(forReadingFrom: binaryURL)
         defer { try? fileHandle.close() }
 
@@ -162,16 +157,15 @@ public actor RemoteProvisioner {
         await progress?(.uploadingBinary(progress: 1.0))
     }
 
-    /// Launch `nexus daemon start` on the remote host, detached from SSH.
+    /// Launch `nexus daemon start --json` on the remote host and parse phase events.
     ///
-    /// Before starting the daemon, we ensure a persistent SSH agent is running on
-    /// the remote host and its socket path is persisted to
-    /// `~/.local/state/nexus/ssh-agent.env`.  The daemon inherits `SSH_AUTH_SOCK`
-    /// so it can forward the agent for git-over-SSH operations.
+    /// Phase events from the rootless bootstrap are emitted as JSON lines:
+    /// `{"phase":"preflight","status":"ok","message":"KVM accessible"}`
     ///
-    /// Uses `nohup ... &` so the daemon outlives the SSH session.
-    private func startDaemon(sshTarget: String) async throws {
+    /// The daemon runs in background (nohup &) after the bootstrap phases complete.
+    private func startDaemonWithPhaseEvents(sshTarget: String, progress: ProgressHandler?) async throws {
         let remotePort = profile.port
+
         let cmd = """
             set -euo pipefail
             export PATH="$HOME/.local/bin:$PATH"
@@ -179,17 +173,11 @@ public actor RemoteProvisioner {
             LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nexus"
             mkdir -p "$LOG_DIR"
 
-            # ── Persistent SSH agent ──────────────────────────────────────────────
-            # We store the agent socket path so the daemon always has SSH_AUTH_SOCK
-            # set, enabling git-over-SSH inside workspaces.
+            # ── SSH agent ──────────────────────────────────────────────────────
             AGENT_ENV="$LOG_DIR/ssh-agent.env"
-
-            # Try to reuse a previously started agent.
             if [ -f "$AGENT_ENV" ]; then
               . "$AGENT_ENV" 2>/dev/null || true
             fi
-
-            # Start a new agent if the current one is dead or missing.
             if [ -z "${SSH_AUTH_SOCK:-}" ] || ! ssh-add -l >/dev/null 2>&1; then
               eval "$(ssh-agent -s)" >/dev/null
               printf 'SSH_AUTH_SOCK=%s\\nexport SSH_AUTH_SOCK\\nSSH_AGENT_PID=%s\\nexport SSH_AGENT_PID\\n' \\
@@ -197,33 +185,89 @@ public actor RemoteProvisioner {
             fi
             export SSH_AUTH_SOCK SSH_AGENT_PID
 
-            # ── Guard: already running? ────────────────────────────────────────────
+            # ── Guard: already running? ────────────────────────────────────────
             if curl -sf --max-time 2 http://127.0.0.1:\(remotePort)/healthz >/dev/null 2>&1; then
-              echo already-running
+              echo '{"phase":"daemon-launch","status":"ok","message":"already-running"}'
               exit 0
             fi
 
-            # ── Launch daemon ─────────────────────────────────────────────────────
+            # ── Run rootless bootstrap + launch daemon ─────────────────────────
             SSH_AUTH_SOCK="$SSH_AUTH_SOCK" \\
               nohup "$NEXUS" daemon start \\
+                --json \\
                 --network --bind 127.0.0.1 --port \(remotePort) \\
                 >>"$LOG_DIR/provision.log" 2>&1 &
             disown
-            echo started
+            echo '{"phase":"daemon-launch","status":"start","message":"started"}'
             """
-        let result = try runSSH(sshTarget: sshTarget, command: cmd)
-        let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
-        logger.info("provision: start daemon result: \(trimmed, privacy: .public)")
-        if trimmed != "started" && trimmed != "already-running" {
-            throw ProvisionError.daemonStartFailed(message: trimmed)
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        proc.arguments = buildSSHArgs(sshTarget: sshTarget) + [sshTarget, cmd]
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
+
+        try proc.run()
+        proc.waitUntilExit()
+
+        let rawOut = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let rawErr = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+        // Parse JSON phase events and report progress
+        var encounteredError: String?
+        for line in rawOut.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if let event = parsePhaseEvent(trimmed) {
+                logger.info("provision: phase \(event.phase, privacy: .public) \(event.status, privacy: .public) \(event.message, privacy: .public)")
+                let msg = event.message.isEmpty ? event.phase : "\(event.phase): \(event.message)"
+                await progress?(.bootstrapPhase(phase: event.phase, message: msg))
+                if event.status == "error" {
+                    encounteredError = "provision_error.remote_daemon_start: \(event.phase) failed: \(event.message)"
+                }
+            }
+        }
+
+        if proc.terminationStatus != 0 {
+            let errMsg = rawErr.trimmingCharacters(in: .whitespacesAndNewlines)
+            logger.error("provision: daemon start failed status=\(proc.terminationStatus, privacy: .public) stderr=\(errMsg, privacy: .public)")
+            throw ProvisionError.daemonStartFailed(message: errMsg.isEmpty ? "exit \(proc.terminationStatus)" : errMsg)
+        }
+
+        if let err = encounteredError {
+            throw ProvisionError.daemonStartFailed(message: err)
         }
     }
 
+    private struct PhaseEvent: Decodable {
+        let phase: String
+        let status: String
+        let message: String
+
+        enum CodingKeys: String, CodingKey {
+            case phase, status, message
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            phase = try c.decode(String.self, forKey: .phase)
+            status = try c.decode(String.self, forKey: .status)
+            message = (try? c.decode(String.self, forKey: .message)) ?? ""
+        }
+    }
+
+    private func parsePhaseEvent(_ line: String) -> PhaseEvent? {
+        guard let data = line.data(using: .utf8),
+              let event = try? JSONDecoder().decode(PhaseEvent.self, from: data) else {
+            return nil
+        }
+        return event
+    }
+
     /// Poll the daemon's healthz endpoint via SSH until it responds 200 or we time out.
-    ///
-    /// Returns only when the daemon is provably accepting connections,
-    /// not just when the start command exits.
-    private func waitForDaemon(sshTarget: String, progress: ProgressHandler?, timeout: TimeInterval = 60) async throws {
+    private func waitForDaemon(sshTarget: String, progress: ProgressHandler?, timeout: TimeInterval = 120) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         var attempt = 0
 
@@ -236,7 +280,6 @@ public actor RemoteProvisioner {
                 return
             }
 
-            // Exponential backoff capped at 3s
             let delay = min(Double(attempt) * 0.5, 3.0)
             try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
@@ -246,11 +289,6 @@ public actor RemoteProvisioner {
 
     // MARK: - Binary bundling
 
-    /// Returns the URL of the bundled Linux nexus binary for the remote architecture.
-    ///
-    /// The binary is bundled in the app's Resources directory as `nexus-linux-amd64`
-    /// or `nexus-linux-arm64`, cross-compiled from source via
-    /// `scripts/swift/stage-linux-nexus.sh`.
     private func bundledLinuxBinary() -> URL? {
         let candidates = ["nexus-linux-amd64", "nexus-linux-arm64"]
         for name in candidates {
@@ -258,13 +296,12 @@ public actor RemoteProvisioner {
                 return url
             }
         }
-        // Development fallback: look in the repo build output.
         for name in candidates {
             let devPath = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()  // NexusCore/
-                .deletingLastPathComponent()  // Sources/
-                .deletingLastPathComponent()  // nexus-swift/
-                .deletingLastPathComponent()  // packages/
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
                 .appendingPathComponent("packages/nexus-swift/Resources/\(name)")
             if FileManager.default.fileExists(atPath: devPath.path) {
                 logger.info("provision: using dev binary at \(devPath.path, privacy: .public)")

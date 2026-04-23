@@ -325,6 +325,9 @@ private struct WorkspaceContextMenu: View {
         case .stopped, .created:
             Button("Start") { Task { await appState.start(workspace) } }
                 .disabled(isBusy)
+        case .starting:
+            Button("Starting…") { }
+                .disabled(true)
         case .running, .restored:
             Button("Stop") { Task { await appState.stop(workspace) } }
                 .disabled(isBusy)

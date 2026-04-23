@@ -55,6 +55,7 @@ enum Theme {
     static func statusColor(_ s: WorkspaceStatus) -> Color {
         switch s {
         case .running, .restored: return green
+        case .starting:           return orange
         case .paused:             return orange
         case .stopped, .created:  return Color(nsColor: .tertiaryLabelColor)
         }
