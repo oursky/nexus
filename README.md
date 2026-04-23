@@ -30,10 +30,22 @@ curl -fsSL https://raw.githubusercontent.com/oursky/nexus/main/install.sh | sh
 
 This installs the `nexus` CLI and `nexus-daemon` binaries for your platform.
 
+## Linux Host Prerequisites
+
+Run this **once** on your Linux host before starting the daemon. It creates a
+200 GiB sparse XFS volume that nexus uses for instant copy-on-write workspace
+clones (actual disk usage only grows as you write data):
+
+```bash
+sudo bash -c "mkdir -p /data && truncate -s 200G /data/nexus.img && mkfs.xfs /data/nexus.img && mkdir -p /data/nexus && mount -o loop /data/nexus.img /data/nexus && chown $(id -u):$(id -g) /data/nexus && echo '/data/nexus.img /data/nexus xfs loop,defaults 0 0' >> /etc/fstab"
+```
+
+> This mounts at `/data/nexus` and persists across reboots via `/etc/fstab`.
+
 ## Quick Start
 
 ```bash
-# On your Linux host — start the daemon
+# On your Linux host — start the daemon (requires the XFS step above first)
 nexus daemon start
 
 # On your Mac — connect to it

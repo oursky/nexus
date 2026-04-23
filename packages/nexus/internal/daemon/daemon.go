@@ -110,7 +110,12 @@ func New(cfg Config) (*Daemon, error) {
 			db.Close()
 			return nil, err
 		}
-		fcDriver = buildFirecrackerDriver(cfg)
+		var fcErr error
+		fcDriver, fcErr = buildFirecrackerDriver(cfg)
+		if fcErr != nil {
+			db.Close()
+			return nil, fmt.Errorf("firecracker: %w", fcErr)
+		}
 		if err := fcDriver.CleanupStaleInstances(context.Background()); err != nil {
 			log.Printf("daemon: firecracker stale cleanup warning: %v", err)
 		}
@@ -122,7 +127,7 @@ func New(cfg Config) (*Daemon, error) {
 		log.Printf("daemon: sandbox (process) runtime driver wired")
 	}
 
-	wsSvc := appworkspace.NewService(wsStore, projStore, rtDriver)
+	wsSvc := appworkspace.NewService(wsStore, projStore, rtDriver, context.Background())
 
 	spotlightOpts := []appspotlight.Option{}
 	if fcDriver != nil {
@@ -181,8 +186,9 @@ func New(cfg Config) (*Daemon, error) {
 }
 
 // reconcileFirecrackerWorkspaceStates prevents stale DB state after daemon
-// restarts: if runtime instances are cleaned up, mark previously "running"
-// Firecracker workspaces as stopped so callers trigger a real start path.
+// restarts: if runtime instances are cleaned up, mark previously "running" or
+// "starting" Firecracker workspaces as stopped/created so callers trigger a
+// real start path.
 func reconcileFirecrackerWorkspaceStates(ctx context.Context, wsStore *store.WorkspaceStore) {
 	all, err := wsStore.List(ctx)
 	if err != nil {
@@ -193,10 +199,18 @@ func reconcileFirecrackerWorkspaceStates(ctx context.Context, wsStore *store.Wor
 		if ws == nil {
 			continue
 		}
-		if ws.Backend != "firecracker" || ws.State != domainws.StateRunning {
+		if ws.Backend != "firecracker" {
 			continue
 		}
-		ws.State = domainws.StateStopped
+		switch ws.State {
+		case domainws.StateRunning:
+			ws.State = domainws.StateStopped
+		case domainws.StateStarting:
+			// Start was interrupted mid-flight; reset so user can retry.
+			ws.State = domainws.StateCreated
+		default:
+			continue
+		}
 		ws.UpdatedAt = time.Now().UTC()
 		if err := wsStore.Update(ctx, ws); err != nil {
 			log.Printf("daemon: workspace state reconcile %s: %v", ws.ID, err)
@@ -244,17 +258,53 @@ func (d *Daemon) Stop() error {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func buildFirecrackerDriver(cfg Config) *firecracker.FCDriver {
-	type runner struct{}
-	// CommandRunner is satisfied by a local exec-based runner.
-	// This wraps exec.CommandContext inline.
+func buildFirecrackerDriver(cfg Config) (*firecracker.FCDriver, error) {
+	// Both firecracker-vms and firecracker-bases must live on the same XFS
+	// volume so that cp --reflink=always works across them.
+	dataDir := nexusDataVolumeDir()
+	fsType := firecracker.FilesystemType(dataDir)
+	if !firecracker.ReflinkAvailable(dataDir) {
+		return nil, fmt.Errorf(
+			"data volume at %s is %q — nexus requires XFS for reflink workspace clones.\n"+
+				"See the Linux host prerequisites in the README, or set NEXUS_DATA_DIR to an XFS path.",
+			dataDir, fsType,
+		)
+	}
+	log.Printf("daemon: data volume %s (%s) — XFS reflink mode (O(1) workspace clones)", dataDir, fsType)
+
+	workDirRoot := cfg.WorkDirRoot
+	if workDirRoot == "" {
+		workDirRoot = filepath.Join(dataDir, "firecracker-vms")
+	}
+	basesDir := filepath.Join(dataDir, "firecracker-bases")
+
 	mgr := firecracker.NewManager(firecracker.ManagerConfig{
 		FirecrackerBin: orDefault(cfg.FirecrackerBin, "firecracker"),
 		KernelPath:     orDefault(cfg.KernelPath, os.Getenv("NEXUS_FIRECRACKER_KERNEL")),
 		RootFSPath:     orDefault(cfg.RootFSPath, os.Getenv("NEXUS_FIRECRACKER_ROOTFS")),
-		WorkDirRoot:    cfg.WorkDirRoot,
+		WorkDirRoot:    workDirRoot,
+		BasesDir:       basesDir,
 	})
-	return firecracker.New(execRunner{}, firecracker.WithManager(mgr))
+	return firecracker.New(execRunner{}, firecracker.WithManager(mgr), firecracker.WithBasesDir(basesDir)), nil
+}
+
+// nexusDataVolumeDir returns the directory used for Firecracker VM state and
+// base image cache. The directory must be on XFS for reflink support.
+//
+// Override via NEXUS_DATA_DIR env var or by mounting a volume at /data/nexus.
+func nexusDataVolumeDir() string {
+	if v := strings.TrimSpace(os.Getenv("NEXUS_DATA_DIR")); v != "" {
+		return v
+	}
+	const dedicated = "/data/nexus"
+	if fi, err := os.Stat(dedicated); err == nil && fi.IsDir() {
+		if f, err := os.CreateTemp(dedicated, ".nexus-probe-*"); err == nil {
+			f.Close()
+			os.Remove(f.Name())
+			return dedicated
+		}
+	}
+	return defaultDataDir()
 }
 
 // loadFirecrackerBridgeSubnet returns the bridge subnet CIDR.

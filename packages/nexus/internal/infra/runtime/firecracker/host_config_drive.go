@@ -118,7 +118,7 @@ func gatewayTempFile() (path string, cleanup func(), err error) {
 	if err != nil {
 		return "", func() {}, fmt.Errorf("create gateway temp file: %w", err)
 	}
-	gw := bridgeGatewayIP()
+	gw := vmNetworkGatewayIP()
 	if _, err := f.WriteString(gw + "\n"); err != nil {
 		f.Close()
 		os.Remove(f.Name())
@@ -189,6 +189,18 @@ func buildHostConfigDrive(home, destPath string) error {
 	add(home+"/.opencode/opencode.jsonc", ".opencode/opencode.jsonc")
 	add(home+"/.config/claude/credentials.json", ".config/claude/credentials.json")
 	add(home+"/.config/claude/settings.json", ".config/claude/settings.json")
+	add(home+"/.codex/auth.json", ".codex/auth.json")
+	add(home+"/.codex/config.json", ".codex/config.json")
+
+	// Collect AI/LLM API keys from the daemon's environment and write them to
+	// a .nexus-env file.  The guest agent sources this in /root/.profile so
+	// every shell inside the VM has the keys available without extra login steps.
+	if envContent := buildAPIKeyEnvFile(); envContent != "" {
+		if envPath, cleanup, err := writeTempFileForConfigDrive("nexus-env-*", []byte(envContent)); err == nil {
+			defer cleanup()
+			files = append(files, entry{envPath, ".nexus-env"})
+		}
+	}
 
 	// Host DNS resolver config so the guest can use the same upstream DNS
 	// servers (important in networks where public DNS is blocked).
@@ -241,4 +253,43 @@ func buildHostConfigDrive(home, destPath string) error {
 	}
 
 	return nil
+}
+
+// buildAPIKeyEnvFile collects AI/LLM API keys and tool tokens from the current
+// process environment and returns a shell-sourceable export string.
+// Only well-known, safe-to-forward variables are included.
+func buildAPIKeyEnvFile() string {
+	// Known AI/LLM API keys and tool auth tokens worth forwarding.
+	known := []string{
+		"OPENAI_API_KEY",
+		"ANTHROPIC_API_KEY",
+		"GEMINI_API_KEY",
+		"GOOGLE_API_KEY",
+		"GOOGLE_GENERATIVE_AI_API_KEY",
+		"MISTRAL_API_KEY",
+		"GROQ_API_KEY",
+		"COHERE_API_KEY",
+		"XAI_API_KEY",
+		"OPENROUTER_API_KEY",
+		"AZURE_OPENAI_API_KEY",
+		"AZURE_OPENAI_ENDPOINT",
+		"AWS_ACCESS_KEY_ID",
+		"AWS_SECRET_ACCESS_KEY",
+		"AWS_DEFAULT_REGION",
+		"GITHUB_TOKEN",
+		"GH_TOKEN",
+	}
+
+	var lines []string
+	for _, key := range known {
+		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
+			// Shell-quote the value: wrap in single quotes, escape embedded singles.
+			escaped := strings.ReplaceAll(val, "'", "'\\''")
+			lines = append(lines, fmt.Sprintf("export %s='%s'", key, escaped))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n") + "\n"
 }

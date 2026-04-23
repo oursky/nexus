@@ -255,6 +255,12 @@ func ensureRootIdentityEnv(env []string) []string {
 	env = ensureEnvVar(env, "HOME", "/root")
 	env = ensureEnvVar(env, "USER", "root")
 	env = ensureEnvVar(env, "LOGNAME", "root")
+	// Default TERM to xterm-256color so TUI apps (opencode, etc.) render
+	// correctly.  The value is overridden by whatever the connecting client
+	// sends in the PTY env, so interactive sessions from the Mac app get the
+	// right TERM automatically.
+	env = ensureEnvVar(env, "TERM", "xterm-256color")
+	env = ensureEnvVar(env, "COLORTERM", "truecolor")
 	return env
 }
 
@@ -513,10 +519,31 @@ func handleShellClose(req execRequest, encoder *json.Encoder) {
 }
 
 func main() {
-	emitDiagnostic("agent boot pid=%d", os.Getpid())
+	pid := os.Getpid()
+	emitDiagnostic("agent boot pid=%d", pid)
 
-	bootstrapGuestEnvironment(os.Getpid())
+	bootstrapGuestEnvironment(pid)
 	startSSHAgentProxy()
+
+	// Install the OS developer toolchain synchronously before accepting PTY
+	// connections.  The workspace stays in "starting" state on the host side
+	// until we open the vsock listener, so the user never lands in a shell
+	// without make/node/docker available.
+	//
+	// On subsequent boots the stamp file makes this a no-op (<1 s).
+	ensureGuestBasePackages()
+	// CLI tools (opencode/codex/claude) can install in the background — they
+	// are not required before a user can open a terminal.
+	go ensureGuestCLITools()
+	// Docker daemon also starts in the background.
+	if pid == 1 {
+		go func() {
+			if err := ensureDockerDaemon(); err != nil {
+				emitDiagnostic("agent docker daemon setup failed (non-fatal): %v", err)
+			}
+		}()
+	}
+
 	go startSpotlightListener()
 
 	listener, transport, err := resolveListener()
@@ -646,7 +673,7 @@ func bootstrapGuestEnvironment(pid int) {
 		emitDiagnostic("agent workspace mounted")
 	}
 
-	// Mount the host config drive (/dev/vdc) if present and apply configs.
+	// Mount the host config drive and apply configs.
 	if err := applyHostConfigDrive(); err != nil {
 		emitDiagnostic("agent host config drive (non-fatal): %v", err)
 	} else {
@@ -666,23 +693,14 @@ func bootstrapGuestEnvironment(pid int) {
 	setupDNSFunc()
 	emitDiagnostic("agent dns configured")
 
-	// Install CLI tools in the background so boot/PTY readiness is not blocked
-	// on npm network operations (which can also fill the rootfs if run synchronously).
-	go ensureGuestCLITools()
-
-	if pid == 1 {
-		if err := ensureDockerDaemon(); err != nil {
-			emitDiagnostic("agent docker daemon setup failed (non-fatal): %v", err)
-		}
-	}
 }
 
-const hostConfigDevice = "/dev/vdc"
 const hostConfigMount = "/run/nexus-host"
 
-// applyHostConfigDrive mounts the host config ext4 image (attached as
-// /dev/vdc) at /run/nexus-host and copies known config files into place.
+// applyHostConfigDrive mounts the host config ext4 image at /run/nexus-host
+// and copies known config files into place. The config drive is always /dev/vdc.
 func applyHostConfigDrive() error {
+	const hostConfigDevice = "/dev/vdc"
 	if _, err := os.Stat(hostConfigDevice); err != nil {
 		return nil // drive not attached — nothing to do
 	}
@@ -713,9 +731,18 @@ func applyHostConfigDrive() error {
 		{".opencode/opencode.jsonc", "/root/.opencode/opencode.jsonc", 0o644},
 		{".config/claude/credentials.json", "/root/.config/claude/credentials.json", 0o600},
 		{".config/claude/settings.json", "/root/.config/claude/settings.json", 0o644},
+		// Codex CLI OAuth token.
+		{".codex/auth.json", "/root/.codex/auth.json", 0o600},
+		{".codex/config.json", "/root/.codex/config.json", 0o644},
 	}
 
+	// Ensure /root and /root/.ssh are owned by uid 0 (root). The rootfs may
+	// have been built by a non-root unsquashfs extraction which assigns the
+	// builder's UID to all files. SSHd refuses to honour authorized_keys
+	// inside a directory not owned by the authenticating user.
 	_ = os.MkdirAll("/root/.ssh", 0o700)
+	_ = os.Chown("/root", 0, 0)
+	_ = os.Chown("/root/.ssh", 0, 0)
 
 	for _, c := range copies {
 		src := filepath.Join(hostConfigMount, c.src)
@@ -735,15 +762,116 @@ func applyHostConfigDrive() error {
 	// Strip platform-specific credential helpers that won't work in the VM.
 	_ = exec.Command("git", "config", "--global", "--unset-all", "credential.helper").Run()
 
-	// Write SSH_AUTH_SOCK to profile so all shells pick it up.
-	profileLine := "\nexport SSH_AUTH_SOCK=/tmp/ssh-agent.sock\n"
+	// Write SSH_AUTH_SOCK and API key env vars to profile so all shells pick
+	// them up.  .nexus-env contains export statements for AI/LLM API keys
+	// collected from the daemon host's environment.
+	profileLines := "\nexport SSH_AUTH_SOCK=/tmp/ssh-agent.sock\n"
+	profileLines += "[ -f /run/nexus-host/.nexus-env ] && . /run/nexus-host/.nexus-env\n"
 	f, err := os.OpenFile("/root/.profile", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err == nil {
-		_, _ = f.WriteString(profileLine)
+		_, _ = f.WriteString(profileLines)
 		f.Close()
 	}
 
+	// Also source immediately into the current process environment so that
+	// docker, npm install, and background services inherit the keys.
+	if envData, err := os.ReadFile(filepath.Join(hostConfigMount, ".nexus-env")); err == nil {
+		for _, line := range strings.Split(string(envData), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "export ") {
+				continue
+			}
+			kv := strings.TrimPrefix(line, "export ")
+			idx := strings.IndexByte(kv, '=')
+			if idx < 0 {
+				continue
+			}
+			key := kv[:idx]
+			val := kv[idx+1:]
+			// Strip surrounding single quotes added by shell quoting.
+			if len(val) >= 2 && val[0] == '\'' && val[len(val)-1] == '\'' {
+				val = strings.ReplaceAll(val[1:len(val)-1], "'\\''", "'")
+			}
+			_ = os.Setenv(key, val)
+		}
+	}
+
 	return nil
+}
+
+// ensureGuestBasePackages installs the developer toolchain (make, nodejs, npm,
+// docker.io, build-essential) via apt-get inside the VM.  The VM is a real root
+// environment so apt-get works without any user-namespace restrictions.
+//
+// A stamp file in the rootfs (/var/lib/nexus-tools-installed) prevents
+// re-running on every workspace start — packages only install once per rootfs.
+func ensureGuestBasePackages() {
+	const stampFile = "/var/lib/nexus-tools-installed"
+	if _, err := os.Stat(stampFile); err == nil {
+		emitDiagnostic("agent base packages: already installed (stamp found)")
+		return
+	}
+
+	if _, err := exec.LookPath("apt-get"); err != nil {
+		emitDiagnostic("agent base packages: apt-get not found, skipping")
+		return
+	}
+
+	emitDiagnostic("agent base packages: installing (make, nodejs, npm, docker.io, build-essential)...")
+
+	pkgs := []string{
+		// apt-utils first so subsequent installs don't emit debconf warnings
+		// about delayed configuration, which causes a non-zero exit code.
+		"apt-utils",
+		"make",
+		"build-essential",
+		"nodejs",
+		"npm",
+		"docker.io",
+		"containerd",
+		"curl",
+		"wget",
+		"python3",
+		"python3-pip",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	env := append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+
+	// The rootfs has /etc/apt/apt.conf.d/99nexus-root which sets
+	// APT::Sandbox::User "root", and /tmp is a tmpfs with mode 1777, so
+	// no extra flags are needed here.
+	updateCmd := exec.CommandContext(ctx, "apt-get", "update", "-qq")
+	updateCmd.Env = env
+	if out, err := updateCmd.CombinedOutput(); err != nil {
+		emitDiagnostic("agent base packages: apt-get update failed: %v: %s", err, strings.TrimSpace(string(out)))
+		return
+	}
+
+	args := append([]string{"install", "-y", "-qq", "--no-install-recommends"}, pkgs...)
+	installCmd := exec.CommandContext(ctx, "apt-get", args...)
+	installCmd.Env = env
+	if out, err := installCmd.CombinedOutput(); err != nil {
+		outStr := strings.TrimSpace(string(out))
+		// debconf prints "delaying package configuration, since apt-utils is not
+		// installed" and exits 100 — but packages ARE installed. Treat this
+		// specific case as a warning since apt-utils is in our package list and
+		// will be present after the install completes.
+		isDebconfOnly := strings.Contains(outStr, "debconf: delaying package configuration") &&
+			!strings.Contains(outStr, "E: ") && !strings.Contains(outStr, "Err:")
+		if !isDebconfOnly {
+			emitDiagnostic("agent base packages: apt-get install failed: %v: %s", err, outStr)
+			return
+		}
+		emitDiagnostic("agent base packages: apt-get install warning (debconf): %s", outStr)
+	}
+
+	// Write stamp so subsequent boots skip this step.
+	_ = os.MkdirAll("/var/lib", 0o755)
+	_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
+	emitDiagnostic("agent base packages: installed successfully")
 }
 
 func ensureGuestCLITools() {
@@ -784,7 +912,7 @@ func ensureGuestCLITools() {
 		return
 	}
 
-	// Redirect npm cache to /workspace to avoid filling the small rootfs.
+	// Redirect npm cache off the rootfs to avoid filling it.
 	npmCacheDir := workspaceMountPoint + "/.npm-cache"
 	_ = os.MkdirAll(npmCacheDir, 0o755)
 
@@ -987,6 +1115,11 @@ func mountKernelFilesystems() {
 	_ = kernelMountFunc("proc", "/proc", "proc", 0, "")
 	_ = kernelMountFunc("sysfs", "/sys", "sysfs", 0, "")
 	_ = kernelMountFunc("devtmpfs", "/dev", "devtmpfs", 0, "")
+	// Mount tmpfs at /tmp with sticky bit so all users (including apt's _apt
+	// sandbox user) can create temp files.  Without this, apt-key fails trying
+	// to write to /tmp which is only 0755 in the base squashfs.
+	_ = kernelMkdirAll("/tmp", 0o1777)
+	_ = kernelMountFunc("tmpfs", "/tmp", "tmpfs", 0, "mode=1777")
 	mountCgroupFilesystems()
 }
 
@@ -1020,18 +1153,29 @@ func ensureDockerDaemon() error {
 		return nil
 	}
 
+	// Store Docker data in the workspace (native ext4, overlay2 works natively).
+	dataRoot := "/workspace/.nexus-docker"
+	execRoot := "/workspace/.nexus-docker-exec"
+
 	_ = os.Remove("/var/run/docker.pid")
-	if err := os.MkdirAll("/workspace/.nexus-docker", 0o755); err != nil {
+	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
 		return fmt.Errorf("mkdir docker data root: %w", err)
 	}
-	if err := os.MkdirAll("/workspace/.nexus-docker-exec", 0o755); err != nil {
+	if err := os.MkdirAll(execRoot, 0o755); err != nil {
 		return fmt.Errorf("mkdir docker exec root: %w", err)
 	}
 
+	// Firecracker's 5.10 kernel does not support nftables.  Ubuntu 24.04's
+	// default `iptables` binary is nftables-backed and will fail with
+	// "Failed to initialize nft: Protocol not supported".  Switch to
+	// iptables-legacy (which ships alongside iptables in the iptables package)
+	// so Docker can create its DOCKER NAT chain.
 	iptablesFlag := "--iptables=false"
-	if _, err := exec.LookPath("iptables-legacy"); err == nil {
-		iptablesFlag = "--iptables=true"
-	} else if _, err := exec.LookPath("iptables"); err == nil {
+	if legacyPath, err := exec.LookPath("iptables-legacy"); err == nil {
+		_ = exec.Command("update-alternatives", "--set", "iptables", legacyPath).Run()
+		if legacy6Path, err := exec.LookPath("ip6tables-legacy"); err == nil {
+			_ = exec.Command("update-alternatives", "--set", "ip6tables", legacy6Path).Run()
+		}
 		iptablesFlag = "--iptables=true"
 	}
 
@@ -1044,8 +1188,8 @@ func ensureDockerDaemon() error {
 	cmd := exec.Command(
 		"dockerd",
 		"--host=unix:///var/run/docker.sock",
-		"--data-root=/workspace/.nexus-docker",
-		"--exec-root=/workspace/.nexus-docker-exec",
+		"--data-root="+dataRoot,
+		"--exec-root="+execRoot,
 		"--storage-driver=overlay2",
 		iptablesFlag,
 	)

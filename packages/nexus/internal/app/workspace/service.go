@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -19,6 +20,9 @@ type Service struct {
 	repo        workspace.Repository
 	projectRepo project.Repository
 	driver      runtime.Driver
+	// bgCtx is a long-lived context used for async workspace starts so they
+	// are not cancelled when the originating RPC request context expires.
+	bgCtx context.Context
 }
 
 type runtimeReadinessDriver interface {
@@ -26,8 +30,9 @@ type runtimeReadinessDriver interface {
 }
 
 // NewService constructs a Service. driver may be nil if no runtime backend is available.
-func NewService(repo workspace.Repository, projectRepo project.Repository, driver runtime.Driver) *Service {
-	return &Service{repo: repo, projectRepo: projectRepo, driver: driver}
+// bgCtx should be the daemon's root context (cancelled only on shutdown).
+func NewService(repo workspace.Repository, projectRepo project.Repository, driver runtime.Driver, bgCtx context.Context) *Service {
+	return &Service{repo: repo, projectRepo: projectRepo, driver: driver, bgCtx: bgCtx}
 }
 
 // Relations is a graph of workspaces grouped by repo.
@@ -157,6 +162,9 @@ func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*works
 	return ws, nil
 }
 
+// Start transitions a workspace to StateStarting immediately and boots the VM
+// in the background. The caller should poll workspace.info until state==running.
+// If the workspace is already starting or running, it returns the current state.
 func (s *Service) Start(ctx context.Context, id string) (*workspace.Workspace, error) {
 	ws, err := s.repo.Get(ctx, id)
 	if err != nil {
@@ -165,24 +173,60 @@ func (s *Service) Start(ctx context.Context, id string) (*workspace.Workspace, e
 	if ws.State == workspace.StateRemoved {
 		return nil, fmt.Errorf("cannot start removed workspace: %s", id)
 	}
-
-	if s.driver != nil {
-		if err := s.driver.Start(ctx, ws); err != nil {
-			return nil, fmt.Errorf("runtime start: %w", err)
-		}
-		// Backfill backend for workspaces created before the backend field was stamped.
-		if ws.Backend == "" {
-			ws.Backend = s.driver.Backend()
-		}
+	// Idempotent: if already starting or running, return current state.
+	if ws.State == workspace.StateStarting || ws.State == workspace.StateRunning {
+		return s.cloneWithGuestIP(ctx, ws), nil
 	}
 
-	ws.State = workspace.StateRunning
+	// Transition to starting immediately so the caller can return to the client.
+	ws.State = workspace.StateStarting
 	ws.UpdatedAt = time.Now().UTC()
 	if err := s.repo.Update(ctx, ws); err != nil {
-		return nil, fmt.Errorf("persist start: %w", err)
+		return nil, fmt.Errorf("persist starting: %w", err)
 	}
 
+	wsCopy := *ws
+	go s.runStartAsync(&wsCopy)
+
 	return s.cloneWithGuestIP(ctx, ws), nil
+}
+
+// runStartAsync performs the slow driver.Start work in the background and
+// transitions the workspace to running (success) or created (failure).
+func (s *Service) runStartAsync(ws *workspace.Workspace) {
+	ctx := s.bgCtx
+	id := ws.ID
+
+	var startErr error
+	if s.driver != nil {
+		startErr = s.driver.Start(ctx, ws)
+	}
+
+	// Re-fetch latest state in case it was updated externally while we were starting.
+	current, fetchErr := s.repo.Get(ctx, id)
+	if fetchErr != nil {
+		log.Printf("[workspace] runStartAsync: workspace %s disappeared during start: %v", id, fetchErr)
+		return
+	}
+
+	if startErr != nil {
+		log.Printf("[workspace] runStartAsync: start failed for %s: %v", id, startErr)
+		// Roll back to created so the user can retry.
+		current.State = workspace.StateCreated
+		current.UpdatedAt = time.Now().UTC()
+		_ = s.repo.Update(ctx, current)
+		return
+	}
+
+	// Backfill backend for workspaces created before the backend field was stamped.
+	if current.Backend == "" && s.driver != nil {
+		current.Backend = s.driver.Backend()
+	}
+	current.State = workspace.StateRunning
+	current.UpdatedAt = time.Now().UTC()
+	if err := s.repo.Update(ctx, current); err != nil {
+		log.Printf("[workspace] runStartAsync: persist running failed for %s: %v", id, err)
+	}
 }
 
 // DiscoveredPort is a port discovered from docker-compose or workspace config.

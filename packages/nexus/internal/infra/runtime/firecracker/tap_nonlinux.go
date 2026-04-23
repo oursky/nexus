@@ -5,6 +5,7 @@ package firecracker
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 )
 
 const bridgeName = "nexusbr0"
@@ -31,3 +32,15 @@ func realSetupTAP(tapName, hostIP, subnetCIDR string) (any, error) {
 
 func realTeardownTAP(tapName, subnetCIDR string) {
 }
+
+func defaultTapPrepare(_ string, _ *exec.Cmd) {}
+
+func defaultTapAttach(_ string, _ int, _ string, _ uint32) error { return nil }
+
+func getSlirpSSHTarget(_ string) string { return "" }
+
+func defaultTapNetTeardown(_ string) {}
+
+func defaultHostDevName(tap string) string { return tap }
+
+func defaultVMNetworkGatewayIP() string { return bridgeGatewayIP() }

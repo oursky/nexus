@@ -212,7 +212,7 @@ func newTestService() (*Service, *fakeWorkspaceRepo, *fakeProjectRepo, *fakeDriv
 	wr := newFakeWorkspaceRepo()
 	pr := newFakeProjectRepo()
 	d := &fakeDriver{backend: "test"}
-	svc := NewService(wr, pr, d)
+	svc := NewService(wr, pr, d, context.Background())
 	return svc, wr, pr, d
 }
 
@@ -220,7 +220,7 @@ func newTestService() (*Service, *fakeWorkspaceRepo, *fakeProjectRepo, *fakeDriv
 func newTestServiceNoDriver() (*Service, *fakeWorkspaceRepo) {
 	wr := newFakeWorkspaceRepo()
 	pr := newFakeProjectRepo()
-	svc := NewService(wr, pr, nil)
+	svc := NewService(wr, pr, nil, context.Background())
 	return svc, wr
 }
 
@@ -374,8 +374,20 @@ func TestService_Start_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if result.State != workspace.StateRunning {
-		t.Errorf("state: got %q, want %q", result.State, workspace.StateRunning)
+	// Start is async: returns StateStarting immediately; poll until StateRunning.
+	if result.State != workspace.StateStarting && result.State != workspace.StateRunning {
+		t.Errorf("state: got %q, want starting or running", result.State)
+	}
+	var final *workspace.Workspace
+	for i := 0; i < 50; i++ {
+		final, _ = repo.Get(ctx, ws.ID)
+		if final != nil && final.State == workspace.StateRunning {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if final == nil || final.State != workspace.StateRunning {
+		t.Errorf("persisted state: got %q, want %q", final.State, workspace.StateRunning)
 	}
 	if len(driver.starts) != 1 || driver.starts[0] != ws.ID {
 		t.Errorf("driver starts: %v", driver.starts)
