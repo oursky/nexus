@@ -30,6 +30,7 @@ type Handler struct {
 	ws     domainws.Repository
 	proj   domainproj.Repository
 	dialer VsockDialer
+	ready  WorkspaceReadyChecker
 }
 
 // VsockDialer is implemented by the Firecracker driver to open an agent
@@ -37,6 +38,12 @@ type Handler struct {
 type VsockDialer interface {
 	AgentConn(ctx context.Context, workspaceID string) (net.Conn, error)
 	GuestWorkdir(workspaceID string) string
+}
+
+// WorkspaceReadyChecker lets the PTY handler gate terminal creation on
+// runtime-specific readiness checks (toolchain/bootstrap completed).
+type WorkspaceReadyChecker interface {
+	WorkspaceReady(ctx context.Context, workspaceID string) (bool, error)
 }
 
 // HandlerOption configures handler dependencies.
@@ -55,6 +62,11 @@ func WithProjectRepo(proj domainproj.Repository) HandlerOption {
 // WithVsockDialer enables remote PTY sessions for firecracker workspaces.
 func WithVsockDialer(d VsockDialer) HandlerOption {
 	return func(h *Handler) { h.dialer = d }
+}
+
+// WithWorkspaceReadyChecker wires runtime readiness probing into PTY create.
+func WithWorkspaceReadyChecker(c WorkspaceReadyChecker) HandlerOption {
+	return func(h *Handler) { h.ready = c }
 }
 
 // New creates a new Handler backed by the given Registry.
@@ -151,6 +163,15 @@ func (h *Handler) create(ctx context.Context, raw json.RawMessage) (any, error) 
 	if ws != nil && ws.State != domainws.StateRunning {
 		return nil, fmt.Errorf("workspace %s is not ready (state: %s); wait for it to finish starting", p.WorkspaceID, ws.State)
 	}
+	if h.ready != nil && ws != nil && backendUsesGuestControlChannel(ws.Backend) {
+		ready, err := h.ready.WorkspaceReady(ctx, p.WorkspaceID)
+		if err != nil {
+			return nil, fmt.Errorf("workspace %s readiness probe failed: %w", p.WorkspaceID, err)
+		}
+		if !ready {
+			return nil, fmt.Errorf("workspace %s is not ready (guest provisioning still in progress); wait for workspace.ready=true", p.WorkspaceID)
+		}
+	}
 
 	if h.dialer != nil && ws != nil && backendUsesGuestControlChannel(ws.Backend) {
 		return h.createFirecrackerSession(ctx, p, ws, cols, rows)
@@ -160,13 +181,15 @@ func (h *Handler) create(ctx context.Context, raw json.RawMessage) (any, error) 
 }
 
 func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, ws *domainws.Workspace, cols, rows int) (any, error) {
-	log.Printf("pty: createFirecrackerSession: connecting to agent for %s", p.WorkspaceID)
+	tStart := time.Now()
+	log.Printf("pty: createFirecrackerSession: START wsID=%s", p.WorkspaceID)
 	conn, err := h.dialer.AgentConn(ctx, p.WorkspaceID)
+	agentMs := time.Since(tStart).Milliseconds()
 	if err != nil {
-		log.Printf("pty: createFirecrackerSession: agent connect failed: %v", err)
+		log.Printf("pty: createFirecrackerSession: AgentConn FAIL wsID=%s agent_ms=%d err=%v", p.WorkspaceID, agentMs, err)
 		return nil, fmt.Errorf("firecracker agent connect: %w", err)
 	}
-	log.Printf("pty: createFirecrackerSession: agent connected")
+	log.Printf("pty: createFirecrackerSession: AgentConn OK wsID=%s agent_ms=%d", p.WorkspaceID, agentMs)
 
 	workDir := h.dialer.GuestWorkdir(p.WorkspaceID)
 	if workDir == "" {
@@ -253,15 +276,18 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 		}
 	}()
 
+	tAck := time.Now()
 	select {
 	case err := <-ackCh:
+		ackMs := time.Since(tAck).Milliseconds()
 		if err != nil {
-			log.Printf("pty: createFirecrackerSession: ack error: %v", err)
+			log.Printf("pty: createFirecrackerSession: ACK ERROR wsID=%s ack_ms=%d err=%v", p.WorkspaceID, ackMs, err)
 			_ = conn.Close()
 			return nil, err
 		}
-		log.Printf("pty: createFirecrackerSession: ack received OK")
+		log.Printf("pty: createFirecrackerSession: ACK OK wsID=%s ack_ms=%d total_ms=%d", p.WorkspaceID, ackMs, time.Since(tStart).Milliseconds())
 	case <-time.After(8 * time.Second):
+		log.Printf("pty: createFirecrackerSession: ACK TIMEOUT wsID=%s total_ms=%d", p.WorkspaceID, time.Since(tStart).Milliseconds())
 		_ = conn.Close()
 		return nil, errors.New("firecracker shell.open ack timed out")
 	}
@@ -269,7 +295,7 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 	s.SetNotifier(notifier)
 	h.reg.Register(s)
 	go h.streamFirecrackerSession(s, dec)
-	log.Printf("pty: createFirecrackerSession: session %s registered, streaming", s.ID)
+	log.Printf("pty: createFirecrackerSession: REGISTERED session=%s wsID=%s total_ms=%d", s.ID, p.WorkspaceID, time.Since(tStart).Milliseconds())
 	return s.Info(), nil
 }
 

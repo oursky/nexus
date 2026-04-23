@@ -75,3 +75,9 @@ func (a *Adapter) GuestSSHHost(ctx context.Context, workspaceID string) (string,
 	_ = workspaceID
 	return "", false
 }
+
+// WorkspaceReady always returns true for sandbox workspaces since they run as
+// host processes and don't require a separate provisioning phase.
+func (a *Adapter) WorkspaceReady(_ context.Context, _ *workspace.Workspace) (bool, error) {
+	return true, nil
+}

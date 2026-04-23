@@ -193,6 +193,9 @@ func (s *Service) Start(ctx context.Context, id string) (*workspace.Workspace, e
 
 // runStartAsync performs the slow driver.Start work in the background and
 // transitions the workspace to running (success) or created (failure).
+// If the driver supports WorkspaceReady, it polls until tools are fully
+// provisioned before marking the workspace as running (keeping it in the
+// starting state during package installation to block premature PTY access).
 func (s *Service) runStartAsync(ws *workspace.Workspace) {
 	ctx := s.bgCtx
 	id := ws.ID
@@ -216,6 +219,38 @@ func (s *Service) runStartAsync(ws *workspace.Workspace) {
 		current.UpdatedAt = time.Now().UTC()
 		_ = s.repo.Update(ctx, current)
 		return
+	}
+
+	// If the driver supports readiness probing, keep the workspace in
+	// StateStarting until tools are fully provisioned (apt-get installs,
+	// opencode/codex npm installs, Docker startup, etc.).  This prevents the
+	// Mac app from prematurely showing "running" and keeps PTY sessions blocked
+	// until the guest is truly ready.
+	if rd, ok := s.driver.(runtimeReadinessDriver); ok {
+		wsCopy := *current
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		log.Printf("[workspace] runStartAsync: waiting for workspace %s to be ready (tool provisioning)...", id)
+		for {
+			ready, err := rd.WorkspaceReady(ctx, &wsCopy)
+			if err != nil {
+				log.Printf("[workspace] runStartAsync: readiness probe error for %s: %v", id, err)
+			}
+			if ready {
+				log.Printf("[workspace] runStartAsync: workspace %s is ready", id)
+				break
+			}
+			select {
+			case <-ctx.Done():
+				log.Printf("[workspace] runStartAsync: context cancelled waiting for %s readiness", id)
+				return
+			case <-ticker.C:
+			}
+		}
+		// Re-fetch in case state was mutated externally during the wait.
+		if cur, err := s.repo.Get(ctx, id); err == nil {
+			current = cur
+		}
 	}
 
 	// Backfill backend for workspaces created before the backend field was stamped.
