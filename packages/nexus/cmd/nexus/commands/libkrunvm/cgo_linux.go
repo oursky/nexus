@@ -3,6 +3,8 @@
 package libkrunvm
 
 /*
+#cgo CFLAGS: -I/home/newman/.local/include
+#cgo LDFLAGS: -L/home/newman/.smolvm/lib -lkrun -Wl,-rpath,/home/newman/.smolvm/lib
 #include <libkrun.h>
 #include <stdlib.h>
 #include <stdint.h>

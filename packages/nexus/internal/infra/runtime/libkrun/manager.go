@@ -93,6 +93,13 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		return nil, fmt.Errorf("create workdir: %w", err)
 	}
 
+	// Remove stale vsock socket files from a previous run so libkrun can
+	// recreate them. If they still exist, krun_add_vsock_port2 fails with
+	// "file exists" and the agent never comes up.
+	for _, port := range []uint32{DefaultAgentVSockPort, DefaultSpotlightVSockPort} {
+		_ = os.Remove(filepath.Join(workDir, fmt.Sprintf("vsock_%d.sock", port)))
+	}
+
 	serialLog := filepath.Join(workDir, "libkrun.log")
 	workspaceImagePath := filepath.Join(workDir, "workspace.ext4")
 	workspaceOverlayPath := filepath.Join(workDir, "workspace-overlay.ext4")
