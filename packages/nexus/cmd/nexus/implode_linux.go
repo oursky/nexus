@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"os/exec"
 )
 
 //go:embed scripts/firecracker-implode.sh
@@ -20,6 +21,29 @@ func buildImplodeScript(installBinDir string) string {
 		shellQuote(installBinDir),
 	)
 	return header + string(firecrackerImplodeScript)
+}
+
+// killLibkrunOrphans kills any lingering passt or nexus libkrun-vm child
+// processes left over from a previous daemon run. These are user-space
+// processes (no root required) that must be stopped before the state
+// directories are wiped.
+func killLibkrunOrphans(w io.Writer) {
+	for _, name := range []string{"passt", "nexus"} {
+		// pkill matches by process name prefix; ignore errors (no processes = fine).
+		_ = exec.Command("pkill", "-u", getUID(), "-f", name+".*libkrun").Run()
+	}
+	// Also kill any nexus libkrun-vm sub-processes spawned as children of the daemon.
+	_ = exec.Command("pkill", "-u", getUID(), "-f", "libkrun-vm").Run()
+	fmt.Fprintln(w, "  killed libkrun/passt orphan processes (if any)")
+}
+
+func getUID() string {
+	out, _ := exec.Command("id", "-u").Output()
+	uid := string(out)
+	for len(uid) > 0 && (uid[len(uid)-1] == '\n' || uid[len(uid)-1] == '\r') {
+		uid = uid[:len(uid)-1]
+	}
+	return uid
 }
 
 // runImplodePrivileged runs the privileged teardown script using the same

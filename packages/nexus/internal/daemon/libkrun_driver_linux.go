@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"path/filepath"
 
 	domainruntime "github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
 	lkruntime "github.com/oursky/nexus/packages/nexus/internal/infra/runtime/libkrun"
@@ -13,12 +14,23 @@ import (
 
 func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 	nexusBin, _ := os.Executable()
+
+	// Default workdir and bases to user state dir when not explicitly set.
+	workDirRoot := cfg.WorkDirRoot
+	if workDirRoot == "" {
+		workDirRoot = filepath.Join(defaultDataDir(), "libkrun-vms")
+	}
+	basesDir := cfg.BasesDir
+	if basesDir == "" {
+		basesDir = filepath.Join(defaultDataDir(), "bases")
+	}
+
 	lkCfg := lkruntime.ManagerConfig{
 		NexusBin:    nexusBin,
 		KernelPath:  cfg.KernelPath,
 		RootFSPath:  cfg.RootFSPath,
-		WorkDirRoot: cfg.WorkDirRoot,
-		BasesDir:    cfg.BasesDir,
+		WorkDirRoot: workDirRoot,
+		BasesDir:    basesDir,
 	}
 	driver := lkruntime.NewDriver(lkCfg)
 	adapter := lkruntime.NewAdapter(driver)

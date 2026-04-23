@@ -66,6 +66,12 @@ func rootlessPasstPath() string {
 	return filepath.Join(xdgLocalBin(), "passt")
 }
 
+// rootlessLibkrunLibDir returns the canonical location for libkrun shared
+// libraries installed by the rootless bootstrap.
+func rootlessLibkrunLibDir() string {
+	return filepath.Join(xdgShareNexus(), "lib")
+}
+
 func rootlessStateFilePath() string {
 	return filepath.Join(rootlessRootlessDirState(), "state.json")
 }
@@ -86,6 +92,7 @@ type rootlessState struct {
 	KernelPath        string `json:"kernel_path"`
 	RootfsPath        string `json:"rootfs_path"`
 	KVMAccess         string `json:"kvm_access"`
+	LibkrunLibDir     string `json:"libkrun_lib_dir,omitempty"`
 }
 
 // ── Phase event (for --json output) ──────────────────────────────────────────
@@ -161,6 +168,88 @@ func passtDownloadURL() string {
 	}
 }
 
+// smolvmSourceDir returns the default smolvm installation directory.
+// smolvm (https://github.com/smol-machines/smolvm) ships libkrun + libkrunfw.
+func smolvmSourceDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".smolvm", "lib")
+}
+
+// ── libkrun library installation ──────────────────────────────────────────────
+
+// installLibkrunLibsRootless ensures libkrun.so and libkrunfw.so are present
+// in the canonical nexus lib directory (~/.local/share/nexus/lib/).
+//
+// Source priority:
+//  1. Already installed (idempotent).
+//  2. Copy from ~/.smolvm/lib/ if smolvm is installed.
+//  3. Otherwise emit a remediation hint.
+func installLibkrunLibsRootless(w io.Writer, emitJSON bool) error {
+	destDir := rootlessLibkrunLibDir()
+
+	// Already installed if the main library is present.
+	if _, err := os.Stat(filepath.Join(destDir, "libkrun.so.1")); err == nil {
+		return nil
+	}
+
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("create libkrun lib dir %s: %w", destDir, err)
+	}
+
+	srcDir := smolvmSourceDir()
+	if _, err := os.Stat(filepath.Join(srcDir, "libkrun.so.1")); err != nil {
+		return fmt.Errorf(
+			"prerequisite_error.libkrun_missing: libkrun shared library not found at %s\n\n"+
+				"Remediation:\n"+
+				"  Install smolvm (provides libkrun + libkrunfw):\n"+
+				"    curl -fsSL https://raw.githubusercontent.com/smol-machines/smolvm/main/install.sh | sh\n"+
+				"  Or build from source: https://github.com/containers/libkrun\n"+
+				"  After installation, re-run: nexus daemon start --driver=libkrun",
+			srcDir,
+		)
+	}
+
+	fmt.Fprintf(w, "  installing libkrun libraries from %s...\n", srcDir)
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return fmt.Errorf("read smolvm lib dir: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "libkrun") {
+			continue
+		}
+		src := filepath.Join(srcDir, name)
+		dst := filepath.Join(destDir, name)
+
+		fi, err := os.Lstat(src)
+		if err != nil {
+			continue
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(src)
+			if err != nil {
+				continue
+			}
+			_ = os.Remove(dst)
+			if err := os.Symlink(target, dst); err != nil {
+				return fmt.Errorf("symlink %s: %w", name, err)
+			}
+		} else {
+			if err := copyFileRootless(src, dst); err != nil {
+				return fmt.Errorf("copy %s: %w", name, err)
+			}
+		}
+	}
+
+	// Verify the main library landed.
+	if _, err := os.Stat(filepath.Join(destDir, "libkrun.so.1")); err != nil {
+		return fmt.Errorf("libkrun.so.1 not found after installation attempt")
+	}
+	fmt.Fprintf(w, "  libkrun libraries installed at %s\n", destDir)
+	return nil
+}
+
 // ── Prerequisite checks ───────────────────────────────────────────────────────
 
 func checkKVMAccess() error {
@@ -198,8 +287,9 @@ func checkNetworkBackend() error {
 
 // RunRootlessBootstrap runs preflight + asset-install + runtime-verify in sequence.
 // On success, the daemon-launch phase can proceed.
+// driver selects which runtime-specific assets to install: "firecracker", "libkrun", or "" (both).
 // emitJSON controls whether phase events are emitted as JSON lines (for --json flag).
-func RunRootlessBootstrap(w io.Writer, emitJSON bool) error {
+func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
 	// ── Phase: preflight ───────────────────────────────────────────────────────
 	emitPhase(w, emitJSON, "preflight", "start", "checking prerequisites")
 
@@ -217,9 +307,20 @@ func RunRootlessBootstrap(w io.Writer, emitJSON bool) error {
 		return fmt.Errorf("asset-install: create dirs: %w", err)
 	}
 
-	if err := installFirecrackerRootless(w, emitJSON); err != nil {
-		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
-		return fmt.Errorf("asset-install: firecracker: %w", err)
+	// Firecracker binary — skip when running libkrun-only.
+	if driver == "" || driver == "firecracker" {
+		if err := installFirecrackerRootless(w, emitJSON); err != nil {
+			emitPhase(w, emitJSON, "asset-install", "error", err.Error())
+			return fmt.Errorf("asset-install: firecracker: %w", err)
+		}
+	}
+
+	// libkrun shared libraries — only needed for the libkrun driver.
+	if driver == "libkrun" {
+		if err := installLibkrunLibsRootless(w, emitJSON); err != nil {
+			emitPhase(w, emitJSON, "asset-install", "error", err.Error())
+			return fmt.Errorf("asset-install: libkrun: %w", err)
+		}
 	}
 
 	if err := installPasstRootless(w, emitJSON); err != nil {
@@ -247,12 +348,12 @@ func RunRootlessBootstrap(w io.Writer, emitJSON bool) error {
 	// ── Phase: runtime-verify ─────────────────────────────────────────────────
 	emitPhase(w, emitJSON, "runtime-verify", "start", "verifying runtime")
 
-	if err := verifyRootlessRuntime(); err != nil {
+	if err := verifyRootlessRuntime(driver); err != nil {
 		emitPhase(w, emitJSON, "runtime-verify", "error", err.Error())
 		return fmt.Errorf("runtime-verify: %w", err)
 	}
 
-	if err := persistRootlessState(); err != nil {
+	if err := persistRootlessState(driver); err != nil {
 		// Non-fatal: log but don't fail startup
 		emitPhase(w, emitJSON, "runtime-verify", "ok", fmt.Sprintf("verified (state persist skipped: %v)", err))
 	} else {
@@ -738,30 +839,40 @@ func buildRootlessRootfs(w io.Writer, dest string) error {
 
 // ── Runtime verification ──────────────────────────────────────────────────────
 
-func verifyRootlessRuntime() error {
-	// Verify firecracker
-	fc := rootlessFirecrackerPath()
-	if _, err := os.Stat(fc); err != nil {
-		return fmt.Errorf("firecracker not found at %s", fc)
-	}
-	if out, err := exec.Command(fc, "--version").Output(); err != nil {
-		return fmt.Errorf("firecracker --version: %w", err)
-	} else if !strings.Contains(string(out), "Firecracker") {
-		return fmt.Errorf("unexpected firecracker --version output: %s", strings.TrimSpace(string(out)))
+func verifyRootlessRuntime(driver string) error {
+	// Firecracker binary — only required for the firecracker driver.
+	if driver == "" || driver == "firecracker" {
+		fc := rootlessFirecrackerPath()
+		if _, err := os.Stat(fc); err != nil {
+			return fmt.Errorf("firecracker not found at %s", fc)
+		}
+		if out, err := exec.Command(fc, "--version").Output(); err != nil {
+			return fmt.Errorf("firecracker --version: %w", err)
+		} else if !strings.Contains(string(out), "Firecracker") {
+			return fmt.Errorf("unexpected firecracker --version output: %s", strings.TrimSpace(string(out)))
+		}
 	}
 
-	// Verify passt
+	// libkrun shared library — only required for the libkrun driver.
+	if driver == "libkrun" {
+		libDir := rootlessLibkrunLibDir()
+		if _, err := os.Stat(filepath.Join(libDir, "libkrun.so.1")); err != nil {
+			return fmt.Errorf("libkrun.so.1 not found at %s", libDir)
+		}
+	}
+
+	// Verify passt (required for both drivers).
 	passt := rootlessPasstPath()
 	if _, err := os.Stat(passt); err != nil {
 		return fmt.Errorf("passt not found at %s", passt)
 	}
 
-	// Verify kernel
+	// Verify kernel (required for both drivers).
 	if _, err := os.Stat(rootlessKernelPath()); err != nil {
 		return fmt.Errorf("kernel not found at %s", rootlessKernelPath())
 	}
 
-	// Verify rootfs
+	// Verify rootfs (required for both drivers).
 	if _, err := os.Stat(rootlessRootfsPath()); err != nil {
 		return fmt.Errorf("rootfs not found at %s", rootlessRootfsPath())
 	}
@@ -771,16 +882,21 @@ func verifyRootlessRuntime() error {
 
 // ── State persistence ─────────────────────────────────────────────────────────
 
-func persistRootlessState() error {
+func persistRootlessState(driver string) error {
 	state := rootlessState{
 		SchemaVersion:     1,
 		InstalledAt:       time.Now().UTC().Format(time.RFC3339),
-		FirecrackerBin:    rootlessFirecrackerPath(),
 		NetworkBackend:    "passt",
 		NetworkBackendBin: rootlessPasstPath(),
 		KernelPath:        rootlessKernelPath(),
 		RootfsPath:        rootlessRootfsPath(),
 		KVMAccess:         "ok",
+	}
+	if driver == "" || driver == "firecracker" {
+		state.FirecrackerBin = rootlessFirecrackerPath()
+	}
+	if driver == "libkrun" {
+		state.LibkrunLibDir = rootlessLibkrunLibDir()
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {

@@ -9,8 +9,10 @@ import (
 var initRuntimeBootstrapRunner func(projectRoot, runtimeName string) error = runInitRuntimeBootstrapLinux
 
 func runInitRuntimeBootstrapLinux(projectRoot, runtimeName string) error {
-	if runtimeName != "firecracker" {
+	switch runtimeName {
+	case "firecracker", "libkrun":
+		return RunRootlessBootstrap(io.Discard, false, runtimeName)
+	default:
 		return nil
 	}
-	return RunRootlessBootstrap(io.Discard, false)
 }

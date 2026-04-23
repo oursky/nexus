@@ -28,11 +28,12 @@ const daemonForegroundEnv = "NEXUS_DAEMON_FOREGROUND"
 // StartSetupFn, if non-nil, is called once before the daemon starts to
 // provision host prerequisites (Firecracker binary, kernel, rootfs, networking).
 // On Linux this is wired to RunRootlessBootstrap by the main package.
-var StartSetupFn func(w io.Writer) error
+// driver is the runtime driver override ("firecracker", "libkrun", or "").
+var StartSetupFn func(w io.Writer, driver string) error
 
 // StartSetupFnJSON, if non-nil, is the JSON-output variant of StartSetupFn.
 // Used when --json is passed to emit structured phase events.
-var StartSetupFnJSON func(w io.Writer) error
+var StartSetupFnJSON func(w io.Writer, driver string) error
 
 // EmbeddedAgentFn, if non-nil, returns the embedded nexus-firecracker-agent
 // binary bytes.  On Linux builds this is always set by daemon_hooks_linux.go.
@@ -125,7 +126,7 @@ func startCommand() *cobra.Command {
 				if StartSetupFnJSON != nil && jsonOutput {
 					setupFn = StartSetupFnJSON
 				}
-				if err := setupFn(setupOut); err != nil {
+				if err := setupFn(setupOut, driver); err != nil {
 					return fmt.Errorf("daemon start: host setup: %w", err)
 				}
 			}
@@ -170,44 +171,63 @@ func startCommand() *cobra.Command {
 				return fmt.Errorf("daemon start: invalid network config: %w", err)
 			}
 
-			// ── Firecracker vs sandbox decision ────────────────────────────────
-			// Sandbox is an internal backend (--sandbox flag). Without it,
-			// Firecracker is the only supported runtime.
-			//
-			// macOS: Firecracker is not yet supported. Without --sandbox the
-			// daemon refuses to start so that tests skip cleanly instead of
-			// silently running against a different backend.
-			if !sandboxMode {
+			// ── Driver validation ───────────────────────────────────────────────
+			// macOS: only sandbox is supported (no KVM).
+			isLibkrun := driver == "libkrun"
+			if !sandboxMode && !isLibkrun {
 				if runtime.GOOS == "darwin" {
 					return fmt.Errorf(
 						"daemon start: Firecracker is not supported on macOS (darwin).\n" +
 							"  Use --sandbox for local development/testing (internal flag).",
 					)
 				}
+			}
+
+			// Both firecracker and libkrun require kernel + rootfs (same assets).
+			if !sandboxMode {
 				if rootfsPath == "" || kernelPath == "" {
+					runtime := "firecracker"
+					if isLibkrun {
+						runtime = "libkrun"
+					}
 					return fmt.Errorf(
-						"daemon start: Firecracker requires --rootfs and --kernel (or NEXUS_FIRECRACKER_ROOTFS / NEXUS_FIRECRACKER_KERNEL).\n" +
-							"  Run `nexus setup` first, or pass --sandbox to use the process sandbox backend.",
+						"daemon start: %s requires --rootfs and --kernel.\n"+
+							"  Run `nexus daemon start` (auto-provisions assets) or supply --rootfs/--kernel.",
+						runtime,
 					)
 				}
-				// Require the image files to be present — no silent fallback.
 				if _, err := os.Stat(rootfsPath); err != nil {
-					return fmt.Errorf("daemon start: rootfs %q not found: %w\n  Run `nexus setup` first or supply --rootfs", rootfsPath, err)
+					return fmt.Errorf("daemon start: rootfs %q not found: %w\n  Run `nexus daemon start` first or supply --rootfs", rootfsPath, err)
 				}
 				if _, err := os.Stat(kernelPath); err != nil {
-					return fmt.Errorf("daemon start: kernel %q not found: %w\n  Run `nexus setup` first or supply --kernel", kernelPath, err)
+					return fmt.Errorf("daemon start: kernel %q not found: %w\n  Run `nexus daemon start` first or supply --kernel", kernelPath, err)
 				}
 			}
 
-			firecrackerEnabled := !sandboxMode
+			// firecrackerEnabled drives the FC driver path; libkrun uses a
+			// separate driver and does not need the firecracker binary.
+			firecrackerEnabled := !sandboxMode && !isLibkrun
 
 			// Pin firecracker to the exact binary our setup installed so PATH
 			// order (e.g. nix) cannot shadow it with a different version.
-			if fcBin == "firecracker" && StartSetupFn != nil {
+			if !isLibkrun && fcBin == "firecracker" && StartSetupFn != nil {
 				home, _ := os.UserHomeDir()
 				installed := filepath.Join(home, ".local", "bin", "firecracker")
 				if _, err := os.Stat(installed); err == nil {
 					fcBin = installed
+				}
+			}
+
+			// For libkrun, ensure the shared libraries directory is on LD_LIBRARY_PATH
+			// so both the agent-injection step and the background daemon child can
+			// dlopen libkrun.so.1 without an RPATH that embeds the exact home dir.
+			if isLibkrun && StartSetupFn != nil {
+				home, _ := os.UserHomeDir()
+				libDir := filepath.Join(home, ".local", "share", "nexus", "lib")
+				if existing := os.Getenv("LD_LIBRARY_PATH"); existing != "" {
+					_ = os.Setenv("LD_LIBRARY_PATH", libDir+":"+existing)
+				} else {
+					_ = os.Setenv("LD_LIBRARY_PATH", libDir)
 				}
 			}
 
@@ -234,11 +254,10 @@ func startCommand() *cobra.Command {
 				Driver:             effectiveDriver,
 			}
 
-			// Inject the guest agent only in the parent (or in foreground mode).
-			// The background child skips this — the parent always completes
-			// injection before launching the child, so the child sees a
-			// consistent rootfs with no concurrent debugfs writes.
-			if firecrackerEnabled && !isForegroundChild {
+			// Inject the guest agent (nexus-firecracker-agent) into rootfs.
+			// Both firecracker and libkrun use the same agent as init/PID-1.
+			// Skip only when sandbox or in the background child (parent handles it).
+			if !sandboxMode && !isForegroundChild {
 				if err := ensureFirecrackerGuestAgent(cfg.RootFSPath); err != nil {
 					return fmt.Errorf("daemon start: guest agent refresh: %w", err)
 				}

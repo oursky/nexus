@@ -16,6 +16,10 @@ import (
 // On Linux this is wired to runImplodePrivileged by the main package.
 var ImplodePrivilegedFn func(w io.Writer) error
 
+// ImplodeUserCleanupFn, if non-nil, runs unprivileged driver-specific cleanup
+// before user-state directories are removed (e.g. killing libkrun/passt PIDs).
+var ImplodeUserCleanupFn func(w io.Writer)
+
 func implodeCommand() *cobra.Command {
 	var force bool
 
@@ -57,7 +61,12 @@ everything from scratch.`,
 			stopCmd.SetArgs([]string{}) // prevent cobra re-parsing os.Args
 			_ = stopCmd.Execute()
 
-			// 2. Remove user-space state (no sudo needed).
+			// 2a. Driver-specific unprivileged cleanup (e.g. kill libkrun/passt PIDs).
+			if ImplodeUserCleanupFn != nil {
+				ImplodeUserCleanupFn(w)
+			}
+
+			// 2b. Remove user-space state (no sudo needed).
 			if err := implodeUserState(w); err != nil {
 				fmt.Fprintf(w, "warning: user-space cleanup: %v\n", err)
 			}

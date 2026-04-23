@@ -450,5 +450,6 @@ func (n *nodeInfo) Capabilities() []rpcdaemon.Capability {
 	return []rpcdaemon.Capability{
 		{Name: "runtime.process", Available: true},
 		{Name: "runtime.firecracker", Available: n.cfg.FirecrackerEnabled},
+		{Name: "runtime.libkrun", Available: n.cfg.Driver == "libkrun"},
 	}
 }
