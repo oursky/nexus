@@ -67,7 +67,7 @@ tasks:
   # Set REMOTE_HOST=user@hostname in .env.local (see .env.local.example).
 
   dev:remote:
-    desc: "Build for linux/amd64, deploy, and restart remote daemon"
+    desc: "Build for linux/amd64, deploy, restart remote daemon, and stage Resources so provision stays in sync"
     preconditions:
       - sh: '[ -n "{{.REMOTE_HOST}}" ]'
         msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
@@ -75,8 +75,8 @@ tasks:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
       REMOTE_BIN:  "{{.REMOTE_BIN}}"
     cmds:
-      - scripts/remote/deploy.sh
-      - scripts/remote/daemon-restart.sh
+      - scripts/remote/deploy.sh       # builds linux binary, stages to Resources/, deploys to remote
+      - scripts/remote/daemon-restart.sh  # restarts daemon + prints remote version for confirmation
 
   dev:cli:
     desc: "install local CLI binary (for CLI-only changes)"
@@ -88,6 +88,17 @@ tasks:
       REMOTE_BIN:  "{{.REMOTE_BIN}}"
     cmds:
       - scripts/local/deploy.sh
+
+  dev:libkrun:
+    desc: "Build libkrun-enabled nexus (downloads libs, embeds nexus-libkrun-vm) and deploy to remote"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+      REMOTE_BIN:  "{{.REMOTE_BIN}}"
+    cmds:
+      - scripts/remote/deploy-libkrun.sh
 
   dev:swift:
     desc: "dev:cli + stage macOS nexus binary + regenerate Swift SDK + build and open NexusApp"
@@ -109,9 +120,14 @@ tasks:
     desc: "Build macOS arm64 nexus CLI and stage to packages/nexus-swift/Resources/nexus"
     cmds:
       - |
-        echo "Staging nexus (darwin/arm64) → packages/nexus-swift/Resources/nexus..."
+        BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
+        LDFLAGS="-X github.com/oursky/nexus/packages/nexus/internal/build.Time=${BUILD_TIME} \
+                 -X github.com/oursky/nexus/packages/nexus/internal/build.Commit=${GIT_COMMIT}"
+        echo "Staging nexus (darwin/arm64) → packages/nexus-swift/Resources/nexus (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
         GOOS=darwin GOARCH=arm64 go build \
           -C packages/nexus \
+          -ldflags "$LDFLAGS" \
           -o ../../packages/nexus-swift/Resources/nexus \
           ./cmd/nexus
         chmod +x packages/nexus-swift/Resources/nexus
@@ -121,9 +137,14 @@ tasks:
     desc: "Build linux/amd64 nexus daemon and stage to packages/nexus-swift/Resources/nexus-linux-amd64 (bundled for remote provisioning)"
     cmds:
       - |
-        echo "Staging nexus (linux/amd64) → packages/nexus-swift/Resources/nexus-linux-amd64..."
+        BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
+        LDFLAGS="-X github.com/oursky/nexus/packages/nexus/internal/build.Time=${BUILD_TIME} \
+                 -X github.com/oursky/nexus/packages/nexus/internal/build.Commit=${GIT_COMMIT}"
+        echo "Staging nexus (linux/amd64) → packages/nexus-swift/Resources/nexus-linux-amd64 (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
         GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
           -C packages/nexus \
+          -ldflags "$LDFLAGS" \
           -o ../../packages/nexus-swift/Resources/nexus-linux-amd64 \
           ./cmd/nexus
         chmod +x packages/nexus-swift/Resources/nexus-linux-amd64

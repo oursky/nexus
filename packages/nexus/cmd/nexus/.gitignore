@@ -11,3 +11,9 @@ firecracker-linux-arm64
 agent-linux-amd64
 agent-linux-arm64
 smolvm-linux-amd64
+
+# libkrun embed artifacts (staged by deploy-libkrun.sh / make build-libkrun)
+# These are build-time inputs, not source files.
+nexus-libkrun-vm
+libkrun-embed.so
+libkrunfw-embed.so

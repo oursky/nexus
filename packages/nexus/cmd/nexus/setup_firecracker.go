@@ -268,7 +268,6 @@ func buildSetupScript(tapHelperSrc, agentSrc, firecrackerSrc, installBinDir stri
 	return header + string(firecrackerSetupScript)
 }
 
-
 // setupCommandPath returns the command path users should run with sudo.
 func setupCommandPath() string {
 	if exe, err := os.Executable(); err == nil {

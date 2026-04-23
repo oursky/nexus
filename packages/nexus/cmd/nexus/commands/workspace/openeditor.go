@@ -58,9 +58,10 @@ Flags:
 			}
 
 			ws := result.Workspace
+			backend := strings.ToLower(strings.TrimSpace(ws.Backend))
 			if ws.GuestIP == "" {
-				if ws.Backend != "firecracker" {
-					return fmt.Errorf("open-editor: workspace %q uses backend %q — only Firecracker workspaces have a guest VM", args[0], ws.Backend)
+				if backend != "firecracker" && backend != "libkrun" {
+					return fmt.Errorf("open-editor: workspace %q uses backend %q — only Firecracker/libkrun workspaces support VM remote-editor access", args[0], ws.Backend)
 				}
 				return fmt.Errorf("open-editor: workspace %q (state: %s) has no guest IP — is it running?\n  hint: nexus workspace start %s", args[0], ws.State, args[0])
 			}

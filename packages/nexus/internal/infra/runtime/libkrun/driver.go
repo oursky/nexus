@@ -21,7 +21,6 @@ import (
 // It mirrors FCDriver from the firecracker package.
 type Driver struct {
 	manager      *Manager
-	basesDir     string
 	projectRoots map[string]string
 	snapshotIDs  map[string]string
 	readyTools   map[string]bool
@@ -33,7 +32,6 @@ func NewDriver(cfg ManagerConfig, opts ...DriverOption) *Driver {
 	mgr := NewManager(cfg)
 	d := &Driver{
 		manager:      mgr,
-		basesDir:     cfg.BasesDir,
 		projectRoots: make(map[string]string),
 		snapshotIDs:  make(map[string]string),
 		readyTools:   make(map[string]bool),
@@ -217,7 +215,6 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 	spec := SpawnSpec{
 		WorkspaceID:     workspaceID,
 		ProjectRoot:     root,
-		BasesDir:        d.basesDir,
 		MemoryMiB:       memMiB,
 		VCPUs:           1,
 		SnapshotID:      snapshotID,
@@ -332,15 +329,19 @@ func (d *Driver) Pause(ctx context.Context, workspaceID string) error {
 	return d.Stop(ctx, workspaceID)
 }
 
-// Resume re-registers the workspace so it restarts on next EnsureStarted.
-func (d *Driver) Resume(_ context.Context, workspaceID string) error {
+// Resume re-registers the workspace so EnsureStarted will restart it on the next call.
+// It clears the ready-tools cache so the next start probes the guest properly.
+func (d *Driver) Resume(ctx context.Context, workspaceID string) error {
 	d.mu.RLock()
 	root := d.projectRoots[workspaceID]
 	d.mu.RUnlock()
 	if root == "" {
 		return fmt.Errorf("workspace %s has no recorded project root", workspaceID)
 	}
-	return nil
+	d.mu.Lock()
+	delete(d.readyTools, workspaceID)
+	d.mu.Unlock()
+	return d.EnsureStarted(ctx, workspaceID, root)
 }
 
 // ForkWithRoot registers the child workspace pointing at childRoot.
@@ -358,10 +359,33 @@ func (d *Driver) ForkWithRoot(_ context.Context, parentID, childID, childRoot st
 	return nil
 }
 
-// CheckpointFork copies the parent's workspace image for the child.
-func (d *Driver) CheckpointFork(_ context.Context, parentID, childID string) (string, error) {
-	if err := d.manager.ForkWorkspaceImage(context.Background(), parentID, childID); err != nil {
+// CheckpointFork snapshots the parent's workspace overlay for the child.
+// The parent VM is stopped before the copy to ensure filesystem consistency,
+// then restarted afterward so the user's session is not permanently interrupted.
+func (d *Driver) CheckpointFork(ctx context.Context, parentID, childID string) (string, error) {
+	d.mu.RLock()
+	parentRoot := d.projectRoots[parentID]
+	d.mu.RUnlock()
+
+	parentWasRunning := false
+	if _, err := d.manager.Get(parentID); err == nil {
+		parentWasRunning = true
+		if stopErr := d.manager.Stop(ctx, parentID); stopErr != nil {
+			log.Printf("[libkrun] CheckpointFork: stop parent %s: %v (continuing)", parentID, stopErr)
+		}
+	}
+
+	if err := d.manager.ForkWorkspaceImage(ctx, parentID, childID); err != nil {
+		if parentWasRunning && parentRoot != "" {
+			_ = d.EnsureStarted(ctx, parentID, parentRoot)
+		}
 		return "", fmt.Errorf("fork workspace image: %w", err)
+	}
+
+	if parentWasRunning && parentRoot != "" {
+		if restartErr := d.EnsureStarted(ctx, parentID, parentRoot); restartErr != nil {
+			log.Printf("[libkrun] CheckpointFork: restart parent %s: %v", parentID, restartErr)
+		}
 	}
 	return childID, nil
 }

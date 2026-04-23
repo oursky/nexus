@@ -20,6 +20,7 @@ func Command() *cobra.Command {
 		profileCommand(),
 		implodeCommand(),
 		checkCommand(),
+		versionCommand(),
 	)
 	return cmd
 }

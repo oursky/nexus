@@ -105,13 +105,10 @@ func workspaceImageSizeBytes(projectSizeBytes int64) int64 {
 	return target
 }
 
-// copyFile copies src to dst using cp with CoW and sparse-file support.
-// --reflink=auto performs a copy-on-write clone when the filesystem supports it
-// (XFS, btrfs) and falls back to a regular copy otherwise.
-// --sparse=always preserves holes in sparse files such as ext4 VM images,
-// avoiding unnecessary disk writes and keeping the copy fast.
+// copyFile copies src to dst as a copy-on-write reflink clone.
+// Requires XFS or btrfs; fails hard if the filesystem does not support reflinks.
 func copyFile(src, dst string) error {
-	out, err := exec.Command("cp", "--reflink=auto", "--sparse=always", src, dst).CombinedOutput()
+	out, err := exec.Command("cp", "--reflink=always", "--sparse=always", src, dst).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("cp %s → %s: %w: %s", src, dst, err, strings.TrimSpace(string(out)))
 	}

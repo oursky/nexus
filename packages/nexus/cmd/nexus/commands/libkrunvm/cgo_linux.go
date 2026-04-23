@@ -1,10 +1,10 @@
-//go:build linux && libkrun
+//go:build ignore
 
 package libkrunvm
 
 /*
-#cgo CFLAGS: -I/home/newman/.local/include
-#cgo LDFLAGS: -L/home/newman/.smolvm/lib -lkrun -Wl,-rpath,/home/newman/.smolvm/lib
+#cgo CFLAGS: -I/usr/local/include
+#cgo LDFLAGS: -lkrun -Wl,-rpath,$$ORIGIN/../lib
 #include <libkrun.h>
 #include <stdlib.h>
 #include <stdint.h>

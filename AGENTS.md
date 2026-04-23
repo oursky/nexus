@@ -6,15 +6,19 @@ This repository is the Nexus remote workspace core.
 
 ### Components
 
-| Component | Status | Description |
-|-----------|--------|-------------|
+
+| Component            | Status   | Description                                                          |
+| -------------------- | -------- | -------------------------------------------------------------------- |
 | **Workspace Daemon** | ✅ Active | Go server for workspace lifecycle, RPC handlers, services, spotlight |
+
 
 ### Packages
 
-| Package | Status | Description |
-|---------|--------|-------------|
+
+| Package          | Status   | Description     |
+| ---------------- | -------- | --------------- |
 | `packages/nexus` | ✅ Active | Go daemon + CLI |
+
 
 ### Scope Notes
 
@@ -101,3 +105,4 @@ docs/
     ├── contributing.md
     └── migration-core-prune.md
 ```
+

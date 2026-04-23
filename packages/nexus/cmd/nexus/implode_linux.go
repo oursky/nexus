@@ -23,18 +23,12 @@ func buildImplodeScript(installBinDir string) string {
 	return header + string(firecrackerImplodeScript)
 }
 
-// killLibkrunOrphans kills any lingering passt or nexus libkrun-vm child
-// processes left over from a previous daemon run. These are user-space
-// processes (no root required) that must be stopped before the state
-// directories are wiped.
+// killLibkrunOrphans kills any lingering nexus-libkrun-vm child processes
+// left over from a previous daemon run.
 func killLibkrunOrphans(w io.Writer) {
-	for _, name := range []string{"passt", "nexus"} {
-		// pkill matches by process name prefix; ignore errors (no processes = fine).
-		_ = exec.Command("pkill", "-u", getUID(), "-f", name+".*libkrun").Run()
-	}
-	// Also kill any nexus libkrun-vm sub-processes spawned as children of the daemon.
-	_ = exec.Command("pkill", "-u", getUID(), "-f", "libkrun-vm").Run()
-	fmt.Fprintln(w, "  killed libkrun/passt orphan processes (if any)")
+	// nexus-libkrun-vm processes are standalone binaries; pkill by name.
+	_ = exec.Command("pkill", "-u", getUID(), "-f", "nexus-libkrun-vm").Run()
+	fmt.Fprintln(w, "  killed nexus-libkrun-vm orphan processes (if any)")
 }
 
 func getUID() string {

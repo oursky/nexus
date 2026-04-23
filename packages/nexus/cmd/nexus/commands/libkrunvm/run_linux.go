@@ -1,6 +1,8 @@
-//go:build linux && libkrun
+//go:build ignore
 
-// Package libkrunvm implements the hidden "libkrun-vm" subcommand.
+// Package libkrunvm is superseded by the standalone cmd/nexus-libkrun-vm binary.
+// The main nexus daemon no longer links CGO against libkrun.so directly.
+// This file is kept for historical reference only.
 // The nexus daemon spawns this as a child process for each workspace VM.
 // It reads a VMSpec JSON file, configures libkrun, and calls krun_start_enter()
 // which takes over the process and runs the microVM. When the VM exits, the

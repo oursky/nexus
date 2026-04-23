@@ -4,6 +4,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
@@ -58,6 +59,12 @@ func rootlessRootfsPath() string {
 	return filepath.Join(rootlessVMDir(), "rootfs.ext4")
 }
 
+// rootlessRootfsDirPath returns the directory-form of the rootfs used by
+// libkrun container mode (krun_set_root). Created alongside rootfs.ext4.
+func rootlessRootfsDirPath() string {
+	return filepath.Join(rootlessVMDir(), "rootfs-dir")
+}
+
 func rootlessFirecrackerPath() string {
 	return filepath.Join(xdgLocalBin(), "firecracker")
 }
@@ -83,9 +90,12 @@ func rootlessSubnetFilePath() string {
 // ── State model ───────────────────────────────────────────────────────────────
 
 type rootlessState struct {
-	SchemaVersion     int    `json:"schema_version"`
-	InstalledAt       string `json:"installed_at"`
-	NexusVersion      string `json:"nexus_version"`
+	SchemaVersion int    `json:"schema_version"`
+	InstalledAt   string `json:"installed_at"`
+	NexusVersion  string `json:"nexus_version"`
+	// Driver is the runtime driver that was bootstrapped: "firecracker" or "libkrun".
+	// daemon start reads this to auto-select the correct driver without needing --driver.
+	Driver            string `json:"driver,omitempty"`
 	FirecrackerBin    string `json:"firecracker_bin"`
 	NetworkBackend    string `json:"network_backend"`
 	NetworkBackendBin string `json:"network_backend_bin"`
@@ -99,7 +109,7 @@ type rootlessState struct {
 
 type bootstrapPhaseEvent struct {
 	Phase   string `json:"phase"`
-	Status  string `json:"status"`  // "start" | "ok" | "error"
+	Status  string `json:"status"` // "start" | "ok" | "error"
 	Message string `json:"message,omitempty"`
 }
 
@@ -152,10 +162,26 @@ func vmKernelURL() string {
 func vmSquashfsURL() string {
 	switch runtime.GOARCH {
 	case "arm64":
-		return "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/ubuntu-24.04.squashfs"
+		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64-root.tar.xz"
 	default:
-		return "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/x86_64/ubuntu-24.04.squashfs"
+		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64-root.tar.xz"
 	}
+}
+
+// vmRootfsIsSquashfs reports whether the cached rootfs archive is squashfs
+// (legacy Firecracker CI format) rather than a tar.xz (Ubuntu CDN format).
+func vmRootfsIsSquashfs(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := f.Read(magic[:]); err != nil {
+		return false
+	}
+	// squashfs magic: 'sqsh' (0x73717368) or 'hsqs' (0x68737173)
+	return magic == [4]byte{0x73, 0x71, 0x73, 0x68} || magic == [4]byte{0x68, 0x73, 0x71, 0x73}
 }
 
 func passtDownloadURL() string {
@@ -175,41 +201,79 @@ func smolvmSourceDir() string {
 	return filepath.Join(home, ".smolvm", "lib")
 }
 
-// ── libkrun library installation ──────────────────────────────────────────────
+// rootlessLibkrunBinDir returns the canonical location for the nexus-libkrun-vm
+// helper binary extracted at bootstrap.
+func rootlessLibkrunBinDir() string {
+	return filepath.Join(xdgShareNexus(), "bin")
+}
 
-// installLibkrunLibsRootless ensures libkrun.so and libkrunfw.so are present
-// in the canonical nexus lib directory (~/.local/share/nexus/lib/).
+// LibkrunVMBinPath returns the path where the nexus-libkrun-vm binary is
+// extracted during bootstrap. The manager uses this to spawn VMs.
+func LibkrunVMBinPath() string {
+	return filepath.Join(rootlessLibkrunBinDir(), "nexus-libkrun-vm")
+}
+
+// ── libkrun library + VM binary installation ──────────────────────────────────
+
+// installLibkrunLibsRootless ensures libkrun.so, libkrunfw.so, and the
+// nexus-libkrun-vm helper binary are present in ~/.local/share/nexus/{lib,bin}/.
 //
 // Source priority:
-//  1. Already installed (idempotent).
-//  2. Copy from ~/.smolvm/lib/ if smolvm is installed.
-//  3. Otherwise emit a remediation hint.
+//  1. Already installed (idempotent — checks for the sentinel libkrun.so.1).
+//  2. Embedded bytes (build was done with -tags libkrun and the artifacts were
+//     bundled into the binary at compile time) — preferred, fully offline.
+//  3. Copy from ~/.smolvm/lib/ if smolvm is installed — fallback for dev builds
+//     that don't have the embed artifacts (e.g. `go run` or unpackaged builds).
 func installLibkrunLibsRootless(w io.Writer, emitJSON bool) error {
-	destDir := rootlessLibkrunLibDir()
+	libDir := rootlessLibkrunLibDir()
+	binDir := rootlessLibkrunBinDir()
 
-	// Already installed if the main library is present.
-	if _, err := os.Stat(filepath.Join(destDir, "libkrun.so.1")); err == nil {
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		return fmt.Errorf("create libkrun lib dir %s: %w", libDir, err)
+	}
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return fmt.Errorf("create libkrun bin dir %s: %w", binDir, err)
+	}
+
+	// ── Path 1: extract from embedded bytes ───────────────────────────────────
+	if len(embeddedLibkrunVM) > 0 && len(embeddedLibkrun) > 0 && len(embeddedLibkrunfw) > 0 {
+		vmBin := filepath.Join(binDir, "nexus-libkrun-vm")
+		libkrunSo := filepath.Join(libDir, "libkrun.so")
+		libkrunfwSo := filepath.Join(libDir, "libkrunfw.so.5.3.0")
+		if needsInstall(vmBin, embeddedLibkrunVM) || needsInstall(libkrunSo, embeddedLibkrun) || needsInstall(libkrunfwSo, embeddedLibkrunfw) {
+			fmt.Fprintf(w, "  extracting embedded libkrun libraries and VM binary...\n")
+			if err := extractLibkrunEmbeds(libDir, binDir); err != nil {
+				return fmt.Errorf("extract libkrun embeds: %w", err)
+			}
+			fmt.Fprintf(w, "  libkrun installed from embedded build artifacts\n")
+		}
 		return nil
 	}
 
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return fmt.Errorf("create libkrun lib dir %s: %w", destDir, err)
+	// Idempotent fallback path: already installed if the main library and VM helper exist.
+	if _, err := os.Stat(filepath.Join(libDir, "libkrun.so.1")); err == nil {
+		if _, err2 := os.Stat(LibkrunVMBinPath()); err2 == nil {
+			return nil
+		}
 	}
 
+	// ── Path 2: copy from smolvm installation (dev fallback) ────────────────
 	srcDir := smolvmSourceDir()
 	if _, err := os.Stat(filepath.Join(srcDir, "libkrun.so.1")); err != nil {
 		return fmt.Errorf(
-			"prerequisite_error.libkrun_missing: libkrun shared library not found at %s\n\n"+
-				"Remediation:\n"+
-				"  Install smolvm (provides libkrun + libkrunfw):\n"+
-				"    curl -fsSL https://raw.githubusercontent.com/smol-machines/smolvm/main/install.sh | sh\n"+
-				"  Or build from source: https://github.com/containers/libkrun\n"+
-				"  After installation, re-run: nexus daemon start --driver=libkrun",
-			srcDir,
+			"prerequisite_error.libkrun_missing: libkrun shared library not found.\n\n" +
+				"This binary was not built with embedded libkrun artifacts.\n" +
+				"Remediation:\n" +
+				"  Re-deploy using the deploy script (downloads libkrun automatically):\n" +
+				"    REMOTE_HOST=user@host scripts/remote/deploy-libkrun.sh\n\n" +
+				"  Or install smolvm for local dev (pre-built libkrun.so included):\n" +
+				"    SMOLVM_VER=v0.5.19\n" +
+				"    curl -fsSL https://github.com/smol-machines/smolvm/releases/download/${SMOLVM_VER}/smolvm-${SMOLVM_VER#v}-linux-x86_64.tar.gz \\\n" +
+				"      | tar -xz --strip-components=2 -C ~/.smolvm/lib smolvm-${SMOLVM_VER#v}-linux-x86_64/lib\n",
 		)
 	}
 
-	fmt.Fprintf(w, "  installing libkrun libraries from %s...\n", srcDir)
+	fmt.Fprintf(w, "  installing libkrun libraries from %s (smolvm fallback)...\n", srcDir)
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		return fmt.Errorf("read smolvm lib dir: %w", err)
@@ -220,8 +284,7 @@ func installLibkrunLibsRootless(w io.Writer, emitJSON bool) error {
 			continue
 		}
 		src := filepath.Join(srcDir, name)
-		dst := filepath.Join(destDir, name)
-
+		dst := filepath.Join(libDir, name)
 		fi, err := os.Lstat(src)
 		if err != nil {
 			continue
@@ -242,12 +305,59 @@ func installLibkrunLibsRootless(w io.Writer, emitJSON bool) error {
 		}
 	}
 
-	// Verify the main library landed.
-	if _, err := os.Stat(filepath.Join(destDir, "libkrun.so.1")); err != nil {
+	// The smolvm fallback has no nexus-libkrun-vm binary — it expects the
+	// main nexus binary to be used with the `libkrun-vm` subcommand.
+	// That only works for unpackaged dev builds; the manager handles this
+	// via NexusBin fallback in that case.
+
+	if _, err := os.Stat(filepath.Join(libDir, "libkrun.so.1")); err != nil {
 		return fmt.Errorf("libkrun.so.1 not found after installation attempt")
 	}
-	fmt.Fprintf(w, "  libkrun libraries installed at %s\n", destDir)
+	fmt.Fprintf(w, "  libkrun libraries installed at %s\n", libDir)
 	return nil
+}
+
+// extractLibkrunEmbeds writes the embedded .so files and nexus-libkrun-vm binary
+// to the canonical nexus directories.
+func extractLibkrunEmbeds(libDir, binDir string) error {
+	// libkrun.so — actual library file; create versioned name + symlinks.
+	libkrunSo := filepath.Join(libDir, "libkrun.so")
+	if err := writeFileAtomic(libkrunSo, embeddedLibkrun, 0o755); err != nil {
+		return fmt.Errorf("write libkrun.so: %w", err)
+	}
+	// libkrun.so.1 → libkrun.so
+	ensureSymlink(libDir, "libkrun.so.1", "libkrun.so")
+
+	// libkrunfw — extract, then create version symlink chain.
+	libkrunfwSo := filepath.Join(libDir, "libkrunfw.so.5.3.0")
+	if err := writeFileAtomic(libkrunfwSo, embeddedLibkrunfw, 0o755); err != nil {
+		return fmt.Errorf("write libkrunfw.so.5.3.0: %w", err)
+	}
+	ensureSymlink(libDir, "libkrunfw.so.5", "libkrunfw.so.5.3.0")
+	ensureSymlink(libDir, "libkrunfw.so", "libkrunfw.so.5")
+
+	// nexus-libkrun-vm binary.
+	vmBin := filepath.Join(binDir, "nexus-libkrun-vm")
+	if err := writeFileAtomic(vmBin, embeddedLibkrunVM, 0o755); err != nil {
+		return fmt.Errorf("write nexus-libkrun-vm: %w", err)
+	}
+	return nil
+}
+
+// writeFileAtomic writes data to path atomically (write to .tmp, then rename).
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// ensureSymlink creates (or replaces) a symlink name→target in dir.
+func ensureSymlink(dir, name, target string) {
+	dst := filepath.Join(dir, name)
+	_ = os.Remove(dst)
+	_ = os.Symlink(target, dst)
 }
 
 // ── Prerequisite checks ───────────────────────────────────────────────────────
@@ -323,6 +433,7 @@ func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
 		}
 	}
 
+	// passt is required for both drivers in VM mode networking.
 	if err := installPasstRootless(w, emitJSON); err != nil {
 		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
 		return fmt.Errorf("asset-install: passt: %w", err)
@@ -333,14 +444,11 @@ func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
 		return fmt.Errorf("asset-install: kernel: %w", err)
 	}
 
+	// Both Firecracker and libkrun require a block-backed rootfs image so guest
+	// root behaves like a real VM filesystem (root can install arbitrary packages).
 	if err := installVMRootfsRootless(w, emitJSON); err != nil {
 		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
 		return fmt.Errorf("asset-install: rootfs: %w", err)
-	}
-
-	if err := ensureDataVolumeXFS(w, emitJSON); err != nil {
-		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
-		return fmt.Errorf("asset-install: data-volume: %w", err)
 	}
 
 	emitPhase(w, emitJSON, "asset-install", "ok", "all assets present")
@@ -362,82 +470,6 @@ func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
 
 	// daemon-launch phase is emitted by the caller after this returns.
 	return nil
-}
-
-// ── Data volume detection ─────────────────────────────────────────────────────
-
-const (
-	// xfsImagePath is the sparse backing file for the XFS loop mount.
-	xfsImagePath = "/data/nexus.img"
-	// xfsMountPoint is where the XFS volume is expected to be mounted.
-	xfsMountPoint = "/data/nexus"
-)
-
-// xfsSetupOneLiner is the single sudo command users run once as a prerequisite
-// before the first `nexus daemon start`. It creates a 200 GiB sparse XFS
-// image, mounts it, and registers it in /etc/fstab for persistence.
-const xfsSetupOneLiner = `sudo bash -c "mkdir -p /data && truncate -s 200G /data/nexus.img && mkfs.xfs /data/nexus.img && mkdir -p /data/nexus && mount -o loop /data/nexus.img /data/nexus && chown $(id -u):$(id -g) /data/nexus && echo '/data/nexus.img /data/nexus xfs loop,defaults 0 0' >> /etc/fstab"`
-
-// ensureDataVolumeXFS verifies that the Nexus data volume is on XFS (required
-// for O(1) reflink workspace clones). If it is not, it prints the one-liner
-// the user needs to run once and returns an error.
-func ensureDataVolumeXFS(w io.Writer, emitJSON bool) error {
-	dir := nexusDataVolumeDirBootstrap()
-	if reflinkAvailableBootstrap(dir) {
-		fmt.Fprintf(w, "  data volume: %s (%s) — XFS reflink ready\n", dir, filesystemTypeBootstrap(dir))
-		return nil
-	}
-	fsType := filesystemTypeBootstrap(dir)
-	return fmt.Errorf(
-		"data volume at %s is %q — nexus requires XFS.\n\n"+
-			"Run this once on the Linux host, then re-run daemon start:\n\n"+
-			"  %s",
-		dir, fsType, xfsSetupOneLiner,
-	)
-}
-
-// nexusDataVolumeDirBootstrap mirrors daemon.nexusDataVolumeDir without
-// importing the daemon package (bootstrap runs before daemon wiring).
-func nexusDataVolumeDirBootstrap() string {
-	if v := strings.TrimSpace(os.Getenv("NEXUS_DATA_DIR")); v != "" {
-		return v
-	}
-	const dedicated = "/data/nexus"
-	if fi, err := os.Stat(dedicated); err == nil && fi.IsDir() {
-		if f, err := os.CreateTemp(dedicated, ".nexus-probe-*"); err == nil {
-			f.Close()
-			os.Remove(f.Name())
-			return dedicated
-		}
-	}
-	return xdgStateNexus()
-}
-
-// filesystemTypeBootstrap returns a human-readable filesystem type for dir.
-func filesystemTypeBootstrap(dir string) string {
-	out, err := exec.Command("stat", "-f", "-c", "%T", dir).Output()
-	if err == nil {
-		t := strings.TrimSpace(string(out))
-		if t != "" {
-			return t
-		}
-	}
-	return "unknown"
-}
-
-// reflinkAvailableBootstrap probes whether dir supports cp --reflink=always.
-func reflinkAvailableBootstrap(dir string) bool {
-	probe, err := os.CreateTemp(dir, ".nexus-reflink-probe-src-*")
-	if err != nil {
-		return false
-	}
-	probe.Close()
-	dst := probe.Name() + "-dst"
-	defer func() {
-		os.Remove(probe.Name())
-		os.Remove(dst)
-	}()
-	return exec.Command("cp", "--reflink=always", probe.Name(), dst).Run() == nil
 }
 
 // ── Directory setup ───────────────────────────────────────────────────────────
@@ -499,7 +531,7 @@ func needsInstall(dest string, newContent []byte) bool {
 	if err != nil {
 		return true
 	}
-	return len(existing) != len(newContent)
+	return !bytes.Equal(existing, newContent)
 }
 
 // ── passt installation ────────────────────────────────────────────────────────
@@ -614,6 +646,129 @@ func installVMRootfsRootless(w io.Writer, emitJSON bool) error {
 	return nil
 }
 
+// installRootfsDirForLibkrun downloads the Ubuntu minimal root archive and
+// extracts it directly to rootfs-dir/ — the only rootfs artifact libkrun needs.
+// It deliberately skips building rootfs.ext4, saving 5–10 min of ext4 work.
+//
+// Download format: Ubuntu 24.04 minimal cloud image tar.xz (~30 MB compressed).
+// Served from Ubuntu's CDN (Akamai) — much faster than the Firecracker CI S3 bucket.
+//
+// Legacy upgrade path: if the old ubuntu.squashfs cache file is present it is
+// extracted with unsquashfs so users who already downloaded it don't re-download.
+func installRootfsDirForLibkrun(w io.Writer, emitJSON bool) error {
+	permDir := rootlessRootfsDirPath()
+	if _, err := os.Stat(permDir); err == nil {
+		return nil // already present
+	}
+
+	emitPhase(w, emitJSON, "asset-install", "start", "installing rootfs directory for libkrun")
+
+	tmpDir, err := os.MkdirTemp("", "nexus-rootfs-dir-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// ── Step 1: obtain the archive (tar.xz preferred; squashfs fallback) ──────
+	archivePath := filepath.Join(rootlessVMDir(), "ubuntu.squashfs") // legacy cache path
+	archiveIsSquashfs := false
+
+	if _, err := os.Stat(archivePath); err == nil && vmRootfsIsSquashfs(archivePath) {
+		archiveIsSquashfs = true
+		fmt.Fprintf(w, "  using cached squashfs (legacy) from %s\n", archivePath)
+	} else {
+		// Download the Ubuntu minimal tar.xz — CDN-served, typically ~30 MB.
+		tarxzCache := filepath.Join(rootlessVMDir(), "ubuntu-minimal.tar.xz")
+		if _, err := os.Stat(tarxzCache); err != nil {
+			url := vmSquashfsURL()
+			fmt.Fprintf(w, "  downloading Ubuntu minimal rootfs from %s ...\n", url)
+			emitPhase(w, emitJSON, "asset-install", "start", "downloading Ubuntu minimal rootfs (~30 MB)")
+			data, dlErr := httpDownload(url)
+			if dlErr != nil {
+				return fmt.Errorf("download rootfs tar.xz: %w", dlErr)
+			}
+			if err := atomicWriteFile(tarxzCache, data, 0o644); err != nil {
+				return fmt.Errorf("save rootfs tar.xz: %w", err)
+			}
+		} else {
+			fmt.Fprintf(w, "  using cached tar.xz from %s\n", tarxzCache)
+		}
+		archivePath = tarxzCache
+	}
+
+	// ── Step 2: extract the archive into a temp dir ───────────────────────────
+	extractDir := filepath.Join(tmpDir, "rootfs")
+	if err := os.MkdirAll(extractDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir extract dir: %w", err)
+	}
+
+	fakerootDBPath := filepath.Join(tmpDir, "fakeroot.db")
+	hasFakeroot := func() bool { _, err := exec.LookPath("fakeroot"); return err == nil }()
+	runCmd := func(name string, args ...string) *exec.Cmd {
+		if hasFakeroot {
+			allArgs := append([]string{"-s", fakerootDBPath, "-i", fakerootDBPath, name}, args...)
+			return exec.Command("fakeroot", allArgs...)
+		}
+		return exec.Command(name, args...)
+	}
+
+	fmt.Fprintf(w, "  extracting rootfs archive...\n")
+	emitPhase(w, emitJSON, "asset-install", "start", "extracting rootfs archive")
+
+	if archiveIsSquashfs {
+		if _, err := exec.LookPath("unsquashfs"); err != nil {
+			return fmt.Errorf("unsquashfs not found — install squashfs-tools")
+		}
+		unsqCmd := runCmd("unsquashfs", "-d", extractDir, archivePath)
+		unsqCmd.Stdout = w
+		unsqCmd.Stderr = w
+		if err := unsqCmd.Run(); err != nil {
+			return fmt.Errorf("unsquashfs: %w", err)
+		}
+	} else {
+		// tar.xz: extract directly into extractDir; -J = xz decompression.
+		tarCmd := runCmd("tar", "-xJf", archivePath, "-C", extractDir)
+		tarCmd.Stdout = w
+		tarCmd.Stderr = w
+		if err := tarCmd.Run(); err != nil {
+			return fmt.Errorf("tar -xJf: %w", err)
+		}
+	}
+
+	// ── Step 3: patch and install to permanent location ───────────────────────
+	fmt.Fprintf(w, "  patching rootfs for root environment...\n")
+	if err := patchRootfsForRoot(extractDir); err != nil {
+		fmt.Fprintf(w, "  warning: rootfs patch incomplete (non-fatal): %v\n", err)
+	}
+
+	if err := os.MkdirAll(permDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir rootfs-dir: %w", err)
+	}
+	cpCmd := exec.Command("cp", "-a", extractDir+"/.", permDir)
+	if out, cpErr := cpCmd.CombinedOutput(); cpErr != nil {
+		_ = os.RemoveAll(permDir)
+		return fmt.Errorf("cp -a to rootfs-dir: %w: %s", cpErr, strings.TrimSpace(string(out)))
+	}
+
+	// ── Step 4: inject the nexus agent into the rootfs directory ─────────────
+	// For libkrun container mode, krun_set_exec runs the agent from inside the
+	// rootfs-dir. Inject the same agent binary that's embedded in the nexus binary.
+	if len(embeddedAgent) > 0 {
+		agentDst := filepath.Join(permDir, "usr", "local", "bin", "nexus-firecracker-agent")
+		if mkErr := os.MkdirAll(filepath.Dir(agentDst), 0o755); mkErr == nil {
+			if writeErr := os.WriteFile(agentDst, embeddedAgent, 0o755); writeErr == nil {
+				fmt.Fprintf(w, "  agent injected into rootfs-dir at %s\n", agentDst)
+			} else {
+				fmt.Fprintf(w, "  warning: agent inject failed (non-fatal): %v\n", writeErr)
+			}
+		}
+	}
+
+	fmt.Fprintf(w, "  rootfs directory ready at %s\n", permDir)
+	emitPhase(w, emitJSON, "asset-install", "ok", "rootfs directory installed")
+	return nil
+}
+
 // copyFileRootless copies a file in userspace (no root needed).
 func copyFileRootless(src, dst string) error {
 	in, err := os.Open(src)
@@ -639,7 +794,6 @@ func copyFileRootless(src, dst string) error {
 	return os.Rename(tmp, dst)
 }
 
-
 // patchRootfsForRoot writes OS-level configuration files into the extracted
 // rootfs directory so that root has full, unrestricted control of the VM
 // environment from first boot — no per-operation workarounds needed.
@@ -650,17 +804,17 @@ func patchRootfsForRoot(rootfsDir string) error {
 		mode    os.FileMode
 	}
 
+	// Ubuntu minimal cloud image ships /etc/resolv.conf as a symlink to
+	// ../run/systemd/resolve/stub-resolv.conf — a path that doesn't exist
+	// inside the libkrun guest. Remove the symlink so the agent can write
+	// a real file; in TSI mode the agent adds "options use-vc" so DNS
+	// queries go over TCP (the only transport TSI supports for DNS).
+	resolvConf := filepath.Join(rootfsDir, "etc", "resolv.conf")
+	if fi, err := os.Lstat(resolvConf); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		_ = os.Remove(resolvConf)
+	}
+
 	files := []fileSpec{
-		// apt: disable the _apt sandbox entirely and always run as root.
-		// Without this, apt-key creates temp files as the _apt user and
-		// fails when /tmp is not world-writable.
-		{
-			path: "etc/apt/apt.conf.d/99nexus-root",
-			content: `// Nexus: run apt as root — the VM is a fully trusted root environment.
-APT::Sandbox::User "root";
-`,
-			mode: 0o644,
-		},
 		// /tmp: ensure world-writable sticky bit — squashfs default is 0755.
 		// The agent also mounts tmpfs here on boot, but this covers any path
 		// that does not go through the agent's mountKernelFilesystems.
@@ -729,35 +883,36 @@ func buildRootlessRootfs(w io.Writer, dest string) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Cache squashfs under ~/.local/share/nexus/vm/ — user-owned, survives
-	// reboots, and avoids /tmp world-writable / root-ownership problems.
-	squashfsCache := filepath.Join(rootlessVMDir(), "ubuntu.squashfs")
-	squashfsPath := squashfsCache
-	if _, err := os.Stat(squashfsCache); err != nil {
-		fmt.Fprintf(w, "  downloading squashfs rootfs (this may take a few minutes)...\n")
-		url := vmSquashfsURL()
-		data, err := httpDownload(url)
-		if err != nil {
-			return fmt.Errorf("download squashfs from %s: %w", url, err)
-		}
-		if err := atomicWriteFile(squashfsCache, data, 0o644); err != nil {
-			return fmt.Errorf("save squashfs: %w", err)
-		}
+	// Rootfs archive cache under ~/.local/share/nexus/vm/.
+	// Prefer Ubuntu minimal tar.xz; support legacy squashfs cache for upgrades.
+	archivePath := filepath.Join(rootlessVMDir(), "ubuntu.squashfs")
+	archiveIsSquashfs := false
+	if _, err := os.Stat(archivePath); err == nil && vmRootfsIsSquashfs(archivePath) {
+		archiveIsSquashfs = true
+		fmt.Fprintf(w, "  using cached squashfs rootfs from %s\n", archivePath)
 	} else {
-		fmt.Fprintf(w, "  using cached squashfs from %s\n", squashfsCache)
-	}
-
-	// Extract squashfs (no root needed)
-	if _, err := exec.LookPath("unsquashfs"); err != nil {
-		return fmt.Errorf(
-			"bootstrap_error.asset_install: unsquashfs not found\n\n"+
-				"Remediation:\n"+
-				"  sudo apt install squashfs-tools",
-		)
+		tarxzCache := filepath.Join(rootlessVMDir(), "ubuntu-minimal.tar.xz")
+		archivePath = tarxzCache
+		if _, err := os.Stat(tarxzCache); err != nil {
+			fmt.Fprintf(w, "  downloading Ubuntu minimal rootfs (tar.xz)...\n")
+			url := vmSquashfsURL()
+			data, err := httpDownload(url)
+			if err != nil {
+				return fmt.Errorf("download rootfs from %s: %w", url, err)
+			}
+			if err := atomicWriteFile(tarxzCache, data, 0o644); err != nil {
+				return fmt.Errorf("save rootfs tar.xz: %w", err)
+			}
+		} else {
+			fmt.Fprintf(w, "  using cached tar.xz rootfs from %s\n", tarxzCache)
+		}
 	}
 
 	rootfsDir := filepath.Join(tmpDir, "rootfs")
-	fmt.Fprintf(w, "  extracting squashfs...\n")
+	if err := os.MkdirAll(rootfsDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir rootfs dir: %w", err)
+	}
+	fmt.Fprintf(w, "  extracting rootfs archive...\n")
 
 	// Wrap with fakeroot if available so unsquashfs can preserve the original
 	// UIDs/GIDs from the squashfs (e.g. root-owned dirs like /root, /etc/ssh).
@@ -777,17 +932,27 @@ func buildRootlessRootfs(w io.Writer, dest string) error {
 		return exec.Command(name, args...)
 	}
 
-	unsqCmd := runCmd("unsquashfs", "-d", rootfsDir, squashfsPath)
-	unsqCmd.Stdout = w
-	unsqCmd.Stderr = w
-	if err := unsqCmd.Run(); err != nil {
-		return fmt.Errorf("unsquashfs: %w", err)
-	}
-
-	// Patch the extracted rootfs so root has full control on first boot.
-	fmt.Fprintf(w, "  patching rootfs for root environment...\n")
-	if err := patchRootfsForRoot(rootfsDir); err != nil {
-		fmt.Fprintf(w, "  warning: rootfs patch incomplete (non-fatal): %v\n", err)
+	if archiveIsSquashfs {
+		if _, err := exec.LookPath("unsquashfs"); err != nil {
+			return fmt.Errorf(
+				"bootstrap_error.asset_install: unsquashfs not found\n\n" +
+					"Remediation:\n" +
+					"  sudo apt install squashfs-tools",
+			)
+		}
+		unsqCmd := runCmd("unsquashfs", "-d", rootfsDir, archivePath)
+		unsqCmd.Stdout = w
+		unsqCmd.Stderr = w
+		if err := unsqCmd.Run(); err != nil {
+			return fmt.Errorf("unsquashfs: %w", err)
+		}
+	} else {
+		tarCmd := runCmd("tar", "-xJf", archivePath, "-C", rootfsDir)
+		tarCmd.Stdout = w
+		tarCmd.Stderr = w
+		if err := tarCmd.Run(); err != nil {
+			return fmt.Errorf("tar -xJf: %w", err)
+		}
 	}
 
 	// Require at least one ext4 builder.
@@ -810,6 +975,7 @@ func buildRootlessRootfs(w io.Writer, dest string) error {
 	const rootfsSize = "8g"
 	const rootfsSizeBlocks = "8388608" // 8 GiB in 1 KiB blocks for genext2fs
 
+	var ext4Err error
 	if hasGenext2fs {
 		buildCmd := runCmd("genext2fs",
 			"-b", rootfsSizeBlocks,
@@ -820,22 +986,44 @@ func buildRootlessRootfs(w io.Writer, dest string) error {
 		)
 		buildCmd.Stdout = w
 		buildCmd.Stderr = w
-		if err := buildCmd.Run(); err != nil {
-			return fmt.Errorf("genext2fs: %w", err)
+		ext4Err = buildCmd.Run()
+		if ext4Err != nil {
+			ext4Err = fmt.Errorf("genext2fs: %w", ext4Err)
 		}
-		return nil
+	} else {
+		// mke2fs -d path (fakeroot-aware, same runCmd wrapper)
+		mke2fsCmd := runCmd("mke2fs", "-F", "-t", "ext4", "-d", rootfsDir, "-q", dest, rootfsSize)
+		mke2fsCmd.Stdout = w
+		mke2fsCmd.Stderr = w
+		if err := mke2fsCmd.Run(); err != nil {
+			ext4Err = fmt.Errorf("mke2fs -d: %w", err)
+		}
+	}
+	if ext4Err != nil {
+		return ext4Err
 	}
 
-	// mke2fs -d path (fakeroot-aware, same runCmd wrapper)
-	mke2fsCmd := runCmd("mke2fs", "-F", "-t", "ext4", "-d", rootfsDir, "-q", dest, rootfsSize)
-	mke2fsCmd.Stdout = w
-	mke2fsCmd.Stderr = w
-	if err := mke2fsCmd.Run(); err != nil {
-		return fmt.Errorf("mke2fs -d: %w", err)
+	// Save the rootfs as a directory for libkrun container mode.
+	// krun_set_root() requires a host directory; libkrunfw's virtiofs kernel
+	// maps host uid→0 inside the VM so ownership is transparent to the guest.
+	permDir := rootlessRootfsDirPath()
+	if _, statErr := os.Stat(permDir); statErr != nil {
+		fmt.Fprintf(w, "  saving rootfs directory for libkrun container mode...\n")
+		if mkErr := os.MkdirAll(permDir, 0o755); mkErr != nil {
+			fmt.Fprintf(w, "  warning: mkdir rootfs-dir: %v\n", mkErr)
+		} else {
+			// cp -a src/. dest copies the tree into the pre-created dest dir.
+			cpCmd := exec.Command("cp", "-a", rootfsDir+"/.", permDir)
+			if out, cpErr := cpCmd.CombinedOutput(); cpErr != nil {
+				fmt.Fprintf(w, "  warning: failed to save rootfs-dir: %v: %s\n", cpErr, strings.TrimSpace(string(out)))
+				_ = os.RemoveAll(permDir) // clean up partial copy
+			} else {
+				fmt.Fprintf(w, "  rootfs directory saved at %s\n", permDir)
+			}
+		}
 	}
 	return nil
 }
-
 
 // ── Runtime verification ──────────────────────────────────────────────────────
 
@@ -861,7 +1049,7 @@ func verifyRootlessRuntime(driver string) error {
 		}
 	}
 
-	// Verify passt (required for both drivers).
+	// Verify passt.
 	passt := rootlessPasstPath()
 	if _, err := os.Stat(passt); err != nil {
 		return fmt.Errorf("passt not found at %s", passt)
@@ -872,7 +1060,7 @@ func verifyRootlessRuntime(driver string) error {
 		return fmt.Errorf("kernel not found at %s", rootlessKernelPath())
 	}
 
-	// Verify rootfs (required for both drivers).
+	// Both drivers use rootfs.ext4.
 	if _, err := os.Stat(rootlessRootfsPath()); err != nil {
 		return fmt.Errorf("rootfs not found at %s", rootlessRootfsPath())
 	}
@@ -883,11 +1071,22 @@ func verifyRootlessRuntime(driver string) error {
 // ── State persistence ─────────────────────────────────────────────────────────
 
 func persistRootlessState(driver string) error {
+	networkBackend := "passt"
+	networkBackendBin := rootlessPasstPath()
+	if driver == "libkrun" {
+		networkBackend = "tsi" // built into libkrun — no external binary
+		networkBackendBin = ""
+	}
+	effectiveDriver := driver
+	if effectiveDriver == "" {
+		effectiveDriver = "firecracker"
+	}
 	state := rootlessState{
 		SchemaVersion:     1,
 		InstalledAt:       time.Now().UTC().Format(time.RFC3339),
-		NetworkBackend:    "passt",
-		NetworkBackendBin: rootlessPasstPath(),
+		Driver:            effectiveDriver,
+		NetworkBackend:    networkBackend,
+		NetworkBackendBin: networkBackendBin,
 		KernelPath:        rootlessKernelPath(),
 		RootfsPath:        rootlessRootfsPath(),
 		KVMAccess:         "ok",
