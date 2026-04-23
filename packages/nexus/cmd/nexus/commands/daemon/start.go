@@ -171,6 +171,16 @@ func startCommand() *cobra.Command {
 				return fmt.Errorf("daemon start: invalid network config: %w", err)
 			}
 
+			// ── Driver selection ────────────────────────────────────────────────
+			// Apply the compile-time default when --driver is not specified.
+			// Local builds with the "libkrun" tag default to libkrun; production
+			// CI builds (no tag) default to firecracker.
+			if driver == "" && defaultDriver != "" {
+				driver = defaultDriver
+				log.Printf("daemon: using compile-time default driver=%s", driver)
+			}
+
+
 			// ── Driver validation ───────────────────────────────────────────────
 			// macOS: only sandbox is supported (no KVM).
 			isLibkrun := driver == "libkrun"
@@ -183,24 +193,24 @@ func startCommand() *cobra.Command {
 				}
 			}
 
-			// Both firecracker and libkrun require kernel + rootfs (same assets).
+			// Firecracker and libkrun both require rootfs.ext4.
+			// Firecracker additionally requires an explicit kernel path.
 			if !sandboxMode {
-				if rootfsPath == "" || kernelPath == "" {
-					runtime := "firecracker"
-					if isLibkrun {
-						runtime = "libkrun"
-					}
+				if rootfsPath == "" || (!isLibkrun && kernelPath == "") {
 					return fmt.Errorf(
-						"daemon start: %s requires --rootfs and --kernel.\n"+
-							"  Run `nexus daemon start` (auto-provisions assets) or supply --rootfs/--kernel.",
-						runtime,
+						"daemon start: %s requires --rootfs%s.\n"+
+							"  Run `nexus daemon start` (auto-provisions assets) or supply required flags.",
+						map[bool]string{true: "libkrun", false: "firecracker"}[isLibkrun],
+						map[bool]string{true: "", false: " and --kernel"}[isLibkrun],
 					)
 				}
 				if _, err := os.Stat(rootfsPath); err != nil {
 					return fmt.Errorf("daemon start: rootfs %q not found: %w\n  Run `nexus daemon start` first or supply --rootfs", rootfsPath, err)
 				}
-				if _, err := os.Stat(kernelPath); err != nil {
-					return fmt.Errorf("daemon start: kernel %q not found: %w\n  Run `nexus daemon start` first or supply --kernel", kernelPath, err)
+				if !isLibkrun {
+					if _, err := os.Stat(kernelPath); err != nil {
+						return fmt.Errorf("daemon start: kernel %q not found: %w\n  Run `nexus daemon start` first or supply --kernel", kernelPath, err)
+					}
 				}
 			}
 
@@ -252,12 +262,13 @@ func startCommand() *cobra.Command {
 				NodeName:           nodeName,
 				Network:            netCfg,
 				Driver:             effectiveDriver,
+				EmbeddedAgentFn:    EmbeddedAgentFn,
 			}
 
-			// Inject the guest agent (nexus-firecracker-agent) into rootfs.
-			// Both firecracker and libkrun use the same agent as init/PID-1.
-			// Skip only when sandbox or in the background child (parent handles it).
+			// Inject/refresh the guest agent binary.
 			if !sandboxMode && !isForegroundChild {
+				// Refresh embedded guest agent in rootfs.ext4 so deploys take effect
+				// immediately for both runtime drivers.
 				if err := ensureFirecrackerGuestAgent(cfg.RootFSPath); err != nil {
 					return fmt.Errorf("daemon start: guest agent refresh: %w", err)
 				}
@@ -392,6 +403,50 @@ func defaultDataDir() string {
 func hostName() string {
 	name, _ := os.Hostname()
 	return name
+}
+
+// rootlessDirPath returns the libkrun rootfs directory path (rootfs-dir/).
+func rootlessDirPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "nexus", "vm", "rootfs-dir")
+}
+
+// ensureLibkrunGuestAgent writes the embedded nexus-firecracker-agent into
+// rootfs-dir when the binary has changed (hash mismatch).
+// libkrun's krun_set_exec runs the agent directly from the shared rootfs-dir.
+func ensureLibkrunGuestAgent(rootfsDirPath string) error {
+	if EmbeddedAgentFn == nil {
+		return nil // no embedded agent in this build (dev mode)
+	}
+	agentData := EmbeddedAgentFn()
+	if len(agentData) == 0 {
+		return nil
+	}
+
+	if _, err := os.Stat(rootfsDirPath); err != nil {
+		return fmt.Errorf("rootfs-dir not found at %q", rootfsDirPath)
+	}
+	agentDst := filepath.Join(rootfsDirPath, "usr", "local", "bin", "nexus-firecracker-agent")
+
+	// Hash check — skip write if binary matches what's already in the dir.
+	newHash := sha256.Sum256(agentData)
+	newHashHex := hex.EncodeToString(newHash[:])
+	hashFile := agentHashFile() + ".libkrun"
+	if stored, err := os.ReadFile(hashFile); err == nil {
+		if strings.TrimSpace(string(stored)) == newHashHex {
+			return nil // already up to date
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(agentDst), 0o755); err != nil {
+		return fmt.Errorf("mkdir agent dir: %w", err)
+	}
+	if err := os.WriteFile(agentDst, agentData, 0o755); err != nil {
+		return fmt.Errorf("write agent to rootfs-dir: %w", err)
+	}
+	_ = os.WriteFile(hashFile, []byte(newHashHex), 0o600)
+	log.Printf("daemon: libkrun guest agent refreshed in rootfs-dir")
+	return nil
 }
 
 // ensureFirecrackerGuestAgent writes the nexus-firecracker-agent binary into
