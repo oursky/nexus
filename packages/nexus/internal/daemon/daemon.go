@@ -71,9 +71,13 @@ type Config struct {
 	KernelPath         string
 	RootFSPath         string
 	WorkDirRoot        string
+	BasesDir           string
 	NodeName           string
 	NodeTags           []string
 	Network            NetworkConfig
+	// Driver overrides the runtime driver: "" or "firecracker" = Firecracker,
+	// "libkrun" = libkrun (requires build tag libkrun), "sandbox" = process sandbox.
+	Driver string
 }
 
 // Daemon is the assembled daemon with all services wired together.
@@ -105,7 +109,26 @@ func New(cfg Config) (*Daemon, error) {
 
 	var rtDriver domainruntime.Driver
 	var fcDriver *firecracker.FCDriver
-	if cfg.FirecrackerEnabled {
+
+	var lkBundle libkrunDriverBundle
+
+	switch {
+	case cfg.Driver == "libkrun":
+		// libkrun driver — built only when the "libkrun" build tag is set.
+		var err error
+		lkBundle, err = buildLibkrunDriver(cfg)
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("daemon: libkrun driver: %w", err)
+		}
+		if err := lkBundle.CleanupStaleInstances(context.Background()); err != nil {
+			log.Printf("daemon: libkrun stale cleanup warning: %v", err)
+		}
+		reconcileLibkrunWorkspaceStates(context.Background(), wsStore)
+		rtDriver = lkBundle.AsDriver()
+		log.Printf("daemon: libkrun runtime driver wired")
+
+	case cfg.FirecrackerEnabled && cfg.Driver != "sandbox":
 		if err := validateFirecrackerHostRouting(); err != nil {
 			db.Close()
 			return nil, err
@@ -117,7 +140,8 @@ func New(cfg Config) (*Daemon, error) {
 		reconcileFirecrackerWorkspaceStates(context.Background(), wsStore)
 		rtDriver = firecracker.NewAdapter(fcDriver)
 		log.Printf("daemon: firecracker runtime driver wired")
-	} else {
+
+	default:
 		rtDriver = sandbox.NewAdapter(sandbox.NewDriver())
 		log.Printf("daemon: sandbox (process) runtime driver wired")
 	}
@@ -127,6 +151,8 @@ func New(cfg Config) (*Daemon, error) {
 	spotlightOpts := []appspotlight.Option{}
 	if fcDriver != nil {
 		spotlightOpts = append(spotlightOpts, appspotlight.WithPortDialer(fcDriver))
+	} else if cfg.Driver == "libkrun" {
+		spotlightOpts = append(spotlightOpts, appspotlight.WithPortDialer(lkBundle))
 	}
 	spotlightSvc := appspotlight.New(fwdStore, wsStore, spotlightOpts...)
 	ptyReg := apppty.NewRegistry()
@@ -145,6 +171,8 @@ func New(cfg Config) (*Daemon, error) {
 	}
 	if fcDriver != nil {
 		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithVsockDialer(fcDriver))
+	} else if cfg.Driver == "libkrun" {
+		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithVsockDialer(lkBundle))
 	}
 	rpcpty.New(ptyReg, ptyHandlerOpts...).Register(reg)
 	rpcfs.New("/").Register(reg)
@@ -178,6 +206,32 @@ func New(cfg Config) (*Daemon, error) {
 	}
 
 	return d, nil
+}
+
+// reconcileLibkrunWorkspaceStates resets stale libkrun workspace states after restart.
+func reconcileLibkrunWorkspaceStates(ctx context.Context, wsStore *store.WorkspaceStore) {
+	all, err := wsStore.List(ctx)
+	if err != nil {
+		log.Printf("daemon: libkrun workspace state reconcile skipped: %v", err)
+		return
+	}
+	for _, ws := range all {
+		if ws == nil || ws.Backend != "libkrun" {
+			continue
+		}
+		switch ws.State {
+		case domainws.StateRunning:
+			ws.State = domainws.StateStopped
+		case domainws.StateStarting:
+			ws.State = domainws.StateCreated
+		default:
+			continue
+		}
+		ws.UpdatedAt = time.Now().UTC()
+		if err := wsStore.Update(ctx, ws); err != nil {
+			log.Printf("daemon: libkrun workspace state reconcile %s: %v", ws.ID, err)
+		}
+	}
 }
 
 // reconcileFirecrackerWorkspaceStates prevents stale DB state after daemon

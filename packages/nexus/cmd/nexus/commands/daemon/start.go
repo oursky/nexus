@@ -94,6 +94,7 @@ func startCommand() *cobra.Command {
 		sandboxMode bool   // internal: use process sandbox backend instead of Firecracker
 		networkCIDR string // --network-cidr: bridge subnet for Firecracker VMs
 		jsonOutput  bool   // --json: emit structured phase events (rootless bootstrap)
+		driver      string // --driver: runtime driver override (firecracker, libkrun, sandbox)
 	)
 
 	defaultData := defaultDataDir()
@@ -210,6 +211,15 @@ func startCommand() *cobra.Command {
 				}
 			}
 
+			// Resolve effective driver.
+			effectiveDriver := driver
+			if effectiveDriver == "" && sandboxMode {
+				effectiveDriver = "sandbox"
+			}
+			if effectiveDriver == "" && firecrackerEnabled {
+				effectiveDriver = "firecracker"
+			}
+
 			cfg := daemon.Config{
 				DBPath:             dbPath,
 				SocketPath:         socketPath,
@@ -218,8 +228,10 @@ func startCommand() *cobra.Command {
 				KernelPath:         kernelPath,
 				RootFSPath:         rootfsPath,
 				WorkDirRoot:        workDirRoot,
+				BasesDir:           filepath.Join(defaultData, "bases"),
 				NodeName:           nodeName,
 				Network:            netCfg,
+				Driver:             effectiveDriver,
 			}
 
 			// Inject the guest agent only in the parent (or in foreground mode).
@@ -277,6 +289,7 @@ func startCommand() *cobra.Command {
 	_ = cmd.Flags().MarkHidden("sandbox")
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Stay in foreground instead of self-daemonizing")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON phase events during bootstrap (for RemoteProvisioner / CI)")
+	cmd.Flags().StringVar(&driver, "driver", "", "Runtime driver override: firecracker | libkrun | sandbox (default: auto)")
 
 	return cmd
 }
