@@ -24,30 +24,50 @@ const DefaultSpotlightVSockPort uint32 = 10792
 
 // ManagerConfig holds configuration for the libkrun VM manager.
 type ManagerConfig struct {
+	// LibkrunVMBin is the path to the nexus-libkrun-vm helper binary.
+	// When non-empty (packaged builds with embedded artifacts), the manager
+	// spawns this binary directly.  When empty it falls back to NexusBin with
+	// the "libkrun-vm" subcommand (unpackaged / smolvm-fallback dev builds).
+	LibkrunVMBin string
 	// NexusBin is the path to the nexus binary (os.Executable()).
-	// Used to spawn libkrun-vm child processes.
-	NexusBin   string
+	// Fallback for dev builds that don't have LibkrunVMBin.
+	NexusBin string
+
+	// RootFSBasePath is the canonical rootfs.ext4 created during bootstrap.
+	// Each workspace clones it (reflink/sparse copy) into its own workdir so
+	// the guest root is a real writable block filesystem.
+	RootFSBasePath string
+	// KernelPath is the kernel image passed to krun_set_kernel.
 	KernelPath string
-	RootFSPath string
+	// BasesDir stores cached per-repo base workspace images.
+	BasesDir string
+	// NetworkBackend selects networking mode for libkrun VMs:
+	// "auto" (prefer virtio-net), "virtio-net", or "tsi".
+	NetworkBackend string
+
 	WorkDirRoot string
-	BasesDir   string
+
+	// EmbeddedAgentFn returns the embedded nexus-firecracker-agent binary bytes.
+	// When set, the agent binary is written into each workspace's rootfs.ext4
+	// on spawn so the in-VM agent stays in sync with the nexus binary.
+	EmbeddedAgentFn func() []byte
 }
 
 // Instance represents a running libkrun VM.
 type Instance struct {
-	WorkspaceID    string
-	WorkDir        string
-	WorkspaceImage string
-	BaseImage      string
-	SerialLog      string
+	WorkspaceID     string
+	WorkDir         string
+	RootFSImage     string
+	WorkspaceImage  string // ext4 mounted at /workspace
+	DockerDataImage string // sparse ext4 for /var/lib/docker
+	SerialLog       string
+	PasstProcess    *os.Process
 	// GuestIP is the host-accessible SSH target (127.0.0.1:PORT).
-	GuestIP        string
+	GuestIP string
 	// Process is the libkrun-vm child process.
-	Process        *os.Process
-	// Passt is the passt networking process.
-	Passt          *passtState
-	// SSHPort is the host port forwarded to guest port 22.
-	SSHPort        int
+	Process *os.Process
+	// SSHPort is the host TCP port that libkrun TSI maps to guest port 22.
+	SSHPort int
 }
 
 // Manager handles libkrun VM lifecycle.
@@ -72,14 +92,21 @@ func NewManager(cfg ManagerConfig) *Manager {
 type SpawnSpec struct {
 	WorkspaceID     string
 	ProjectRoot     string
-	BasesDir        string
-	SnapshotID      string
+	SnapshotID      string // non-empty → restore overlay from this snapshot
 	MemoryMiB       int
 	VCPUs           int
 	HostConfigDrive string
 }
 
-// Spawn creates and starts a new libkrun VM.
+// Spawn creates and starts a new libkrun VM using block-backed root/workspace
+// images plus a separate Docker data image.
+//
+// Disk layout inside the guest (assembled by the agent):
+//
+//	/dev/vda  rootfs.ext4             (workspace clone, rw)   → /
+//	/dev/vdb  workspace.ext4          (workspace clone, rw)   → /workspace
+//	/dev/vdc  docker-data.ext4        (sparse, Docker data)   → /var/lib/docker
+//	/dev/vdd  hostconfig.ext4         (read-only)             → /run/nexus-host
 func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) {
 	m.mu.Lock()
 	if _, exists := m.instances[spec.WorkspaceID]; exists {
@@ -101,56 +128,73 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	}
 
 	serialLog := filepath.Join(workDir, "libkrun.log")
-	workspaceImagePath := filepath.Join(workDir, "workspace.ext4")
-	workspaceOverlayPath := filepath.Join(workDir, "workspace-overlay.ext4")
+	rootfsPath := filepath.Join(workDir, "rootfs.ext4")
+	workspacePath := filepath.Join(workDir, "workspace.ext4")
+	dockerDataPath := filepath.Join(workDir, "docker-data.ext4")
 
-	overlayMode := spec.BasesDir != ""
-	var baseImagePath string
-
-	if overlayMode {
-		bp, err := EnsureBaseImage(spec.ProjectRoot, spec.BasesDir)
-		if err != nil {
+	// Rootfs: restore from snapshot for forks, otherwise clone from base rootfs.
+	// clone uses reflink when available (XFS/btrfs) and sparse-copy fallback.
+	if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
+		if err := copyFile(m.snapshotRootfsPath(snapID), rootfsPath); err != nil {
 			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("ensure base image: %w", err)
+			return nil, fmt.Errorf("restore rootfs from snapshot: %w", err)
 		}
-		baseImagePath = bp
-
-		if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
-			snapPath := m.snapshotImagePath(snapID)
-			if err := copyFile(snapPath, workspaceOverlayPath); err != nil {
-				os.RemoveAll(workDir)
-				return nil, fmt.Errorf("restore overlay from fork snapshot: %w", err)
-			}
-		} else {
-			if err := createWorkspaceOverlay(workspaceOverlayPath); err != nil {
-				os.RemoveAll(workDir)
-				return nil, fmt.Errorf("create workspace overlay: %w", err)
-			}
-		}
-	} else if strings.TrimSpace(spec.SnapshotID) != "" {
-		if err := copyFile(m.snapshotImagePath(spec.SnapshotID), workspaceImagePath); err != nil {
+		log.Printf("[libkrun] workspace %s: restored rootfs from snapshot %s", spec.WorkspaceID, snapID)
+	} else if _, err := os.Stat(rootfsPath); err != nil {
+		if err := copyFile(m.cfg.RootFSBasePath, rootfsPath); err != nil {
 			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("restore workspace from snapshot: %w", err)
-		}
-	} else {
-		if err := createWorkspaceImage(spec.ProjectRoot, workspaceImagePath); err != nil {
-			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("build workspace image: %w", err)
+			return nil, fmt.Errorf("clone rootfs image: %w", err)
 		}
 	}
 
-	// Pick a free host port for SSH forwarding.
+	// Inject current embedded agent into the rootfs so the in-VM agent always
+	// matches this nexus binary, regardless of when rootfs.ext4 was created.
+	if m.cfg.EmbeddedAgentFn != nil {
+		if agentData := m.cfg.EmbeddedAgentFn(); len(agentData) > 0 {
+			if err := injectFileIntoExt4(rootfsPath, agentData, "/usr/local/bin/nexus-firecracker-agent", 0o755); err != nil {
+				log.Printf("[libkrun] workspace %s: agent inject failed (non-fatal): %v", spec.WorkspaceID, err)
+			}
+		}
+	}
+
+	// Workspace image: restore from snapshot or clone repo base image.
+	if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
+		if err := copyFile(m.snapshotWorkspacePath(snapID), workspacePath); err != nil {
+			os.RemoveAll(workDir)
+			return nil, fmt.Errorf("restore workspace from snapshot: %w", err)
+		}
+		log.Printf("[libkrun] workspace %s: restored workspace from snapshot %s", spec.WorkspaceID, snapID)
+	} else if _, err := os.Stat(workspacePath); err != nil {
+		basePath, err := EnsureBaseImage(spec.ProjectRoot, m.cfg.BasesDir)
+		if err != nil {
+			os.RemoveAll(workDir)
+			return nil, fmt.Errorf("ensure base workspace image: %w", err)
+		}
+		if err := copyFile(basePath, workspacePath); err != nil {
+			os.RemoveAll(workDir)
+			return nil, fmt.Errorf("clone workspace image: %w", err)
+		}
+	}
+
+	// Docker data image: restore from snapshot for forks, otherwise create fresh.
+	if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
+		if err := copyFile(m.snapshotDockerPath(snapID), dockerDataPath); err != nil {
+			os.RemoveAll(workDir)
+			return nil, fmt.Errorf("restore docker-data from snapshot: %w", err)
+		}
+		log.Printf("[libkrun] workspace %s: restored docker-data from snapshot %s", spec.WorkspaceID, snapID)
+	} else if _, err := os.Stat(dockerDataPath); err != nil {
+		if err := createDockerDataImage(dockerDataPath); err != nil {
+			os.RemoveAll(workDir)
+			return nil, fmt.Errorf("create docker-data image: %w", err)
+		}
+	}
+
+	// Pick a free host TCP port for SSH forwarding (TSI maps it to guest port 22).
 	sshPort, err := pickFreePort()
 	if err != nil {
 		os.RemoveAll(workDir)
 		return nil, fmt.Errorf("pick ssh port: %w", err)
-	}
-
-	// Start passt (networking backend).
-	ps, err := setupPasst(spec.WorkspaceID, workDir, sshPort)
-	if err != nil {
-		os.RemoveAll(workDir)
-		return nil, fmt.Errorf("setup passt: %w", err)
 	}
 
 	// vsock port configurations.
@@ -172,59 +216,72 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		},
 	}
 
-	// Build kernel cmdline.
-	// Re-use the same init binary as Firecracker so no guest changes are needed.
-	workspaceImg := workspaceOverlayPath
-	if !overlayMode {
-		workspaceImg = workspaceImagePath
-	}
-	cmdline := buildKernelCmdline(overlayMode)
-
 	vmSpec := VMSpec{
 		WorkspaceID:     spec.WorkspaceID,
 		KernelPath:      m.cfg.KernelPath,
-		KernelCmdline:   cmdline,
-		RootFSPath:      m.cfg.RootFSPath,
-		WorkspaceImage:  workspaceImg,
-		BaseImage:       baseImagePath,
-		OverlayMode:     overlayMode,
+		KernelCmdline:   "console=hvc0 root=/dev/vda rw init=/usr/local/bin/nexus-firecracker-agent",
+		RootFSImage:     rootfsPath,
+		AgentPath:       "/usr/local/bin/nexus-firecracker-agent",
+		WorkspaceImage:  workspacePath,
+		DockerDataImage: dockerDataPath,
 		HostConfigDrive: spec.HostConfigDrive,
 		MemoryMiB:       spec.MemoryMiB,
 		VCPUs:           spec.VCPUs,
 		SerialLog:       serialLog,
-		PasstFDIndex:    0, // vmFD is ExtraFiles[0] → fd 3
 		SSHHostPort:     sshPort,
+		NetworkBackend:  strings.TrimSpace(m.cfg.NetworkBackend),
+		PortMap:         []string{fmt.Sprintf("%d:22", sshPort)},
 		VsockPorts:      vsockPorts,
+	}
+	if vmSpec.NetworkBackend == "" {
+		vmSpec.NetworkBackend = "auto"
+	}
+
+	var vmSideFD, hostSideFD *os.File
+	var passtProc *os.Process
+	if vmSpec.NetworkBackend == "auto" || vmSpec.NetworkBackend == "virtio-net" {
+		var pairErr error
+		vmSideFD, hostSideFD, pairErr = createPasstSocketPair()
+		if pairErr != nil {
+			os.RemoveAll(workDir)
+			return nil, fmt.Errorf("create passt socketpair: %w", pairErr)
+		}
+		passtProc, pairErr = startPasstProcess(workDir, hostSideFD)
+		if pairErr != nil {
+			_ = vmSideFD.Close()
+			_ = hostSideFD.Close()
+			os.RemoveAll(workDir)
+			return nil, fmt.Errorf("start passt: %w", pairErr)
+		}
+		vmSpec.PasstFDIndex = 0
 	}
 
 	// Write VMSpec to a temp config file.
 	configPath := filepath.Join(workDir, "libkrun-config.json")
 	configData, err := json.Marshal(vmSpec)
 	if err != nil {
-		teardownPasst(ps)
 		os.RemoveAll(workDir)
 		return nil, fmt.Errorf("marshal vm spec: %w", err)
 	}
 	if err := os.WriteFile(configPath, configData, 0o600); err != nil {
-		teardownPasst(ps)
 		os.RemoveAll(workDir)
 		return nil, fmt.Errorf("write vm config: %w", err)
 	}
 
-	// Spawn the libkrun-vm child process.
-	nexusBin := m.cfg.NexusBin
-	if nexusBin == "" {
-		nexusBin, err = os.Executable()
-		if err != nil {
-			teardownPasst(ps)
-			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("resolve nexus executable: %w", err)
-		}
+	// Spawn the libkrun-vm child process using the extracted standalone binary.
+	vmBin := strings.TrimSpace(m.cfg.LibkrunVMBin)
+	if vmBin == "" {
+		os.RemoveAll(workDir)
+		return nil, fmt.Errorf("LibkrunVMBin not configured: run 'nexus daemon start --driver=libkrun' to bootstrap")
 	}
-
-	childCmd := exec.Command(nexusBin, "libkrun-vm", "--config="+configPath)
-	childCmd.ExtraFiles = []*os.File{ps.vmFD} // vmFD becomes fd 3 in the child
+	libDir := filepath.Join(filepath.Dir(vmBin), "..", "lib")
+	env := append(os.Environ(), "LD_LIBRARY_PATH="+libDir+":"+os.Getenv("LD_LIBRARY_PATH"))
+	childCmd := exec.Command(vmBin, "--config="+configPath)
+	childCmd.Env = env
 	childCmd.Dir = workDir
+	if vmSideFD != nil {
+		childCmd.ExtraFiles = []*os.File{vmSideFD}
+	}
 
 	// Redirect child stdout/stderr to the VM's serial log.
 	vmLogFile, err := os.OpenFile(serialLog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
@@ -235,29 +292,40 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	childCmd.Stderr = vmLogFile
 
 	if err := childCmd.Start(); err != nil {
-		teardownPasst(ps)
+		if passtProc != nil {
+			_ = passtProc.Kill()
+		}
+		if vmSideFD != nil {
+			_ = vmSideFD.Close()
+		}
+		if hostSideFD != nil {
+			_ = hostSideFD.Close()
+		}
 		os.RemoveAll(workDir)
 		return nil, fmt.Errorf("spawn libkrun-vm child: %w", err)
 	}
+	if vmSideFD != nil {
+		_ = vmSideFD.Close()
+	}
+	if hostSideFD != nil {
+		_ = hostSideFD.Close()
+	}
 	_ = vmLogFile.Close()
-
-	// The vmFD is now owned by the child; close in parent.
-	_ = ps.vmFD.Close()
-	ps.vmFD = nil
 
 	// Write PID file.
 	_ = os.WriteFile(filepath.Join(workDir, "libkrun.pid"), []byte(strconv.Itoa(childCmd.Process.Pid)), 0o600)
 
 	inst := &Instance{
-		WorkspaceID:    spec.WorkspaceID,
-		WorkDir:        workDir,
-		WorkspaceImage: workspaceImg,
-		BaseImage:      baseImagePath,
-		SerialLog:      serialLog,
-		GuestIP:        fmt.Sprintf("127.0.0.1:%d", sshPort),
-		Process:        childCmd.Process,
-		Passt:          ps,
-		SSHPort:        sshPort,
+		WorkspaceID:     spec.WorkspaceID,
+		WorkDir:         workDir,
+		RootFSImage:     rootfsPath,
+		WorkspaceImage:  workspacePath,
+		DockerDataImage: dockerDataPath,
+		SerialLog:       serialLog,
+		PasstProcess:    passtProc,
+		GuestIP:         fmt.Sprintf("127.0.0.1:%d", sshPort),
+		Process:         childCmd.Process,
+		SSHPort:         sshPort,
 	}
 
 	m.mu.Lock()
@@ -283,7 +351,7 @@ func (m *Manager) Stop(_ context.Context, workspaceID string) error {
 	m.mu.Unlock()
 
 	if !exists {
-		return nil
+		return fmt.Errorf("workspace not found: %s", workspaceID)
 	}
 
 	// Gracefully stop VM child process.
@@ -302,8 +370,21 @@ func (m *Manager) Stop(_ context.Context, workspaceID string) error {
 			_ = inst.Process.Kill()
 		}
 	}
-
-	teardownPasst(inst.Passt)
+	if inst.PasstProcess != nil {
+		if err := inst.PasstProcess.Signal(os.Interrupt); err != nil {
+			_ = inst.PasstProcess.Kill()
+		}
+		done := make(chan struct{})
+		go func() {
+			_, _ = inst.PasstProcess.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			_ = inst.PasstProcess.Kill()
+		}
+	}
 	return nil
 }
 
@@ -325,30 +406,51 @@ func (m *Manager) CleanupWorkspaceByID(ctx context.Context, workspaceID string) 
 	return os.RemoveAll(workDir)
 }
 
-// snapshotImagePath returns the path where a fork/snapshot image is stored.
-func (m *Manager) snapshotImagePath(snapshotID string) string {
-	return filepath.Join(m.cfg.WorkDirRoot, ".snapshots", snapshotID+".ext4")
+// snapshot image paths for fork/restore lineage.
+func (m *Manager) snapshotRootfsPath(snapshotID string) string {
+	return filepath.Join(m.cfg.WorkDirRoot, ".snapshots", snapshotID+".rootfs.ext4")
 }
 
-// ForkWorkspaceImage copies the parent's workspace image as a snapshot for the child.
-// The parent VM is stopped first and resumed afterwards via the driver.
+func (m *Manager) snapshotWorkspacePath(snapshotID string) string {
+	return filepath.Join(m.cfg.WorkDirRoot, ".snapshots", snapshotID+".workspace.ext4")
+}
+
+func (m *Manager) snapshotDockerPath(snapshotID string) string {
+	return filepath.Join(m.cfg.WorkDirRoot, ".snapshots", snapshotID+".docker.ext4")
+}
+
+// ForkWorkspaceImage snapshots the parent's rootfs, workspace, and docker images
+// for the child lineage snapshot.
+// The caller (Driver.CheckpointFork) is responsible for stopping the parent VM
+// before calling this and restarting it afterward.
 func (m *Manager) ForkWorkspaceImage(_ context.Context, parentWorkspaceID, childSnapshotID string) error {
 	m.mu.RLock()
 	parent, exists := m.instances[parentWorkspaceID]
 	m.mu.RUnlock()
 
-	var srcPath string
+	var rootSrcPath, workspaceSrcPath, dockerSrcPath string
 	if exists {
-		srcPath = parent.WorkspaceImage
+		rootSrcPath = parent.RootFSImage
+		workspaceSrcPath = parent.WorkspaceImage
+		dockerSrcPath = parent.DockerDataImage
 	} else {
-		// Parent not running; find the image from the workdir.
-		workDir := filepath.Join(m.cfg.WorkDirRoot, parentWorkspaceID)
-		// Try overlay path first, then legacy.
-		p := filepath.Join(workDir, "workspace-overlay.ext4")
-		if _, err := os.Stat(p); err == nil {
-			srcPath = p
-		} else {
-			srcPath = filepath.Join(workDir, "workspace.ext4")
+		// Parent not currently running; find images from its workdir.
+		parentDir := filepath.Join(m.cfg.WorkDirRoot, parentWorkspaceID)
+		rootSrcPath = filepath.Join(parentDir, "rootfs.ext4")
+		workspaceSrcPath = filepath.Join(parentDir, "workspace.ext4")
+		dockerSrcPath = filepath.Join(parentDir, "docker-data.ext4")
+	}
+
+	for _, p := range []struct {
+		label string
+		path  string
+	}{
+		{label: "rootfs", path: rootSrcPath},
+		{label: "workspace", path: workspaceSrcPath},
+		{label: "docker", path: dockerSrcPath},
+	} {
+		if _, err := os.Stat(p.path); err != nil {
+			return fmt.Errorf("parent %s image not found at %s: %w", p.label, p.path, err)
 		}
 	}
 
@@ -357,8 +459,21 @@ func (m *Manager) ForkWorkspaceImage(_ context.Context, parentWorkspaceID, child
 		return fmt.Errorf("create snapshots dir: %w", err)
 	}
 
-	dstPath := m.snapshotImagePath(childSnapshotID)
-	return copyFile(srcPath, dstPath)
+	copyItems := []struct {
+		label string
+		src   string
+		dst   string
+	}{
+		{label: "rootfs", src: rootSrcPath, dst: m.snapshotRootfsPath(childSnapshotID)},
+		{label: "workspace", src: workspaceSrcPath, dst: m.snapshotWorkspacePath(childSnapshotID)},
+		{label: "docker", src: dockerSrcPath, dst: m.snapshotDockerPath(childSnapshotID)},
+	}
+	for _, item := range copyItems {
+		if err := copyFile(item.src, item.dst); err != nil {
+			return fmt.Errorf("snapshot %s image %s → %s: %w", item.label, item.src, item.dst, err)
+		}
+	}
+	return nil
 }
 
 // ReconcileOrphans kills child processes whose workspace IDs are not in liveIDs.
@@ -388,21 +503,4 @@ func (m *Manager) GrowWorkspace(_ context.Context, workspaceID string, newSizeBy
 		return fmt.Errorf("workspace not running: %s", workspaceID)
 	}
 	return resizeImage(inst.WorkspaceImage, newSizeBytes)
-}
-
-// buildKernelCmdline returns the kernel command line for a libkrun VM.
-// Matches the Firecracker cmdline so the same initrd/agent binary works.
-func buildKernelCmdline(overlayMode bool) string {
-	if raw := strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_BOOT_ARGS")); raw != "" {
-		return raw
-	}
-	// libkrun uses a VirtIO console (hvc0), not a legacy ttyS0 UART.
-	// Use "console=hvc0" so kernel output goes to the VirtIO console that
-	// krun_set_console_output captures; keep ttyS0 as fallback for kernels
-	// that don't have hvc0 compiled in.
-	base := "console=hvc0 console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/usr/local/bin/nexus-firecracker-agent"
-	if overlayMode {
-		base += " nexus.overlay=1"
-	}
-	return base
 }

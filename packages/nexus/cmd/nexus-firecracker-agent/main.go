@@ -43,6 +43,13 @@ var (
 	workspaceReadProcMounts         = os.ReadFile
 	kernelMkdirAll                  = os.MkdirAll
 	kernelMountFunc                 = unix.Mount
+
+	// virtiofsWorkspaceOnce ensures setupVirtiofsWorkspace runs exactly once.
+	// Unlike ext4 block devices (which return EBUSY on re-mount), overlayfs
+	// silently stacks a new mount on each call, so an idempotency check via
+	// the mount return code is not reliable.
+	virtiofsWorkspaceOnce    sync.Once
+	virtiofsWorkspaceOnceErr error
 )
 
 // Request types
@@ -536,7 +543,9 @@ func main() {
 	// are not required before a user can open a terminal.
 	go ensureGuestCLITools()
 	// Docker daemon also starts in the background.
-	if pid == 1 {
+	// In libkrun container mode the agent is not PID 1 but NEXUS_CONTAINER_MODE
+	// tells us to start Docker anyway.
+	if isPrimaryAgent() {
 		go func() {
 			if err := ensureDockerDaemon(); err != nil {
 				emitDiagnostic("agent docker daemon setup failed (non-fatal): %v", err)
@@ -659,12 +668,13 @@ var setupDNSFunc = setupDNS
 func bootstrapGuestEnvironment(pid int) {
 	ensureAgentProcessPath()
 
-	if pid == 1 {
+	primary := isPrimaryAgent()
+	if primary {
 		mountKernelFilesystemsFunc()
 		if err := setupPTYDevices(); err != nil {
 			emitDiagnostic("agent pty device setup failed (non-fatal): %v", err)
 		}
-		emitDiagnostic("agent pid1 kernel filesystems mounted")
+		emitDiagnostic("agent primary kernel filesystems mounted (pid=%d container_mode=%v)", pid, os.Getenv("NEXUS_CONTAINER_MODE") == "1")
 	}
 
 	if err := setupWorkspaceMountFunc(); err != nil {
@@ -686,21 +696,22 @@ func bootstrapGuestEnvironment(pid int) {
 		emitDiagnostic("agent network configured")
 	}
 
-	if pid == 1 {
+	if primary {
 		maybeStartSSHDInGuest()
 	}
 
 	setupDNSFunc()
 	emitDiagnostic("agent dns configured")
-
 }
 
 const hostConfigMount = "/run/nexus-host"
 
 // applyHostConfigDrive mounts the host config ext4 image at /run/nexus-host
-// and copies known config files into place. The config drive is always /dev/vdc.
+// and copies known config files into place.
+// Device path is resolved from NEXUS_CONFIG_DEV (libkrun) or derived from mode
+// (Firecracker virtiofs → /dev/vdd, Firecracker legacy → /dev/vdc).
 func applyHostConfigDrive() error {
-	const hostConfigDevice = "/dev/vdc"
+	hostConfigDevice := configDevPath()
 	if _, err := os.Stat(hostConfigDevice); err != nil {
 		return nil // drive not attached — nothing to do
 	}
@@ -710,7 +721,10 @@ func applyHostConfigDrive() error {
 	}
 
 	if err := unix.Mount(hostConfigDevice, hostConfigMount, "ext4", unix.MS_RDONLY, ""); err != nil {
-		return fmt.Errorf("mount %s: %w", hostConfigDevice, err)
+		if !errors.Is(err, unix.EBUSY) {
+			return fmt.Errorf("mount %s: %w", hostConfigDevice, err)
+		}
+		// Already mounted from a previous call — proceed to copy files.
 	}
 
 	type copySpec struct {
@@ -734,6 +748,8 @@ func applyHostConfigDrive() error {
 		// Codex CLI OAuth token.
 		{".codex/auth.json", "/root/.codex/auth.json", 0o600},
 		{".codex/config.json", "/root/.codex/config.json", 0o644},
+		// opencode provider OAuth tokens (Copilot, OpenAI, etc.).
+		{".local/share/opencode/auth.json", "/root/.local/share/opencode/auth.json", 0o600},
 	}
 
 	// Ensure /root and /root/.ssh are owned by uid 0 (root). The rootfs may
@@ -752,6 +768,12 @@ func applyHostConfigDrive() error {
 		}
 		if err := os.MkdirAll(filepath.Dir(c.dst), 0o755); err != nil {
 			continue
+		}
+		// Remove any broken symlink at the destination before writing
+		// (Ubuntu minimal cloud image ships /etc/resolv.conf as a dangling
+		// symlink; os.WriteFile would silently fail through it).
+		if fi, lerr := os.Lstat(c.dst); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+			_ = os.Remove(c.dst)
 		}
 		_ = os.WriteFile(c.dst, data, c.mode)
 	}
@@ -803,10 +825,10 @@ func applyHostConfigDrive() error {
 // docker.io, build-essential) via apt-get inside the VM.  The VM is a real root
 // environment so apt-get works without any user-namespace restrictions.
 //
-// A stamp file in the rootfs (/var/lib/nexus-tools-installed) prevents
+// A versioned stamp file in the rootfs prevents
 // re-running on every workspace start — packages only install once per rootfs.
 func ensureGuestBasePackages() {
-	const stampFile = "/var/lib/nexus-tools-installed"
+	const stampFile = "/var/lib/nexus-tools-installed-v2"
 	if _, err := os.Stat(stampFile); err == nil {
 		emitDiagnostic("agent base packages: already installed (stamp found)")
 		return
@@ -817,18 +839,16 @@ func ensureGuestBasePackages() {
 		return
 	}
 
-	emitDiagnostic("agent base packages: installing (make, nodejs, npm, docker.io, build-essential)...")
+	emitDiagnostic("agent base packages: installing (make, nodejs, npm, docker.io, build-essential, git)...")
 
 	pkgs := []string{
-		// apt-utils first so subsequent installs don't emit debconf warnings
-		// about delayed configuration, which causes a non-zero exit code.
-		"apt-utils",
 		"make",
 		"build-essential",
 		"nodejs",
 		"npm",
 		"docker.io",
 		"containerd",
+		"git",
 		"curl",
 		"wget",
 		"python3",
@@ -838,7 +858,27 @@ func ensureGuestBasePackages() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	env := append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+	env := append(os.Environ(),
+		"DEBIAN_FRONTEND=noninteractive",
+		// virtiofs rootfs: chown(uid=0) fails because the host kernel rejects
+		// it from a non-root process.  --no-same-owner tells tar (used by
+		// dpkg-deb) to skip ownership restoration during package extraction.
+		"TAR_OPTIONS=--no-same-owner",
+	)
+
+	// Some minimal rootfs images omit /var/log/apt/ and /var/log/dpkg.log,
+	// which causes apt-get to exit 100 with "E: Directory '/var/log/apt/' missing"
+	// even when packages install successfully.  Create them upfront so apt is happy.
+	for _, dir := range []string{"/var/log/apt", "/var/cache/apt/archives/partial"} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			emitDiagnostic("agent base packages: mkdir %s failed: %v", dir, err)
+		}
+	}
+	if _, err := os.Stat("/var/log/dpkg.log"); os.IsNotExist(err) {
+		if f, err := os.OpenFile("/var/log/dpkg.log", os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			_ = f.Close()
+		}
+	}
 
 	// The rootfs has /etc/apt/apt.conf.d/99nexus-root which sets
 	// APT::Sandbox::User "root", and /tmp is a tmpfs with mode 1777, so
@@ -854,24 +894,73 @@ func ensureGuestBasePackages() {
 	installCmd := exec.CommandContext(ctx, "apt-get", args...)
 	installCmd.Env = env
 	if out, err := installCmd.CombinedOutput(); err != nil {
-		outStr := strings.TrimSpace(string(out))
-		// debconf prints "delaying package configuration, since apt-utils is not
-		// installed" and exits 100 — but packages ARE installed. Treat this
-		// specific case as a warning since apt-utils is in our package list and
-		// will be present after the install completes.
-		isDebconfOnly := strings.Contains(outStr, "debconf: delaying package configuration") &&
-			!strings.Contains(outStr, "E: ") && !strings.Contains(outStr, "Err:")
-		if !isDebconfOnly {
-			emitDiagnostic("agent base packages: apt-get install failed: %v: %s", err, outStr)
-			return
-		}
-		emitDiagnostic("agent base packages: apt-get install warning (debconf): %s", outStr)
+		emitDiagnostic("agent base packages: apt-get install failed: %v: %s", err, strings.TrimSpace(string(out)))
+		return
 	}
+
+	// Install docker compose plugin (v2) from the GitHub release.
+	// Ubuntu's default repos only ship docker.io which has no compose plugin;
+	// Docker's official CLI plugin binary must be installed separately.
+	installDockerComposePlugin(ctx, env)
 
 	// Write stamp so subsequent boots skip this step.
 	_ = os.MkdirAll("/var/lib", 0o755)
 	_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
 	emitDiagnostic("agent base packages: installed successfully")
+}
+
+// installDockerComposePlugin installs the Docker Compose v2 CLI plugin binary
+// directly from the GitHub release.  Ubuntu's default repos ship docker.io
+// which does not include the compose plugin; this is the canonical way to add
+// `docker compose` support alongside the ubuntu-packaged docker.io.
+func installDockerComposePlugin(ctx context.Context, env []string) {
+	const pluginPath = "/usr/local/lib/docker/cli-plugins/docker-compose"
+
+	if _, err := os.Stat(pluginPath); err == nil {
+		emitDiagnostic("agent docker-compose-plugin: already installed")
+		return
+	}
+
+	// Find the curl binary that was just installed.
+	curlPath, err := exec.LookPath("curl")
+	if err != nil {
+		emitDiagnostic("agent docker-compose-plugin: curl not found, skipping: %v", err)
+		return
+	}
+
+	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o755); err != nil {
+		emitDiagnostic("agent docker-compose-plugin: mkdir failed: %v", err)
+		return
+	}
+
+	// Pin to a known-good version that is compatible with docker.io on Ubuntu 24.04.
+	const composeVersion = "v2.24.6"
+	url := fmt.Sprintf(
+		"https://github.com/docker/compose/releases/download/%s/docker-compose-linux-x86_64",
+		composeVersion,
+	)
+	emitDiagnostic("agent docker-compose-plugin: downloading %s...", composeVersion)
+
+	tmpPath := pluginPath + ".tmp"
+	dlCmd := exec.CommandContext(ctx, curlPath, "-fsSL", "--retry", "3", "-o", tmpPath, url)
+	dlCmd.Env = env
+	if out, err := dlCmd.CombinedOutput(); err != nil {
+		_ = os.Remove(tmpPath)
+		emitDiagnostic("agent docker-compose-plugin: download failed: %v: %s", err, strings.TrimSpace(string(out)))
+		return
+	}
+
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		_ = os.Remove(tmpPath)
+		emitDiagnostic("agent docker-compose-plugin: chmod failed: %v", err)
+		return
+	}
+	if err := os.Rename(tmpPath, pluginPath); err != nil {
+		_ = os.Remove(tmpPath)
+		emitDiagnostic("agent docker-compose-plugin: rename failed: %v", err)
+		return
+	}
+	emitDiagnostic("agent docker-compose-plugin: installed %s at %s", composeVersion, pluginPath)
 }
 
 func ensureGuestCLITools() {
@@ -987,12 +1076,173 @@ func ensureAgentProcessPath() {
 	}
 }
 
+// isVirtiofsWorkspaceMode reports whether the workspace is virtiofs+overlayfs.
+// In libkrun container mode the kernel cmdline is not under our control, so
+// the host sets NEXUS_WORKSPACE_MODE=virtiofs via krun_set_exec. Legacy
+// Firecracker VMs set nexus.workspace=virtiofs on the kernel cmdline.
+func isVirtiofsWorkspaceMode() bool {
+	if os.Getenv("NEXUS_WORKSPACE_MODE") == "virtiofs" {
+		return true
+	}
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return false
+	}
+	for _, field := range strings.Fields(string(data)) {
+		if field == "nexus.workspace=virtiofs" {
+			return true
+		}
+	}
+	return false
+}
+
+// isPrimaryAgent reports whether this agent instance should behave like PID 1
+// (mounting kernel filesystems, starting sshd, starting Docker). In Firecracker
+// the agent IS PID 1. In libkrun container mode the agent is launched by
+// krun_set_exec and is NOT PID 1, but the host sets NEXUS_CONTAINER_MODE=1 to
+// tell it to still perform these duties.
+func isPrimaryAgent() bool {
+	return os.Getpid() == 1 || os.Getenv("NEXUS_CONTAINER_MODE") == "1"
+}
+
+// overlayDevPath returns the block device for the workspace overlay upper layer.
+// Default /dev/vdb (Firecracker virtiofs mode); overridden to /dev/vda in
+// libkrun container mode via NEXUS_OVERLAY_DEV.
+func overlayDevPath() string {
+	if v := os.Getenv("NEXUS_OVERLAY_DEV"); v != "" {
+		return v
+	}
+	return "/dev/vdb"
+}
+
+// dockerDevPath returns the block device for docker-data.
+// Default /dev/vdc (Firecracker virtiofs mode); overridden in libkrun via NEXUS_DOCKER_DEV.
+func dockerDevPath() string {
+	if v := os.Getenv("NEXUS_DOCKER_DEV"); v != "" {
+		return v
+	}
+	return "/dev/vdc"
+}
+
+// configDevPath returns the block device for the host config drive.
+// Default /dev/vdd (Firecracker virtiofs mode); overridden in libkrun via NEXUS_CONFIG_DEV.
+func configDevPath() string {
+	if v := os.Getenv("NEXUS_CONFIG_DEV"); v != "" {
+		return v
+	}
+	return "/dev/vdd"
+}
+
+// setupVirtiofsWorkspace assembles the virtiofs+overlayfs workspace mount.
+//
+// Device layout is resolved from environment variables set by the host daemon:
+//
+//	virtiofs "nexus-workspace"   project dir (ro lower layer)
+//	NEXUS_OVERLAY_DEV (/dev/vdb) workspace-overlay.ext4 (rw upper layer)
+//	NEXUS_DOCKER_DEV  (/dev/vdc) docker-data.ext4 → /var/lib/docker
+//	NEXUS_CONFIG_DEV  (/dev/vdd) hostconfig.ext4  → /run/nexus-host  (read-only)
+//
+// Firecracker virtiofs mode falls back to /dev/vdb, /dev/vdc, /dev/vdd.
+func setupVirtiofsWorkspace() error {
+	overlayDev := overlayDevPath()
+	dockerDev := dockerDevPath()
+
+	lowerDir := "/mnt/nexus-lower"
+	overlayMnt := "/mnt/nexus-overlay"
+
+	for _, dir := range []string{lowerDir, overlayMnt, workspaceMountPoint, "/var/lib/docker"} {
+		if err := workspaceMkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dir, err)
+		}
+	}
+
+	// Mount virtiofs tag → lower dir (read-only project directory passthrough).
+	if err := workspaceMountFunc("nexus-workspace", lowerDir, "virtiofs", unix.MS_RDONLY, ""); err != nil {
+		if !errors.Is(err, unix.EBUSY) {
+			return fmt.Errorf("mount virtiofs nexus-workspace → %s: %w", lowerDir, err)
+		}
+	} else {
+		emitDiagnostic("agent virtiofs lower mounted at %s", lowerDir)
+	}
+
+	// Wait for workspace-overlay ext4 device and mount it.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := workspaceStat(overlayDev); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("workspace overlay device %s not available after 30s", overlayDev)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err := workspaceMountFunc(overlayDev, overlayMnt, "ext4", 0, ""); err != nil && !errors.Is(err, unix.EBUSY) {
+		return fmt.Errorf("mount overlay ext4 %s → %s: %w", overlayDev, overlayMnt, err)
+	}
+
+	// Ensure upper and work directories exist inside the overlay ext4.
+	upperDir := overlayMnt + "/upper"
+	workDir := overlayMnt + "/work"
+	for _, dir := range []string{upperDir, workDir} {
+		if err := workspaceMkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("mkdir overlayfs dir %s: %w", dir, err)
+		}
+	}
+
+	// Mount overlayfs: lower=virtiofs, upper=overlay ext4, merged → /workspace.
+	overlayOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lowerDir, upperDir, workDir)
+	if err := workspaceMountFunc("overlay", workspaceMountPoint, "overlay", 0, overlayOpts); err != nil {
+		if !errors.Is(err, unix.EBUSY) {
+			return fmt.Errorf("mount overlayfs → %s: %w", workspaceMountPoint, err)
+		}
+	} else {
+		emitDiagnostic("agent overlayfs workspace mounted at %s", workspaceMountPoint)
+	}
+
+	// Wait for docker-data ext4 device and mount to /var/lib/docker.
+	deadline = time.Now().Add(30 * time.Second)
+	for {
+		if _, err := workspaceStat(dockerDev); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("docker-data device %s not available after 30s", dockerDev)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err := workspaceMountFunc(dockerDev, "/var/lib/docker", "ext4", 0, ""); err != nil {
+		if !errors.Is(err, unix.EBUSY) {
+			return fmt.Errorf("mount docker-data %s → /var/lib/docker: %w", dockerDev, err)
+		}
+	} else {
+		emitDiagnostic("agent docker-data mounted at /var/lib/docker")
+	}
+
+	return nil
+}
+
 func setupWorkspaceMount() error {
+	if isVirtiofsWorkspaceMode() {
+		return setupVirtiofsWorkspaceOnce()
+	}
 	return setupWorkspaceMountWithRequirement(false)
 }
 
 func setupWorkspaceMountRequired() error {
+	if isVirtiofsWorkspaceMode() {
+		return setupVirtiofsWorkspaceOnce()
+	}
 	return setupWorkspaceMountWithRequirement(true)
+}
+
+// setupVirtiofsWorkspaceOnce calls setupVirtiofsWorkspace exactly once.
+// Overlayfs does not return EBUSY on re-mount — it silently stacks a new
+// mount — so idempotency must be enforced here rather than at the syscall.
+func setupVirtiofsWorkspaceOnce() error {
+	virtiofsWorkspaceOnce.Do(func() {
+		virtiofsWorkspaceOnceErr = setupVirtiofsWorkspace()
+	})
+	return virtiofsWorkspaceOnceErr
 }
 
 func setupWorkspaceMountWithRequirement(required bool) error {
@@ -1153,9 +1403,15 @@ func ensureDockerDaemon() error {
 		return nil
 	}
 
-	// Store Docker data in the workspace (native ext4, overlay2 works natively).
+	// In virtiofs mode: Docker data lives on /dev/vdc (mounted at /var/lib/docker),
+	// a dedicated sparse ext4 so overlay2 runs on a native kernel filesystem.
+	// In legacy mode: data lives inside /workspace (native ext4 block device).
 	dataRoot := "/workspace/.nexus-docker"
 	execRoot := "/workspace/.nexus-docker-exec"
+	if isVirtiofsWorkspaceMode() {
+		dataRoot = "/var/lib/docker"
+		execRoot = "/var/lib/docker-exec"
+	}
 
 	_ = os.Remove("/var/run/docker.pid")
 	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
@@ -1386,16 +1642,61 @@ var setupDNSPath = "/etc/resolv.conf"
 // setupDNS writes /etc/resolv.conf with public DNS servers if it is empty or
 // missing. This is needed because the kernel ip= cmdline arg configures the
 // network interface but does not create /etc/resolv.conf.
+//
+// In libkrun TSI mode (no eth0) DNS UDP packets have no interface to route
+// through, but TSI does intercept TCP sockets. "options use-vc" forces
+// glibc's resolver to use TCP for all DNS queries so they transit TSI.
 func setupDNS() {
-	const content = "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"
+	tsiMode := isTSINetworkMode()
+	var content string
+	if tsiMode {
+		// TSI: force DNS over TCP (use-vc) so queries go through TSI, not UDP.
+		content = "nameserver 8.8.8.8\nnameserver 1.1.1.1\noptions use-vc\n"
+	} else {
+		content = "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"
+	}
 
-	// Prefer host-provided resolver config when present and valid.
-	if data, err := os.ReadFile(setupDNSPath); err == nil && dnsConfigLooksUsable(string(data)) {
-		return
+	// Prefer host-provided resolver config when present and valid (real file,
+	// not a broken symlink). Always ensure use-vc is set in TSI mode.
+	if fi, statErr := os.Lstat(setupDNSPath); statErr == nil && fi.Mode()&os.ModeSymlink == 0 {
+		if data, err := os.ReadFile(setupDNSPath); err == nil && dnsConfigLooksUsable(string(data)) {
+			if !tsiMode {
+				return
+			}
+			// In TSI mode: patch existing config to add use-vc if not present.
+			existing := string(data)
+			if !strings.Contains(existing, "use-vc") {
+				existing = strings.TrimRight(existing, "\n") + "\noptions use-vc\n"
+				_ = os.WriteFile(setupDNSPath, []byte(existing), 0o644)
+			}
+			return
+		}
 	}
 
 	_ = os.MkdirAll("/etc", 0o755)
+	// Remove any broken symlink first (Ubuntu minimal cloud image ships
+	// /etc/resolv.conf → ../run/systemd/resolve/stub-resolv.conf which
+	// points to a path that doesn't exist inside the VM). os.WriteFile
+	// follows symlinks, so it would silently fail against the missing target;
+	// unlinking first ensures we create a real file at the path.
+	_ = os.Remove(setupDNSPath)
 	_ = os.WriteFile(setupDNSPath, []byte(content), 0o644)
+}
+
+func isTSINetworkMode() bool {
+	if isVirtiofsWorkspaceMode() {
+		return true
+	}
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return false
+	}
+	for _, field := range strings.Fields(string(data)) {
+		if field == "nexus.tsi=1" {
+			return true
+		}
+	}
+	return false
 }
 
 func dnsConfigLooksUsable(content string) bool {

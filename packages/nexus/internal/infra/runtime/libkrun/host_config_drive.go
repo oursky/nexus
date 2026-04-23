@@ -34,9 +34,20 @@ func buildHostConfigDriveLibkrun(home, destPath string) error {
 	add(home+"/.config/opencode/ocx.jsonc", ".config/opencode/ocx.jsonc")
 	add(home+"/.opencode/opencode.json", ".opencode/opencode.json")
 	add(home+"/.opencode/opencode.jsonc", ".opencode/opencode.jsonc")
+	add(home+"/.local/share/opencode/auth.json", ".local/share/opencode/auth.json")
 	add(home+"/.config/claude/credentials.json", ".config/claude/credentials.json")
 	add(home+"/.config/claude/settings.json", ".config/claude/settings.json")
+	add(home+"/.codex/auth.json", ".codex/auth.json")
+	add(home+"/.codex/config.json", ".codex/config.json")
 	add("/etc/resolv.conf", ".resolv.conf")
+
+	// AI/LLM API keys from daemon process environment → sourced by guest /root/.profile.
+	if envContent := buildAPIKeyEnvFileLibkrun(); envContent != "" {
+		if envPath, cleanup, err := writeTempFileForConfigDrive("nexus-env-*", []byte(envContent)); err == nil {
+			defer cleanup()
+			files = append(files, entry{envPath, ".nexus-env"})
+		}
+	}
 
 	if authMaterial, ok := hostSSHAuthorizedKeysMaterial(home); ok {
 		if authPath, cleanup, err := writeTempFileForConfigDrive("nexus-authkeys-*", authMaterial); err == nil {
@@ -151,6 +162,82 @@ func hostSSHAuthorizedKeysMaterial(home string) ([]byte, bool) {
 		return nil, false
 	}
 	return []byte(strings.Join(lines, "\n") + "\n"), true
+}
+
+// buildAPIKeyEnvFileLibkrun collects AI/LLM API keys from the daemon's environment
+// and returns a shell-sourceable export string for the guest's /root/.profile.
+//
+// Keys are sourced in priority order (later values win on duplicates):
+//  1. Daemon process environment
+//  2. ~/.config/nexus/api-keys.env (KEY=value lines, # comments ignored)
+//
+// The api-keys.env file allows users to persist API keys without requiring
+// the daemon to be launched with specific environment variables.
+func buildAPIKeyEnvFileLibkrun() string {
+	known := []string{
+		"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY",
+		"GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY",
+		"MISTRAL_API_KEY", "GROQ_API_KEY", "COHERE_API_KEY",
+		"XAI_API_KEY", "OPENROUTER_API_KEY",
+		"AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
+		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION",
+		"GITHUB_TOKEN", "GH_TOKEN",
+	}
+
+	// Collect from daemon environment.
+	result := map[string]string{}
+	for _, key := range known {
+		if val := strings.TrimSpace(os.Getenv(key)); val != "" {
+			result[key] = val
+		}
+	}
+
+	// Overlay with ~/.config/nexus/api-keys.env if present.
+	if home, err := os.UserHomeDir(); err == nil {
+		keysFile := filepath.Join(home, ".config", "nexus", "api-keys.env")
+		if data, err := os.ReadFile(keysFile); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				// Strip optional "export " prefix.
+				line = strings.TrimPrefix(line, "export ")
+				k, v, ok := strings.Cut(line, "=")
+				if !ok {
+					continue
+				}
+				k = strings.TrimSpace(k)
+				v = strings.Trim(strings.TrimSpace(v), `"'`)
+				if k != "" && v != "" {
+					result[k] = v
+				}
+			}
+		}
+	}
+
+	if len(result) == 0 {
+		return ""
+	}
+	var lines []string
+	for _, key := range known {
+		if val, ok := result[key]; ok {
+			escaped := strings.ReplaceAll(val, "'", "'\\''")
+			lines = append(lines, fmt.Sprintf("export %s='%s'", key, escaped))
+		}
+	}
+	// Include any extra keys from the file that weren't in the known list.
+	knownSet := make(map[string]bool, len(known))
+	for _, k := range known {
+		knownSet[k] = true
+	}
+	for k, v := range result {
+		if !knownSet[k] {
+			escaped := strings.ReplaceAll(v, "'", "'\\''")
+			lines = append(lines, fmt.Sprintf("export %s='%s'", k, escaped))
+		}
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func writeTempFileForConfigDrive(pattern string, data []byte) (string, func(), error) {

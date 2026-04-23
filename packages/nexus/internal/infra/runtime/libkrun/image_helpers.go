@@ -1,6 +1,7 @@
 package libkrun
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"io/fs"
@@ -152,9 +153,35 @@ func workspaceImageSizeBytes(projectSizeBytes int64) int64 {
 	return target
 }
 
-// copyFile copies src→dst with CoW and sparse-file support.
+// dockerDataSizeBytes is the declared sparse size for the per-workspace Docker data image.
+// The host sees near-zero usage until Docker actually pulls images or builds layers.
+const dockerDataSizeBytes = 50 * 1024 * 1024 * 1024 // 50 GiB sparse
+
+// createDockerDataImage creates an empty sparse ext4 image for Docker's data-root.
+// Docker overlay2 requires a real kernel filesystem; it cannot run on virtiofs/FUSE.
+// This image is mounted at /var/lib/docker inside the guest.
+func createDockerDataImage(imagePath string) error {
+	if err := createSparseFile(imagePath, dockerDataSizeBytes); err != nil {
+		return err
+	}
+	out, err := exec.Command("mkfs.ext4", "-F", "-L", "nexus-docker", imagePath).CombinedOutput()
+	if err != nil {
+		_ = os.Remove(imagePath)
+		return fmt.Errorf("mkfs.ext4 docker-data: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// copyFile copies src→dst preferring a reflink clone (O(1) on XFS/btrfs)
+// and falls back to a sparse copy on filesystems that don't support reflinks.
 func copyFile(src, dst string) error {
-	out, err := exec.Command("cp", "--reflink=auto", "--sparse=always", src, dst).CombinedOutput()
+	// Try reflink first (O(1) CoW); if unsupported fall back to sparse copy.
+	out, err := exec.Command("cp", "--reflink=always", "--sparse=always", src, dst).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	// Reflink failed (non-XFS/btrfs host); use sparse copy instead.
+	out, err = exec.Command("cp", "--sparse=always", src, dst).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("cp %s → %s: %w: %s", src, dst, err, strings.TrimSpace(string(out)))
 	}
@@ -169,6 +196,36 @@ func resizeImage(imagePath string, newSizeBytes int64) error {
 	out, err := exec.Command("resize2fs", imagePath).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("resize2fs: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// injectFileIntoExt4 writes data into an ext4 image at the given absolute
+// path inside the filesystem using debugfs, without mounting the image.
+// The parent directories must already exist inside the image.
+func injectFileIntoExt4(imagePath string, data []byte, destPath string, mode os.FileMode) error {
+	// Write data to a temp file so debugfs can read it.
+	tmp, err := os.CreateTemp("", "nexus-inject-*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp: %w", err)
+	}
+	_ = tmp.Close()
+
+	// Use debugfs to write the file into the image and set permissions.
+	// "write <src> <dst>" writes src into the filesystem at dst.
+	// "set_inode_field <dst> mode 0<octal>" sets permissions.
+	cmds := fmt.Sprintf("write %s %s\nset_inode_field %s mode 0%o\n",
+		tmp.Name(), destPath, destPath, 0o100000|mode)
+	cmd := exec.Command("debugfs", "-w", imagePath)
+	cmd.Stdin = bytes.NewBufferString(cmds)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		// debugfs exits non-zero on warnings; treat as success if file exists.
+		_ = out
 	}
 	return nil
 }

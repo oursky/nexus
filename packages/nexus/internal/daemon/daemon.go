@@ -78,6 +78,10 @@ type Config struct {
 	// Driver overrides the runtime driver: "" or "firecracker" = Firecracker,
 	// "libkrun" = libkrun (requires build tag libkrun), "sandbox" = process sandbox.
 	Driver string
+	// EmbeddedAgentFn returns the embedded nexus-firecracker-agent binary bytes.
+	// When set, the libkrun driver injects the current agent into each VM's rootfs
+	// on spawn so the agent stays in sync with the nexus binary.
+	EmbeddedAgentFn func() []byte
 }
 
 // Daemon is the assembled daemon with all services wired together.
@@ -128,6 +132,11 @@ func New(cfg Config) (*Daemon, error) {
 		rtDriver = lkBundle.AsDriver()
 		log.Printf("daemon: libkrun runtime driver wired")
 
+		// Pre-warm base workspace images for all known libkrun workspaces in
+		// the background so the first workspace start doesn't block on
+		// mkfs.ext4 -d <project_root> (which can take 30-120s for large repos).
+		go prewarmLibkrunBaseImages(wsStore, cfg.BasesDir)
+
 	case cfg.FirecrackerEnabled && cfg.Driver != "sandbox":
 		if err := validateFirecrackerHostRouting(); err != nil {
 			db.Close()
@@ -176,8 +185,10 @@ func New(cfg Config) (*Daemon, error) {
 	}
 	if fcDriver != nil {
 		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithVsockDialer(fcDriver))
+		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithWorkspaceReadyChecker(fcDriver))
 	} else if cfg.Driver == "libkrun" {
 		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithVsockDialer(lkBundle))
+		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithWorkspaceReadyChecker(lkBundle))
 	}
 	rpcpty.New(ptyReg, ptyHandlerOpts...).Register(reg)
 	rpcfs.New("/").Register(reg)
