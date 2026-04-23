@@ -3,7 +3,6 @@
 package libkrunvm
 
 /*
-#cgo pkg-config: libkrun
 #include <libkrun.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -15,15 +14,8 @@ package libkrunvm
 #define FORMAT_GZ      4
 #define FORMAT_ZSTD    5
 
-// COMPAT_NET_FEATURES matches the set enabled by krun_set_passt_fd.
-#define COMPAT_FEATURES (                             \
-	(1 << 0)  /* CSUM */      |                   \
-	(1 << 1)  /* GUEST_CSUM */|                   \
-	(1 << 7)  /* GUEST_TSO4 */|                   \
-	(1 << 10) /* GUEST_UFO */ |                   \
-	(1 << 11) /* HOST_TSO4 */ |                   \
-	(1 << 14) /* HOST_UFO */                      \
-)
+// COMPAT_FEATURES: CSUM|GUEST_CSUM|GUEST_TSO4|GUEST_UFO|HOST_TSO4|HOST_UFO
+#define COMPAT_FEATURES ((1<<0)|(1<<1)|(1<<7)|(1<<10)|(1<<11)|(1<<14))
 
 // helper: convert Go bool to C bool
 static bool go_bool(int v) { return v != 0; }
@@ -34,6 +26,11 @@ import (
 	"syscall"
 	"unsafe"
 )
+
+// krunSetLogLevel sets libkrun internal log level (0=off…4=debug).
+func krunSetLogLevel(level uint32) {
+	C.krun_set_log_level(C.uint32_t(level))
+}
 
 // krunCreate returns a new libkrun context id.
 func krunCreate() (uint32, error) {
@@ -84,9 +81,19 @@ func krunAddDisk(ctx uint32, blockID, path string, readOnly bool) error {
 	p := C.CString(path)
 	defer C.free(unsafe.Pointer(p))
 
-	ret := C.krun_add_disk(C.uint32_t(ctx), bid, p, C.go_bool(boolToInt(readOnly)))
+	ret := C.krun_add_disk(C.uint32_t(ctx), bid, p, C.go_bool(C.int(boolToInt(readOnly))))
 	if ret != 0 {
 		return fmt.Errorf("krun_add_disk %s: %w", blockID, syscall.Errno(-ret))
+	}
+	return nil
+}
+
+// krunSetPasstFD connects the VM networking to a passt socket fd.
+// Uses the simpler krun_set_passt_fd API (deprecated but widely supported).
+func krunSetPasstFD(ctx uint32, fd int) error {
+	ret := C.krun_set_passt_fd(C.uint32_t(ctx), C.int(fd))
+	if ret != 0 {
+		return fmt.Errorf("krun_set_passt_fd: %w", syscall.Errno(-ret))
 	}
 	return nil
 }
@@ -114,7 +121,7 @@ func krunAddNetUnixStream(ctx uint32, fd int) error {
 func krunAddVsockPort2(ctx uint32, port uint32, socketPath string, listen bool) error {
 	sp := C.CString(socketPath)
 	defer C.free(unsafe.Pointer(sp))
-	ret := C.krun_add_vsock_port2(C.uint32_t(ctx), C.uint32_t(port), sp, C.go_bool(boolToInt(listen)))
+	ret := C.krun_add_vsock_port2(C.uint32_t(ctx), C.uint32_t(port), sp, C.go_bool(C.int(boolToInt(listen))))
 	if ret != 0 {
 		return fmt.Errorf("krun_add_vsock_port2 port=%d: %w", port, syscall.Errno(-ret))
 	}
@@ -126,6 +133,15 @@ func krunDisableImplicitConsole(ctx uint32) error {
 	ret := C.krun_disable_implicit_console(C.uint32_t(ctx))
 	if ret != 0 {
 		return fmt.Errorf("krun_disable_implicit_console: %w", syscall.Errno(-ret))
+	}
+	return nil
+}
+
+// krunAddSerialConsoleDefault adds a legacy serial console (ttyS0) with explicit I/O fds.
+func krunAddSerialConsoleDefault(ctx uint32, inputFD, outputFD int) error {
+	ret := C.krun_add_serial_console_default(C.uint32_t(ctx), C.int(inputFD), C.int(outputFD))
+	if ret != 0 {
+		return fmt.Errorf("krun_add_serial_console_default: %w", syscall.Errno(-ret))
 	}
 	return nil
 }

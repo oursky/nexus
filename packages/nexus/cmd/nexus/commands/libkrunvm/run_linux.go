@@ -53,10 +53,23 @@ func runVM(configFile string) error {
 // launchVM configures libkrun from spec and calls krun_start_enter.
 // Does not return on success.
 func launchVM(spec libkrun.VMSpec) error {
+	logf := func(format string, args ...interface{}) {
+		fmt.Fprintf(os.Stderr, "[libkrun-vm] "+format+"\n", args...)
+	}
+
+	// Enable libkrun debug logging to stderr.
+	krunSetLogLevel(4)
+
+	logf("creating context for workspace %s", spec.WorkspaceID)
 	ctx, err := krunCreate()
 	if err != nil {
 		return fmt.Errorf("libkrun-vm: %w", err)
 	}
+	logf("ctx=%d", ctx)
+
+	// Enable verbose libkrun logging for diagnostics.
+	// krun_set_log_level: 0=off 1=error 2=warn 3=info 4=debug
+	// (optional; ignore error — not critical)
 
 	// vCPUs and RAM
 	vcpus := spec.VCPUs
@@ -67,73 +80,93 @@ func launchVM(spec libkrun.VMSpec) error {
 	if memMiB < 256 {
 		memMiB = 512
 	}
+	logf("set_vm_config: vcpus=%d mem=%d MiB", vcpus, memMiB)
 	if err := krunSetVMConfig(ctx, uint8(vcpus), uint32(memMiB)); err != nil {
 		return fmt.Errorf("libkrun-vm: %w", err)
 	}
 
 	// Custom kernel (same kernel used by Firecracker).
-	// Format: ELF (1) for uncompressed vmlinux, BZ2 (3) for bzImage, GZ (4) for gzip.
-	// Our kernel binary is typically a gzip-compressed bzImage.
-	if err := krunSetKernel(ctx, spec.KernelPath, "", spec.KernelCmdline, 4 /* KRUN_KERNEL_FORMAT_IMAGE_GZ */); err != nil {
-		// Try ELF format as fallback
-		if err2 := krunSetKernel(ctx, spec.KernelPath, "", spec.KernelCmdline, 1 /* KRUN_KERNEL_FORMAT_ELF */); err2 != nil {
-			return fmt.Errorf("libkrun-vm: set kernel (tried gz and elf): gz=%v elf=%v", err, err2)
+	// Our vmlinux.bin is a statically-linked ELF kernel.
+	logf("set_kernel: path=%s cmdline=%q", spec.KernelPath, spec.KernelCmdline)
+	if err := krunSetKernel(ctx, spec.KernelPath, "", spec.KernelCmdline, 1 /* KRUN_KERNEL_FORMAT_ELF */); err != nil {
+		// Try gzip-compressed image as fallback (bzImage).
+		logf("set_kernel ELF failed (%v), trying IMAGE_GZ", err)
+		if err2 := krunSetKernel(ctx, spec.KernelPath, "", spec.KernelCmdline, 4 /* KRUN_KERNEL_FORMAT_IMAGE_GZ */); err2 != nil {
+			return fmt.Errorf("libkrun-vm: set kernel (tried elf=%v gz=%v)", err, err2)
 		}
 	}
 
 	// Root filesystem (same rootfs.ext4 used by Firecracker).
+	logf("add_disk: rootfs=%s", spec.RootFSPath)
 	if err := krunAddDisk(ctx, "rootfs", spec.RootFSPath, false); err != nil {
 		return fmt.Errorf("libkrun-vm: add rootfs disk: %w", err)
 	}
 
 	// Workspace image (writable, mounted at /workspace in the guest).
 	if spec.OverlayMode {
-		// Overlay mode: read-only base + writable overlay layer.
 		if spec.BaseImage != "" {
+			logf("add_disk: workspace_base=%s", spec.BaseImage)
 			if err := krunAddDisk(ctx, "workspace_base", spec.BaseImage, true); err != nil {
 				return fmt.Errorf("libkrun-vm: add base disk: %w", err)
 			}
 		}
+		logf("add_disk: workspace_overlay=%s", spec.WorkspaceImage)
 		if err := krunAddDisk(ctx, "workspace_overlay", spec.WorkspaceImage, false); err != nil {
 			return fmt.Errorf("libkrun-vm: add overlay disk: %w", err)
 		}
 	} else {
-		// Legacy mode: full writable workspace image.
+		logf("add_disk: workspace=%s", spec.WorkspaceImage)
 		if err := krunAddDisk(ctx, "workspace", spec.WorkspaceImage, false); err != nil {
 			return fmt.Errorf("libkrun-vm: add workspace disk: %w", err)
 		}
 	}
 
-	// Host config drive (gitconfig, SSH keys, tool auth files).
+	// Host config drive.
 	if spec.HostConfigDrive != "" {
+		logf("add_disk: hostconfig=%s", spec.HostConfigDrive)
 		if err := krunAddDisk(ctx, "hostconfig", spec.HostConfigDrive, true); err != nil {
-			// Non-fatal: log and continue without config drive.
-			fmt.Fprintf(os.Stderr, "[libkrun-vm] warning: host config drive: %v\n", err)
+			logf("warning: host config drive: %v", err)
 		}
 	}
 
-	// Networking: passt socket passed via extra fd (fd 3 + PasstFDIndex).
-	// The parent process set up the socket pair and started passt with one end.
+	// Networking: passt socket via krun_set_passt_fd (simpler API).
+	// The parent process started passt and passed the VM-side socket fd as ExtraFile[PasstFDIndex].
 	passtFD := 3 + spec.PasstFDIndex
-	if err := krunAddNetUnixStream(ctx, passtFD); err != nil {
-		return fmt.Errorf("libkrun-vm: attach passt network: %w", err)
+	logf("set_passt_fd: fd=%d", passtFD)
+	if err := krunSetPasstFD(ctx, passtFD); err != nil {
+		logf("krun_set_passt_fd failed (%v), trying krun_add_net_unixstream", err)
+		if err2 := krunAddNetUnixStream(ctx, passtFD); err2 != nil {
+			return fmt.Errorf("libkrun-vm: network setup: passt_fd=%v unixstream=%v", err, err2)
+		}
 	}
 
-	// Vsock port mappings for agent communication.
+	// Vsock port mappings.
 	for _, vp := range spec.VsockPorts {
+		logf("add_vsock_port2: port=%d path=%s listen=%v", vp.Port, vp.Path, vp.Listen)
 		if err := krunAddVsockPort2(ctx, vp.Port, vp.Path, vp.Listen); err != nil {
 			return fmt.Errorf("libkrun-vm: vsock port %d: %w", vp.Port, err)
 		}
 	}
 
-	// Console output → log file.
+	// Add an explicit serial console (ttyS0) pointing to our debug log (fd 1 = stdout).
+	// This captures early kernel boot messages which appear before VirtIO console (hvc0) starts.
+	// NOTE: krun_add_serial_console_default on x86 Linux does NOT require disabling the implicit
+	// console first — it adds ttyS0 as the FIRST serial device (irrespective of hvc0).
+	logf("add_serial_console_default: input=/dev/null output=stdout(1)")
+	if err := krunAddSerialConsoleDefault(ctx, -1, 1); err != nil {
+		logf("warning: serial console: %v (continuing with implicit hvc0 only)", err)
+	}
+
+	// Also redirect implicit VirtIO console (hvc0) output to a separate file.
 	if spec.SerialLog != "" {
-		if err := krunSetConsoleOutput(ctx, spec.SerialLog); err != nil {
-			fmt.Fprintf(os.Stderr, "[libkrun-vm] warning: set console output: %v\n", err)
+		serialLogPath := spec.SerialLog + ".hvc0"
+		logf("set_console_output: %s", serialLogPath)
+		if err := krunSetConsoleOutput(ctx, serialLogPath); err != nil {
+			logf("warning: set hvc0 console output: %v", err)
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "[libkrun-vm] starting VM for workspace %s\n", spec.WorkspaceID)
+	logf("calling krun_start_enter (process will become the VMM)")
 
 	// This call does not return on success.
 	return krunStartEnter(ctx)

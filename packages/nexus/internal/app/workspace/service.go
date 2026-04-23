@@ -453,7 +453,8 @@ func (s *Service) attachGuestIP(ctx context.Context, ws *workspace.Workspace) {
 	if ws.State != workspace.StateRunning && ws.State != workspace.StateRestored {
 		return
 	}
-	if !strings.EqualFold(strings.TrimSpace(ws.Backend), "firecracker") {
+	backend := strings.ToLower(strings.TrimSpace(ws.Backend))
+	if backend != "firecracker" && backend != "libkrun" {
 		return
 	}
 	ip, ok := s.driver.GuestSSHHost(ctx, ws.ID)

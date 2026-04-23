@@ -275,7 +275,7 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 
 func backendUsesGuestControlChannel(backend string) bool {
 	switch strings.ToLower(strings.TrimSpace(backend)) {
-	case "", "firecracker":
+	case "", "firecracker", "libkrun":
 		return true
 	default:
 		return false

@@ -53,6 +53,10 @@ type initOptions struct {
 
 const execKVMGroupReexecEnv = "NEXUS_EXEC_KVM_GROUP_REEXEC"
 
+// extraCommands holds optional cobra commands registered by platform-specific
+// init() functions (e.g. the hidden "libkrun-vm" subcommand on Linux+libkrun).
+var extraCommands []*cobra.Command
+
 func main() {
 	root := &cobra.Command{
 		Use:           "nexus",
@@ -70,6 +74,9 @@ func main() {
 		execCommand(),
 		doctorCommand(),
 	)
+	for _, cmd := range extraCommands {
+		root.AddCommand(cmd)
+	}
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

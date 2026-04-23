@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,8 +65,9 @@ Without flags an interactive SSH session is opened.`,
 
 			ws := result.Workspace
 			if ws.GuestIP == "" {
-				if ws.Backend != "firecracker" {
-					return fmt.Errorf("nexus workspace ssh-vm: workspace %q uses backend %q — only Firecracker workspaces have a guest VM", args[0], ws.Backend)
+				backend := strings.ToLower(strings.TrimSpace(ws.Backend))
+				if backend != "firecracker" && backend != "libkrun" {
+					return fmt.Errorf("nexus workspace ssh-vm: workspace %q uses backend %q — only Firecracker/libkrun workspaces have a guest VM", args[0], ws.Backend)
 				}
 				return fmt.Errorf("nexus workspace ssh-vm: workspace %q (state: %s) has no guest IP — is it running?\n  hint: nexus workspace start %s", args[0], ws.State, args[0])
 			}
@@ -73,13 +75,19 @@ Without flags an interactive SSH session is opened.`,
 			p, _ := profile.LoadDefault()
 			proxyJump := buildProxyJump(p)
 
+			// Parse host:port format (used by libkrun+passt which forwards SSH via a host port).
+			sshHost, sshPort, err := parseSSHHostPort(ws.GuestIP)
+			if err != nil {
+				return fmt.Errorf("nexus workspace ssh-vm: invalid guest IP %q: %w", ws.GuestIP, err)
+			}
+
 			if diagnose {
 				mux := rpc.NewMuxConn(conn)
 				return runSSHDiagnose(cmd.Context(), mux, wsID, ws.GuestIP, proxyJump, cmd)
 			}
 
-			sshTarget := "root@" + ws.GuestIP
-			sshArgs := buildVMSSHArgs(proxyJump)
+			sshTarget := "root@" + sshHost
+			sshArgs := buildVMSSHArgs(proxyJump, sshPort)
 
 			if info {
 				printSSHInfo(cmd, ws.GuestIP, sshTarget, proxyJump, sshArgs)
@@ -130,16 +138,33 @@ func buildProxyJump(p *profile.Profile) string {
 }
 
 // buildVMSSHArgs returns ssh flag arguments (without the final [user@]host).
-func buildVMSSHArgs(proxyJump string) []string {
+// port is the SSH port; if <= 0 or 22, no -p flag is added.
+func buildVMSSHArgs(proxyJump string, port int) []string {
 	args := []string{
 		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "ConnectTimeout=10",
 	}
+	if port > 0 && port != 22 {
+		args = append(args, "-p", strconv.Itoa(port))
+	}
 	if proxyJump != "" {
 		args = append(args, "-J", proxyJump)
 	}
 	return args
+}
+
+// parseSSHHostPort splits a "host" or "host:port" string into host and port.
+// If no port is present, port 22 is returned.
+func parseSSHHostPort(hostPort string) (string, int, error) {
+	if h, p, err := net.SplitHostPort(hostPort); err == nil {
+		port, err := strconv.Atoi(p)
+		if err != nil {
+			return "", 0, fmt.Errorf("invalid port %q", p)
+		}
+		return h, port, nil
+	}
+	return hostPort, 22, nil
 }
 
 func printSSHInfo(cmd *cobra.Command, guestIP, sshTarget, proxyJump string, sshArgs []string) {

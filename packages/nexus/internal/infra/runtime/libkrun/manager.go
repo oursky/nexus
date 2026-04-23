@@ -389,7 +389,11 @@ func buildKernelCmdline(overlayMode bool) string {
 	if raw := strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_BOOT_ARGS")); raw != "" {
 		return raw
 	}
-	base := "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/usr/local/bin/nexus-firecracker-agent"
+	// libkrun uses a VirtIO console (hvc0), not a legacy ttyS0 UART.
+	// Use "console=hvc0" so kernel output goes to the VirtIO console that
+	// krun_set_console_output captures; keep ttyS0 as fallback for kernels
+	// that don't have hvc0 compiled in.
+	base := "console=hvc0 console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/usr/local/bin/nexus-firecracker-agent"
 	if overlayMode {
 		base += " nexus.overlay=1"
 	}

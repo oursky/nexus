@@ -201,8 +201,14 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 	memMiB := defaultMemMiB()
 
 	// Build host config drive (gitconfig, SSH keys, tool auth).
+	// Use a per-workspace path in the work dir so concurrent workspace starts
+	// don't reformat each other's drive (the old project-root path was shared).
 	home, _ := os.UserHomeDir()
-	configDrivePath := filepath.Join(root, ".nexus-host-config.ext4")
+	configDriveDir := filepath.Join(d.manager.cfg.WorkDirRoot, workspaceID)
+	if err := os.MkdirAll(configDriveDir, 0o755); err != nil {
+		log.Printf("[libkrun] warning: create config drive dir: %v", err)
+	}
+	configDrivePath := filepath.Join(configDriveDir, "host-config.ext4")
 	if err := buildHostConfigDriveLibkrun(home, configDrivePath); err != nil {
 		log.Printf("[libkrun] warning: host config drive: %v", err)
 		configDrivePath = ""

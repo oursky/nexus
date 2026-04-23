@@ -63,7 +63,7 @@ func setupPasst(workspaceID, workDir string, sshHostPort int) (*passtState, erro
 
 	// passt args: socket fd mode, foreground, stderr logging.
 	// --fd: the socket pair fd (passt reads/writes L2 frames here)
-	// --tcp-ns HOST_PORT:22: forward host port to guest SSH
+	// -t HOST_PORT:22: forward host port to guest SSH port 22
 	args := []string{
 		"--fd", strconv.Itoa(3), // fds[0] will be fd 3 (ExtraFiles[0])
 		"--foreground",
@@ -71,9 +71,9 @@ func setupPasst(workspaceID, workDir string, sshHostPort int) (*passtState, erro
 		"--no-map-gw",
 	}
 	if sshHostPort > 0 {
-		// Forward host TCP port to guest port 22.
-		// passt uses --tcp-ns in recent versions; older may use --tcp-ports.
-		args = append(args, "--tcp-ns", fmt.Sprintf("%d:22", sshHostPort))
+		// Forward host TCP sshHostPort to guest port 22.
+		// passt format: HOST_PORT:GUEST_PORT
+		args = append(args, "-t", fmt.Sprintf("127.0.0.1/%d:22", sshHostPort))
 	}
 
 	cmd := exec.Command(passtBin, args...)
@@ -116,7 +116,7 @@ func teardownPasst(ps *passtState) {
 		}
 		done := make(chan struct{})
 		go func() {
-			_ = ps.proc.Wait()
+			_, _ = ps.proc.Wait()
 			close(done)
 		}()
 		select {
