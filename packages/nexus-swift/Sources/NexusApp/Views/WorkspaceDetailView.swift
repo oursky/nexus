@@ -291,6 +291,7 @@ private struct WorkspaceActionMenu: View {
     private var primaryIcon: String {
         switch workspace.state {
         case .running, .restored: "ellipsis.circle"
+        case .starting: "ellipsis.circle"
         case .paused, .stopped, .created: "play.fill"
         }
     }
@@ -303,6 +304,11 @@ private struct WorkspaceActionMenu: View {
                     Label("Start", systemImage: "play.fill")
                 }
                 .disabled(isBusy)
+            case .starting:
+                Button { } label: {
+                    Label("Starting…", systemImage: "ellipsis.circle")
+                }
+                .disabled(true)
             case .running, .restored:
                 Button { Task { await appState.stop(workspace) } } label: {
                     Label("Stop", systemImage: "stop.fill")

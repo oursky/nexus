@@ -55,9 +55,19 @@ public enum EngineRemotePathBrowser {
             "    sys.exit(2)",
             "names = sorted(os.listdir(p))",
             "for name in names:",
-            "    full = os.path.join(p, name)",
-            "    kind = 'd' if os.path.isdir(full) else 'f'",
-            "    print(kind + '\\t' + name)",
+            // Skip hidden entries (matches plain `ls` behaviour — no -a flag).
+            "    if name.startswith('.'): continue",
+            // Skip non-UTF-8 names (os.listdir uses surrogate-escape on Linux).
+            "    try: name.encode('utf-8')",
+            "    except (UnicodeEncodeError, UnicodeDecodeError): continue",
+            "    try:",
+            "        full = os.path.join(p, name)",
+            // Only emit directories — this is a project-directory picker, not a
+            // general file browser. Filtering out files eliminates garbled binary
+            // filenames left behind by archives / packages in the home directory.
+            "        if not os.path.isdir(full): continue",
+            "        sys.stdout.buffer.write(('d\\t' + name + '\\n').encode('utf-8'))",
+            "    except OSError: continue",
         ]
         let pyScript = pyLines.joined(separator: "\n")
 

@@ -74,6 +74,7 @@ func (h *Handler) Register(r registry.Registry) {
 	r.Register("pty.rename", h.rename)
 	r.Register("pty.close", h.close)
 	r.Register("pty.write", h.write)
+	r.Register("pty.reattach", h.reattach)
 }
 
 // ── DTOs ─────────────────────────────────────────────────────────────────────
@@ -110,6 +111,10 @@ type closeParams struct {
 type writeParams struct {
 	SessionID string `json:"sessionId"`
 	Data      string `json:"data"`
+}
+
+type reattachParams struct {
+	SessionID string `json:"sessionId"`
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -261,8 +266,9 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 		return nil, errors.New("firecracker shell.open ack timed out")
 	}
 
+	s.SetNotifier(notifier)
 	h.reg.Register(s)
-	go h.streamFirecrackerSession(s, dec, notifier)
+	go h.streamFirecrackerSession(s, dec)
 	log.Printf("pty: createFirecrackerSession: session %s registered, streaming", s.ID)
 	return s.Info(), nil
 }
@@ -276,7 +282,7 @@ func backendUsesGuestControlChannel(backend string) bool {
 	}
 }
 
-func (h *Handler) streamFirecrackerSession(s *appty.Session, dec *json.Decoder, notifier transport.Notifier) {
+func (h *Handler) streamFirecrackerSession(s *appty.Session, dec *json.Decoder) {
 	log.Printf("pty: streamFirecrackerSession: starting for %s", s.ID)
 	defer func() {
 		_ = s.RemoteConn.Close()
@@ -298,23 +304,26 @@ func (h *Handler) streamFirecrackerSession(s *appty.Session, dec *json.Decoder, 
 		if err := dec.Decode(&env); err != nil {
 			if !s.Closing.Load() {
 				log.Printf("pty: vsock read error for session %s: %v", s.ID, err)
-				notifier.Notify("pty.exit", map[string]any{"sessionId": s.ID, "exitCode": -1})
+				// Read the current notifier so pty.exit reaches whoever is attached now.
+				s.GetNotifier().Notify("pty.exit", map[string]any{"sessionId": s.ID, "exitCode": -1})
 			}
 			return
 		}
 		log.Printf("pty: streamFirecrackerSession: received type=%q id=%q", env.Type, env.ID)
+		n := s.GetNotifier()
 		switch env.Type {
 		case "chunk":
-			notifier.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Data})
+			s.AppendScrollback(env.Data)
+			n.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Data})
 		case "result", "":
 			log.Printf("pty: streamFirecrackerSession: sending pty.exit exitCode=%d", env.ExitCode)
 			if env.Stdout != "" {
-				notifier.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Stdout})
+				n.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Stdout})
 			}
 			if env.Stderr != "" {
-				notifier.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Stderr})
+				n.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Stderr})
 			}
-			notifier.Notify("pty.exit", map[string]any{"sessionId": s.ID, "exitCode": env.ExitCode})
+			n.Notify("pty.exit", map[string]any{"sessionId": s.ID, "exitCode": env.ExitCode})
 			return
 		case "ack":
 			// shell.write ack
@@ -387,9 +396,11 @@ func (h *Handler) createLocalSession(ctx context.Context, p createParams, cols, 
 		for {
 			n, err := ptmx.Read(buf)
 			if n > 0 {
+				chunk := string(buf[:n])
+				s.AppendScrollback(chunk)
 				notifier.Notify("pty.data", map[string]any{
 					"sessionId": s.ID,
-					"data":      string(buf[:n]),
+					"data":      chunk,
 				})
 			}
 			if err != nil {
@@ -521,6 +532,29 @@ func (h *Handler) write(_ context.Context, raw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("write to PTY: %w", err)
 	}
 	return map[string]any{}, nil
+}
+
+// reattach redirects an existing PTY session's pty.data notifications to the
+// current WebSocket connection. Called by the Mac app whenever it reconnects
+// and finds live sessions from a previous connection — without this, the stream
+// goroutine keeps pushing to the old (dead) notifier and the terminal is blank.
+func (h *Handler) reattach(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p reattachParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, rpcerrors.InvalidParams(err.Error())
+	}
+	s := h.reg.Get(p.SessionID)
+	if s == nil {
+		return nil, rpcerrors.NotFound("session not found")
+	}
+	n := transport.NotifierFromCtx(ctx)
+	s.SetNotifier(n)
+	// Replay buffered output so the freshly-connected client sees existing content.
+	if sb := s.Scrollback(); sb != "" {
+		n.Notify("pty.data", map[string]any{"sessionId": p.SessionID, "data": sb})
+	}
+	log.Printf("pty: reattach: session %s reattached to new client (scrollback=%d bytes)", p.SessionID, len(s.Scrollback()))
+	return map[string]bool{"ok": true}, nil
 }
 
 func defaultShell() string {

@@ -308,6 +308,14 @@ public final class AppState: ObservableObject {
             guard let self else { return (false, "AppState deallocated") }
             return await self.openEditorViaCLI(workspaceID: workspaceID, app: app, checkOnly: checkOnly)
         }
+        // Wire workspace lifecycle + provisioning providers for headless RPC.
+        server.daemonClientProvider = { [weak self] in
+            guard let self else { return nil }
+            return self.client
+        }
+        server.daemonProfileProvider = { [weak self] in
+            self?.activeDaemonProfile
+        }
         rpcServer = server
         server.start()
     }
@@ -469,6 +477,8 @@ public final class AppState: ObservableObject {
                     msg = String(format: "Uploading Nexus (%.0f%%)…", pct * 100)
                 case .startingDaemon:
                     msg = "Starting daemon…"
+                case .bootstrapPhase(_, let message):
+                    msg = message.isEmpty ? "Bootstrapping…" : message
                 case .waitingForDaemon(let attempt):
                     msg = attempt <= 1 ? "Waiting for daemon…" : "Waiting for daemon (attempt \(attempt))…"
                 case .ready:
@@ -585,6 +595,7 @@ public final class AppState: ObservableObject {
                     case .checkingHost:                msg = "Checking remote host…"
                     case .uploadingBinary(let pct):   msg = String(format: "Uploading Nexus (%.0f%%)…", pct * 100)
                     case .startingDaemon:             msg = "Starting daemon…"
+                    case .bootstrapPhase(_, let m):   msg = m.isEmpty ? "Bootstrapping…" : m
                     case .waitingForDaemon(let n):    msg = n <= 1 ? "Waiting for daemon…" : "Waiting (\(n))…"
                     case .ready:                      msg = "Daemon ready"
                     }
@@ -736,6 +747,14 @@ public final class AppState: ObservableObject {
     public func start(_ workspace: Workspace) async {
         await perform(workspaceID: workspace.id, opState: .starting) {
             try await self.client.startWorkspace(id: workspace.id)
+            // Daemon returns immediately with state=starting; poll until running or rolled-back.
+            let deadline = Date().addingTimeInterval(15 * 60) // 15 min ceiling
+            while Date() < deadline {
+                try await Task.sleep(nanoseconds: 2_000_000_000) // 2 s
+                let all = try await self.client.listWorkspaces()
+                guard let ws = all.first(where: { $0.id == workspace.id }) else { return }
+                if ws.state != .starting { return }
+            }
         }
     }
 

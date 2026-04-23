@@ -2,19 +2,37 @@ import Foundation
 import Network
 import OSLog
 
-/// A minimal local HTTP/1.1 server that exposes headless control over terminal tabs
-/// and workspace editor actions.
-/// Only active when the environment variable NEXUS_HEADLESS_RPC=1 is set.
+/// A minimal local HTTP/1.1 server that exposes headless control over terminal tabs,
+/// workspace lifecycle, and remote provisioning for automated end-to-end testing.
+/// Only active when NEXUS_HEADLESS_RPC=1 or ~/.nexus-headless-rpc sentinel file exists.
 ///
-/// Endpoints:
+/// Terminal endpoints:
 ///   GET  /status
 ///   GET  /terminal/tabs
 ///   POST /terminal/open         { workspaceID, name? }
 ///   POST /terminal/write        { tabID, text }
 ///   GET  /terminal/read?tabID=...
 ///   POST /terminal/clear        { tabID }
+///
+/// Workspace lifecycle (maps to daemon client):
+///   GET  /workspace/list
+///   POST /workspace/create      { name, repo, ref?, backend? }
+///   POST /workspace/start       { workspaceID }
+///   POST /workspace/stop        { workspaceID }
+///   POST /workspace/delete      { workspaceID }
+///   GET  /workspace/info?workspaceID=...
+///
+/// Editor / SSH:
 ///   POST /workspace/ssh-check   { workspaceID }  → { ok, detail }
 ///   POST /workspace/open-editor { workspaceID, app? }  → { ok, detail }
+///
+/// Daemon provisioning (simulates full fresh-host onboarding):
+///   GET  /daemon/status
+///   POST /daemon/provision      { sshTarget, port?, sshIdentity? }
+///   POST /daemon/connect        { sshTarget, port?, sshIdentity? }
+///
+/// Linuxbox clean-room (remote state removal for regression testing):
+///   POST /linuxbox/clean-room   { sshTarget, sshPort? }  — remove ~/.local/{share,state,run}/nexus + binaries
 @MainActor
 public final class HeadlessRPCServer {
     private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "HeadlessRPCServer")
@@ -27,6 +45,12 @@ public final class HeadlessRPCServer {
     /// Called by /workspace/ssh-check and /workspace/open-editor.
     /// (workspaceID, app, checkOnly) → (ok, detail)
     public var openEditorAction: ((String, String, Bool) async -> (Bool, String))?
+
+    /// Returns the active daemon client (any protocol) for workspace lifecycle calls.
+    public var daemonClientProvider: (() -> (any DaemonClient)?)?
+
+    /// Returns the active daemon profile for provisioning calls.
+    public var daemonProfileProvider: (() -> DaemonProfile?)?
 
     public init(
         port: UInt16 = HeadlessRPCServer.defaultPort,
@@ -157,6 +181,8 @@ public final class HeadlessRPCServer {
         switch (method, path) {
         case ("GET", "/status"):
             return handleStatus()
+
+        // ── Terminal ──────────────────────────────────────────────────────────
         case ("GET", "/terminal/tabs"):
             return await handleListTabs()
         case ("POST", "/terminal/open"):
@@ -167,10 +193,39 @@ public final class HeadlessRPCServer {
             return await handleRead(query: query)
         case ("POST", "/terminal/clear"):
             return await handleClear(body: bodyString)
+
+        // ── Workspace lifecycle ───────────────────────────────────────────────
+        case ("GET", "/workspace/list"):
+            return await handleWorkspaceList()
+        case ("POST", "/workspace/create"):
+            return await handleWorkspaceCreate(body: bodyString)
+        case ("POST", "/workspace/start"):
+            return await handleWorkspaceStart(body: bodyString)
+        case ("POST", "/workspace/stop"):
+            return await handleWorkspaceStop(body: bodyString)
+        case ("POST", "/workspace/delete"):
+            return await handleWorkspaceDelete(body: bodyString)
+        case ("GET", "/workspace/info"):
+            return await handleWorkspaceInfo(query: query)
+
+        // ── Editor / SSH ──────────────────────────────────────────────────────
         case ("POST", "/workspace/ssh-check"):
             return await handleSSHCheck(body: bodyString)
         case ("POST", "/workspace/open-editor"):
             return await handleOpenEditor(body: bodyString)
+
+        // ── Daemon provisioning ───────────────────────────────────────────────
+        case ("GET", "/daemon/status"):
+            return await handleDaemonStatus()
+        case ("POST", "/daemon/provision"):
+            return await handleDaemonProvision(body: bodyString)
+        case ("POST", "/daemon/connect"):
+            return await handleDaemonConnect(body: bodyString)
+
+        // ── Linuxbox clean-room ───────────────────────────────────────────────
+        case ("POST", "/linuxbox/clean-room"):
+            return await handleLinuxboxCleanRoom(body: bodyString)
+
         default:
             return (404, jsonError("not found"))
         }
@@ -317,6 +372,367 @@ public final class HeadlessRPCServer {
             return (500, jsonError("serialization failed"))
         }
         return (ok ? 200 : 500, str)
+    }
+
+    // MARK: - Workspace lifecycle handlers
+
+    private func handleWorkspaceList() async -> (Int, String) {
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        do {
+            let workspaces = try await client.listWorkspaces()
+            let list: [[String: Any]] = workspaces.map { ws in
+                var d: [String: Any] = [
+                    "id": ws.id,
+                    "name": ws.workspaceName,
+                    "repo": ws.repo,
+                    "ref": ws.ref,
+                    "state": ws.state.rawValue,
+                    "rootPath": ws.rootPath,
+                ]
+                if let backend = ws.backend { d["backend"] = backend }
+                if let guestIp = ws.guestIp { d["guestIp"] = guestIp }
+                return d
+            }
+            guard let data = try? JSONSerialization.data(withJSONObject: ["workspaces": list]),
+                  let str = String(data: data, encoding: .utf8) else {
+                return (500, jsonError("serialization failed"))
+            }
+            return (200, str)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    private func handleWorkspaceCreate(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let name = dict["name"] as? String,
+              let repo = dict["repo"] as? String else {
+            return (400, jsonError("missing required fields: name, repo"))
+        }
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        let ref = dict["ref"] as? String ?? "main"
+        let backend = dict["backend"] as? String ?? ""
+        let spec = WorkspaceCreateSpec(
+            repo: repo,
+            ref: ref,
+            workspaceName: name,
+            agentProfile: "default",
+            backend: backend
+        )
+        do {
+            let ws = try await client.createWorkspace(spec: spec)
+            let payload: [String: Any] = [
+                "workspaceID": ws.id,
+                "name": ws.workspaceName,
+                "state": ws.state.rawValue,
+            ]
+            guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                  let str = String(data: data, encoding: .utf8) else {
+                return (500, jsonError("serialization failed"))
+            }
+            return (200, str)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    private func handleWorkspaceStart(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let workspaceID = dict["workspaceID"] as? String else {
+            return (400, jsonError("missing workspaceID"))
+        }
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        do {
+            try await client.startWorkspace(id: workspaceID)
+            return (200, #"{"ok":true}"#)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    private func handleWorkspaceStop(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let workspaceID = dict["workspaceID"] as? String else {
+            return (400, jsonError("missing workspaceID"))
+        }
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        do {
+            try await client.stopWorkspace(id: workspaceID)
+            return (200, #"{"ok":true}"#)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    private func handleWorkspaceDelete(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let workspaceID = dict["workspaceID"] as? String else {
+            return (400, jsonError("missing workspaceID"))
+        }
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        do {
+            try await client.removeWorkspace(id: workspaceID)
+            return (200, #"{"ok":true}"#)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    private func handleWorkspaceInfo(query: String) async -> (Int, String) {
+        let params = parseQuery(query)
+        guard let workspaceID = params["workspaceID"] else {
+            return (400, jsonError("missing workspaceID query param"))
+        }
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        do {
+            let info = try await client.workspaceInfo(id: workspaceID)
+            let payload: [String: Any] = [
+                "workspaceID": workspaceID,
+                "workspacePath": info.workspacePath,
+                "ports": info.ports.map { ["local": $0.id, "remote": $0.remotePort] },
+            ]
+            guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                  let str = String(data: data, encoding: .utf8) else {
+                return (500, jsonError("serialization failed"))
+            }
+            return (200, str)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    // MARK: - Daemon provisioning handlers
+
+    private func handleDaemonStatus() async -> (Int, String) {
+        let profile = daemonProfileProvider?()
+        let hasProfile = profile != nil
+        let sshTarget = profile?.sshTarget ?? ""
+        let payload: [String: Any] = [
+            "hasProfile": hasProfile,
+            "sshTarget": sshTarget,
+            "port": profile?.port ?? 7777,
+            "clientConnected": daemonClientProvider?() != nil,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (200, str)
+    }
+
+    private func handleDaemonProvision(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let sshTarget = dict["sshTarget"] as? String else {
+            return (400, jsonError("missing sshTarget"))
+        }
+        let port = dict["port"] as? Int ?? 7777
+        let sshIdentity = dict["sshIdentity"] as? String
+        let sshPort = dict["sshPort"] as? Int
+
+        let profile = DaemonProfile(
+            name: "headless-rpc",
+            port: port,
+            sshTarget: sshTarget,
+            sshPort: sshPort,
+            sshIdentity: sshIdentity
+        )
+        let provisioner = RemoteProvisioner(profile: profile)
+        var phases: [[String: String]] = []
+        do {
+            try await provisioner.provision { step in
+                switch step {
+                case .checkingHost:
+                    phases.append(["step": "checking-host"])
+                case .uploadingBinary(let pct):
+                    phases.append(["step": "uploading-binary", "progress": String(format: "%.0f%%", pct * 100)])
+                case .startingDaemon:
+                    phases.append(["step": "starting-daemon"])
+                case .bootstrapPhase(let phase, let msg):
+                    phases.append(["step": "bootstrap", "phase": phase, "message": msg])
+                case .waitingForDaemon(let attempt):
+                    phases.append(["step": "waiting", "attempt": "\(attempt)"])
+                case .ready:
+                    phases.append(["step": "ready"])
+                }
+            }
+            let payload: [String: Any] = ["ok": true, "phases": phases]
+            guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                  let str = String(data: data, encoding: .utf8) else {
+                return (500, jsonError("serialization failed"))
+            }
+            return (200, str)
+        } catch {
+            let payload: [String: Any] = ["ok": false, "error": error.localizedDescription, "phases": phases]
+            guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                  let str = String(data: data, encoding: .utf8) else {
+                return (500, jsonError(error.localizedDescription))
+            }
+            return (500, str)
+        }
+    }
+
+    private func handleDaemonConnect(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let sshTarget = dict["sshTarget"] as? String else {
+            return (400, jsonError("missing sshTarget"))
+        }
+        let port = dict["port"] as? Int ?? 7777
+        let sshIdentity = dict["sshIdentity"] as? String
+        let sshPort = dict["sshPort"] as? Int
+
+        let profile = DaemonProfile(
+            name: "headless-rpc",
+            port: port,
+            sshTarget: sshTarget,
+            sshPort: sshPort,
+            sshIdentity: sshIdentity
+        )
+        let provisioner = RemoteProvisioner(profile: profile)
+        do {
+            try await provisioner.provision()
+        } catch {
+            return (500, jsonError("provision failed: \(error.localizedDescription)"))
+        }
+
+        let payload: [String: Any] = [
+            "ok": true,
+            "sshTarget": sshTarget,
+            "port": port,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (200, str)
+    }
+
+    // MARK: - Linuxbox clean-room handler
+
+    /// Runs the remote clean-room fixture: removes nexus state and binaries.
+    /// This enables regression testing from absolute clean state without SSH manually.
+    private func handleLinuxboxCleanRoom(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let sshTarget = dict["sshTarget"] as? String else {
+            return (400, jsonError("missing sshTarget"))
+        }
+        let sshPort = dict["sshPort"] as? Int ?? 22
+        let sshIdentity = dict["sshIdentity"] as? String
+
+        var args = [
+            "-p", "\(sshPort)",
+            "-F", "/dev/null",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=15",
+        ]
+        if let identity = sshIdentity, !identity.isEmpty {
+            args += ["-i", identity]
+        }
+
+        // Pipe the clean-room script via stdin to `bash -s` to avoid:
+        // - SIGPIPE from broken stdout pipe (trap '' PIPE + exec to /dev/null)
+        // - quoting complexity of inline command strings
+        // - `set -e` interaction with `test && echo` patterns
+        let cleanRoomScript = """
+            trap '' PIPE
+            set -uo pipefail
+            echo "==> Stopping all nexus daemon processes..."
+            pkill -f "nexus daemon" 2>/dev/null || true
+            pkill -f "nexus-libkrun" 2>/dev/null || true
+            pkill -f "nexus-firecracker" 2>/dev/null || true
+            pkill -f "firecracker" 2>/dev/null || true
+            sleep 2
+            echo "==> Removing nexus state..."
+            rm -rf "$HOME/.local/share/nexus" || true
+            rm -rf "$HOME/.local/state/nexus" || true
+            rm -rf "$HOME/.local/run/nexus" || true
+            rm -f "$HOME/.local/bin/nexus" || true
+            rm -f "$HOME/.local/bin/nexus-libkrun" || true
+            rm -f "$HOME/.local/bin/nexus-firecracker-agent" || true
+            rm -f "$HOME/.local/bin/firecracker" || true
+            rm -f "$HOME/.local/bin/passt" || true
+            rm -f "$HOME/.local/bin/pasta" || true
+            echo "==> Verifying removal..."
+            if [ ! -d "$HOME/.local/share/nexus" ]; then echo "share/nexus: removed"; else echo "share/nexus: still present"; fi
+            if [ ! -d "$HOME/.local/state/nexus" ]; then echo "state/nexus: removed"; else echo "state/nexus: still present"; fi
+            if [ ! -f "$HOME/.local/bin/nexus" ]; then echo "nexus binary: removed"; else echo "nexus binary: still present"; fi
+            echo "==> Clean-room complete"
+            """
+
+        // Pass script via stdin to `bash -s` to avoid quoting/SIGPIPE issues.
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        proc.arguments = args + [sshTarget, "bash -s"]
+
+        let stdinPipe = Pipe()
+        proc.standardInput = stdinPipe
+        if let scriptData = cleanRoomScript.data(using: .utf8) {
+            stdinPipe.fileHandleForWriting.write(scriptData)
+            stdinPipe.fileHandleForWriting.closeFile()
+        }
+
+        // Forward SSH_AUTH_SOCK so SSH key agent works from sandboxed context.
+        var env = ProcessInfo.processInfo.environment
+        if let authSock = env["SSH_AUTH_SOCK"], !authSock.isEmpty {
+            env["SSH_AUTH_SOCK"] = authSock
+        }
+        proc.environment = env
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
+
+        // Drain both pipes concurrently to prevent buffer deadlock when the process
+        // produces output faster than the caller reads (pipe buffer ~64 KB on macOS).
+        nonisolated(unsafe) var out = ""
+        nonisolated(unsafe) var err = ""
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async {
+            out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global().async {
+            err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            group.leave()
+        }
+
+        do {
+            try proc.run()
+        } catch {
+            return (500, jsonError("ssh failed: \(error.localizedDescription)"))
+        }
+        proc.waitUntilExit()
+        group.wait()
+
+        if proc.terminationStatus != 0 {
+            return (500, jsonError("clean-room script failed (exit \(proc.terminationStatus)): \(err.trimmingCharacters(in: .whitespacesAndNewlines))"))
+        }
+
+        let payload: [String: Any] = [
+            "ok": true,
+            "output": out.trimmingCharacters(in: .whitespacesAndNewlines),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (200, str)
     }
 
     // MARK: - Helpers

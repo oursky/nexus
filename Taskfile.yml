@@ -100,6 +100,7 @@ tasks:
     cmds:
       - task: dev:cli
       - task: stage:nexus-macos
+      - task: stage:nexus-linux
       - scripts/generate-sdk.sh
       - scripts/swift/build.sh
       - scripts/swift/open.sh
@@ -115,6 +116,18 @@ tasks:
           ./cmd/nexus
         chmod +x packages/nexus-swift/Resources/nexus
         echo "✓ Staged $(ls -lh packages/nexus-swift/Resources/nexus | awk '{print $5}')"
+
+  stage:nexus-linux:
+    desc: "Build linux/amd64 nexus daemon and stage to packages/nexus-swift/Resources/nexus-linux-amd64 (bundled for remote provisioning)"
+    cmds:
+      - |
+        echo "Staging nexus (linux/amd64) → packages/nexus-swift/Resources/nexus-linux-amd64..."
+        GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+          -C packages/nexus \
+          -o ../../packages/nexus-swift/Resources/nexus-linux-amd64 \
+          ./cmd/nexus
+        chmod +x packages/nexus-swift/Resources/nexus-linux-amd64
+        echo "✓ Staged $(ls -lh packages/nexus-swift/Resources/nexus-linux-amd64 | awk '{print $5}')"
 
   # ── Maintenance ───────────────────────────────────────────────────────────
   generate:sdk:

@@ -731,9 +731,11 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         _ = try await call("pty.close", params: ["sessionId": sessionId])
     }
 
-    /// Legacy hook; PTY I/O is multiplexed on the WebSocket via `pty.data` notifications.
+    /// Re-attaches an existing PTY session to the current WebSocket connection so
+    /// that pty.data notifications reach this client.  Called when the app reconnects
+    /// and finds sessions that were live on a previous connection.
     public func attachPTY(sessionId: String) async throws -> Bool {
-        _ = sessionId
+        _ = try await call("pty.reattach", params: ["sessionId": sessionId])
         return true
     }
 
