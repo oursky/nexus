@@ -26,8 +26,8 @@ set -euo pipefail
 export GOPATH="$HOME/go"
 export PATH="$HOME/.local/share/mise/installs/go/1.24.11/bin:$PATH"
 WORKDIR="$HOME/magic/nexus/.worktrees/libkrun-experiment/packages/nexus"
-LIBKRUN_LIB="$HOME/.smolvm/lib"
-LIBKRUN_INC="$HOME/.local/include"
+LIBKRUN_LIB="${SMOLVM_LIB_DIR:-$HOME/.smolvm/lib}"
+LIBKRUN_INC="${LIBKRUN_INC_DIR:-$HOME/.local/include}"
 
 go version
 
@@ -45,6 +45,10 @@ echo "Build succeeded: tmp/nexus-libkrun"
 REMOTE
 
 echo "==> Installing to ${REMOTE_HOST}:${REMOTE_BIN}..."
-REMOTE_WORKDIR="$HOME/magic/nexus/.worktrees/libkrun-experiment/packages/nexus"
-ssh "${REMOTE_HOST}" "cp ~/magic/nexus/.worktrees/libkrun-experiment/packages/nexus/tmp/nexus-libkrun ${REMOTE_BIN} && chmod +x ${REMOTE_BIN}"
+# Stop the daemon before replacing the binary to avoid "Text file busy".
+ssh "${REMOTE_HOST}" "bash -l -c 'nexus daemon stop 2>/dev/null; sleep 1; true'"
+ssh "${REMOTE_HOST}" "rm -f ${REMOTE_BIN} && cp ~/magic/nexus/.worktrees/libkrun-experiment/packages/nexus/tmp/nexus-libkrun ${REMOTE_BIN} && chmod +x ${REMOTE_BIN}"
 echo "==> Deployed: ${REMOTE_HOST}:${REMOTE_BIN}"
+echo ""
+echo "To start the daemon with libkrun:  nexus daemon start --driver=libkrun"
+echo "To verify the environment:         nexus daemon check --driver=libkrun"
