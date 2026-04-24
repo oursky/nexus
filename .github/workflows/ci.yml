@@ -190,6 +190,16 @@ jobs:
           # user can subsequently create subdirectories (e.g. .local/share/).
           sudo chown -R "$USER":"$USER" "$HOME/.local" 2>/dev/null || true
 
+          # Copy the agent-hash stamp from root's state dir to the runner user's
+          # so that E2E test daemons (running as runner) skip the slow rootfs
+          # agent injection step (e2fsck + debugfs) for every parallel test.
+          ROOT_HASH=/root/.local/state/nexus/rootfs-agent.sha256
+          USER_HASH="$HOME/.local/state/nexus/rootfs-agent.sha256"
+          if sudo test -f "$ROOT_HASH"; then
+            mkdir -p "$(dirname "$USER_HASH")"
+            sudo cat "$ROOT_HASH" > "$USER_HASH"
+          fi
+
       - name: Run CI pipeline
         run: task ci
         env:
