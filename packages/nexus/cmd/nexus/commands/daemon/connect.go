@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"os/exec"
 	"strings"
 
@@ -35,6 +38,9 @@ func connectCommand() *cobra.Command {
 			}
 			if err := profile.SaveDefault(p); err != nil {
 				return fmt.Errorf("save profile: %w", err)
+			}
+			if err := ensureRemoteEditorSSHIncludes(); err != nil {
+				return fmt.Errorf("update local SSH config: %w", err)
 			}
 
 			conn, err := rpc.EnsureDaemon()
@@ -71,4 +77,52 @@ func fetchRemoteToken(host string, sshPort int) (string, error) {
 		return "", fmt.Errorf("no token found on remote host (is the daemon started?)")
 	}
 	return token, nil
+}
+
+func ensureRemoteEditorSSHIncludes() error {
+	includeLines := []string{
+		"Include ~/.nexus/ssh/*.ssh.config",
+		"Include ~/Library/Containers/com.oursky.nexus/Data/.nexus/ssh/*.ssh.config",
+		"Include ~/Library/Containers/com.oursky.nexus.local/Data/.nexus/ssh/*.ssh.config",
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(homeDir) == "" {
+		return fmt.Errorf("resolve home directory: %w", err)
+	}
+	sshDir := filepath.Join(homeDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		return err
+	}
+	cfgPath := filepath.Join(sshDir, "config")
+	body, _ := os.ReadFile(cfgPath)
+	bodyStr := string(body)
+
+	hasAllIncludes := true
+	for _, includeLine := range includeLines {
+		if !strings.Contains(bodyStr, includeLine) {
+			hasAllIncludes = false
+			break
+		}
+	}
+	if hasAllIncludes {
+		lines := strings.SplitAfter(bodyStr, "\n")
+		for _, l := range lines {
+			trimmed := strings.TrimSpace(l)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if trimmed == includeLines[0] {
+				return nil
+			}
+			break
+		}
+	}
+
+	newBody := regexp.MustCompile(`(?m)^# nexus VM remote-editor.*\n`).ReplaceAllString(bodyStr, "")
+	for _, includeLine := range includeLines {
+		pattern := regexp.QuoteMeta(includeLine)
+		newBody = regexp.MustCompile(`(?m)^` + pattern + `\n?`).ReplaceAllString(newBody, "")
+	}
+	prefix := "# nexus VM remote-editor (managed by Nexus — must be first)\n" + strings.Join(includeLines, "\n") + "\n\n"
+	return os.WriteFile(cfgPath, []byte(prefix+newBody), 0o600)
 }
