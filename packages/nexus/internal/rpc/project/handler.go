@@ -115,7 +115,13 @@ func (h *Handler) create(ctx context.Context, raw json.RawMessage) (any, error) 
 	if err := h.repo.Create(ctx, p); err != nil {
 		return nil, mapErr(err)
 	}
-	return &createRes{Project: p}, nil
+	// Re-fetch so the response reflects the stored record (handles upsert case
+	// where the project already existed with an earlier CreatedAt).
+	stored, err := h.repo.Get(ctx, p.ID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return &createRes{Project: stored}, nil
 }
 
 func (h *Handler) get(ctx context.Context, raw json.RawMessage) (any, error) {

@@ -25,9 +25,11 @@ type AgentExecFn func(ctx context.Context, conn net.Conn, id, command string, ar
 const ProbeCommand = "sh"
 
 // ProbeArgs are the arguments passed to ProbeCommand.
+// Uses "which" instead of "--version" because claude --version exits 1 when
+// stdout is redirected, giving false-negative probe results.
 var ProbeArgs = []string{
 	"-lc",
-	"codex --version >/dev/null 2>&1 && opencode --version >/dev/null 2>&1 && claude --version >/dev/null 2>&1",
+	"which codex >/dev/null 2>&1 && which opencode >/dev/null 2>&1 && which claude >/dev/null 2>&1",
 }
 
 // DockerProbeArgs verify the Docker daemon is running inside the VM.
