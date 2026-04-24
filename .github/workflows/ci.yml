@@ -9,7 +9,7 @@ on:
 jobs:
   go-fix:
     name: Go Fix Check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, v1]
 
     steps:
       - name: Checkout code
@@ -40,7 +40,7 @@ jobs:
 
   coverage:
     name: Go Coverage (nexus)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, v1]
 
     steps:
       - name: Checkout code
@@ -80,7 +80,7 @@ jobs:
 
   ci:
     name: Core CI (linux)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, v1]
 
     steps:
       - name: Checkout code
@@ -209,7 +209,7 @@ jobs:
   # that install Xcode outside the default path.
   nexus-swift-macos:
     name: NexusApp (macOS)
-    runs-on: macos-latest
+    runs-on: [self-hosted, macOS, ARM64, v2, tw]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
