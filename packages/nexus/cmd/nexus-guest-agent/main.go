@@ -21,8 +21,14 @@ import (
 
 	creackpty "github.com/creack/pty"
 	"github.com/mdlayher/vsock"
-	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/firecracker"
 	"golang.org/x/sys/unix"
+)
+
+// vsock port constants shared with the host-side runtime drivers.
+const (
+	defaultAgentVSockPort    uint32 = 10789
+	defaultSpotlightVSockPort uint32 = 10792
+	vendingVSockPort         uint32 = 10790
 )
 
 const (
@@ -613,7 +619,7 @@ func main() {
 // 127.0.0.1:<port> inside the guest. This lets the daemon host reach services
 // that only listen on loopback without relying on bridge networking.
 func startSpotlightListener() {
-	port := firecracker.DefaultSpotlightVSockPort
+	port := defaultSpotlightVSockPort
 
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {
@@ -1849,7 +1855,7 @@ func listenTCP() (net.Listener, error) {
 }
 
 func listenVsock() (net.Listener, error) {
-	port := firecracker.DefaultAgentVSockPort
+	port := defaultAgentVSockPort
 	if raw := strings.TrimSpace(os.Getenv("AGENT_VSOCK_PORT")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed <= 0 {
@@ -1893,7 +1899,7 @@ func startSSHAgentProxy() {
 	const (
 		sockPath  = "/tmp/ssh-agent.sock"
 		hostCID   = uint32(2) // VMADDR_CID_HOST
-		agentPort = uint32(firecracker.VendingVSockPort)
+		agentPort = vendingVSockPort
 	)
 
 	_ = os.Setenv("SSH_AUTH_SOCK", sockPath)
@@ -1942,7 +1948,7 @@ func emitDiagnostic(format string, args ...any) {
 	}
 
 	if kmsg, err := os.OpenFile("/dev/kmsg", os.O_WRONLY|os.O_APPEND, 0); err == nil {
-		_, _ = fmt.Fprintf(kmsg, "<6>nexus-firecracker-agent: %s\n", msg)
+		_, _ = fmt.Fprintf(kmsg, "<6>nexus-guest-agent: %s\n", msg)
 		_ = kmsg.Close()
 	}
 }
