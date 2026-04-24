@@ -83,7 +83,8 @@ targets:
         inputFiles:
           - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus
         outputFiles:
-          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus
+          # Stamp only: Xcode rejects the same path as both input and output (mutable output).
+          - $(DERIVED_FILE_DIR)/nexus-sign-bundled-cli.stamp
         script: |
           # Every Mach-O executable in the .app must declare App Sandbox for Mac App Store.
           # Copied CLIs are ad-hoc signed or unsigned; re-sign with the app entitlements.
@@ -116,6 +117,8 @@ targets:
               sign_macho "$bin"
             done
           fi
+          mkdir -p "${DERIVED_FILE_DIR}"
+          touch "${DERIVED_FILE_DIR}/nexus-sign-bundled-cli.stamp"
     dependencies:
       - target: NexusCore
         link: true
