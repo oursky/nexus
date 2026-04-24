@@ -22,19 +22,27 @@ GIT_COMMIT="$(git -C "$SCRIPT_DIR/../.." rev-parse --short HEAD 2>/dev/null || e
 LDFLAGS="-X github.com/oursky/nexus/packages/nexus/internal/build.Time=${BUILD_TIME} \
          -X github.com/oursky/nexus/packages/nexus/internal/build.Commit=${GIT_COMMIT}"
 
-echo "Building nexus for linux/amd64 (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
-  -C "$NEXUS_PKG" \
-  -ldflags "$LDFLAGS" \
-  -o ./tmp/nexus-linux \
-  ./cmd/nexus
-
+# Build the guest agent first so it can be embedded in the nexus binary.
+# The //go:embed directive in cmd/nexus reads agent-linux-amd64 at compile
+# time; if we built nexus before updating this file the embedded agent would
+# always be one deploy behind.
 echo "Building nexus-firecracker-agent for linux/amd64..."
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
   -C "$NEXUS_PKG" \
   -ldflags "$LDFLAGS" \
   -o ./tmp/nexus-firecracker-agent-linux \
   ./cmd/nexus-firecracker-agent
+
+# Update the embed file before building nexus so the embedded agent is current.
+cp "$NEXUS_PKG/tmp/nexus-firecracker-agent-linux" "$NEXUS_PKG/cmd/nexus/agent-linux-amd64"
+chmod +x "$NEXUS_PKG/cmd/nexus/agent-linux-amd64"
+
+echo "Building nexus for linux/amd64 (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+  -C "$NEXUS_PKG" \
+  -ldflags "$LDFLAGS" \
+  -o ./tmp/nexus-linux \
+  ./cmd/nexus
 
 # Keep the Mac app's embedded linux binary in sync so provision never
 # re-uploads a stale version over a freshly deployed remote daemon.
@@ -43,10 +51,6 @@ if [ -d "$SWIFT_RESOURCES" ]; then
   chmod +x "$SWIFT_RESOURCES/nexus-linux-amd64"
   echo "Staged  → packages/nexus-swift/Resources/nexus-linux-amd64 (kept in sync)"
 fi
-
-# Also embed the new agent binary inside cmd/nexus (used by the linker //go:embed).
-cp "$NEXUS_PKG/tmp/nexus-firecracker-agent-linux" "$NEXUS_PKG/cmd/nexus/agent-linux-amd64"
-chmod +x "$NEXUS_PKG/cmd/nexus/agent-linux-amd64"
 
 echo "Deploying to ${REMOTE_HOST}:${REMOTE_BIN}..."
 ssh "$REMOTE_HOST" "BIN=${REMOTE_BIN}; mkdir -p \"\$(dirname \"\$BIN\")\"; rm -f \"\$BIN\""
