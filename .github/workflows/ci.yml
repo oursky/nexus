@@ -214,9 +214,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Select Xcode (optional)
-        if: ${{ vars.NEXUS_MACOS_DEVELOPER_DIR != '' }}
-        run: echo "DEVELOPER_DIR=${{ vars.NEXUS_MACOS_DEVELOPER_DIR }}" >> "$GITHUB_ENV"
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          if [ -n "${{ vars.NEXUS_MACOS_DEVELOPER_DIR }}" ]; then
+            XCODE_DIR="${{ vars.NEXUS_MACOS_DEVELOPER_DIR }}"
+          else
+            # Fall back to the first available Xcode under /Volumes/xcodes.
+            XCODE_DIR="$(ls -d /Volumes/xcodes/Xcode_*.app 2>/dev/null | sort -V | tail -1)/Contents/Developer"
+          fi
+          echo "DEVELOPER_DIR=$XCODE_DIR" >> "$GITHUB_ENV"
+          echo "Selected Xcode: $XCODE_DIR"
+          xcode-select -p || true
 
       - name: Build NexusApp (Debug)
         run: scripts/swift/build.sh
