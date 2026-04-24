@@ -346,6 +346,25 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	client := m.apiClientFactory(apiSocket)
 
+	// Configure Firecracker's internal logger to write at Warning level to a
+	// separate hypervisor log file.  Without this, Firecracker writes all DEBUG
+	// messages (e.g. virtio interrupt noise) to its stderr, which is redirected
+	// to firecracker.log along with the guest serial console output.
+	// Configuring the logger here moves Firecracker's own messages out of the
+	// serial log so firecracker.log contains only clean guest console output.
+	hypLogPath := filepath.Join(workDir, "hypervisor.log")
+	loggerConfig := map[string]any{
+		"log_path":        hypLogPath,
+		"level":           "Warning",
+		"show_level":      true,
+		"show_log_origin": false,
+	}
+	if err := client.put(ctx, "/logger", loggerConfig); err != nil {
+		// Non-fatal: log the warning but continue — the serial log will just
+		// be noisier (DEBUG virtio lines mixed with guest console output).
+		log.Printf("[firecracker] warning: could not configure logger (serial log will include hypervisor debug output): %v", err)
+	}
+
 	machineConfig := map[string]any{
 		"vcpu_count":        spec.VCPUs,
 		"mem_size_mib":      spec.MemoryMiB,

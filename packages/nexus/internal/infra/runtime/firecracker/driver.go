@@ -99,6 +99,19 @@ func (d *FCDriver) Backend() string {
 	return "firecracker"
 }
 
+// SerialLogPath returns the path to the Firecracker serial/console log for a
+// running workspace. Returns an error if the workspace is not found.
+func (d *FCDriver) SerialLogPath(workspaceID string) (string, error) {
+	if d.manager == nil {
+		return "", fmt.Errorf("no firecracker manager available")
+	}
+	inst, err := d.manager.Get(workspaceID)
+	if err != nil {
+		return "", fmt.Errorf("workspace %s: %w", workspaceID, err)
+	}
+	return inst.SerialLog, nil
+}
+
 // GuestSSHHost implements [runtime.Driver] for Remote-SSH into the micro-VM.
 // In rootless mode it returns "127.0.0.1:PORT" (slirp4netns port-forward target)
 // so the macOS SSH client can jump through the engine host and land on the VM's
