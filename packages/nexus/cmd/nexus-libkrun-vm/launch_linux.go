@@ -34,7 +34,11 @@ func launchVM(spec libkrun.VMSpec) error {
 		fmt.Fprintf(os.Stderr, "[libkrun-vm] "+format+"\n", args...)
 	}
 
-	krunSetLogLevel(4)
+	logLevel := uint32(4) // default: debug
+	if spec.LibkrunLogLevel > 0 {
+		logLevel = uint32(spec.LibkrunLogLevel)
+	}
+	krunSetLogLevel(logLevel)
 
 	logf("creating context for workspace %s", spec.WorkspaceID)
 	ctx, err := krunCreate()

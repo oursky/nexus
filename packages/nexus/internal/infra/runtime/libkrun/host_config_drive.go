@@ -1,8 +1,11 @@
 package libkrun
 
 import (
+	"bufio"
+	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +43,15 @@ func buildHostConfigDriveLibkrun(home, destPath string) error {
 	add(home+"/.codex/auth.json", ".codex/auth.json")
 	add(home+"/.codex/config.json", ".codex/config.json")
 	add("/etc/resolv.conf", ".resolv.conf")
+
+	// Write the host's default gateway so the guest static-IP fallback uses the
+	// correct gateway when DHCP fails (passt's gateway == host's default gateway).
+	if gw := hostDefaultGatewayIP(); gw != "" {
+		if gwPath, cleanup, err := writeTempFileForConfigDrive("nexus-gw-*", []byte(gw+"\n")); err == nil {
+			defer cleanup()
+			files = append(files, entry{gwPath, ".nexus-gateway"})
+		}
+	}
 
 	// AI/LLM API keys from daemon process environment → sourced by guest /root/.profile.
 	if envContent := buildAPIKeyEnvFileLibkrun(); envContent != "" {
@@ -238,6 +250,42 @@ func buildAPIKeyEnvFileLibkrun() string {
 		}
 	}
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// hostDefaultGatewayIP returns the host's IPv4 default gateway by reading
+// /proc/net/route. Returns "" on error or if no default route is found.
+func hostDefaultGatewayIP() string {
+	f, err := os.Open("/proc/net/route")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Scan() // skip header line
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 3 {
+			continue
+		}
+		// Destination == 00000000 means default route.
+		if fields[1] != "00000000" {
+			continue
+		}
+		// Gateway field is a little-endian hex IPv4 address.
+		gwHex := fields[2]
+		if len(gwHex) != 8 {
+			continue
+		}
+		b, err := hex.DecodeString(gwHex)
+		if err != nil || len(b) != 4 {
+			continue
+		}
+		// Bytes are in little-endian order in /proc/net/route.
+		ip := net.IP{b[3], b[2], b[1], b[0]}
+		return ip.String()
+	}
+	return ""
 }
 
 func writeTempFileForConfigDrive(pattern string, data []byte) (string, func(), error) {

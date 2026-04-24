@@ -4,10 +4,12 @@ package libkrun
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -52,19 +54,30 @@ func createPasstSocketPair() (vmSide *os.File, hostSide *os.File, err error) {
 	return os.NewFile(uintptr(fds[0]), "passt-vm"), os.NewFile(uintptr(fds[1]), "passt-host"), nil
 }
 
-func startPasstProcess(workDir string, hostSide *os.File) (*os.Process, error) {
+func startPasstProcess(workDir string, hostSide *os.File, sshHostPort int, guestIPv4 string) (*os.Process, error) {
 	logPath := filepath.Join(workDir, "passt.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		logFile = os.Stderr
 	}
 	passtBin := resolvePasstPath()
-	cmd := exec.Command(
-		passtBin,
+	args := []string{
 		"--fd", strconv.Itoa(3),
 		"--foreground",
 		"--stderr",
-	)
+	}
+	if guestIPv4 = strings.TrimSpace(guestIPv4); guestIPv4 != "" {
+		// Keep passt's DHCP yiaddr aligned with the agent's static fallback so
+		// host->guest forwarded TCP reaches the same IPv4 even when DHCPv4 setup
+		// inside the guest fails and we fall back to a static address.
+		args = append(args, "--address", guestIPv4+"/16")
+	}
+	// Forward host loopback port → guest port 22 so Remote-SSH (Mac → ProxyJump → VM) works.
+	// The GuestIP stored in the workspace record uses this same port.
+	if sshHostPort > 0 {
+		args = append(args, "-t", fmt.Sprintf("127.0.0.1/%d:22", sshHostPort))
+	}
+	cmd := exec.Command(passtBin, args...)
 	cmd.ExtraFiles = []*os.File{hostSide}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -74,4 +87,39 @@ func startPasstProcess(workDir string, hostSide *os.File) (*os.Process, error) {
 	}
 	_ = logFile.Close()
 	return cmd.Process, nil
+}
+
+func passtMACForWorkspaceID(workspaceID string) [6]byte {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(workspaceID))
+	v := h.Sum32()
+	return [6]byte{0x02, byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v), 0x01}
+}
+
+func passtGuestIPv4ForWorkspace(workspaceID string) string {
+	gateway := strings.TrimSpace(hostDefaultGatewayIP())
+	if gateway == "" {
+		gateway = "192.168.0.1"
+	}
+	mac := passtMACForWorkspaceID(workspaceID)
+	return staticGuestIPv4ForMAC(fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]), gateway)
+}
+
+// staticGuestIPv4ForMAC mirrors the guest agent's staticGuestIPForMAC logic so
+// passt's DHCP address and the guest's static fallback converge on the same IP.
+func staticGuestIPv4ForMAC(mac, gateway string) string {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(mac)), ":")
+	if len(parts) != 6 {
+		return "192.168.169.1"
+	}
+	b4, err4 := strconv.ParseUint(parts[4], 16, 8)
+	b5, err5 := strconv.ParseUint(parts[5], 16, 8)
+	if err4 != nil || err5 != nil {
+		return "192.168.169.1"
+	}
+	gwParts := strings.SplitN(gateway, ".", 4)
+	if len(gwParts) < 2 {
+		return fmt.Sprintf("172.26.%d.%d", b4, b5)
+	}
+	return fmt.Sprintf("%s.%s.%d.%d", gwParts[0], gwParts[1], b4, b5)
 }

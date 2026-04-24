@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -246,7 +247,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("create passt socketpair: %w", pairErr)
 		}
-		passtProc, pairErr = startPasstProcess(workDir, hostSideFD)
+		passtProc, pairErr = startPasstProcess(workDir, hostSideFD, sshPort, passtGuestIPv4ForWorkspace(spec.WorkspaceID))
 		if pairErr != nil {
 			_ = vmSideFD.Close()
 			_ = hostSideFD.Close()
@@ -338,7 +339,43 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	log.Printf("[libkrun] started workspace %s (pid=%d ssh=127.0.0.1:%d)",
 		spec.WorkspaceID, childCmd.Process.Pid, sshPort)
 
+	// Reap the VM/passt processes in the background so unexpected exits are
+	// visible in daemon logs and stale "running" instances don't linger forever.
+	go m.monitorInstance(spec.WorkspaceID, inst)
+
 	return inst, nil
+}
+
+func (m *Manager) monitorInstance(workspaceID string, inst *Instance) {
+	if inst == nil || inst.Process == nil {
+		return
+	}
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Signal 0 checks liveness without delivering a real signal.
+		err := inst.Process.Signal(syscall.Signal(0))
+		if err == nil {
+			continue
+		}
+
+		log.Printf("[libkrun] workspace %s: vm process no longer alive: %v", workspaceID, err)
+		if inst.PasstProcess != nil {
+			if pErr := inst.PasstProcess.Signal(syscall.Signal(0)); pErr == nil {
+				_ = inst.PasstProcess.Kill()
+			}
+		}
+
+		m.mu.Lock()
+		current, ok := m.instances[workspaceID]
+		if ok && current == inst {
+			delete(m.instances, workspaceID)
+		}
+		m.mu.Unlock()
+		return
+	}
 }
 
 // Stop terminates a running VM.

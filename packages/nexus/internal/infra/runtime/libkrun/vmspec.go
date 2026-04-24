@@ -56,6 +56,10 @@ type VMSpec struct {
 	// pre-opened passt unix-stream socket (effective FD = 3 + index).
 	PasstFDIndex int            `json:"passt_fd_index,omitempty"`
 	VsockPorts   []VsockPortCfg `json:"vsock_ports,omitempty"`
+
+	// LibkrunLogLevel overrides the libkrun verbosity level (krun_set_log_level).
+	// 0=off 1=error 2=warn 3=info 4=debug 5=trace. 0 means "use default" (4).
+	LibkrunLogLevel int `json:"libkrun_log_level,omitempty"`
 }
 
 // VsockPortCfg maps a guest vsock port to a host Unix socket path.
