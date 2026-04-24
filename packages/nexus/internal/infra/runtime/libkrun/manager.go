@@ -460,10 +460,16 @@ func (m *Manager) snapshotDockerPath(snapshotID string) string {
 // for the child lineage snapshot.
 // The caller (Driver.CheckpointFork) is responsible for stopping the parent VM
 // before calling this and restarting it afterward.
-func (m *Manager) ForkWorkspaceImage(_ context.Context, parentWorkspaceID, childSnapshotID string) error {
+// fallbackProjectRoot is the parent workspace's project root; it is used to
+// materialise workspace images when the parent VM was never started.
+func (m *Manager) ForkWorkspaceImage(_ context.Context, parentWorkspaceID, childSnapshotID, fallbackProjectRoot string) error {
 	m.mu.RLock()
 	parent, exists := m.instances[parentWorkspaceID]
 	m.mu.RUnlock()
+
+	// tmpDockerPath is set when we create a temporary docker image that should
+	// be cleaned up after the snapshot copy finishes.
+	var tmpDockerPath string
 
 	var rootSrcPath, workspaceSrcPath, dockerSrcPath string
 	if exists {
@@ -476,6 +482,33 @@ func (m *Manager) ForkWorkspaceImage(_ context.Context, parentWorkspaceID, child
 		rootSrcPath = filepath.Join(parentDir, "rootfs.ext4")
 		workspaceSrcPath = filepath.Join(parentDir, "workspace.ext4")
 		dockerSrcPath = filepath.Join(parentDir, "docker-data.ext4")
+
+		// When the workspace was registered but never booted the workdir
+		// images don't exist yet. Fall back to base images so that a fork of
+		// a freshly-created (unstarted) workspace still works.
+		if _, err := os.Stat(rootSrcPath); err != nil {
+			if fallbackProjectRoot == "" {
+				return fmt.Errorf("parent rootfs image not found at %s and no fallback project root: %w", rootSrcPath, err)
+			}
+			rootSrcPath = m.cfg.RootFSBasePath
+
+			basePath, baseErr := EnsureBaseImage(fallbackProjectRoot, m.cfg.BasesDir)
+			if baseErr != nil {
+				return fmt.Errorf("ensure base workspace image for fork fallback: %w", baseErr)
+			}
+			workspaceSrcPath = basePath
+
+			// Docker data image: create a fresh empty image into a temp file
+			// so that the snapshot copy below works uniformly.
+			tmpDockerPath = filepath.Join(m.cfg.WorkDirRoot, ".tmp-docker-"+childSnapshotID+".ext4")
+			if createErr := createDockerDataImage(tmpDockerPath); createErr != nil {
+				return fmt.Errorf("create docker-data image for fork fallback: %w", createErr)
+			}
+			dockerSrcPath = tmpDockerPath
+		}
+	}
+	if tmpDockerPath != "" {
+		defer os.Remove(tmpDockerPath)
 	}
 
 	for _, p := range []struct {

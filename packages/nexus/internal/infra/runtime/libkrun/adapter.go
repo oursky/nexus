@@ -90,7 +90,7 @@ func (a *Adapter) Fork(ctx context.Context, parent *workspace.Workspace, child *
 	if parentRoot == "" {
 		return "", fmt.Errorf("parent workspace %s has no project root", parent.ID)
 	}
-	if err := a.d.manager.ForkWorkspaceImage(ctx, parent.ID, child.ID); err != nil {
+	if err := a.d.manager.ForkWorkspaceImage(ctx, parent.ID, child.ID, parentRoot); err != nil {
 		return "", fmt.Errorf("fork workspace image: %w", err)
 	}
 	if err := a.d.ForkWithRoot(ctx, parent.ID, child.ID, parentRoot); err != nil {

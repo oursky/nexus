@@ -389,7 +389,7 @@ func (d *Driver) CheckpointFork(ctx context.Context, parentID, childID string) (
 		}
 	}
 
-	if err := d.manager.ForkWorkspaceImage(ctx, parentID, childID); err != nil {
+	if err := d.manager.ForkWorkspaceImage(ctx, parentID, childID, parentRoot); err != nil {
 		if parentWasRunning && parentRoot != "" {
 			_ = d.EnsureStarted(ctx, parentID, parentRoot)
 		}
