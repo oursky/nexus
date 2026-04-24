@@ -1058,7 +1058,7 @@ func TestRunInitRuntimeBootstrapReturnsFastErrorInNonInteractiveNoSudoNonRoot(t 
 	initRuntimeBootstrapIsTTYFn = func(f *os.File) bool { return false }
 	initRuntimeBootstrapSkipFastFailFn = nil
 
-	err := runInitRuntimeBootstrap(t.TempDir(), "firecracker")
+	err := runInitRuntimeBootstrap(t.TempDir(), "libkrun")
 	if err == nil {
 		t.Fatal("expected fast-fail error in non-interactive no-sudo non-root scenario")
 	}
