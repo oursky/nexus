@@ -190,9 +190,26 @@ jobs:
           # user can subsequently create subdirectories (e.g. .local/share/).
           sudo chown -R "$USER":"$USER" "$HOME/.local" 2>/dev/null || true
 
+          # The rootless bootstrap installs VM assets into root's XDG data dir
+          # (/root/.local/share/nexus/vm/). E2E test daemons run as the runner
+          # user and fall back to /var/lib/nexus/ before downloading. Symlink
+          # root's assets there so per-test daemons find them instantly.
+          ROOT_VM=/root/.local/share/nexus/vm
+          if sudo test -d "$ROOT_VM"; then
+            sudo mkdir -p /var/lib/nexus
+            for f in vmlinux.bin rootfs.ext4 rootfs-dir; do
+              SRC="$ROOT_VM/$f"
+              DST="/var/lib/nexus/$f"
+              if sudo test -e "$SRC" && ! sudo test -e "$DST"; then
+                sudo ln -s "$SRC" "$DST"
+              fi
+            done
+            sudo chmod 0755 /var/lib/nexus
+            sudo chmod -R a+rX "$ROOT_VM"
+          fi
+
           # Copy the agent-hash stamp from root's state dir to the runner user's
-          # so that E2E test daemons (running as runner) skip the slow rootfs
-          # agent injection step (e2fsck + debugfs) for every parallel test.
+          # so E2E test daemons skip the slow e2fsck + debugfs injection.
           ROOT_HASH=/root/.local/state/nexus/rootfs-agent.sha256
           USER_HASH="$HOME/.local/state/nexus/rootfs-agent.sha256"
           if sudo test -f "$ROOT_HASH"; then
