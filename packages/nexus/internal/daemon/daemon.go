@@ -162,6 +162,14 @@ func New(cfg Config) (*Daemon, error) {
 
 	wsSvc := appworkspace.NewService(wsStore, projStore, rtDriver, context.Background())
 
+	// ── Workspace handler with optional serial log provider ────────────────
+	wsHandlerOpts := []rpcworkspace.HandlerOption{}
+	if fcDriver != nil {
+		wsHandlerOpts = append(wsHandlerOpts, rpcworkspace.WithSerialLogProvider(fcDriver))
+	} else if cfg.Driver == "libkrun" {
+		wsHandlerOpts = append(wsHandlerOpts, rpcworkspace.WithSerialLogProvider(lkBundle))
+	}
+
 	spotlightOpts := []appspotlight.Option{}
 	if fcDriver != nil {
 		spotlightOpts = append(spotlightOpts, appspotlight.WithPortDialer(fcDriver))
@@ -174,7 +182,7 @@ func New(cfg Config) (*Daemon, error) {
 
 	reg := rpcregistry.NewMapRegistry()
 
-	rpcworkspace.NewHandler(wsSvc).Register(reg)
+	rpcworkspace.NewHandler(wsSvc, wsHandlerOpts...).Register(reg)
 	if err := rpcspotlight.New(spotlightSvc).Register(reg); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("register spotlight rpc: %w", err)
@@ -192,7 +200,8 @@ func New(cfg Config) (*Daemon, error) {
 	}
 	rpcpty.New(ptyReg, ptyHandlerOpts...).Register(reg)
 	rpcfs.New("/").Register(reg)
-	rpcdaemon.New(newNodeInfo(cfg)).Register(reg)
+	daemonLogPath := filepath.Join(filepath.Dir(cfg.SocketPath), "daemon.log")
+	rpcdaemon.New(newNodeInfo(cfg), rpcdaemon.WithLogPath(daemonLogPath)).Register(reg)
 	rpcproject.New(projStore).Register(reg)
 	rpcauth.New(wsStore, broker).Register(reg)
 

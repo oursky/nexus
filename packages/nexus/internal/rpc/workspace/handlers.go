@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -261,9 +264,12 @@ type SSHCheckResult struct {
 	Stderr  string `json:"stderr,omitempty"`
 }
 
-// handleSSHCheck runs `ssh root@<guestIP> whoami` from the daemon host and
-// returns whether the connection succeeded, along with any error details.
+// handleSSHCheck runs `ssh root@<host> [-p port] whoami` from the daemon host
+// and returns whether the connection succeeded, along with any error details.
 // This lets the Mac app verify SSH connectivity via RPC before opening Cursor.
+//
+// GuestIP may be a bare host (firecracker bridge) or host:port (libkrun port-
+// forward). Both forms are handled: host:port is split into -p PORT root@host.
 func (h *Handler) handleSSHCheck(ctx context.Context, raw json.RawMessage) (any, error) {
 	req, err := decode[sshCheckReq](raw)
 	if err != nil {
@@ -286,10 +292,17 @@ func (h *Handler) handleSSHCheck(ctx context.Context, raw json.RawMessage) (any,
 		}, nil
 	}
 
-	// Run ssh with a 10 s timeout from the daemon host (which is on the same
-	// bridge network as the VM).
+	// Run ssh with a 15 s timeout from the daemon host.
 	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+
+	// GuestIP may be "host" or "host:port". Split accordingly.
+	sshHost := guestIP
+	sshPort := ""
+	if h, p, splitErr := net.SplitHostPort(guestIP); splitErr == nil {
+		sshHost = h
+		sshPort = p
+	}
 
 	sshArgs := []string{
 		"-o", "StrictHostKeyChecking=accept-new",
@@ -297,9 +310,12 @@ func (h *Handler) handleSSHCheck(ctx context.Context, raw json.RawMessage) (any,
 		"-o", "ConnectTimeout=10",
 		"-o", "BatchMode=yes",
 		"-o", "LogLevel=ERROR",
-		"root@" + guestIP,
-		"whoami",
 	}
+	if sshPort != "" {
+		sshArgs = append(sshArgs, "-p", sshPort)
+	}
+	sshArgs = append(sshArgs, "root@"+sshHost, "whoami")
+
 	cmd := exec.CommandContext(checkCtx, "ssh", sshArgs...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -323,4 +339,84 @@ func (h *Handler) handleSSHCheck(ctx context.Context, raw json.RawMessage) (any,
 		GuestIP: guestIP,
 		Whoami:  whoami,
 	}, nil
+}
+
+// ── Serial log ────────────────────────────────────────────────────────────────
+
+type serialLogReq struct {
+	ID    string `json:"id"`
+	Lines int    `json:"lines,omitempty"`
+}
+
+type serialLogRes struct {
+	Lines     []string `json:"lines"`
+	Path      string   `json:"path"`
+	Available bool     `json:"available"`
+}
+
+func (h *Handler) handleSerialLog(_ context.Context, raw json.RawMessage) (any, error) {
+	req, err := decode[serialLogReq](raw)
+	if err != nil {
+		return nil, err
+	}
+	if req.ID == "" {
+		return nil, rpce.InvalidParams("id is required")
+	}
+	if req.Lines <= 0 {
+		req.Lines = 200
+	}
+
+	if h.serialLogProvider == nil {
+		return &serialLogRes{Lines: []string{}, Path: "", Available: false}, nil
+	}
+
+	logPath, err := h.serialLogProvider.SerialLogPath(req.ID)
+	if err != nil {
+		// Workspace not running or no serial log — return empty result, not error.
+		return &serialLogRes{Lines: []string{}, Path: "", Available: false}, nil
+	}
+
+	lines, err := tailLines(logPath, req.Lines)
+	if err != nil {
+		return &serialLogRes{Lines: []string{}, Path: logPath, Available: false}, nil
+	}
+	return &serialLogRes{Lines: lines, Path: logPath, Available: true}, nil
+}
+
+// tailLines reads up to maxLines lines from the end of a file.
+// It reads at most 64 KB from the end: after JSON-encoding (ANSI escape
+// sequences expand ~6×) the response stays well under 1 MB, which is the
+// default URLSessionWebSocketTask limit on Apple platforms.
+func tailLines(path string, maxLines int) ([]string, error) {
+	const bufCap = 64 * 1024
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	offset := fi.Size() - int64(bufCap)
+	if offset < 0 {
+		offset = 0
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	text := strings.TrimRight(string(data), "\n")
+	if text == "" {
+		return []string{}, nil
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return lines, nil
 }
