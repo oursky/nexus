@@ -643,6 +643,9 @@ func installVMRootfsRootless(w io.Writer, emitJSON bool) error {
 	// Remove the cached agent hash so ensureFirecrackerGuestAgent knows to
 	// re-inject rather than skip because the old hash still matches.
 	_ = os.Remove(filepath.Join(xdgStateNexus(), "rootfs-agent.sha256"))
+	// Also remove the bake stamp so the next daemon start re-bakes the rootfs
+	// with developer tools baked into the fresh image.
+	_ = os.Remove(filepath.Join(xdgStateNexus(), "rootfs-baked-v3"))
 	return nil
 }
 

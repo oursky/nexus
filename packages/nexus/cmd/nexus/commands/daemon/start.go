@@ -39,6 +39,10 @@ var StartSetupFnJSON func(w io.Writer, driver string) error
 // binary bytes.  On Linux builds this is always set by daemon_hooks_linux.go.
 var EmbeddedAgentFn func() []byte
 
+// LibkrunBakeFn, if non-nil, is called after agent injection to pre-bake
+// developer tools into the base rootfs. Set on Linux by libkrun_bake_linux.go.
+var LibkrunBakeFn func(rootfsPath, kernelPath string)
+
 // DefaultVMKernelPath is the canonical kernel location after rootless daemon setup.
 // Uses the XDG user data path; the old /var/lib/nexus path is no longer written by default.
 var DefaultVMKernelPath = defaultVMKernelPath()
@@ -271,6 +275,13 @@ func startCommand() *cobra.Command {
 				// immediately for both runtime drivers.
 				if err := ensureFirecrackerGuestAgent(cfg.RootFSPath); err != nil {
 					return fmt.Errorf("daemon start: guest agent refresh: %w", err)
+				}
+
+				// Pre-bake developer tools into the base rootfs so workspaces start
+				// instantly instead of spending 5-10 min on apt-get/npm install.
+				// Only runs once per rootfs build (stamp-based, idempotent).
+				if isLibkrun && LibkrunBakeFn != nil {
+					LibkrunBakeFn(cfg.RootFSPath, cfg.KernelPath)
 				}
 			}
 

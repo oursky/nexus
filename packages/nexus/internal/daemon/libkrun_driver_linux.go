@@ -132,6 +132,13 @@ func (b libkrunDriverBundle) DialPort(ctx context.Context, workspaceID string, p
 	return b.adapter.DialPort(ctx, workspaceID, port)
 }
 
+func (b libkrunDriverBundle) SerialLogPath(workspaceID string) (string, error) {
+	if b.driver == nil {
+		return "", fmt.Errorf("libkrun driver is unavailable")
+	}
+	return b.driver.SerialLogPath(workspaceID)
+}
+
 // prewarmLibkrunBaseImages builds cached base workspace ext4 images for all
 // known libkrun workspaces at daemon startup so the first workspace start
 // doesn't block on mkfs.ext4 -d <project_root> (30–120 s for large repos).

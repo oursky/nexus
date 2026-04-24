@@ -38,5 +38,9 @@ func (b libkrunDriverBundle) WorkspaceReady(_ context.Context, _ string) (bool, 
 	return false, fmt.Errorf("libkrun not available on this platform")
 }
 
+func (b libkrunDriverBundle) SerialLogPath(_ string) (string, error) {
+	return "", fmt.Errorf("libkrun not available on this platform")
+}
+
 // prewarmLibkrunBaseImages is a no-op stub on non-Linux platforms.
 func prewarmLibkrunBaseImages(_ *store.WorkspaceStore, _ string) {}
