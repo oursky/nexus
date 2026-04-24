@@ -326,13 +326,19 @@ func TestStaticGuestIPForMACInvalid(t *testing.T) {
 }
 
 func TestBootstrapGuestEnvironmentPID1MountsAndConfiguresNetwork(t *testing.T) {
+	// isPrimaryAgent() checks os.Getpid()==1 || NEXUS_CONTAINER_MODE==1.
+	// Tests never run as PID 1, so set the env var to simulate primary-agent mode.
+	t.Setenv("NEXUS_CONTAINER_MODE", "1")
+
 	origMount := mountKernelFilesystemsFunc
 	origSetupNet := setupNetworkFunc
 	origSetupDNS := setupDNSFunc
+	origWorkspace := setupWorkspaceMountFunc
 	t.Cleanup(func() {
 		mountKernelFilesystemsFunc = origMount
 		setupNetworkFunc = origSetupNet
 		setupDNSFunc = origSetupDNS
+		setupWorkspaceMountFunc = origWorkspace
 	})
 
 	calledMount := false
@@ -348,6 +354,9 @@ func TestBootstrapGuestEnvironmentPID1MountsAndConfiguresNetwork(t *testing.T) {
 	}
 	setupDNSFunc = func() {
 		calledDNS = true
+	}
+	setupWorkspaceMountFunc = func() error {
+		return nil
 	}
 
 	bootstrapGuestEnvironment(1)

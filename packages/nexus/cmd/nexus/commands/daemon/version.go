@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/oursky/nexus/packages/nexus/internal/build"
+	"github.com/oursky/nexus/packages/nexus/internal/buildinfo"
 )
 
 func versionCommand() *cobra.Command {
@@ -13,7 +13,7 @@ func versionCommand() *cobra.Command {
 		Use:   "version",
 		Short: "Print the build version of this nexus binary",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println(build.Info())
+			fmt.Println(buildinfo.Info())
 		},
 	}
 }

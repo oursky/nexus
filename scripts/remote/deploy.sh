@@ -19,8 +19,8 @@ SWIFT_RESOURCES="$SCRIPT_DIR/../../packages/nexus-swift/Resources"
 # Build timestamp and git commit for build.Info() traceability.
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 GIT_COMMIT="$(git -C "$SCRIPT_DIR/../.." rev-parse --short HEAD 2>/dev/null || echo dev)"
-LDFLAGS="-X github.com/oursky/nexus/packages/nexus/internal/build.Time=${BUILD_TIME} \
-         -X github.com/oursky/nexus/packages/nexus/internal/build.Commit=${GIT_COMMIT}"
+LDFLAGS="-X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
+         -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT}"
 
 # Build the guest agent first so it can be embedded in the nexus binary.
 # The //go:embed directive in cmd/nexus reads agent-linux-amd64 at compile
