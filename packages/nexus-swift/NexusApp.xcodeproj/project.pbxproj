@@ -27,7 +27,6 @@
 		7E776D62015DFBCF25EEE644 /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6231766FDA3F470858042A87 /* TerminalView.swift */; };
 		80CE1FC1D1DC6ED9FA1B0B3D /* NexusApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 804B2FADD0C5143C198F46DA /* NexusApp.swift */; };
 		8831D4FD2BE4EC9CA00D54D9 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 659564BF098092F19E1351D0 /* AppState.swift */; };
-		A1DD90E12B3C4D5E8F901113 /* RemoteEditorURL.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1DD90E12B3C4D5E8F901112 /* RemoteEditorURL.swift */; };
 		A512F81B9A51ED222CBECA5F /* WebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BFDE21D93B71D9558A8EB6 /* WebSocketClient.swift */; };
 		A774123997F078D6CD0C11BA /* WorkspaceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E59BFA6CB8B1E9F66EE1247E /* WorkspaceDetailView.swift */; };
 		A9273E20904D087845541518 /* DaemonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9C948C4674F0FD006FCE84F /* DaemonClient.swift */; };
@@ -47,6 +46,7 @@
 		F11D426FF5DBE88A5C71C595 /* libNexusCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = E3045A4B1F455132950EB624 /* libNexusCore.a */; };
 		F71E6104BA64F7AEDA21B697 /* NexusRPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4646410F10ECC1921C4F685B /* NexusRPC.swift */; };
 		F81E5DCB46A4A329A68C993D /* DaemonLogStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5600243E10A19C71DA84256F /* DaemonLogStream.swift */; };
+		FDB08C96B9DB1ED11E82C5B5 /* RemoteEditorURL.swift in Sources */ = {isa = PBXBuildFile; fileRef = 578374C9B41398139FEF60DE /* RemoteEditorURL.swift */; };
 		FDBEFFBC099CB2989A5EA2AF /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CBA4800536CF2D77E40B4F3 /* ContentView.swift */; };
 /* End PBXBuildFile section */
 
@@ -83,6 +83,7 @@
 		4F536D8D8113B5D7DEAFEEFC /* RemoteProvisioner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteProvisioner.swift; sourceTree = "<group>"; };
 		52D96DD4872B23F7851C58FC /* debug_pty.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = debug_pty.swift; sourceTree = "<group>"; };
 		5600243E10A19C71DA84256F /* DaemonLogStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonLogStream.swift; sourceTree = "<group>"; };
+		578374C9B41398139FEF60DE /* RemoteEditorURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteEditorURL.swift; sourceTree = "<group>"; };
 		59B54A26C62C6D8473AD660D /* DaemonSettingsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonSettingsPanel.swift; sourceTree = "<group>"; };
 		5CBA4800536CF2D77E40B4F3 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		6231766FDA3F470858042A87 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
@@ -94,7 +95,6 @@
 		85417139225FD79454603276 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		88535B8DEC2991EA5557D322 /* EngineRemotePathBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineRemotePathBrowser.swift; sourceTree = "<group>"; };
 		9A570BFC62A722A8BE1F84B9 /* NexusAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NexusAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		A1DD90E12B3C4D5E8F901112 /* RemoteEditorURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteEditorURL.swift; sourceTree = "<group>"; };
 		A1299EB3EDDA3B0AD4AA85C6 /* AsyncDeadlineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncDeadlineTests.swift; sourceTree = "<group>"; };
 		A2BFDE21D93B71D9558A8EB6 /* WebSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketClient.swift; sourceTree = "<group>"; };
 		ADCBCD9E06B53B830CCD0102 /* GitLogReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLogReader.swift; sourceTree = "<group>"; };
@@ -208,9 +208,9 @@
 				627A582E95B747EFE2E6B9D6 /* ProjectMirrorSync.swift */,
 				03F2854DA61EBC0E804A1045 /* ProjectRepoBindingStore.swift */,
 				BE2B07751BE8ACCB41EBA453 /* PTYSessionManager.swift */,
+				578374C9B41398139FEF60DE /* RemoteEditorURL.swift */,
 				4F536D8D8113B5D7DEAFEEFC /* RemoteProvisioner.swift */,
 				4813F94247C8246742DEA82F /* SSHTunnelManager.swift */,
-				A1DD90E12B3C4D5E8F901112 /* RemoteEditorURL.swift */,
 				CBE87649ADC2236DDDD799E3 /* StartupTrace.swift */,
 				14DE7269B3B6401897CF20B5 /* TerminalRegistry.swift */,
 				2E3741BD5102248BC1C00360 /* Workspace.swift */,
@@ -264,6 +264,7 @@
 			buildPhases = (
 				2C9E70762C891E5819603FF9 /* Sources */,
 				77F45765587B63B666448DE8 /* Copy bundled tools to app Resources */,
+				3FC237B12A6617A88FE5CC2B /* Sign bundled macOS CLI (App Store) */,
 				7B1504AE75815FA85AC2EEA6 /* Resources */,
 				FAB36B0455E6FDDE1FDD72F2 /* Frameworks */,
 			);
@@ -383,6 +384,26 @@
 			shellPath = /bin/sh;
 			shellScript = "ditto \"${SCRIPT_INPUT_FILE_0}\" \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 		};
+		3FC237B12A6617A88FE5CC2B /* Sign bundled macOS CLI (App Store) */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus",
+			);
+			name = "Sign bundled macOS CLI (App Store)";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Every Mach-O executable in the .app must declare App Sandbox for Mac App Store.\n# Copied CLIs are ad-hoc signed or unsigned; re-sign with the app entitlements.\nRES=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources\"\nENT=\"${SRCROOT}/Sources/NexusApp/NexusApp.entitlements\"\nsign_macho() {\n  local bin=\"$1\"\n  [ -f \"$bin\" ] || return 0\n  case \"$(file -b \"$bin\")\" in\n    Mach-O*) ;;\n    *) echo \"Sign bundled CLI: skip non-Mach-O $(basename \"$bin\")\"; return 0 ;;\n  esac\n  if [ -z \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ] || [ \"${EXPANDED_CODE_SIGN_IDENTITY}\" = \"-\" ]; then\n    echo \"Sign bundled CLI: skip (no EXPANDED_CODE_SIGN_IDENTITY): $bin\"\n    return 0\n  fi\n  codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" \\\n    --entitlements \"${ENT}\" \\\n    --timestamp \\\n    --options runtime \\\n    \"$bin\"\n  echo \"Sign bundled CLI: ok $(basename \"$bin\")\"\n}\nsign_macho \"${RES}/nexus\"\nsign_macho \"${RES}/nexus-daemon\"\nif [ -d \"${RES}/tools\" ]; then\n  for bin in \"${RES}/tools/\"*; do\n    [ -f \"$bin\" ] || continue\n    [ -x \"$bin\" ] || continue\n    sign_macho \"$bin\"\n  done\nfi\n";
+		};
 		77F45765587B63B666448DE8 /* Copy bundled tools to app Resources */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -457,8 +478,8 @@
 				DCD55CD52BA08D65FF1A4C57 /* PTYSessionManager.swift in Sources */,
 				34050728C546080F0F59F339 /* ProjectMirrorSync.swift in Sources */,
 				B1C2A5C2E164B1357F511E43 /* ProjectRepoBindingStore.swift in Sources */,
+				FDB08C96B9DB1ED11E82C5B5 /* RemoteEditorURL.swift in Sources */,
 				2837D8E1C547498450A97FFE /* RemoteProvisioner.swift in Sources */,
-				A1DD90E12B3C4D5E8F901113 /* RemoteEditorURL.swift in Sources */,
 				C1C7D99C12055E99522AC87F /* SSHTunnelManager.swift in Sources */,
 				5142C089169B296EB634FB67 /* StartupTrace.swift in Sources */,
 				E339CD09AB98290F2BD040F1 /* TerminalRegistry.swift in Sources */,

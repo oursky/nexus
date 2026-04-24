@@ -79,6 +79,43 @@ targets:
           for arch in amd64 arm64; do
             copy_tool "${SRCROOT}/Resources/nexus-linux-${arch}" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-linux-${arch}" "nexus-linux-${arch}"
           done
+      - name: Sign bundled macOS CLI (App Store)
+        inputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus
+        script: |
+          # Every Mach-O executable in the .app must declare App Sandbox for Mac App Store.
+          # Copied CLIs are ad-hoc signed or unsigned; re-sign with the app entitlements.
+          RES="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources"
+          ENT="${SRCROOT}/Sources/NexusApp/NexusApp.entitlements"
+          sign_macho() {
+            local bin="$1"
+            [ -f "$bin" ] || return 0
+            case "$(file -b "$bin")" in
+              Mach-O*) ;;
+              *) echo "Sign bundled CLI: skip non-Mach-O $(basename "$bin")"; return 0 ;;
+            esac
+            if [ -z "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] || [ "${EXPANDED_CODE_SIGN_IDENTITY}" = "-" ]; then
+              echo "Sign bundled CLI: skip (no EXPANDED_CODE_SIGN_IDENTITY): $bin"
+              return 0
+            fi
+            codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY}" \
+              --entitlements "${ENT}" \
+              --timestamp \
+              --options runtime \
+              "$bin"
+            echo "Sign bundled CLI: ok $(basename "$bin")"
+          }
+          sign_macho "${RES}/nexus"
+          sign_macho "${RES}/nexus-daemon"
+          if [ -d "${RES}/tools" ]; then
+            for bin in "${RES}/tools/"*; do
+              [ -f "$bin" ] || continue
+              [ -x "$bin" ] || continue
+              sign_macho "$bin"
+            done
+          fi
     dependencies:
       - target: NexusCore
         link: true
