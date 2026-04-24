@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Desktop editors that register a `vscode-remote` folder URL handler on macOS.
 public enum RemoteEditorApp: String, Sendable, CaseIterable {
@@ -26,25 +27,68 @@ public struct RemoteSSHFolderOpenSpec: Sendable {
 /// Writes `~/.nexus/ssh` snippets so Remote-SSH can reach Firecracker guests via `ProxyJump` through the engine host.
 /// `~/.ssh/config` must already contain `Include ~/.nexus/ssh/*.ssh.config` (added by `installIncludeIfNeeded`).
 public enum NexusSSHConfigSnippet {
-    private static let nexusSSHDir = NSString(string: "~/.nexus/ssh").expandingTildeInPath
     private static let marker = "# nexus-vm-remote-editor (managed by Nexus — do not remove)"
     private static let includeLine = "Include ~/.nexus/ssh/*.ssh.config"
+
+    private static func realUserHome() -> String {
+        if let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir {
+            let path = String(cString: dir)
+            if !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return path
+            }
+        }
+        return NSHomeDirectoryForUser(NSUserName()) ?? FileManager.default.homeDirectoryForCurrentUser.path
+    }
+
+    private static func nexusSSHDir() -> String {
+        (realUserHome() as NSString).appendingPathComponent(".nexus/ssh")
+    }
+
+    private static func sshConfigPath() -> String {
+        (realUserHome() as NSString).appendingPathComponent(".ssh/config")
+    }
 
     /// Ensures `~/.ssh/config` contains `Include ~/.nexus/ssh/*.ssh.config`.
     /// If the line is already present (e.g. added by the Lima setup) this is a no-op.
     public static func installIncludeIfNeeded() throws {
-        let sshDir = NSString(string: "~/.ssh").expandingTildeInPath
-        let cfgPath = (sshDir as NSString).appendingPathComponent("config")
+        let sshDir = (realUserHome() as NSString).appendingPathComponent(".ssh")
+        let cfgPath = sshConfigPath()
         try FileManager.default.createDirectory(atPath: sshDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try FileManager.default.createDirectory(atPath: nexusSSHDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try FileManager.default.createDirectory(atPath: nexusSSHDir(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         var body = ""
         if FileManager.default.fileExists(atPath: cfgPath) {
             body = try String(contentsOfFile: cfgPath, encoding: .utf8)
         }
-        // Already present (either via our marker or Lima's own Include line).
-        if body.contains(includeLine) || body.contains(marker) { return }
-        let block = "\n\(marker)\n\(includeLine)\n"
-        try (body + block).write(toFile: cfgPath, atomically: true, encoding: .utf8)
+
+        // If the include already exists but not at the top, move it there. This
+        // must come before any `Host *` block or OpenSSH will keep using the raw
+        // alias as HostName, causing Remote-SSH to fail to resolve `nexus-vm-*`.
+        if body.contains(includeLine) || body.contains(marker) {
+            let lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            var firstMeaningfulLine: String?
+            for line in lines {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+                firstMeaningfulLine = trimmed
+                break
+            }
+            if firstMeaningfulLine == includeLine {
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cfgPath)
+                return
+            }
+
+            let filteredLines = lines.filter { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                return trimmed != marker && trimmed != includeLine
+            }
+            body = filteredLines.joined(separator: "\n")
+            if !body.isEmpty, !body.hasPrefix("\n") {
+                body = "\n" + body
+            }
+        }
+
+        let block = "\(marker)\n\(includeLine)\n"
+        try (block + body).write(toFile: cfgPath, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cfgPath)
     }
 
@@ -52,8 +96,9 @@ public enum NexusSSHConfigSnippet {
     /// Sets `VSCODE_AGENT_FOLDER` and `CURSOR_AGENT_FOLDER` to `/workspace/.cursor-server` so
     /// VS Code / Cursor install their server on the large workspace disk, not the small rootfs.
     public static func writeVMJumpHost(hostAlias: String, guestIP: String, proxyJump: String, user: String = "root", identityFile: String?) throws {
-        try FileManager.default.createDirectory(atPath: nexusSSHDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let path = (nexusSSHDir as NSString).appendingPathComponent("\(hostAlias).ssh.config")
+        let sshDir = nexusSSHDir()
+        try FileManager.default.createDirectory(atPath: sshDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let path = (sshDir as NSString).appendingPathComponent("\(hostAlias).ssh.config")
 
         // guestIP may be "host:port" (slirp4netns port-forward target) or a plain IP.
         let hostName: String

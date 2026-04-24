@@ -186,6 +186,25 @@ private struct RemoteEditorOpenMenu: View {
     /// Calls AppState.openEditorViaCLI and maps the result to SSHCheckResult.
     /// Returns nil on success, or an SSHCheckResult describing the failure.
     private func runCLIOpenEditor(workspaceId: String, app: RemoteEditorApp, checkOnly: Bool = false) async -> SSHCheckResult? {
+        if let sshTarget,
+           let spec = workspace.remoteSSHFolderOpen(jumpHost: sshTarget, identityFile: appState.activeDaemonProfile?.sshIdentity),
+           let guestIP = spec.vmGuestIP,
+           !guestIP.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            do {
+                try NexusSSHConfigSnippet.installIncludeIfNeeded()
+                try NexusSSHConfigSnippet.writeVMJumpHost(
+                    hostAlias: spec.sshHostForURI,
+                    guestIP: guestIP,
+                    proxyJump: spec.proxyJump,
+                    identityFile: spec.identityFile
+                )
+            } catch {
+                // Sandboxed app builds may not be allowed to edit the real SSH
+                // config directly. The CLI path still performs its own setup, so
+                // continue instead of blocking the open.
+            }
+        }
+
         let (ok, detail) = await appState.openEditorViaCLI(
             workspaceID: workspaceId,
             app: app.rawValue,

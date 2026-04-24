@@ -45,6 +45,12 @@ public protocol DaemonClient: Sendable {
     // ── VM SSH diagnostics ─────────────────────────────────────────────
     /// Asks the daemon to test SSH connectivity from the engine host into the VM.
     func checkVMSSH(workspaceId: String) async throws -> VMSSHCheckResult
+
+    // ── Diagnostics / Logs ─────────────────────────────────────────────
+    /// Returns the last `lines` lines of the workspace's VM serial/console log.
+    func workspaceSerialLog(workspaceId: String, lines: Int) async throws -> WorkspaceSerialLog
+    /// Returns the last `lines` lines of the daemon process log.
+    func daemonLogTail(lines: Int) async throws -> DaemonLogTail
 }
 
 /// Result of `workspace.sshcheck` — SSH connectivity test run from the engine host.
@@ -98,6 +104,30 @@ public struct SandboxCreateRequest: Sendable {
 public struct TunnelStatus: Sendable {
     public let active: Bool
     public let activeWorkspaceId: String
+}
+
+/// Result of `workspace.serial-log` — VM console/serial log tail.
+public struct WorkspaceSerialLog: Sendable {
+    public let lines: [String]
+    public let path: String
+    public let available: Bool
+
+    public init(lines: [String] = [], path: String = "", available: Bool = false) {
+        self.lines = lines
+        self.path = path
+        self.available = available
+    }
+}
+
+/// Result of `daemon.log.tail` — daemon process log tail.
+public struct DaemonLogTail: Sendable {
+    public let lines: [String]
+    public let path: String
+
+    public init(lines: [String] = [], path: String = "") {
+        self.lines = lines
+        self.path = path
+    }
 }
 
 public struct SandboxResourceSettings: Sendable, Equatable {

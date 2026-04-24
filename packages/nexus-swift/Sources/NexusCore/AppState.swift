@@ -336,6 +336,30 @@ public final class AppState: ObservableObject {
         let wsURL = daemonWebSocketURL?.absoluteString
         let tok = daemonToken
         let sshHost = cachedProfile?.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sshPort = cachedProfile?.sshPort
+        let sshIdentity = cachedProfile?.sshIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let sshHost, !sshHost.isEmpty,
+           let workspace = repos.flatMap(\.workspaces).first(where: { $0.id == workspaceID }),
+           let spec = workspace.remoteSSHFolderOpen(jumpHost: sshHost, identityFile: sshIdentity),
+           let guestIP = spec.vmGuestIP,
+           !guestIP.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            do {
+                try NexusSSHConfigSnippet.installIncludeIfNeeded()
+                try NexusSSHConfigSnippet.writeVMJumpHost(
+                    hostAlias: spec.sshHostForURI,
+                    guestIP: guestIP,
+                    proxyJump: spec.proxyJump,
+                    identityFile: spec.identityFile
+                )
+                log.info("open-editor prewrote SSH alias \(spec.sshHostForURI, privacy: .public)")
+            } catch {
+                // Sandboxed app builds may not have direct access to the real
+                // ~/.ssh config. Fall back to the CLI path, which still writes
+                // its own alias snippet before opening the editor.
+                log.error("open-editor prewrite skipped: \(error.localizedDescription, privacy: .public)")
+            }
+        }
 
         log.info("open-editor start workspaceID=\(workspaceID, privacy: .public) app=\(app, privacy: .public) checkOnly=\(checkOnly, privacy: .public)")
         log.debug("open-editor daemonURL=\(wsURL ?? "(nil)", privacy: .public) hasToken=\(tok != nil, privacy: .public)")
@@ -350,6 +374,10 @@ public final class AppState: ObservableObject {
                 if let u = wsURL    { env["NEXUS_E2E_DAEMON_WEBSOCKET"] = u }
                 if let t = tok      { env["NEXUS_DAEMON_TOKEN"] = t }
                 if let h = sshHost, !h.isEmpty { env["NEXUS_DAEMON_SSH_HOST"] = h }
+                if let p = sshPort, p > 0 { env["NEXUS_DAEMON_SSH_PORT"] = "\(p)" }
+                if let id = sshIdentity, !id.isEmpty {
+                    env["NEXUS_DAEMON_SSH_IDENTITY"] = id
+                }
 
                 var args = ["workspace", "open-editor", workspaceID, "--app", app]
                 if checkOnly { args.append("--check") }

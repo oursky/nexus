@@ -7,6 +7,9 @@ struct DaemonSettingsPanel: View {
     @EnvironmentObject var appState: AppState
     @State private var isCheckRunning = false
     @State private var checkResult: DaemonCheckResult?
+    @State private var showDaemonLog = false
+    @State private var isDaemonLogLoading = false
+    @State private var daemonLog: DaemonLogTail = DaemonLogTail()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,11 +20,16 @@ struct DaemonSettingsPanel: View {
             provisionSection
             Divider().opacity(0.4)
             healthCheckSection
+            Divider().opacity(0.4)
+            daemonLogSection
         }
         .frame(width: 320)
         .background(Theme.bgContent)
         .sheet(item: $checkResult) { result in
             DaemonCheckResultSheet(result: result)
+        }
+        .sheet(isPresented: $showDaemonLog) {
+            DaemonLogSheet(log: daemonLog)
         }
     }
 
@@ -162,6 +170,49 @@ struct DaemonSettingsPanel: View {
               : "Connect to a daemon first to run health checks.")
     }
 
+    // MARK: - Daemon log section
+
+    @ViewBuilder
+    private var daemonLogSection: some View {
+        HStack {
+            Button {
+                Task { await fetchDaemonLog() }
+            } label: {
+                if isDaemonLogLoading {
+                    HStack(spacing: 6) {
+                        ProgressView().scaleEffect(0.7).frame(width: 14, height: 14)
+                        Text("Loading log…")
+                    }
+                } else {
+                    Label("View Daemon Log", systemImage: "doc.text.magnifyingglass")
+                }
+            }
+            .buttonStyle(.borderless)
+            .font(.system(size: 12))
+            .foregroundColor(isDaemonConnected ? Theme.label : Theme.labelTertiary)
+            .disabled(isDaemonLogLoading || !isDaemonConnected)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .help(isDaemonConnected
+              ? "Show the last 300 lines of the daemon process log for debugging connection and VM issues."
+              : "Connect to a daemon first to view its log.")
+    }
+
+    private func fetchDaemonLog() async {
+        guard !isDaemonLogLoading, let client = appState.client as? WebSocketDaemonClient else { return }
+        isDaemonLogLoading = true
+        defer { isDaemonLogLoading = false }
+        do {
+            daemonLog = try await client.daemonLogTail(lines: 300)
+            showDaemonLog = true
+        } catch {
+            daemonLog = DaemonLogTail(lines: ["Error fetching daemon log: \(error.localizedDescription)"], path: "")
+            showDaemonLog = true
+        }
+    }
+
     // MARK: - Actions
 
     private var isDaemonConnected: Bool {
@@ -248,6 +299,78 @@ struct DaemonCheckResultSheet: View {
         }
         .padding(16)
         .frame(width: 520)
+        .background(Theme.bgContent)
+    }
+}
+
+// MARK: - Daemon Log Sheet
+
+struct DaemonLogSheet: View {
+    let log: DaemonLogTail
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "doc.text")
+                    .foregroundColor(Theme.labelSecondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Daemon Log")
+                        .font(.headline)
+                    if !log.path.isEmpty {
+                        Text(log.path)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Theme.labelTertiary)
+                    }
+                }
+                Spacer()
+                Button {
+                    let text = log.lines.joined(separator: "\n")
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 12))
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+
+            Divider()
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if log.lines.isEmpty {
+                            Text("(log is empty)")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(Theme.labelTertiary)
+                                .padding(8)
+                        } else {
+                            ForEach(Array(log.lines.enumerated()), id: \.offset) { _, line in
+                                Text(line.isEmpty ? " " : line)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(Theme.label)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 1)
+                            }
+                            Color.clear.frame(height: 1).id("end")
+                        }
+                    }
+                }
+                .onAppear {
+                    proxy.scrollTo("end", anchor: .bottom)
+                }
+            }
+            .frame(maxHeight: 480)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.6))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .padding(16)
+        .frame(width: 680, height: 560)
         .background(Theme.bgContent)
     }
 }

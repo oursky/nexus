@@ -691,6 +691,27 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         return VMSSHCheckResult(ok: ok, guestIP: guestIP, whoami: whoami, error: error, stderr: stderr)
     }
 
+    public func workspaceSerialLog(workspaceId: String, lines: Int = 200) async throws -> WorkspaceSerialLog {
+        let result = try await call("workspace.serial-log", params: ["id": workspaceId, "lines": lines])
+        guard let dict = result as? [String: Any] else {
+            throw RPCError(message: "unexpected workspace.serial-log response")
+        }
+        let logLines = dict["lines"] as? [String] ?? []
+        let path = dict["path"] as? String ?? ""
+        let available = dict["available"] as? Bool ?? false
+        return WorkspaceSerialLog(lines: logLines, path: path, available: available)
+    }
+
+    public func daemonLogTail(lines: Int = 200) async throws -> DaemonLogTail {
+        let result = try await call("daemon.log.tail", params: ["lines": lines])
+        guard let dict = result as? [String: Any] else {
+            throw RPCError(message: "unexpected daemon.log.tail response")
+        }
+        let logLines = dict["lines"] as? [String] ?? []
+        let path = dict["path"] as? String ?? ""
+        return DaemonLogTail(lines: logLines, path: path)
+    }
+
     private func parseSpotlightForwards(from raw: Any?) -> [ForwardedPort] {
         guard let items = raw as? [[String: Any]] else { return [] }
         return items.compactMap { item in
