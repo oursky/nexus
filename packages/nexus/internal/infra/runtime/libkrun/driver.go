@@ -48,6 +48,18 @@ type DriverOption func(*Driver)
 // Backend returns the driver backend identifier.
 func (d *Driver) Backend() string { return "libkrun" }
 
+// SerialLogPath returns the path to the libkrun VM console log (hvc0) for a
+// running workspace. The hvc0 file contains the guest kernel/agent output and
+// is much smaller than the host-side libkrun.log which contains verbose VMM
+// debug output. Returns an error if the workspace is not found.
+func (d *Driver) SerialLogPath(workspaceID string) (string, error) {
+	inst, err := d.manager.Get(workspaceID)
+	if err != nil {
+		return "", fmt.Errorf("workspace %s: %w", workspaceID, err)
+	}
+	return inst.SerialLog + ".hvc0", nil
+}
+
 // GuestSSHHost returns the SSH address for a running workspace VM.
 func (d *Driver) GuestSSHHost(_ context.Context, workspaceID string) (string, bool) {
 	inst, err := d.manager.Get(workspaceID)
@@ -265,7 +277,9 @@ func (d *Driver) WorkspaceReady(ctx context.Context, workspaceID string) (bool, 
 		req := AgentExecRequest{
 			ID:      fmt.Sprintf("ready-%d", time.Now().UnixNano()),
 			Command: "sh",
-			Args:    []string{"-lc", "codex --version >/dev/null 2>&1 && opencode --version >/dev/null 2>&1 && claude --version >/dev/null 2>&1"},
+			// Use "which" (not --version) to check tool presence: claude --version
+			// exits 1 when stdout is redirected, giving a false-negative probe result.
+			Args:    []string{"-lc", "which codex >/dev/null 2>&1 && which opencode >/dev/null 2>&1 && which claude >/dev/null 2>&1"},
 			WorkDir: "/workspace",
 		}
 		result, err := agentExec(attemptCtx, conn, req)
@@ -412,5 +426,5 @@ func defaultMemMiB() int {
 			return n
 		}
 	}
-	return 1024
+	return 4096
 }
