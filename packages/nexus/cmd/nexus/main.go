@@ -1373,10 +1373,10 @@ func runBuiltInRuntimeBackendCheck() (checkResult, error) {
 	}
 
 	backend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND"))
-	if backend != "firecracker" && backend != "seatbelt" {
+	if backend != "libkrun" && backend != "firecracker" && backend != "seatbelt" {
 		result.Status = "failed_required"
 		result.DurationMs = time.Since(start).Milliseconds()
-		result.Error = fmt.Sprintf("unsupported runtime backend %q: doctor command only supports firecracker or seatbelt", backend)
+		result.Error = fmt.Sprintf("unsupported runtime backend %q: doctor command only supports libkrun or seatbelt", backend)
 		return result, fmt.Errorf("required probes failed: %s", checkName)
 	}
 
@@ -1395,10 +1395,13 @@ func bootstrapDoctorExecContext(projectRoot string) error {
 			return err
 		}
 		return containerBootstrapRunner(projectRoot, execCtx, "firecracker", true)
+	case "libkrun":
+		// libkrun workspaces run on the remote daemon; no local bootstrap needed.
+		return nil
 	case "seatbelt":
 		return nil
 	default:
-		return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker or seatbelt", execCtx.backend)
+		return fmt.Errorf("unsupported runtime backend %q: doctor command only supports libkrun or seatbelt", execCtx.backend)
 	}
 }
 
@@ -1408,10 +1411,13 @@ func bootstrapExecCommandContext(projectRoot string) error {
 	switch execCtx.backend {
 	case "firecracker":
 		return bootstrapFirecrackerExecContext(projectRoot, execCtx)
+	case "libkrun":
+		// libkrun workspaces run on the remote daemon; no local bootstrap needed.
+		return nil
 	case "seatbelt":
 		return nil
 	default:
-		return fmt.Errorf("unsupported runtime backend %q: exec command only supports firecracker or seatbelt", execCtx.backend)
+		return fmt.Errorf("unsupported runtime backend %q: exec command only supports libkrun or seatbelt", execCtx.backend)
 	}
 }
 
@@ -1606,7 +1612,7 @@ func selectRuntimeBackend(required []string) string {
 			}
 		case "linux":
 			if firecrackerHostGOOS == "linux" {
-				return "firecracker"
+				return "libkrun"
 			}
 		default:
 			if backend, ok := normalizeRuntimeBackend(candidate); ok {
@@ -1619,7 +1625,7 @@ func selectRuntimeBackend(required []string) string {
 		return "seatbelt"
 	}
 	if firecrackerHostGOOS == "linux" {
-		return "firecracker"
+		return "libkrun"
 	}
 
 	return ""
@@ -1627,8 +1633,8 @@ func selectRuntimeBackend(required []string) string {
 
 func normalizeRuntimeBackend(raw string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "firecracker":
-		return "firecracker", true
+	case "libkrun":
+		return "libkrun", true
 	case "seatbelt":
 		return "seatbelt", true
 	default:
