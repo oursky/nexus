@@ -1,5 +1,14 @@
 default_platform(:mac)
 
+def resolve_build_number(options)
+  bn = options[:build_number].to_s.strip
+  return bn unless bn.empty?
+
+  bn = Time.now.to_i.to_s
+  UI.important("No build_number provided; using Unix timestamp #{bn}")
+  bn
+end
+
 def get_git_commit_info
   {
     commit_hash: last_git_commit[:abbreviated_commit_hash],
@@ -29,7 +38,7 @@ platform :mac do
 
   desc 'Build the macOS app for TestFlight'
   lane :app_build do |options|
-    build_number = options[:build_number]
+    build_number = resolve_build_number(options)
     git_info = get_git_commit_info
 
     UI.message "Building Nexus macOS app"
@@ -76,7 +85,7 @@ platform :mac do
 
   desc 'Upload the macOS app to TestFlight'
   lane :app_testflight do |options|
-    build_number = options[:build_number]
+    build_number = resolve_build_number(options)
     git_info = get_git_commit_info
     pkg_path = options[:pkg] || Actions.lane_context[SharedValues::PKG_OUTPUT_PATH] || Dir[File.join(File.dirname(__dir__), '*.pkg')].max_by { |f| File.mtime(f) }
 
