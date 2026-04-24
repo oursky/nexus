@@ -525,11 +525,42 @@ func handleShellClose(req execRequest, encoder *json.Encoder) {
 	_ = encoder.Encode(execResponse{ID: req.ID, Type: "ack", ExitCode: 0})
 }
 
+// isBakeMode reports whether the agent is running in rootfs-bake mode.
+// In bake mode the agent installs all tools synchronously then powers off
+// the VM so the host can use the resulting rootfs as the pre-baked base.
+func isBakeMode() bool {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return false
+	}
+	for _, field := range strings.Fields(string(data)) {
+		if field == "nexus.bake=1" {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
 	pid := os.Getpid()
 	emitDiagnostic("agent boot pid=%d", pid)
 
 	bootstrapGuestEnvironment(pid)
+
+	// Bake mode: install all tools synchronously, then power off.
+	// The host waits for the VM process to exit and uses the resulting
+	// rootfs.ext4 as the pre-baked base image for all future workspaces.
+	if isBakeMode() {
+		emitDiagnostic("agent bake: starting rootfs pre-bake")
+		ensureGuestBasePackages()
+		ensureGuestCLITools()
+		emitDiagnostic("agent bake: all tools installed — powering off VM")
+		// Give the serial console a moment to flush.
+		time.Sleep(500 * time.Millisecond)
+		_ = unix.Reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
+		os.Exit(0) // unreachable, but satisfies the compiler
+	}
+
 	startSSHAgentProxy()
 
 	// Install the OS developer toolchain synchronously before accepting PTY
@@ -821,6 +852,41 @@ func applyHostConfigDrive() error {
 	return nil
 }
 
+// runStreamed runs a command with output wired directly to /dev/console so
+// every byte appears in the hvc0 serial log without Go-level buffering.
+// /dev/kmsg rate-limits burst writes, so we bypass emitDiagnostic here and
+// write the header/trailer via emitDiagnostic only (two lines total).
+func runStreamed(ctx context.Context, env []string, prefix, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if env != nil {
+		cmd.Env = env
+	}
+
+	// Attach stdout/stderr directly to the serial console so output is
+	// visible in real time without buffering.
+	console, consErr := os.OpenFile("/dev/console", os.O_WRONLY|os.O_APPEND, 0)
+	if consErr == nil {
+		cmd.Stdout = console
+		cmd.Stderr = console
+	}
+
+	if err := cmd.Start(); err != nil {
+		if console != nil {
+			_ = console.Close()
+		}
+		return fmt.Errorf("start %s: %w", name, err)
+	}
+
+	err := cmd.Wait()
+	if console != nil {
+		_ = console.Close()
+	}
+	if err != nil {
+		return fmt.Errorf("%s exited: %w", name, err)
+	}
+	return nil
+}
+
 // ensureGuestBasePackages installs the developer toolchain (make, nodejs, npm,
 // docker.io, build-essential) via apt-get inside the VM.  The VM is a real root
 // environment so apt-get works without any user-namespace restrictions.
@@ -828,7 +894,7 @@ func applyHostConfigDrive() error {
 // A versioned stamp file in the rootfs prevents
 // re-running on every workspace start — packages only install once per rootfs.
 func ensureGuestBasePackages() {
-	const stampFile = "/var/lib/nexus-tools-installed-v2"
+	const stampFile = "/var/lib/nexus-tools-installed-v4"
 	if _, err := os.Stat(stampFile); err == nil {
 		emitDiagnostic("agent base packages: already installed (stamp found)")
 		return
@@ -839,7 +905,7 @@ func ensureGuestBasePackages() {
 		return
 	}
 
-	emitDiagnostic("agent base packages: installing (make, nodejs, npm, docker.io, build-essential, git)...")
+	emitDiagnostic("agent base packages: installing (make, nodejs, npm, docker.io, build-essential, git, busybox-static)...")
 
 	pkgs := []string{
 		"make",
@@ -853,9 +919,12 @@ func ensureGuestBasePackages() {
 		"wget",
 		"python3",
 		"python3-pip",
+		// busybox-static provides udhcpc (DHCP client) used by the agent's
+		// setupNetwork to acquire an IP from passt at VM boot time.
+		"busybox-static",
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	env := append(os.Environ(),
@@ -880,21 +949,16 @@ func ensureGuestBasePackages() {
 		}
 	}
 
-	// The rootfs has /etc/apt/apt.conf.d/99nexus-root which sets
-	// APT::Sandbox::User "root", and /tmp is a tmpfs with mode 1777, so
-	// no extra flags are needed here.
-	updateCmd := exec.CommandContext(ctx, "apt-get", "update", "-qq")
-	updateCmd.Env = env
-	if out, err := updateCmd.CombinedOutput(); err != nil {
-		emitDiagnostic("agent base packages: apt-get update failed: %v: %s", err, strings.TrimSpace(string(out)))
+	emitDiagnostic("agent base packages: running apt-get update...")
+	if err := runStreamed(ctx, env, "apt-get update", "apt-get", "update"); err != nil {
+		emitDiagnostic("agent base packages: apt-get update FAILED: %v", err)
 		return
 	}
 
-	args := append([]string{"install", "-y", "-qq", "--no-install-recommends"}, pkgs...)
-	installCmd := exec.CommandContext(ctx, "apt-get", args...)
-	installCmd.Env = env
-	if out, err := installCmd.CombinedOutput(); err != nil {
-		emitDiagnostic("agent base packages: apt-get install failed: %v: %s", err, strings.TrimSpace(string(out)))
+	emitDiagnostic("agent base packages: running apt-get install...")
+	installArgs := append([]string{"install", "-y", "--no-install-recommends"}, pkgs...)
+	if err := runStreamed(ctx, env, "apt-get install", "apt-get", installArgs...); err != nil {
+		emitDiagnostic("agent base packages: apt-get install FAILED: %v", err)
 		return
 	}
 
@@ -942,11 +1006,9 @@ func installDockerComposePlugin(ctx context.Context, env []string) {
 	emitDiagnostic("agent docker-compose-plugin: downloading %s...", composeVersion)
 
 	tmpPath := pluginPath + ".tmp"
-	dlCmd := exec.CommandContext(ctx, curlPath, "-fsSL", "--retry", "3", "-o", tmpPath, url)
-	dlCmd.Env = env
-	if out, err := dlCmd.CombinedOutput(); err != nil {
+	if err := runStreamed(ctx, env, "curl docker-compose", curlPath, "-fSL", "--retry", "3", "--progress-bar", "-o", tmpPath, url); err != nil {
 		_ = os.Remove(tmpPath)
-		emitDiagnostic("agent docker-compose-plugin: download failed: %v: %s", err, strings.TrimSpace(string(out)))
+		emitDiagnostic("agent docker-compose-plugin: download FAILED: %v", err)
 		return
 	}
 
@@ -976,98 +1038,51 @@ func ensureGuestCLITools() {
 	}
 
 	npmPath, err := lookPathInEnv("npm", os.Environ())
-	hasNPM := err == nil && strings.TrimSpace(npmPath) != ""
+	if err != nil || strings.TrimSpace(npmPath) == "" {
+		emitDiagnostic("agent cli tools: npm not found, skipping install")
+		return
+	}
+
+	env := ensurePathInEnv(os.Environ())
 
 	missing := make([]cliSpec, 0, len(tools))
 	for _, tool := range tools {
-		if err := writeCLIWrapper(filepath.Join("/usr/local/bin", tool.binary), tool.pkg); err != nil {
-			emitDiagnostic("agent cli wrapper write failed for %s: %v", tool.binary, err)
-		}
-		if guestCLIAvailable(tool.binary) {
+		if _, err := lookPathInEnv(tool.binary, env); err == nil {
+			emitDiagnostic("agent cli tools: %s already installed", tool.binary)
 			continue
 		}
 		missing = append(missing, tool)
 	}
 	if len(missing) == 0 {
+		emitDiagnostic("agent cli tools: all tools present")
 		return
 	}
-
-	if !hasNPM {
-		names := make([]string, 0, len(missing))
-		for _, tool := range missing {
-			names = append(names, tool.binary)
-		}
-		emitDiagnostic("agent cli tools: npm not found, wrappers only (missing=%s)", strings.Join(names, ", "))
-		return
-	}
-
-	// Redirect npm cache off the rootfs to avoid filling it.
-	npmCacheDir := workspaceMountPoint + "/.npm-cache"
-	_ = os.MkdirAll(npmCacheDir, 0o755)
 
 	var packages []string
 	for _, tool := range missing {
 		packages = append(packages, tool.pkg)
+		emitDiagnostic("agent cli tools: will install %s (%s)", tool.binary, tool.pkg)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	args := append([]string{"install", "-g", "--force", "--cache", npmCacheDir}, packages...)
-	out, err := exec.CommandContext(ctx, npmPath, args...).CombinedOutput()
-	if err != nil {
-		emitDiagnostic("agent cli tools install failed: %v: %s", err, strings.TrimSpace(string(out)))
+
+	args := append([]string{"install", "-g", "--force"}, packages...)
+	emitDiagnostic("agent cli tools: running npm install -g %s...", strings.Join(packages, " "))
+	if err := runStreamed(ctx, env, "npm install", npmPath, args...); err != nil {
+		emitDiagnostic("agent cli tools: npm install FAILED: %v", err)
 		return
 	}
 
-	stillMissing := make([]string, 0, len(missing))
+	// Verify each binary is now resolvable.
+	envAfter := ensurePathInEnv(os.Environ())
 	for _, tool := range missing {
-		if !guestCLIAvailable(tool.binary) {
-			stillMissing = append(stillMissing, tool.binary)
+		if _, err := lookPathInEnv(tool.binary, envAfter); err != nil {
+			emitDiagnostic("agent cli tools: WARNING %s not found after install: %v", tool.binary, err)
+		} else {
+			emitDiagnostic("agent cli tools: %s installed OK", tool.binary)
 		}
 	}
-	if len(stillMissing) > 0 {
-		emitDiagnostic("agent cli tools install incomplete (missing=%s)", strings.Join(stillMissing, ", "))
-		return
-	}
-
-	emitDiagnostic("agent cli tools installed and verified: %s", strings.Join(packages, ", "))
-}
-
-func writeCLIWrapper(destPath, pkg string) error {
-	content := fmt.Sprintf(`#!/bin/sh
-exec npx -y %s "$@"
-`, pkg)
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(destPath), ".nexus-wrapper-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if _, err := tmp.WriteString(content); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0o755); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, destPath)
-}
-
-func guestCLIAvailable(binary string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "--version")
-	cmd.Env = ensurePathInEnv(os.Environ())
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-	return true
 }
 
 func ensureAgentProcessPath() {
@@ -1497,7 +1512,7 @@ func mountCgroupFilesystems() {
 // Overridable in tests.
 var setupNetworkFunc = realSetupNetwork
 
-// setupNetwork brings up eth0 via DHCP using udhcpc.
+// setupNetwork brings up eth0 via DHCP (udhcpc or dhcpcd) or static fallback.
 // It is called at PID1 boot before setupDNS so that DNS resolution works.
 func setupNetwork() error {
 	return setupNetworkFunc()
@@ -1536,12 +1551,32 @@ func maybeStartSSHDInGuest() {
 	}
 	_ = os.MkdirAll(sshdRunDir, 0o755)
 
-	cmd := exec.Command(sshdPath)
+	// Run sshd in foreground+stderr mode so its output appears in the hvc0
+	// serial log. sshd's -D keeps it in the foreground, -e logs to stderr.
+	// We open /dev/console directly so the output appears in the guest serial
+	// log regardless of what fd 2 (stderr) is connected to in the agent.
+	consoleF, _ := os.OpenFile("/dev/console", os.O_WRONLY|os.O_APPEND, 0)
+	if consoleF == nil {
+		consoleF = os.Stderr
+	}
+	cmd := exec.Command(sshdPath, "-D", "-e")
+	cmd.Stdout = consoleF
+	cmd.Stderr = consoleF
 	if err := cmd.Start(); err != nil {
+		_ = consoleF.Close()
 		emitDiagnostic("sshd: start failed (non-fatal): %v", err)
 		return
 	}
-	emitDiagnostic("sshd: started (pid=%d)", cmd.Process.Pid)
+	_ = consoleF.Close() // child inherited the fd; parent can close its copy
+	emitDiagnostic("sshd: started (pid=%d) foreground+stderr mode", cmd.Process.Pid)
+	// Reap sshd if it exits unexpectedly so it doesn't become a zombie.
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			emitDiagnostic("sshd: exited unexpectedly: %v", err)
+		} else {
+			emitDiagnostic("sshd: exited cleanly")
+		}
+	}()
 }
 
 func realSetupNetwork() error {
@@ -1549,7 +1584,7 @@ func realSetupNetwork() error {
 		return fmt.Errorf("ip link set lo up: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	// Bring the interface up first so udhcpc can configure it.
+	// Bring the interface up first so DHCP can configure it.
 	if out, err := exec.Command("ip", "link", "set", "eth0", "up").CombinedOutput(); err != nil {
 		return fmt.Errorf("ip link set eth0 up: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -1561,30 +1596,87 @@ func realSetupNetwork() error {
 			"udhcpc", "-i", "eth0", "-n", "-q", "-t", "10", "-T", "3",
 		).CombinedOutput()
 		if err == nil {
-			return nil
+			if hasUsableIPv4OnEth0() {
+				return nil
+			}
+			emitDiagnostic("udhcpc exited successfully but eth0 has no usable IPv4; falling through to other DHCP/static methods")
 		}
-		emitDiagnostic("udhcpc failed, falling back to static guest IP: %v: %s", err, strings.TrimSpace(string(out)))
+		emitDiagnostic("udhcpc failed: %v: %s", err, strings.TrimSpace(string(out)))
+	} else if _, err := exec.LookPath("dhcpcd"); err == nil {
+		// dhcpcd is available (installed on Ubuntu when busybox is not).
+		// -1 (--oneshot): exit after the first interface is configured.
+		// This makes dhcpcd behave like a one-shot DHCP client.
+		out, err := exec.Command("dhcpcd", "-1", "eth0").CombinedOutput()
+		if err == nil {
+			if hasUsableIPv4OnEth0() {
+				return nil
+			}
+			emitDiagnostic("dhcpcd exited successfully but eth0 has no usable IPv4; falling through to static fallback")
+		}
+		emitDiagnostic("dhcpcd failed: %v: %s", err, strings.TrimSpace(string(out)))
+	} else if _, err := exec.LookPath("dhclient"); err == nil {
+		out, err := exec.Command("dhclient", "-1", "-v", "eth0").CombinedOutput()
+		if err == nil {
+			if hasUsableIPv4OnEth0() {
+				return nil
+			}
+			emitDiagnostic("dhclient exited successfully but eth0 has no usable IPv4; falling through to static fallback")
+		}
+		emitDiagnostic("dhclient failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 
+	emitDiagnostic("all DHCP clients failed or unavailable, falling back to static guest IP")
 	if err := configureStaticGuestNetwork(); err != nil {
 		return fmt.Errorf("static network fallback failed: %w", err)
 	}
 	return nil
 }
 
-// readNexusGateway returns the bridge gateway IP from the host config drive
-// (.nexus-gateway), falling back to the compiled-in default.
+// hasUsableIPv4OnEth0 reports whether eth0 has a global IPv4 address and a
+// default route. Some DHCP clients can exit 0 after configuring only IPv6,
+// which leaves host->guest TCP forwarding broken for passt/libkrun SSH.
+func hasUsableIPv4OnEth0() bool {
+	addrOut, addrErr := exec.Command("sh", "-lc", "ip -4 addr show dev eth0 scope global | grep -q 'inet '").CombinedOutput()
+	routeOut, routeErr := exec.Command("sh", "-lc", "ip route show default | grep -q '^default '").CombinedOutput()
+	if addrErr == nil && routeErr == nil {
+		return true
+	}
+	emitDiagnostic(
+		"network verify: missing IPv4 or default route after DHCP (addrErr=%v routeErr=%v addr=%q route=%q)",
+		addrErr,
+		routeErr,
+		strings.TrimSpace(string(addrOut)),
+		strings.TrimSpace(string(routeOut)),
+	)
+	return false
+}
+
+// readNexusGateway returns the guest's default gateway IP. It checks, in order:
+//  1. The host config drive (.nexus-gateway) — set for normal workspace VMs.
+//  2. The kernel cmdline nexus.gw= parameter — set for bake VMs.
+//  3. A compiled-in default (172.26.0.1) which passt's static-IP fallback uses.
 func readNexusGateway() string {
 	const configDriveMount = "/run/nexus-host"
 	const defaultGW = "172.26.0.1"
 
-	data, err := os.ReadFile(filepath.Join(configDriveMount, ".nexus-gateway"))
-	if err != nil {
-		return defaultGW
+	// 1. Host config drive (workspace VMs).
+	if data, err := os.ReadFile(filepath.Join(configDriveMount, ".nexus-gateway")); err == nil {
+		if gw := strings.TrimSpace(string(data)); gw != "" {
+			return gw
+		}
 	}
-	if gw := strings.TrimSpace(string(data)); gw != "" {
-		return gw
+
+	// 2. Kernel cmdline nexus.gw= (bake VMs and any VM without a config drive).
+	if cmdline, err := os.ReadFile("/proc/cmdline"); err == nil {
+		for _, field := range strings.Fields(string(cmdline)) {
+			if strings.HasPrefix(field, "nexus.gw=") {
+				if gw := strings.TrimPrefix(field, "nexus.gw="); gw != "" {
+					return gw
+				}
+			}
+		}
 	}
+
 	return defaultGW
 }
 
