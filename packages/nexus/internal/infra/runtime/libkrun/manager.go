@@ -33,6 +33,10 @@ type ManagerConfig struct {
 	// NexusBin is the path to the nexus binary (os.Executable()).
 	// Fallback for dev builds that don't have LibkrunVMBin.
 	NexusBin string
+	// LibkrunLibDir is the directory containing libkrun.so and libkrunfw.so.
+	// Used to set LD_LIBRARY_PATH when falling back to NexusBin; derived from
+	// LibkrunVMBin path when using the standalone binary.
+	LibkrunLibDir string
 
 	// RootFSBasePath is the canonical rootfs.ext4 created during bootstrap.
 	// Each workspace clones it (reflink/sparse copy) into its own workdir so
@@ -48,7 +52,7 @@ type ManagerConfig struct {
 
 	WorkDirRoot string
 
-	// EmbeddedAgentFn returns the embedded nexus-firecracker-agent binary bytes.
+	// EmbeddedAgentFn returns the embedded nexus-guest-agent binary bytes.
 	// When set, the agent binary is written into each workspace's rootfs.ext4
 	// on spawn so the in-VM agent stays in sync with the nexus binary.
 	EmbeddedAgentFn func() []byte
@@ -152,7 +156,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	// matches this nexus binary, regardless of when rootfs.ext4 was created.
 	if m.cfg.EmbeddedAgentFn != nil {
 		if agentData := m.cfg.EmbeddedAgentFn(); len(agentData) > 0 {
-			if err := injectFileIntoExt4(rootfsPath, agentData, "/usr/local/bin/nexus-firecracker-agent", 0o755); err != nil {
+			if err := injectFileIntoExt4(rootfsPath, agentData, "/usr/local/bin/nexus-guest-agent", 0o755); err != nil {
 				log.Printf("[libkrun] workspace %s: agent inject failed (non-fatal): %v", spec.WorkspaceID, err)
 			}
 		}
@@ -220,9 +224,9 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	vmSpec := VMSpec{
 		WorkspaceID:     spec.WorkspaceID,
 		KernelPath:      m.cfg.KernelPath,
-		KernelCmdline:   "console=hvc0 root=/dev/vda rw init=/usr/local/bin/nexus-firecracker-agent",
+		KernelCmdline:   "console=hvc0 root=/dev/vda rw init=/usr/local/bin/nexus-guest-agent",
 		RootFSImage:     rootfsPath,
-		AgentPath:       "/usr/local/bin/nexus-firecracker-agent",
+		AgentPath:       "/usr/local/bin/nexus-guest-agent",
 		WorkspaceImage:  workspacePath,
 		DockerDataImage: dockerDataPath,
 		HostConfigDrive: spec.HostConfigDrive,
@@ -269,15 +273,23 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		return nil, fmt.Errorf("write vm config: %w", err)
 	}
 
-	// Spawn the libkrun-vm child process using the extracted standalone binary.
+	// Spawn the libkrun-vm child process. Use the extracted standalone binary
+	// when available (packaged builds); fall back to the main nexus binary with
+	// the "libkrun-vm" subcommand for smolvm/dev builds.
 	vmBin := strings.TrimSpace(m.cfg.LibkrunVMBin)
-	if vmBin == "" {
+	var libDir string
+	var childCmd *exec.Cmd
+	if vmBin != "" {
+		libDir = filepath.Join(filepath.Dir(vmBin), "..", "lib")
+		childCmd = exec.Command(vmBin, "--config="+configPath)
+	} else if nexusBin := strings.TrimSpace(m.cfg.NexusBin); nexusBin != "" {
+		libDir = m.cfg.LibkrunLibDir
+		childCmd = exec.Command(nexusBin, "libkrun-vm", "--config="+configPath)
+	} else {
 		os.RemoveAll(workDir)
 		return nil, fmt.Errorf("LibkrunVMBin not configured: run 'nexus daemon start --driver=libkrun' to bootstrap")
 	}
-	libDir := filepath.Join(filepath.Dir(vmBin), "..", "lib")
 	env := append(os.Environ(), "LD_LIBRARY_PATH="+libDir+":"+os.Getenv("LD_LIBRARY_PATH"))
-	childCmd := exec.Command(vmBin, "--config="+configPath)
 	childCmd.Env = env
 	childCmd.Dir = workDir
 	if vmSideFD != nil {

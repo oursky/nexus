@@ -1,19 +1,12 @@
-# Pre-built tap-helper binaries embedded into nexus at build time.
-# Regenerate with: go generate ./cmd/nexus
-tap-helper-linux-amd64
-tap-helper-linux-arm64
-
-# Firecracker release binaries (task firecracker:update → scripts/nexus/update-firecracker.sh)
-firecracker-linux-amd64
-firecracker-linux-arm64
-
-# Guest agent binaries (go generate ./cmd/nexus builds ../nexus-firecracker-agent)
+# Guest agent binary (cross-compiled linux/amd64, embedded into nexus at build time)
 agent-linux-amd64
 agent-linux-arm64
-smolvm-linux-amd64
 
-# libkrun embed artifacts (staged by deploy-libkrun.sh / make build-libkrun)
-# These are build-time inputs, not source files.
-nexus-libkrun-vm
+# libkrun shared libraries (downloaded from smolvm releases by deploy.sh, gitignored)
+# Use: scripts/remote/deploy.sh  — fetches and caches these automatically.
 libkrun-embed.so
 libkrunfw-embed.so
+
+# nexus-libkrun-vm is the pre-built CGO helper binary — it IS committed to git.
+# Only rebuild via scripts/remote/deploy-libkrun.sh when the libkrun C API wrapper
+# (cmd/nexus-libkrun-vm/cgo_linux.go) changes or libkrun is upgraded.

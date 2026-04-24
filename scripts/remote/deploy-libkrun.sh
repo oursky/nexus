@@ -97,11 +97,11 @@ else
 fi
 
 echo ""
-echo "── Step 3b: build nexus-firecracker-agent (guest init, embedded in nexus) ─"
+echo "── Step 3b: build nexus-guest-agent (in-VM init, embedded in nexus) ──────"
 CGO_ENABLED=0 go build \
   -trimpath -ldflags='-s -w' \
   -o "${EMBED_DIR}/agent-linux-amd64" \
-  ./cmd/nexus-firecracker-agent
+  ./cmd/nexus-guest-agent
 echo "  → ${EMBED_DIR}/agent-linux-amd64 built ($(du -sh ${EMBED_DIR}/agent-linux-amd64 | cut -f1))"
 
 echo ""
@@ -143,16 +143,26 @@ echo "  → tmp/nexus built ($(du -sh tmp/nexus | cut -f1))"
 
 echo ""
 echo "── Step 7: clean staging files from source tree ────────────────────────"
-rm -f "${EMBED_DIR}/nexus-libkrun-vm" \
-      "${EMBED_DIR}/libkrun-embed.so" \
+# Keep nexus-libkrun-vm in cmd/nexus/ — it's committed to git so that
+# deploy.sh can build libkrun-enabled binaries without CGO on the build machine.
+# Run: git add packages/nexus/cmd/nexus/nexus-libkrun-vm && git commit
+rm -f "${EMBED_DIR}/libkrun-embed.so" \
       "${EMBED_DIR}/libkrunfw-embed.so" \
       "${EMBED_DIR}/agent-linux-amd64"
-echo "  → done"
+echo "  → done (nexus-libkrun-vm kept in ${EMBED_DIR}/ — remember to git commit it)"
 REMOTE
 
 echo ""
+echo "==> Pulling nexus-libkrun-vm → packages/nexus/cmd/nexus/nexus-libkrun-vm ..."
+NEXUS_PKG_LOCAL="${SCRIPT_DIR}/../../packages/nexus"
+scp "${REMOTE_HOST}:~/magic/nexus/packages/nexus/cmd/nexus/nexus-libkrun-vm" \
+    "${NEXUS_PKG_LOCAL}/cmd/nexus/nexus-libkrun-vm"
+echo "  → nexus-libkrun-vm updated locally ($(du -sh ${NEXUS_PKG_LOCAL}/cmd/nexus/nexus-libkrun-vm | cut -f1))"
+echo "  → run: git add packages/nexus/cmd/nexus/nexus-libkrun-vm && git commit -m 'chore: update nexus-libkrun-vm'"
+
+echo ""
 echo "==> Deploying to ${REMOTE_HOST}:${REMOTE_BIN} ..."
-ssh "${REMOTE_HOST}" "bash -l -c 'nexus daemon stop 2>/dev/null; sleep 1; true'"
+ssh "${REMOTE_HOST}" "~/.local/bin/nexus daemon stop 2>/dev/null || true; sleep 1"
 ssh "${REMOTE_HOST}" "\
   rm -f ${REMOTE_BIN} && \
   cp ~/magic/nexus/packages/nexus/tmp/nexus ${REMOTE_BIN} && \

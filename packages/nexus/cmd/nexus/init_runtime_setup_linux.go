@@ -39,7 +39,7 @@ var (
 
 func runInitRuntimeBootstrapLinux(projectRoot, runtimeName string) error {
 	switch runtimeName {
-	case "firecracker", "libkrun":
+	case "libkrun":
 		skipFastFail := initRuntimeBootstrapSkipFastFailFn != nil && initRuntimeBootstrapSkipFastFailFn()
 		isRoot := initRuntimeBootstrapIsRootFn()
 
@@ -48,7 +48,7 @@ func runInitRuntimeBootstrapLinux(projectRoot, runtimeName string) error {
 		// requires root and would fail with an opaque error).
 		if !skipFastFail && !isRoot && !initRuntimeBootstrapSudoOKFn() && !initRuntimeBootstrapIsTTYFn(os.Stdin) {
 			return fmt.Errorf(
-				"firecracker runtime setup failed: bootstrap setup failed\n\nmanual next steps:\n  sudo -E nexus init --project-root %s",
+				"runtime setup failed: bootstrap setup failed\n\nmanual next steps:\n  sudo -E nexus init --project-root %s",
 				projectRoot,
 			)
 		}

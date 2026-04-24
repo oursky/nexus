@@ -39,14 +39,12 @@ Checks include:
   • VM rootfs image present
   • Guest agent embedded in rootfs
   • passt network backend available
-  • Firecracker binary (when driver=firecracker)
-  • libkrun shared libraries (when driver=libkrun)
+  • libkrun shared libraries
   • Docker available on host
   • Git config present
   • SSH config/keys present
   • Auth token config for opencode / claude / codex
 
-Use --driver to target checks for a specific runtime driver.
 Use --json to get machine-readable output.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			results := runEnvChecks(driver)
@@ -80,7 +78,7 @@ Use --json to get machine-readable output.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&driver, "driver", "", "Runtime driver to check for: firecracker | libkrun (default: auto-detect)")
+	cmd.Flags().StringVar(&driver, "driver", "", "Runtime driver to check for: libkrun (default: auto-detect)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON output")
 	return cmd
 }
@@ -140,16 +138,16 @@ func runEnvChecks(driver string) []CheckResult {
 		// This avoids running debugfs on a live (potentially locked) rootfs.
 		hashFile := filepath.Join(defaultDataDir(), "rootfs-agent.sha256")
 		if _, err := os.Stat(hashFile); err == nil {
-			return true, "nexus-firecracker-agent injected (hash file present)"
+			return true, "nexus-guest-agent injected (hash file present)"
 		}
 		// Fallback: try debugfs (only works when rootfs is not mounted).
 		if _, err := exec.LookPath("debugfs"); err == nil {
-			out, _ := exec.Command("debugfs", "-R", "stat /usr/local/bin/nexus-firecracker-agent", rootfsPath).CombinedOutput()
+			out, _ := exec.Command("debugfs", "-R", "stat /usr/local/bin/nexus-guest-agent", rootfsPath).CombinedOutput()
 			if strings.Contains(string(out), "Inode:") {
-				return true, "nexus-firecracker-agent present in rootfs"
+				return true, "nexus-guest-agent present in rootfs"
 			}
 		}
-		return false, "nexus-firecracker-agent not injected — run: nexus daemon start"
+		return false, "nexus-guest-agent not injected — run: nexus daemon start"
 	})
 
 	// ── Network backend ──────────────────────────────────────────────────────
@@ -174,48 +172,19 @@ func runEnvChecks(driver string) []CheckResult {
 
 	effectiveDriver := driver
 	if effectiveDriver == "" {
-		// Auto-detect: prefer libkrun if libs present, else firecracker.
+		effectiveDriver = "libkrun"
+	}
+
+	check("runtime.libkrun", func() (bool, string) {
 		home, _ := os.UserHomeDir()
-		lkDir := filepath.Join(home, ".local", "share", "nexus", "lib")
-		if _, err := os.Stat(filepath.Join(lkDir, "libkrun.so.1")); err == nil {
-			effectiveDriver = "libkrun"
-		} else {
-			home2, _ := os.UserHomeDir()
-			if _, err := os.Stat(filepath.Join(home2, ".local", "bin", "firecracker")); err == nil {
-				effectiveDriver = "firecracker"
-			}
+		libDir := filepath.Join(home, ".local", "share", "nexus", "lib")
+		soPath := filepath.Join(libDir, "libkrun.so.1")
+		if _, err := os.Stat(soPath); err != nil {
+			return false, fmt.Sprintf("libkrun.so.1 not found at %s (run: nexus daemon start)", libDir)
 		}
-	}
-
-	switch effectiveDriver {
-	case "firecracker":
-		check("runtime.firecracker", func() (bool, string) {
-			home, _ := os.UserHomeDir()
-			fc := filepath.Join(home, ".local", "bin", "firecracker")
-			if p, err := exec.LookPath("firecracker"); err == nil {
-				fc = p
-			}
-			if _, err := os.Stat(fc); err != nil {
-				return false, "firecracker binary not found (run: nexus daemon start)"
-			}
-			out, err := exec.Command(fc, "--version").Output()
-			if err != nil || !strings.Contains(string(out), "Firecracker") {
-				return false, fmt.Sprintf("firecracker --version failed: %v", err)
-			}
-			return true, strings.TrimSpace(string(out))
-		})
-
-	case "libkrun":
-		check("runtime.libkrun", func() (bool, string) {
-			home, _ := os.UserHomeDir()
-			libDir := filepath.Join(home, ".local", "share", "nexus", "lib")
-			soPath := filepath.Join(libDir, "libkrun.so.1")
-			if _, err := os.Stat(soPath); err != nil {
-				return false, fmt.Sprintf("libkrun.so.1 not found at %s (run: nexus daemon start --driver=libkrun)", libDir)
-			}
-			return true, soPath
-		})
-	}
+		return true, soPath
+	})
+	_ = effectiveDriver
 
 	// Delegate to main package for any additional driver-specific checks.
 	if CheckSetupFn != nil {

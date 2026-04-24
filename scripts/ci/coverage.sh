@@ -4,9 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
-# Ensure embedded binaries are present before compiling on Linux.
+# Build embedded guest-agent binary before compiling on Linux.
 if [[ "$(uname -s)" == "Linux" ]]; then
-  task firecracker:update
+  cd packages/nexus && go generate ./cmd/nexus/ && cd -
 fi
 
 cd "$ROOT/packages/nexus"

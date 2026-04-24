@@ -26,17 +26,17 @@ import (
 const daemonForegroundEnv = "NEXUS_DAEMON_FOREGROUND"
 
 // StartSetupFn, if non-nil, is called once before the daemon starts to
-// provision host prerequisites (Firecracker binary, kernel, rootfs, networking).
+// provision host prerequisites (libkrun libraries, kernel, rootfs).
 // On Linux this is wired to RunRootlessBootstrap by the main package.
-// driver is the runtime driver override ("firecracker", "libkrun", or "").
+// driver is the runtime driver override ("libkrun", or "").
 var StartSetupFn func(w io.Writer, driver string) error
 
 // StartSetupFnJSON, if non-nil, is the JSON-output variant of StartSetupFn.
 // Used when --json is passed to emit structured phase events.
 var StartSetupFnJSON func(w io.Writer, driver string) error
 
-// EmbeddedAgentFn, if non-nil, returns the embedded nexus-firecracker-agent
-// binary bytes.  On Linux builds this is always set by daemon_hooks_linux.go.
+// EmbeddedAgentFn, if non-nil, returns the embedded guest-agent binary bytes.
+// On Linux builds this is always set by daemon_hooks_linux.go.
 var EmbeddedAgentFn func() []byte
 
 // LibkrunBakeFn, if non-nil, is called after agent injection to pre-bake
@@ -44,7 +44,6 @@ var EmbeddedAgentFn func() []byte
 var LibkrunBakeFn func(rootfsPath, kernelPath string)
 
 // DefaultVMKernelPath is the canonical kernel location after rootless daemon setup.
-// Uses the XDG user data path; the old /var/lib/nexus path is no longer written by default.
 var DefaultVMKernelPath = defaultVMKernelPath()
 
 // DefaultVMRootfsPath is the canonical rootfs location after rootless daemon setup.
@@ -68,8 +67,6 @@ func xdgVMAsset(name string) string {
 	xdgPath := filepath.Join(home, ".local", "share", "nexus", "vm", name)
 	legacyPath := "/var/lib/nexus/" + name
 
-	// Prefer the XDG path; fall back to legacy only when it exists and XDG
-	// file doesn't (migration: host was provisioned with old sudo setup).
 	if _, err := os.Stat(xdgPath); err == nil {
 		return xdgPath
 	}
@@ -83,7 +80,6 @@ func startCommand() *cobra.Command {
 	var (
 		dbPath      string
 		socketPath  string
-		fcBin       string
 		kernelPath  string
 		rootfsPath  string
 		workDirRoot string
@@ -96,10 +92,9 @@ func startCommand() *cobra.Command {
 		tlsCert     string
 		tlsKey      string
 		foreground  bool   // --foreground: stay blocking instead of self-daemonizing
-		sandboxMode bool   // internal: use process sandbox backend instead of Firecracker
-		networkCIDR string // --network-cidr: bridge subnet for Firecracker VMs
+		sandboxMode bool   // internal: use process sandbox backend
 		jsonOutput  bool   // --json: emit structured phase events (rootless bootstrap)
-		driver      string // --driver: runtime driver override (firecracker, libkrun, sandbox)
+		driver      string // --driver: runtime driver override (libkrun, sandbox)
 	)
 
 	defaultData := defaultDataDir()
@@ -110,17 +105,8 @@ func startCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			isForegroundChild := os.Getenv(daemonForegroundEnv) == "1"
 
-			// Propagate --network-cidr into the environment so both the setup
-			// script (injected as an export header) and the Go daemon process
-			// (via os.Getenv) use the same subnet.  The background child
-			// inherits it automatically through os.Environ().
-			if networkCIDR != "" {
-				os.Setenv("NEXUS_BRIDGE_SUBNET", networkCIDR)
-			}
-
-			// Auto-provision host prerequisites (Firecracker binary, kernel,
-			// rootfs, networking).  Skipped in the background child process
-			// since the parent already ran it interactively.
+			// Auto-provision host prerequisites (libkrun libraries, kernel, rootfs).
+			// Skipped in the background child process since the parent already ran it.
 			if !isForegroundChild && StartSetupFn != nil {
 				setupOut := cmd.ErrOrStderr()
 				if StartSetupFnJSON != nil && jsonOutput {
@@ -137,8 +123,6 @@ func startCommand() *cobra.Command {
 
 			// Apply canonical default paths only in production Linux builds
 			// where StartSetupFn has already provisioned the assets.
-			// Test binaries (no StartSetupFn) skip this so the daemon starts
-			// in sandbox mode when no explicit paths are provided.
 			if StartSetupFn != nil && runtime.GOOS != "darwin" {
 				if kernelPath == "" {
 					kernelPath = DefaultVMKernelPath
@@ -177,60 +161,12 @@ func startCommand() *cobra.Command {
 
 			// ── Driver selection ────────────────────────────────────────────────
 			// Apply the compile-time default when --driver is not specified.
-			// Local builds with the "libkrun" tag default to libkrun; production
-			// CI builds (no tag) default to firecracker.
 			if driver == "" && defaultDriver != "" {
 				driver = defaultDriver
 				log.Printf("daemon: using compile-time default driver=%s", driver)
 			}
 
-
-			// ── Driver validation ───────────────────────────────────────────────
-			// macOS: only sandbox is supported (no KVM).
 			isLibkrun := driver == "libkrun"
-			if !sandboxMode && !isLibkrun {
-				if runtime.GOOS == "darwin" {
-					return fmt.Errorf(
-						"daemon start: Firecracker is not supported on macOS (darwin).\n" +
-							"  Use --sandbox for local development/testing (internal flag).",
-					)
-				}
-			}
-
-			// Firecracker and libkrun both require rootfs.ext4.
-			// Firecracker additionally requires an explicit kernel path.
-			if !sandboxMode {
-				if rootfsPath == "" || (!isLibkrun && kernelPath == "") {
-					return fmt.Errorf(
-						"daemon start: %s requires --rootfs%s.\n"+
-							"  Run `nexus daemon start` (auto-provisions assets) or supply required flags.",
-						map[bool]string{true: "libkrun", false: "firecracker"}[isLibkrun],
-						map[bool]string{true: "", false: " and --kernel"}[isLibkrun],
-					)
-				}
-				if _, err := os.Stat(rootfsPath); err != nil {
-					return fmt.Errorf("daemon start: rootfs %q not found: %w\n  Run `nexus daemon start` first or supply --rootfs", rootfsPath, err)
-				}
-				if !isLibkrun {
-					if _, err := os.Stat(kernelPath); err != nil {
-						return fmt.Errorf("daemon start: kernel %q not found: %w\n  Run `nexus daemon start` first or supply --kernel", kernelPath, err)
-					}
-				}
-			}
-
-			// firecrackerEnabled drives the FC driver path; libkrun uses a
-			// separate driver and does not need the firecracker binary.
-			firecrackerEnabled := !sandboxMode && !isLibkrun
-
-			// Pin firecracker to the exact binary our setup installed so PATH
-			// order (e.g. nix) cannot shadow it with a different version.
-			if !isLibkrun && fcBin == "firecracker" && StartSetupFn != nil {
-				home, _ := os.UserHomeDir()
-				installed := filepath.Join(home, ".local", "bin", "firecracker")
-				if _, err := os.Stat(installed); err == nil {
-					fcBin = installed
-				}
-			}
 
 			// For libkrun, ensure the shared libraries directory is on LD_LIBRARY_PATH
 			// so both the agent-injection step and the background daemon child can
@@ -245,49 +181,54 @@ func startCommand() *cobra.Command {
 				}
 			}
 
-			// Resolve effective driver.
+			// Validate VM assets when not in sandbox mode.
+			if !sandboxMode {
+				if rootfsPath == "" || kernelPath == "" {
+					return fmt.Errorf(
+						"daemon start: libkrun requires --rootfs and --kernel.\n"+
+							"  Run `nexus daemon start` (auto-provisions assets) or supply the flags.",
+					)
+				}
+				if _, err := os.Stat(rootfsPath); err != nil {
+					return fmt.Errorf("daemon start: rootfs %q not found: %w\n  Run `nexus daemon start` first or supply --rootfs", rootfsPath, err)
+				}
+				if _, err := os.Stat(kernelPath); err != nil {
+					return fmt.Errorf("daemon start: kernel %q not found: %w\n  Run `nexus daemon start` first or supply --kernel", kernelPath, err)
+				}
+			}
+
 			effectiveDriver := driver
 			if effectiveDriver == "" && sandboxMode {
 				effectiveDriver = "sandbox"
 			}
-			if effectiveDriver == "" && firecrackerEnabled {
-				effectiveDriver = "firecracker"
-			}
 
 			cfg := daemon.Config{
-				DBPath:             dbPath,
-				SocketPath:         socketPath,
-				FirecrackerEnabled: firecrackerEnabled,
-				FirecrackerBin:     fcBin,
-				KernelPath:         kernelPath,
-				RootFSPath:         rootfsPath,
-				WorkDirRoot:        workDirRoot,
-				BasesDir:           filepath.Join(defaultData, "bases"),
-				NodeName:           nodeName,
-				Network:            netCfg,
-				Driver:             effectiveDriver,
-				EmbeddedAgentFn:    EmbeddedAgentFn,
+				DBPath:          dbPath,
+				SocketPath:      socketPath,
+				KernelPath:      kernelPath,
+				RootFSPath:      rootfsPath,
+				WorkDirRoot:     workDirRoot,
+				BasesDir:        filepath.Join(defaultData, "bases"),
+				NodeName:        nodeName,
+				Network:         netCfg,
+				Driver:          effectiveDriver,
+				EmbeddedAgentFn: EmbeddedAgentFn,
 			}
 
-			// Inject/refresh the guest agent binary.
+			// Inject/refresh the guest agent binary into rootfs.ext4.
 			if !sandboxMode && !isForegroundChild {
-				// Refresh embedded guest agent in rootfs.ext4 so deploys take effect
-				// immediately for both runtime drivers.
-				if err := ensureFirecrackerGuestAgent(cfg.RootFSPath); err != nil {
+				if err := ensureGuestAgent(cfg.RootFSPath); err != nil {
 					return fmt.Errorf("daemon start: guest agent refresh: %w", err)
 				}
 
 				// Pre-bake developer tools into the base rootfs so workspaces start
 				// instantly instead of spending 5-10 min on apt-get/npm install.
-				// Only runs once per rootfs build (stamp-based, idempotent).
 				if isLibkrun && LibkrunBakeFn != nil {
 					LibkrunBakeFn(cfg.RootFSPath, cfg.KernelPath)
 				}
 			}
 
 			// Self-daemonize: re-exec in background, wait for socket, return.
-			// The parent runs this interactively (setup, sudo, etc.) then
-			// exits once the daemon is ready.  Use --foreground to opt out.
 			if !foreground && !isForegroundChild {
 				return launchDaemonBackground(cmd.OutOrStdout(), socketPath, jsonOutput)
 			}
@@ -312,11 +253,9 @@ func startCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&dbPath, "db", filepath.Join(defaultData, "nexus.db"), "SQLite database path")
 	cmd.Flags().StringVar(&socketPath, "socket", filepath.Join(defaultData, "nexusd.sock"), "Unix socket path")
-	cmd.Flags().StringVar(&fcBin, "firecracker-bin", "firecracker", "Firecracker binary name")
-	// Env-var overrides; final defaults applied in RunE after setup runs.
-	cmd.Flags().StringVar(&kernelPath, "kernel", os.Getenv("NEXUS_FIRECRACKER_KERNEL"), "Firecracker kernel image path (default: /var/lib/nexus/vmlinux.bin)")
-	cmd.Flags().StringVar(&rootfsPath, "rootfs", os.Getenv("NEXUS_FIRECRACKER_ROOTFS"), "Firecracker rootfs image path (default: /var/lib/nexus/rootfs.ext4)")
-	cmd.Flags().StringVar(&workDirRoot, "workdir-root", "", "Firecracker VM work dir root (default: $data_volume/firecracker-vms)")
+	cmd.Flags().StringVar(&kernelPath, "kernel", os.Getenv("NEXUS_VM_KERNEL"), "VM kernel image path")
+	cmd.Flags().StringVar(&rootfsPath, "rootfs", os.Getenv("NEXUS_VM_ROOTFS"), "VM rootfs image path")
+	cmd.Flags().StringVar(&workDirRoot, "workdir-root", "", "VM work dir root (default: $state/libkrun-vms)")
 	cmd.Flags().StringVar(&nodeName, "node-name", hostName(), "Node name for identity")
 	cmd.Flags().BoolVar(&network, "network", true, "Enable TCP/WebSocket network listener")
 	cmd.Flags().StringVar(&bind, "bind", "127.0.0.1", "Network listener bind address")
@@ -325,20 +264,17 @@ func startCommand() *cobra.Command {
 	cmd.Flags().StringVar(&token, "token", "", "Static bearer token (default: auto-generated and stored)")
 	cmd.Flags().StringVar(&tlsCert, "tls-cert", "", "TLS certificate file (PEM) for required mode")
 	cmd.Flags().StringVar(&tlsKey, "tls-key", "", "TLS key file (PEM) for required mode")
-	cmd.Flags().StringVar(&networkCIDR, "network-cidr", "", "Bridge subnet for Firecracker VMs, e.g. 172.20.0.0/16 (default: 172.26.0.0/16, override with NEXUS_BRIDGE_SUBNET)")
-	cmd.Flags().BoolVar(&sandboxMode, "sandbox", false, "Use process sandbox backend instead of Firecracker (internal/testing)")
+	cmd.Flags().BoolVar(&sandboxMode, "sandbox", false, "Use process sandbox backend (internal/testing)")
 	_ = cmd.Flags().MarkHidden("sandbox")
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Stay in foreground instead of self-daemonizing")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON phase events during bootstrap (for RemoteProvisioner / CI)")
-	cmd.Flags().StringVar(&driver, "driver", "", "Runtime driver override: firecracker | libkrun | sandbox (default: auto)")
+	cmd.Flags().StringVar(&driver, "driver", "", "Runtime driver override: libkrun | sandbox (default: auto)")
 
 	return cmd
 }
 
 // launchDaemonBackground re-execs the current binary with NEXUS_DAEMON_FOREGROUND=1,
 // detached from the terminal (new session, stdout/stderr → log file).
-// It blocks until the daemon socket appears (ready) or a timeout is reached.
-// When jsonOut is true it emits structured JSON phase events instead of plain text.
 func launchDaemonBackground(out io.Writer, socketPath string, jsonOut bool) error {
 	emitPhase := func(status, message string) {
 		if jsonOut {
@@ -376,7 +312,7 @@ func launchDaemonBackground(out io.Writer, socketPath string, jsonOut bool) erro
 
 	emitPhase("start", fmt.Sprintf("background process pid=%d", child.Process.Pid))
 
-	// Poll for socket readiness (daemon writes it once bound).
+	// Poll for socket readiness.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
@@ -384,7 +320,6 @@ func launchDaemonBackground(out io.Writer, socketPath string, jsonOut bool) erro
 			emitPhase("ok", fmt.Sprintf("pid=%d log=%s", child.Process.Pid, logPath))
 			return nil
 		}
-		// Detect early exit (startup failure).
 		if child.ProcessState != nil {
 			return fmt.Errorf("daemon exited unexpectedly (exit %d) — check log: %s",
 				child.ProcessState.ExitCode(), logPath)
@@ -394,8 +329,6 @@ func launchDaemonBackground(out io.Writer, socketPath string, jsonOut bool) erro
 }
 
 // agentHashFile returns a user-writable path for the agent SHA-256 cache.
-// Stored under XDG_STATE_HOME so it survives rootfs rebuilds and can be
-// written by the daemon user even when /var/lib/nexus/ is root-owned.
 func agentHashFile() string {
 	return filepath.Join(defaultDataDir(), "rootfs-agent.sha256")
 }
@@ -416,61 +349,10 @@ func hostName() string {
 	return name
 }
 
-// rootlessDirPath returns the libkrun rootfs directory path (rootfs-dir/).
-func rootlessDirPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "nexus", "vm", "rootfs-dir")
-}
-
-// ensureLibkrunGuestAgent writes the embedded nexus-firecracker-agent into
-// rootfs-dir when the binary has changed (hash mismatch).
-// libkrun's krun_set_exec runs the agent directly from the shared rootfs-dir.
-func ensureLibkrunGuestAgent(rootfsDirPath string) error {
-	if EmbeddedAgentFn == nil {
-		return nil // no embedded agent in this build (dev mode)
-	}
-	agentData := EmbeddedAgentFn()
-	if len(agentData) == 0 {
-		return nil
-	}
-
-	if _, err := os.Stat(rootfsDirPath); err != nil {
-		return fmt.Errorf("rootfs-dir not found at %q", rootfsDirPath)
-	}
-	agentDst := filepath.Join(rootfsDirPath, "usr", "local", "bin", "nexus-firecracker-agent")
-
-	// Hash check — skip write if binary matches what's already in the dir.
-	newHash := sha256.Sum256(agentData)
-	newHashHex := hex.EncodeToString(newHash[:])
-	hashFile := agentHashFile() + ".libkrun"
-	if stored, err := os.ReadFile(hashFile); err == nil {
-		if strings.TrimSpace(string(stored)) == newHashHex {
-			return nil // already up to date
-		}
-	}
-
-	if err := os.MkdirAll(filepath.Dir(agentDst), 0o755); err != nil {
-		return fmt.Errorf("mkdir agent dir: %w", err)
-	}
-	if err := os.WriteFile(agentDst, agentData, 0o755); err != nil {
-		return fmt.Errorf("write agent to rootfs-dir: %w", err)
-	}
-	_ = os.WriteFile(hashFile, []byte(newHashHex), 0o600)
-	log.Printf("daemon: libkrun guest agent refreshed in rootfs-dir")
-	return nil
-}
-
-// ensureFirecrackerGuestAgent writes the nexus-firecracker-agent binary into
-// the rootfs image at /usr/local/bin/nexus-firecracker-agent.
-//
-// The kernel boots the agent directly via the init= boot argument
-// ("init=/usr/local/bin/nexus-firecracker-agent"), so we no longer need to
-// patch /sbin/init or write a wrapper script — just the binary itself.
-//
-// Injection is skipped when the agent binary hash matches the hash stored in
-// rootfsPath+".agent-sha256" — this avoids slow debugfs round-trips on every
-// daemon start when the binary hasn't changed.
-func ensureFirecrackerGuestAgent(rootfsPath string) error {
+// ensureGuestAgent writes the guest-agent binary into the rootfs image at
+// /usr/local/bin/nexus-guest-agent. Injection is skipped when the
+// binary hash matches the stored hash (avoids slow debugfs round-trips).
+func ensureGuestAgent(rootfsPath string) error {
 	rootfsPath = strings.TrimSpace(rootfsPath)
 	if rootfsPath == "" {
 		return fmt.Errorf("rootfs path is required")
@@ -487,10 +369,6 @@ func ensureFirecrackerGuestAgent(rootfsPath string) error {
 		return err
 	}
 
-	// Skip injection when the agent binary hasn't changed since the last time
-	// we wrote it into the rootfs.  The hash is stored in the user state dir
-	// (not next to /var/lib/nexus/rootfs.ext4 which is root-owned) so it
-	// survives daemon restarts and prevents double-injection.
 	hashFile := agentHashFile()
 	agentHash, hashErr := sha256HexFile(agentPath)
 	if hashErr == nil {
@@ -500,30 +378,25 @@ func ensureFirecrackerGuestAgent(rootfsPath string) error {
 		}
 	}
 
-	// Run e2fsck to repair any dirty journal state left by a previously-running VM
-	// before writing with debugfs.  Ignore errors — e2fsck exits non-zero when it
-	// makes repairs, and we proceed regardless.
+	// Repair any dirty journal before writing with debugfs.
 	_ = exec.Command("e2fsck", "-f", "-y", rootfsPath).Run()
 
 	for _, cmd := range []string{
 		"mkdir /usr/local",
 		"mkdir /usr/local/bin",
 		"mkdir /workspace",
-		"rm /usr/local/bin/nexus-firecracker-agent",
+		"rm /usr/local/bin/nexus-guest-agent",
 	} {
 		_ = exec.Command("debugfs", "-w", "-R", cmd, rootfsPath).Run()
 	}
 
-	if out, err := exec.Command("debugfs", "-w", "-R", fmt.Sprintf("write %s /usr/local/bin/nexus-firecracker-agent", agentPath), rootfsPath).CombinedOutput(); err != nil {
+	if out, err := exec.Command("debugfs", "-w", "-R", fmt.Sprintf("write %s /usr/local/bin/nexus-guest-agent", agentPath), rootfsPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("write guest agent into rootfs: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	// debugfs write does not preserve source file permissions; set mode with sif.
-	// 0100755 = S_IFREG | 0755 (regular file, rwxr-xr-x).
-	if out, err := exec.Command("debugfs", "-w", "-R", "sif /usr/local/bin/nexus-firecracker-agent mode 0100755", rootfsPath).CombinedOutput(); err != nil {
+	if out, err := exec.Command("debugfs", "-w", "-R", "sif /usr/local/bin/nexus-guest-agent mode 0100755", rootfsPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("set mode on guest agent in rootfs: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	// Record the new hash only after a successful injection.
 	if hashErr == nil {
 		if dir := filepath.Dir(hashFile); dir != "" {
 			_ = os.MkdirAll(dir, 0o755)
@@ -544,6 +417,13 @@ func sha256HexFile(path string) (string, error) {
 }
 
 func resolveGuestAgentBinary() (string, error) {
+	if raw := strings.TrimSpace(os.Getenv("NEXUS_GUEST_AGENT_BIN")); raw != "" {
+		if _, err := os.Stat(raw); err != nil {
+			return "", fmt.Errorf("NEXUS_GUEST_AGENT_BIN=%s: %w", raw, err)
+		}
+		return raw, nil
+	}
+	// Legacy env var for backwards compatibility.
 	if raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_AGENT_BIN")); raw != "" {
 		if _, err := os.Stat(raw); err != nil {
 			return "", fmt.Errorf("NEXUS_FIRECRACKER_AGENT_BIN=%s: %w", raw, err)
@@ -551,17 +431,15 @@ func resolveGuestAgentBinary() (string, error) {
 		return raw, nil
 	}
 	if EmbeddedAgentFn == nil {
-		return "", fmt.Errorf("nexus-firecracker-agent binary is not embedded in this build (linux/amd64 or linux/arm64 required)")
+		return "", fmt.Errorf("guest agent binary is not embedded in this build (linux/amd64 or linux/arm64 required)")
 	}
 	data := EmbeddedAgentFn()
 	if len(data) == 0 {
-		return "", fmt.Errorf("embedded nexus-firecracker-agent is empty (build error)")
+		return "", fmt.Errorf("embedded guest agent is empty (build error)")
 	}
 
-	// Persist the extracted agent at a stable XDG path instead of /tmp so
-	// it is user-owned, survives reboots, and is never evicted by tmpwatch.
 	home, _ := os.UserHomeDir()
-	dest := filepath.Join(home, ".local", "bin", "nexus-firecracker-agent")
+	dest := filepath.Join(home, ".local", "bin", "nexus-guest-agent")
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return "", fmt.Errorf("create bin dir: %w", err)
 	}

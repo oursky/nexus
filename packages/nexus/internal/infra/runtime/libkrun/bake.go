@@ -98,7 +98,7 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 	// Inject the current embedded agent so the bake VM runs the latest code.
 	if cfg.EmbeddedAgentFn != nil {
 		if agentData := cfg.EmbeddedAgentFn(); len(agentData) > 0 {
-			if err := injectFileIntoExt4(rootfsPath, agentData, "/usr/local/bin/nexus-firecracker-agent", 0o755); err != nil {
+			if err := injectFileIntoExt4(rootfsPath, agentData, "/usr/local/bin/nexus-guest-agent", 0o755); err != nil {
 				log.Printf("[libkrun] bake: agent inject warning: %v", err)
 			}
 		}
@@ -133,9 +133,9 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 		KernelPath:  cfg.KernelPath,
 		// nexus.tsi=1 tells the agent to write "options use-vc" in resolv.conf
 		// so DNS queries use TCP and work through TSI's TCP proxy.
-		KernelCmdline:   "console=hvc0 root=/dev/vda rw init=/usr/local/bin/nexus-firecracker-agent nexus.bake=1 nexus.tsi=1",
+		KernelCmdline:   "console=hvc0 root=/dev/vda rw init=/usr/local/bin/nexus-guest-agent nexus.bake=1 nexus.tsi=1",
 		RootFSImage:     rootfsPath,
-		AgentPath:       "/usr/local/bin/nexus-firecracker-agent",
+		AgentPath:       "/usr/local/bin/nexus-guest-agent",
 		WorkspaceImage:  workspacePath,
 		DockerDataImage: dockerDataPath,
 		MemoryMiB:       1024,

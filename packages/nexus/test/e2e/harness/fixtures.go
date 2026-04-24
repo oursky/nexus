@@ -11,34 +11,44 @@ import (
 	"testing"
 )
 
-// RequireFirecracker skips the test when Firecracker is not available.
+// RequireVM skips the test when the libkrun VM backend is not available.
 //
-//   - macOS/darwin: Firecracker is not yet supported — always skip.
-//   - Linux: skip when NEXUS_FIRECRACKER_KERNEL or NEXUS_FIRECRACKER_ROOTFS
-//     are unset, meaning the Firecracker infrastructure has not been
-//     provisioned in this environment.
+//   - macOS/darwin: libkrun VM is not supported on macOS — always skip.
+//   - Linux: skip when NEXUS_VM_KERNEL or NEXUS_VM_ROOTFS are unset.
 //
-// Call this at the top of every test (or before creating a harness) that needs
-// the real Firecracker VM backend. Tests that work with the sandbox backend
-// should NOT call this.
-func RequireFirecracker(t *testing.T) {
+// Call this at the top of every test that needs a real VM backend.
+// Tests that work with the sandbox backend should NOT call this.
+func RequireVM(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "darwin" {
-		t.Skip("Firecracker is not supported on macOS; skipping Firecracker-specific test")
+		t.Skip("VM backend is not supported on macOS; skipping VM-specific test")
 	}
-	if os.Getenv("NEXUS_FIRECRACKER_KERNEL") == "" || os.Getenv("NEXUS_FIRECRACKER_ROOTFS") == "" {
-		t.Skip("Firecracker not configured (NEXUS_FIRECRACKER_KERNEL/ROOTFS not set); skipping Firecracker-specific test")
+	kernel := os.Getenv("NEXUS_VM_KERNEL")
+	rootfs := os.Getenv("NEXUS_VM_ROOTFS")
+	if kernel == "" {
+		kernel = os.Getenv("NEXUS_FIRECRACKER_KERNEL") // legacy fallback
 	}
+	if rootfs == "" {
+		rootfs = os.Getenv("NEXUS_FIRECRACKER_ROOTFS") // legacy fallback
+	}
+	if kernel == "" || rootfs == "" {
+		t.Skip("VM not configured (NEXUS_VM_KERNEL/ROOTFS not set); skipping VM-specific test")
+	}
+}
+
+// RequireFirecracker is deprecated; use RequireVM.
+func RequireFirecracker(t *testing.T) {
+	t.Helper()
+	RequireVM(t)
 }
 
 // SkipIfVMBoot skips the test when running in short mode (-short flag).
 // Call this at the top of any test that calls workspace.start (which triggers
-// mkfs.ext4 + Firecracker VM boot and takes 3-5 minutes each).
-// In CI set -short to keep the suite fast; remove it when focusing on VM tests.
+// mkfs.ext4 + VM boot and takes 3-5 minutes each).
 func SkipIfVMBoot(t *testing.T) {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("slow: Firecracker VM boot — run without -short to include")
+		t.Skip("slow: VM boot — run without -short to include")
 	}
 }
 

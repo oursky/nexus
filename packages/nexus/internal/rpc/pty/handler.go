@@ -33,7 +33,7 @@ type Handler struct {
 	ready  WorkspaceReadyChecker
 }
 
-// VsockDialer is implemented by the Firecracker driver to open an agent
+// VsockDialer is implemented by VM runtime drivers to open an agent
 // connection and map workspace IDs to guest workdirs.
 type VsockDialer interface {
 	AgentConn(ctx context.Context, workspaceID string) (net.Conn, error)
@@ -59,7 +59,7 @@ func WithProjectRepo(proj domainproj.Repository) HandlerOption {
 	return func(h *Handler) { h.proj = proj }
 }
 
-// WithVsockDialer enables remote PTY sessions for firecracker workspaces.
+// WithVsockDialer enables remote PTY sessions for VM workspaces.
 func WithVsockDialer(d VsockDialer) HandlerOption {
 	return func(h *Handler) { h.dialer = d }
 }
@@ -174,22 +174,22 @@ func (h *Handler) create(ctx context.Context, raw json.RawMessage) (any, error) 
 	}
 
 	if h.dialer != nil && ws != nil && backendUsesGuestControlChannel(ws.Backend) {
-		return h.createFirecrackerSession(ctx, p, ws, cols, rows)
+		return h.createVMSession(ctx, p, ws, cols, rows)
 	}
 
 	return h.createLocalSession(ctx, p, cols, rows)
 }
 
-func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, ws *domainws.Workspace, cols, rows int) (any, error) {
+func (h *Handler) createVMSession(ctx context.Context, p createParams, ws *domainws.Workspace, cols, rows int) (any, error) {
 	tStart := time.Now()
-	log.Printf("pty: createFirecrackerSession: START wsID=%s", p.WorkspaceID)
+	log.Printf("pty: createVMSession: START wsID=%s", p.WorkspaceID)
 	conn, err := h.dialer.AgentConn(ctx, p.WorkspaceID)
 	agentMs := time.Since(tStart).Milliseconds()
 	if err != nil {
-		log.Printf("pty: createFirecrackerSession: AgentConn FAIL wsID=%s agent_ms=%d err=%v", p.WorkspaceID, agentMs, err)
-		return nil, fmt.Errorf("firecracker agent connect: %w", err)
+		log.Printf("pty: createVMSession: AgentConn FAIL wsID=%s agent_ms=%d err=%v", p.WorkspaceID, agentMs, err)
+		return nil, fmt.Errorf("guest agent connect: %w", err)
 	}
-	log.Printf("pty: createFirecrackerSession: AgentConn OK wsID=%s agent_ms=%d", p.WorkspaceID, agentMs)
+	log.Printf("pty: createVMSession: AgentConn OK wsID=%s agent_ms=%d", p.WorkspaceID, agentMs)
 
 	workDir := h.dialer.GuestWorkdir(p.WorkspaceID)
 	if workDir == "" {
@@ -236,7 +236,7 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 	}
 	if err := enc.Encode(shellOpenMsg); err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("firecracker shell.open send: %w", err)
+		return nil, fmt.Errorf("guest shell.open send: %w", err)
 	}
 
 	_ = ws
@@ -250,7 +250,7 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 				Stderr   string `json:"stderr"`
 			}
 			if err := dec.Decode(&env); err != nil {
-				ackCh <- fmt.Errorf("firecracker shell.open ack: %w", err)
+				ackCh <- fmt.Errorf("guest shell.open ack: %w", err)
 				return
 			}
 			if env.ID != "" && env.ID != sessionID {
@@ -260,7 +260,7 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 				continue
 			}
 			if env.Type == "" {
-				ackCh <- errors.New("firecracker guest agent is outdated: shell.open/shell.write protocol not supported; refresh rootfs agent payload")
+				ackCh <- errors.New("guest agent is outdated: shell.open/shell.write protocol not supported; refresh rootfs agent payload")
 				return
 			}
 			// Accept both "ack" (new protocol) and "result" (legacy protocol).
@@ -268,7 +268,7 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 				continue
 			}
 			if env.ExitCode != 0 {
-				ackCh <- fmt.Errorf("firecracker shell.open failed: %s", env.Stderr)
+				ackCh <- fmt.Errorf("guest shell.open failed: %s", env.Stderr)
 				return
 			}
 			ackCh <- nil
@@ -281,21 +281,21 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 	case err := <-ackCh:
 		ackMs := time.Since(tAck).Milliseconds()
 		if err != nil {
-			log.Printf("pty: createFirecrackerSession: ACK ERROR wsID=%s ack_ms=%d err=%v", p.WorkspaceID, ackMs, err)
+			log.Printf("pty: createVMSession: ACK ERROR wsID=%s ack_ms=%d err=%v", p.WorkspaceID, ackMs, err)
 			_ = conn.Close()
 			return nil, err
 		}
-		log.Printf("pty: createFirecrackerSession: ACK OK wsID=%s ack_ms=%d total_ms=%d", p.WorkspaceID, ackMs, time.Since(tStart).Milliseconds())
+		log.Printf("pty: createVMSession: ACK OK wsID=%s ack_ms=%d total_ms=%d", p.WorkspaceID, ackMs, time.Since(tStart).Milliseconds())
 	case <-time.After(8 * time.Second):
-		log.Printf("pty: createFirecrackerSession: ACK TIMEOUT wsID=%s total_ms=%d", p.WorkspaceID, time.Since(tStart).Milliseconds())
+		log.Printf("pty: createVMSession: ACK TIMEOUT wsID=%s total_ms=%d", p.WorkspaceID, time.Since(tStart).Milliseconds())
 		_ = conn.Close()
-		return nil, errors.New("firecracker shell.open ack timed out")
+		return nil, errors.New("guest shell.open ack timed out")
 	}
 
 	s.SetNotifier(notifier)
 	h.reg.Register(s)
-	go h.streamFirecrackerSession(s, dec)
-	log.Printf("pty: createFirecrackerSession: REGISTERED session=%s wsID=%s total_ms=%d", s.ID, p.WorkspaceID, time.Since(tStart).Milliseconds())
+	go h.streamVMSession(s, dec)
+	log.Printf("pty: createVMSession: REGISTERED session=%s wsID=%s total_ms=%d", s.ID, p.WorkspaceID, time.Since(tStart).Milliseconds())
 	return s.Info(), nil
 }
 
@@ -308,8 +308,8 @@ func backendUsesGuestControlChannel(backend string) bool {
 	}
 }
 
-func (h *Handler) streamFirecrackerSession(s *appty.Session, dec *json.Decoder) {
-	log.Printf("pty: streamFirecrackerSession: starting for %s", s.ID)
+func (h *Handler) streamVMSession(s *appty.Session, dec *json.Decoder) {
+	log.Printf("pty: streamVMSession: starting for %s", s.ID)
 	defer func() {
 		_ = s.RemoteConn.Close()
 		h.reg.Unregister(s.ID)
@@ -335,14 +335,14 @@ func (h *Handler) streamFirecrackerSession(s *appty.Session, dec *json.Decoder) 
 			}
 			return
 		}
-		log.Printf("pty: streamFirecrackerSession: received type=%q id=%q", env.Type, env.ID)
+		log.Printf("pty: streamVMSession: received type=%q id=%q", env.Type, env.ID)
 		n := s.GetNotifier()
 		switch env.Type {
 		case "chunk":
 			s.AppendScrollback(env.Data)
 			n.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Data})
 		case "result", "":
-			log.Printf("pty: streamFirecrackerSession: sending pty.exit exitCode=%d", env.ExitCode)
+			log.Printf("pty: streamVMSession: sending pty.exit exitCode=%d", env.ExitCode)
 			if env.Stdout != "" {
 				n.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Stdout})
 			}

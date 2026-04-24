@@ -7,9 +7,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	apppty "github.com/oursky/nexus/packages/nexus/internal/app/pty"
@@ -18,7 +16,6 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/creds/relay"
 	domainruntime "github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
 	domainws "github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
-	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/firecracker"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/sandbox"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/store"
 	rpcauth "github.com/oursky/nexus/packages/nexus/internal/rpc/auth"
@@ -64,21 +61,18 @@ func ValidateNetworkConfig(cfg NetworkConfig) error {
 
 // Config holds all configuration for building a Daemon.
 type Config struct {
-	DBPath             string
-	SocketPath         string
-	FirecrackerEnabled bool
-	FirecrackerBin     string
-	KernelPath         string
-	RootFSPath         string
-	WorkDirRoot        string
-	BasesDir           string
-	NodeName           string
-	NodeTags           []string
-	Network            NetworkConfig
-	// Driver overrides the runtime driver: "" or "firecracker" = Firecracker,
-	// "libkrun" = libkrun (requires build tag libkrun), "sandbox" = process sandbox.
+	DBPath      string
+	SocketPath  string
+	KernelPath  string
+	RootFSPath  string
+	WorkDirRoot string
+	BasesDir    string
+	NodeName    string
+	NodeTags    []string
+	Network     NetworkConfig
+	// Driver selects the runtime driver: "libkrun" or "sandbox".
 	Driver string
-	// EmbeddedAgentFn returns the embedded nexus-firecracker-agent binary bytes.
+	// EmbeddedAgentFn returns the embedded guest-agent binary bytes.
 	// When set, the libkrun driver injects the current agent into each VM's rootfs
 	// on spawn so the agent stays in sync with the nexus binary.
 	EmbeddedAgentFn func() []byte
@@ -112,13 +106,10 @@ func New(cfg Config) (*Daemon, error) {
 	fwdStore := store.NewForwardStore(db)
 
 	var rtDriver domainruntime.Driver
-	var fcDriver *firecracker.FCDriver
-
 	var lkBundle libkrunDriverBundle
 
-	switch {
-	case cfg.Driver == "libkrun":
-		// libkrun driver — built only when the "libkrun" build tag is set.
+	switch cfg.Driver {
+	case "libkrun":
 		var err error
 		lkBundle, err = buildLibkrunDriver(cfg)
 		if err != nil {
@@ -137,24 +128,6 @@ func New(cfg Config) (*Daemon, error) {
 		// mkfs.ext4 -d <project_root> (which can take 30-120s for large repos).
 		go prewarmLibkrunBaseImages(wsStore, cfg.BasesDir)
 
-	case cfg.FirecrackerEnabled && cfg.Driver != "sandbox":
-		if err := validateFirecrackerHostRouting(); err != nil {
-			db.Close()
-			return nil, err
-		}
-		var fcErr error
-		fcDriver, fcErr = buildFirecrackerDriver(cfg)
-		if fcErr != nil {
-			db.Close()
-			return nil, fmt.Errorf("firecracker: %w", fcErr)
-		}
-		if err := fcDriver.CleanupStaleInstances(context.Background()); err != nil {
-			log.Printf("daemon: firecracker stale cleanup warning: %v", err)
-		}
-		reconcileFirecrackerWorkspaceStates(context.Background(), wsStore)
-		rtDriver = firecracker.NewAdapter(fcDriver)
-		log.Printf("daemon: firecracker runtime driver wired")
-
 	default:
 		rtDriver = sandbox.NewAdapter(sandbox.NewDriver())
 		log.Printf("daemon: sandbox (process) runtime driver wired")
@@ -164,16 +137,12 @@ func New(cfg Config) (*Daemon, error) {
 
 	// ── Workspace handler with optional serial log provider ────────────────
 	wsHandlerOpts := []rpcworkspace.HandlerOption{}
-	if fcDriver != nil {
-		wsHandlerOpts = append(wsHandlerOpts, rpcworkspace.WithSerialLogProvider(fcDriver))
-	} else if cfg.Driver == "libkrun" {
+	if cfg.Driver == "libkrun" {
 		wsHandlerOpts = append(wsHandlerOpts, rpcworkspace.WithSerialLogProvider(lkBundle))
 	}
 
 	spotlightOpts := []appspotlight.Option{}
-	if fcDriver != nil {
-		spotlightOpts = append(spotlightOpts, appspotlight.WithPortDialer(fcDriver))
-	} else if cfg.Driver == "libkrun" {
+	if cfg.Driver == "libkrun" {
 		spotlightOpts = append(spotlightOpts, appspotlight.WithPortDialer(lkBundle))
 	}
 	spotlightSvc := appspotlight.New(fwdStore, wsStore, spotlightOpts...)
@@ -191,10 +160,7 @@ func New(cfg Config) (*Daemon, error) {
 		rpcpty.WithWorkspaceRepo(wsStore),
 		rpcpty.WithProjectRepo(projStore),
 	}
-	if fcDriver != nil {
-		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithVsockDialer(fcDriver))
-		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithWorkspaceReadyChecker(fcDriver))
-	} else if cfg.Driver == "libkrun" {
+	if cfg.Driver == "libkrun" {
 		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithVsockDialer(lkBundle))
 		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithWorkspaceReadyChecker(lkBundle))
 	}
@@ -259,39 +225,6 @@ func reconcileLibkrunWorkspaceStates(ctx context.Context, wsStore *store.Workspa
 	}
 }
 
-// reconcileFirecrackerWorkspaceStates prevents stale DB state after daemon
-// restarts: if runtime instances are cleaned up, mark previously "running" or
-// "starting" Firecracker workspaces as stopped/created so callers trigger a
-// real start path.
-func reconcileFirecrackerWorkspaceStates(ctx context.Context, wsStore *store.WorkspaceStore) {
-	all, err := wsStore.List(ctx)
-	if err != nil {
-		log.Printf("daemon: workspace state reconcile skipped: %v", err)
-		return
-	}
-	for _, ws := range all {
-		if ws == nil {
-			continue
-		}
-		if ws.Backend != "firecracker" {
-			continue
-		}
-		switch ws.State {
-		case domainws.StateRunning:
-			ws.State = domainws.StateStopped
-		case domainws.StateStarting:
-			// Start was interrupted mid-flight; reset so user can retry.
-			ws.State = domainws.StateCreated
-		default:
-			continue
-		}
-		ws.UpdatedAt = time.Now().UTC()
-		if err := wsStore.Update(ctx, ws); err != nil {
-			log.Printf("daemon: workspace state reconcile %s: %v", ws.ID, err)
-		}
-	}
-}
-
 // Start begins accepting connections. It blocks until ctx is cancelled or an error occurs.
 func (d *Daemon) Start(ctx context.Context) error {
 	slog.Info("daemon.starting", "addr", d.cfg.SocketPath)
@@ -332,115 +265,6 @@ func (d *Daemon) Stop() error {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func buildFirecrackerDriver(cfg Config) (*firecracker.FCDriver, error) {
-	// Both firecracker-vms and firecracker-bases must live on the same XFS
-	// volume so that cp --reflink=always works across them.
-	dataDir := nexusDataVolumeDir()
-	fsType := firecracker.FilesystemType(dataDir)
-	if !firecracker.ReflinkAvailable(dataDir) {
-		return nil, fmt.Errorf(
-			"data volume at %s is %q — nexus requires XFS for reflink workspace clones.\n"+
-				"See the Linux host prerequisites in the README, or set NEXUS_DATA_DIR to an XFS path.",
-			dataDir, fsType,
-		)
-	}
-	log.Printf("daemon: data volume %s (%s) — XFS reflink mode (O(1) workspace clones)", dataDir, fsType)
-
-	workDirRoot := cfg.WorkDirRoot
-	if workDirRoot == "" {
-		workDirRoot = filepath.Join(dataDir, "firecracker-vms")
-	}
-	basesDir := filepath.Join(dataDir, "firecracker-bases")
-
-	mgr := firecracker.NewManager(firecracker.ManagerConfig{
-		FirecrackerBin: orDefault(cfg.FirecrackerBin, "firecracker"),
-		KernelPath:     orDefault(cfg.KernelPath, os.Getenv("NEXUS_FIRECRACKER_KERNEL")),
-		RootFSPath:     orDefault(cfg.RootFSPath, os.Getenv("NEXUS_FIRECRACKER_ROOTFS")),
-		WorkDirRoot:    workDirRoot,
-		BasesDir:       basesDir,
-	})
-	return firecracker.New(execRunner{}, firecracker.WithManager(mgr), firecracker.WithBasesDir(basesDir)), nil
-}
-
-// nexusDataVolumeDir returns the directory used for Firecracker VM state and
-// base image cache. The directory must be on XFS for reflink support.
-//
-// Override via NEXUS_DATA_DIR env var or by mounting a volume at /data/nexus.
-func nexusDataVolumeDir() string {
-	if v := strings.TrimSpace(os.Getenv("NEXUS_DATA_DIR")); v != "" {
-		return v
-	}
-	const dedicated = "/data/nexus"
-	if fi, err := os.Stat(dedicated); err == nil && fi.IsDir() {
-		if f, err := os.CreateTemp(dedicated, ".nexus-probe-*"); err == nil {
-			f.Close()
-			os.Remove(f.Name())
-			return dedicated
-		}
-	}
-	return defaultDataDir()
-}
-
-// loadFirecrackerBridgeSubnet returns the bridge subnet CIDR.
-// Priority: NEXUS_BRIDGE_SUBNET env var → persisted file → default.
-func loadFirecrackerBridgeSubnet() string {
-	if s := os.Getenv("NEXUS_BRIDGE_SUBNET"); s != "" {
-		return s
-	}
-	data, err := os.ReadFile("/var/lib/nexus/bridge-subnet")
-	if err == nil {
-		if s := strings.TrimSpace(string(data)); s != "" {
-			return s
-		}
-	}
-	return "172.26.0.0/16"
-}
-
-func validateFirecrackerHostRouting() error {
-	const bridge = "nexusbr0"
-	subnet := loadFirecrackerBridgeSubnet()
-	out, err := exec.Command("ip", "-4", "route", "show", subnet).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("firecracker host route check failed for %s: %w", subnet, err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		for i := 0; i < len(fields)-1; i++ {
-			if fields[i] != "dev" {
-				continue
-			}
-			dev := fields[i+1]
-			if dev == bridge {
-				break
-			}
-			return fmt.Errorf(
-				"firecracker subnet conflict: %s route is owned by %q (expected %s)\n"+
-					"Docker likely allocated %s for one of its project networks\n"+
-					"to fix: run `sudo nexus init --project-root <path> --force` to configure\n"+
-					"Docker address pools to exclude %s, then remove conflicting networks:\n"+
-					"  docker network ls  # find networks with subnet %s\n"+
-					"  docker network rm <id>",
-				subnet, dev, bridge, subnet, subnet, subnet,
-			)
-		}
-	}
-	return nil
-}
-
-// execRunner satisfies firecracker.CommandRunner using os/exec.
-type execRunner struct{}
-
-func (execRunner) Run(ctx context.Context, dir string, cmd string, args ...string) error {
-	c := exec.CommandContext(ctx, cmd, args...)
-	c.Dir = dir
-	return c.Run()
-}
-
 func orDefault(v, def string) string {
 	if v != "" {
 		return v
@@ -469,7 +293,6 @@ func (n *nodeInfo) NodeTags() []string { return n.cfg.NodeTags }
 func (n *nodeInfo) Capabilities() []rpcdaemon.Capability {
 	return []rpcdaemon.Capability{
 		{Name: "runtime.process", Available: true},
-		{Name: "runtime.firecracker", Available: n.cfg.FirecrackerEnabled},
 		{Name: "runtime.libkrun", Available: n.cfg.Driver == "libkrun"},
 	}
 }

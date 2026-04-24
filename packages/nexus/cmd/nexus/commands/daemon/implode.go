@@ -29,13 +29,11 @@ func implodeCommand() *cobra.Command {
 		Long: `Implode removes every trace of the Nexus daemon from this machine:
 
   • Stops the running daemon
-  • Removes all workspace runtime state (DB, socket, Firecracker VM dirs)
+  • Removes all workspace runtime state (DB, socket, VM dirs)
   • Removes the auth token
   • Removes the stored connection profile
-  • [Linux] Tears down the nexusbr0 bridge and TAP interfaces
-  • [Linux] Removes iptables/sysctl configuration added by daemon setup
-  • [Linux] Removes ~/.local/bin/nexus-tap-helper and ~/.local/bin/firecracker
-  • [Linux] Removes the VM kernel and rootfs from /var/lib/nexus/
+  • [Linux] Removes libkrun and passt binaries from ~/.local/bin/
+  • [Linux] Removes the VM kernel and rootfs from ~/.local/share/nexus/
 
 After implode, running ` + "`nexus daemon start`" + ` will re-provision
 everything from scratch.`,

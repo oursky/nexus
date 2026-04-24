@@ -26,6 +26,16 @@ func libkrunShareBinDir() string {
 	return filepath.Join(home, ".local", "share", "nexus", "bin")
 }
 
+// libkrunShareLibDir returns the directory where libkrun.so and libkrunfw.so
+// are extracted during bootstrap.
+func libkrunShareLibDir() string {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "nexus", "lib")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "nexus", "lib")
+}
+
 func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 	nexusBin, _ := os.Executable()
 
@@ -82,6 +92,7 @@ func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 	lkCfg := lkruntime.ManagerConfig{
 		LibkrunVMBin:    libkrunVMBin,
 		NexusBin:        nexusBin,
+		LibkrunLibDir:   libkrunShareLibDir(),
 		KernelPath:      kernelPath,
 		RootFSBasePath:  rootFSPath,
 		BasesDir:        cfg.BasesDir,

@@ -65,10 +65,6 @@ func rootlessRootfsDirPath() string {
 	return filepath.Join(rootlessVMDir(), "rootfs-dir")
 }
 
-func rootlessFirecrackerPath() string {
-	return filepath.Join(xdgLocalBin(), "firecracker")
-}
-
 func rootlessPasstPath() string {
 	return filepath.Join(xdgLocalBin(), "passt")
 }
@@ -93,10 +89,8 @@ type rootlessState struct {
 	SchemaVersion int    `json:"schema_version"`
 	InstalledAt   string `json:"installed_at"`
 	NexusVersion  string `json:"nexus_version"`
-	// Driver is the runtime driver that was bootstrapped: "firecracker" or "libkrun".
-	// daemon start reads this to auto-select the correct driver without needing --driver.
+	// Driver is the runtime driver that was bootstrapped (currently always "libkrun").
 	Driver            string `json:"driver,omitempty"`
-	FirecrackerBin    string `json:"firecracker_bin"`
 	NetworkBackend    string `json:"network_backend"`
 	NetworkBackendBin string `json:"network_backend_bin"`
 	KernelPath        string `json:"kernel_path"`
@@ -128,28 +122,12 @@ func emitPhase(w io.Writer, emitJSON bool, phase, status, msg string) {
 // ── Download URLs ─────────────────────────────────────────────────────────────
 
 const (
-	firecrackerVersion = "v1.13.0"
-	passtVersion       = "20250501.0"
+	passtVersion = "20250501.0"
 )
 
-func firecrackerDownloadURL() string {
-	switch runtime.GOARCH {
-	case "arm64":
-		return fmt.Sprintf("https://github.com/firecracker-microvm/firecracker/releases/download/%s/firecracker-%s-aarch64.tgz", firecrackerVersion, firecrackerVersion)
-	default: // amd64
-		return fmt.Sprintf("https://github.com/firecracker-microvm/firecracker/releases/download/%s/firecracker-%s-x86_64.tgz", firecrackerVersion, firecrackerVersion)
-	}
-}
-
-func firecrackerBinaryName() string {
-	switch runtime.GOARCH {
-	case "arm64":
-		return fmt.Sprintf("release-%s-aarch64/firecracker-%s-aarch64", firecrackerVersion, firecrackerVersion)
-	default:
-		return fmt.Sprintf("release-%s-x86_64/firecracker-%s-x86_64", firecrackerVersion, firecrackerVersion)
-	}
-}
-
+// vmKernelURL returns the URL for the Linux kernel image (vmlinux ELF).
+// The URL uses AWS S3 bucket "spec.ccfc.min" maintained by the Firecracker
+// project — it is a public mirror of standard Linux kernels, not FC-specific.
 func vmKernelURL() string {
 	switch runtime.GOARCH {
 	case "arm64":
@@ -397,7 +375,6 @@ func checkNetworkBackend() error {
 
 // RunRootlessBootstrap runs preflight + asset-install + runtime-verify in sequence.
 // On success, the daemon-launch phase can proceed.
-// driver selects which runtime-specific assets to install: "firecracker", "libkrun", or "" (both).
 // emitJSON controls whether phase events are emitted as JSON lines (for --json flag).
 func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
 	// ── Phase: preflight ───────────────────────────────────────────────────────
@@ -417,20 +394,10 @@ func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
 		return fmt.Errorf("asset-install: create dirs: %w", err)
 	}
 
-	// Firecracker binary — skip when running libkrun-only.
-	if driver == "" || driver == "firecracker" {
-		if err := installFirecrackerRootless(w, emitJSON); err != nil {
-			emitPhase(w, emitJSON, "asset-install", "error", err.Error())
-			return fmt.Errorf("asset-install: firecracker: %w", err)
-		}
-	}
-
-	// libkrun shared libraries — only needed for the libkrun driver.
-	if driver == "libkrun" {
-		if err := installLibkrunLibsRootless(w, emitJSON); err != nil {
-			emitPhase(w, emitJSON, "asset-install", "error", err.Error())
-			return fmt.Errorf("asset-install: libkrun: %w", err)
-		}
+	// libkrun shared libraries.
+	if err := installLibkrunLibsRootless(w, emitJSON); err != nil {
+		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
+		return fmt.Errorf("asset-install: libkrun: %w", err)
 	}
 
 	// passt is required for both drivers in VM mode networking.
@@ -489,42 +456,9 @@ func ensureRootlessDirs() error {
 	return nil
 }
 
-// ── Firecracker installation ──────────────────────────────────────────────────
+// ── Firecracker installation (removed) ───────────────────────────────────────
+// Firecracker is no longer supported. This section intentionally left empty.
 
-func installFirecrackerRootless(w io.Writer, emitJSON bool) error {
-	dest := rootlessFirecrackerPath()
-
-	// Check if already installed with embedded binary first
-	if len(embeddedFirecracker) > 0 {
-		if needsInstall(dest, embeddedFirecracker) {
-			fmt.Fprintf(w, "  installing firecracker from embedded binary\n")
-			if err := atomicWriteExec(dest, embeddedFirecracker); err != nil {
-				return fmt.Errorf("install embedded firecracker: %w", err)
-			}
-		}
-		return nil
-	}
-
-	// Already installed
-	if _, err := os.Stat(dest); err == nil {
-		return nil
-	}
-
-	// Download from GitHub releases
-	fmt.Fprintf(w, "  downloading firecracker %s...\n", firecrackerVersion)
-	url := firecrackerDownloadURL()
-	binName := firecrackerBinaryName()
-
-	data, err := downloadAndExtractTarGz(url, binName)
-	if err != nil {
-		return fmt.Errorf("download firecracker from %s: %w", url, err)
-	}
-	if err := atomicWriteExec(dest, data); err != nil {
-		return fmt.Errorf("install firecracker: %w", err)
-	}
-	fmt.Fprintf(w, "  firecracker installed at %s\n", dest)
-	return nil
-}
 
 func needsInstall(dest string, newContent []byte) bool {
 	existing, err := os.ReadFile(dest)
@@ -757,7 +691,7 @@ func installRootfsDirForLibkrun(w io.Writer, emitJSON bool) error {
 	// For libkrun container mode, krun_set_exec runs the agent from inside the
 	// rootfs-dir. Inject the same agent binary that's embedded in the nexus binary.
 	if len(embeddedAgent) > 0 {
-		agentDst := filepath.Join(permDir, "usr", "local", "bin", "nexus-firecracker-agent")
+		agentDst := filepath.Join(permDir, "usr", "local", "bin", "nexus-guest-agent")
 		if mkErr := os.MkdirAll(filepath.Dir(agentDst), 0o755); mkErr == nil {
 			if writeErr := os.WriteFile(agentDst, embeddedAgent, 0o755); writeErr == nil {
 				fmt.Fprintf(w, "  agent injected into rootfs-dir at %s\n", agentDst)
@@ -1031,25 +965,10 @@ func buildRootlessRootfs(w io.Writer, dest string) error {
 // ── Runtime verification ──────────────────────────────────────────────────────
 
 func verifyRootlessRuntime(driver string) error {
-	// Firecracker binary — only required for the firecracker driver.
-	if driver == "" || driver == "firecracker" {
-		fc := rootlessFirecrackerPath()
-		if _, err := os.Stat(fc); err != nil {
-			return fmt.Errorf("firecracker not found at %s", fc)
-		}
-		if out, err := exec.Command(fc, "--version").Output(); err != nil {
-			return fmt.Errorf("firecracker --version: %w", err)
-		} else if !strings.Contains(string(out), "Firecracker") {
-			return fmt.Errorf("unexpected firecracker --version output: %s", strings.TrimSpace(string(out)))
-		}
-	}
-
-	// libkrun shared library — only required for the libkrun driver.
-	if driver == "libkrun" {
-		libDir := rootlessLibkrunLibDir()
-		if _, err := os.Stat(filepath.Join(libDir, "libkrun.so.1")); err != nil {
-			return fmt.Errorf("libkrun.so.1 not found at %s", libDir)
-		}
+	// libkrun shared library.
+	libDir := rootlessLibkrunLibDir()
+	if _, err := os.Stat(filepath.Join(libDir, "libkrun.so.1")); err != nil {
+		return fmt.Errorf("libkrun.so.1 not found at %s", libDir)
 	}
 
 	// Verify passt.
@@ -1058,12 +977,12 @@ func verifyRootlessRuntime(driver string) error {
 		return fmt.Errorf("passt not found at %s", passt)
 	}
 
-	// Verify kernel (required for both drivers).
+	// Verify kernel.
 	if _, err := os.Stat(rootlessKernelPath()); err != nil {
 		return fmt.Errorf("kernel not found at %s", rootlessKernelPath())
 	}
 
-	// Both drivers use rootfs.ext4.
+	// Verify rootfs.
 	if _, err := os.Stat(rootlessRootfsPath()); err != nil {
 		return fmt.Errorf("rootfs not found at %s", rootlessRootfsPath())
 	}
@@ -1074,31 +993,20 @@ func verifyRootlessRuntime(driver string) error {
 // ── State persistence ─────────────────────────────────────────────────────────
 
 func persistRootlessState(driver string) error {
-	networkBackend := "passt"
-	networkBackendBin := rootlessPasstPath()
-	if driver == "libkrun" {
-		networkBackend = "tsi" // built into libkrun — no external binary
-		networkBackendBin = ""
-	}
 	effectiveDriver := driver
 	if effectiveDriver == "" {
-		effectiveDriver = "firecracker"
+		effectiveDriver = "libkrun"
 	}
 	state := rootlessState{
 		SchemaVersion:     1,
 		InstalledAt:       time.Now().UTC().Format(time.RFC3339),
 		Driver:            effectiveDriver,
-		NetworkBackend:    networkBackend,
-		NetworkBackendBin: networkBackendBin,
+		NetworkBackend:    "tsi", // built into libkrun
+		NetworkBackendBin: "",
 		KernelPath:        rootlessKernelPath(),
 		RootfsPath:        rootlessRootfsPath(),
 		KVMAccess:         "ok",
-	}
-	if driver == "" || driver == "firecracker" {
-		state.FirecrackerBin = rootlessFirecrackerPath()
-	}
-	if driver == "libkrun" {
-		state.LibkrunLibDir = rootlessLibkrunLibDir()
+		LibkrunLibDir:     rootlessLibkrunLibDir(),
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {

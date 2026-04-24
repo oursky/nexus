@@ -54,15 +54,9 @@ jobs:
       - name: Install Task
         run: go install github.com/go-task/task/v3/cmd/task@latest
 
-      - name: Download embedded binaries (firecracker + agent + tap-helper)
+      - name: Build embedded guest-agent binary
         working-directory: packages/nexus
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cd ../..
-          task firecracker:update
-          cd packages/nexus
-          go generate ./cmd/nexus/
+        run: go generate ./cmd/nexus/
 
       - name: Run full Go test coverage
         working-directory: packages/nexus
@@ -111,55 +105,22 @@ jobs:
           fi
           ls -la /dev/kvm
 
-      # Tools required by firecracker-setup.sh:
+      # Tools required for rootfs and e2e tests.
       #   squashfs-tools  → unsquashfs (squashfs → rootfs tree)
       #   e2fsprogs       → mkfs.ext4, debugfs (create and modify rootfs image)
-      #   libcap2-bin     → setcap (grant cap_net_admin to nexus-tap-helper)
       #   rsync           → copy rootfs tree into ext4 image
-      # mutagen is required by e2e mirror harness (MirrorGitCheckoutToDaemon).
-      - name: Install Firecracker host prerequisites
+      - name: Install host prerequisites
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y squashfs-tools e2fsprogs libcap2-bin rsync
+          sudo apt-get install -y squashfs-tools e2fsprogs rsync
 
-
-      # Cache the Firecracker kernel — static, changes only with the upstream URL.
-      - name: Cache Firecracker kernel
-        uses: actions/cache@v4
-        with:
-          path: /tmp/nexus-vmlinux.bin
-          key: firecracker-kernel-v1.13-x86_64
-
-      # Cache the squashfs download — large (~200 MB), rarely changes.
-      - name: Cache Ubuntu squashfs
-        uses: actions/cache@v4
-        with:
-          path: /tmp/nexus-ubuntu.squashfs
-          key: firecracker-squashfs-ubuntu24-v1.13-x86_64
-
-      # Cache the pre-built ext4 rootfs — keyed on agent + setup script so it
-      # rebuilds automatically when the guest agent code changes.
-      - name: Cache Firecracker rootfs
-        uses: actions/cache@v4
-        with:
-          path: /tmp/nexus-rootfs.ext4
-          key: firecracker-rootfs-amd64-${{ hashFiles('packages/nexus/cmd/nexus-firecracker-agent/**/*.go', 'packages/nexus/cmd/nexus/scripts/firecracker-setup.sh') }}
-          restore-keys: |
-            firecracker-rootfs-amd64-
-
-      # Download external embedded binaries and build the guest agent + tap-helper
-      # so that the //go:embed directives in cmd/nexus are satisfied.
-      - name: Build embedded binaries (firecracker + agent + tap-helper)
+      # Build the guest-agent binary so the //go:embed directive in
+      # embed_agent_linux_amd64.go is satisfied before compiling nexus.
+      - name: Build embedded guest-agent binary
         working-directory: packages/nexus
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cd ../..
-          task firecracker:update
-          cd packages/nexus
-          go generate ./cmd/nexus/
+        run: go generate ./cmd/nexus/
 
-      # Pre-provision Firecracker host infrastructure once before the test suite.
+      # Pre-provision libkrun host infrastructure once before the test suite.
       # daemon start auto-provisions on first run; we start it briefly then stop
       # it so that every per-test daemon start finds everything already in place
       # and skips the slow setup path.

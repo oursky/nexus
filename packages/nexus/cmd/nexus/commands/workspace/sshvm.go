@@ -66,7 +66,7 @@ Without flags an interactive SSH session is opened.`,
 			ws := result.Workspace
 			if ws.GuestIP == "" {
 				backend := strings.ToLower(strings.TrimSpace(ws.Backend))
-				if backend != "firecracker" && backend != "libkrun" {
+				if backend != "libkrun" {
 					return fmt.Errorf("nexus workspace ssh-vm: workspace %q uses backend %q — only Firecracker/libkrun workspaces have a guest VM", args[0], ws.Backend)
 				}
 				return fmt.Errorf("nexus workspace ssh-vm: workspace %q (state: %s) has no guest IP — is it running?\n  hint: nexus workspace start %s", args[0], ws.State, args[0])

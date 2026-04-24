@@ -156,11 +156,6 @@ tasks:
     cmds:
       - scripts/generate-sdk.sh
 
-  firecracker:update:
-    desc: "Download latest Firecracker binaries for embedding"
-    cmds:
-      - scripts/nexus/update-firecracker.sh
-
   mutagen:update:
     desc: "Download latest Mutagen binaries for embedding"
     cmds:

@@ -9,8 +9,8 @@ import (
 	"os/exec"
 )
 
-//go:embed scripts/firecracker-implode.sh
-var firecrackerImplodeScript []byte
+//go:embed scripts/implode.sh
+var implodeScript []byte
 
 // buildImplodeScript prepends variable-export lines to the embedded implode
 // script.  installBinDir is the user-local bin directory (e.g.
@@ -20,7 +20,7 @@ func buildImplodeScript(installBinDir string) string {
 		"export NEXUS_INSTALL_BIN_DIR=%s\n\n",
 		shellQuote(installBinDir),
 	)
-	return header + string(firecrackerImplodeScript)
+	return header + string(implodeScript)
 }
 
 // killLibkrunOrphans kills any lingering nexus-libkrun-vm child processes
