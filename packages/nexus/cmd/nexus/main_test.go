@@ -2361,10 +2361,10 @@ func TestBuildSetupScriptChecksBridgeRouteLinkdownNotLinkState(t *testing.T) {
 	if !strings.Contains(script, "WARN: nexusbr0 route still linkdown") {
 		t.Fatalf("expected setup script to emit linkdown warning, got:\n%s", script)
 	}
-	if !strings.Contains(script, "ip rule add pref 5190 to 172.26.0.0/16 lookup main") {
+	if !strings.Contains(script, `ip rule add pref 5190 to "$BRIDGE_SUBNET" lookup main`) {
 		t.Fatalf("expected setup script to add high-priority to-subnet policy rule, got:\n%s", script)
 	}
-	if !strings.Contains(script, "ip rule add pref 5191 from 172.26.0.0/16 lookup main") {
+	if !strings.Contains(script, `ip rule add pref 5191 from "$BRIDGE_SUBNET" lookup main`) {
 		t.Fatalf("expected setup script to add high-priority from-subnet policy rule, got:\n%s", script)
 	}
 }
