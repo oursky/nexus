@@ -1855,19 +1855,32 @@ func TestRunExecSelectsBackendFromWorkspaceRuntimeWhenEnvUnset(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// With libkrun as the default Linux backend, bootstrapExecCommandContext
-	// returns nil immediately (no local bootstrap needed for remote daemon VMs).
-	// The firecrackerBootstrapRunner is NOT called for the libkrun path.
+	calledFirecrackerBootstrap := false
+	firecrackerBootstrapRunner = func(projectRoot string, execCtx doctorExecContext) error {
+		calledFirecrackerBootstrap = true
+		if execCtx.backend != "firecracker" {
+			t.Fatalf("expected backend firecracker from default backend selection, got %q", execCtx.backend)
+		}
+		return nil
+	}
+	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
+		if projectRoot != root {
+			t.Fatalf("expected firecracker runExec to use project root %q, got %q", root, projectRoot)
+		}
+		return "/workspace\n", nil
+	}
+
 	err := runExec(execOptions{
 		projectRoot: root,
 		timeout:     15 * time.Second,
 		command:     "pwd",
 	})
-	// runExec tries to run "pwd" via runCheckCommandWithExecContext, which routes
-	// to firecrackerCheckCommandRunner for the firecracker path. For libkrun the
-	// exec is expected to fail (no live daemon connection in unit tests).
-	// We only verify that bootstrap itself does not error.
-	_ = err
+	if err != nil {
+		t.Fatalf("expected runExec to succeed, got %v", err)
+	}
+	if !calledFirecrackerBootstrap {
+		t.Fatal("expected firecracker backend bootstrap from default selection")
+	}
 }
 
 func TestSelectRuntimeBackendLinuxRequirementPrefersFirecrackerOnDarwin(t *testing.T) {

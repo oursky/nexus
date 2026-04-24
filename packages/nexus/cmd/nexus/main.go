@@ -239,8 +239,8 @@ func runInit(opts initOptions) error {
 		}
 	}
 
-	if err := initRuntimeBootstrapRunner(opts.projectRoot, "libkrun"); err != nil {
-		fmt.Printf("init warning: libkrun bootstrap unavailable, runtime will auto-fallback (%v)\n", err)
+	if err := initRuntimeBootstrapRunner(opts.projectRoot, "firecracker"); err != nil {
+		fmt.Printf("init warning: firecracker bootstrap unavailable, runtime will auto-fallback (%v)\n", err)
 	}
 
 	fmt.Printf("initialized nexus workspace metadata at %s\n", nexusDir)
@@ -302,7 +302,7 @@ func shouldReexecExecWithKVMGroup(backend string, runErr error) bool {
 	if runErr == nil {
 		return false
 	}
-	if backend != "libkrun" {
+	if backend != "firecracker" && backend != "libkrun" {
 		return false
 	}
 	if os.Getenv(execKVMGroupReexecEnv) == "1" {
@@ -1527,7 +1527,7 @@ func applyRuntimeBackendFromWorkspace(projectRoot string) error {
 	if rawBackend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND")); rawBackend != "" {
 		backend, ok := normalizeRuntimeBackend(rawBackend)
 		if !ok {
-			return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker or seatbelt", rawBackend)
+			return fmt.Errorf("unsupported runtime backend %q: supported: libkrun, seatbelt (firecracker is deprecated)", rawBackend)
 		}
 		if err := os.Setenv("NEXUS_RUNTIME_BACKEND", backend); err != nil {
 			return fmt.Errorf("set runtime backend env: %w", err)
@@ -1612,7 +1612,7 @@ func selectRuntimeBackend(required []string) string {
 			}
 		case "linux":
 			if firecrackerHostGOOS == "linux" {
-				return "libkrun"
+				return "firecracker"
 			}
 		default:
 			if backend, ok := normalizeRuntimeBackend(candidate); ok {
@@ -1625,7 +1625,7 @@ func selectRuntimeBackend(required []string) string {
 		return "seatbelt"
 	}
 	if firecrackerHostGOOS == "linux" {
-		return "libkrun"
+		return "firecracker"
 	}
 
 	return ""
@@ -1635,6 +1635,10 @@ func normalizeRuntimeBackend(raw string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "libkrun":
 		return "libkrun", true
+	case "firecracker":
+		// Legacy alias — firecracker is no longer supported but recognized for
+		// backward compatibility with existing configs; bootstrap will fail gracefully.
+		return "firecracker", true
 	case "seatbelt":
 		return "seatbelt", true
 	default:
