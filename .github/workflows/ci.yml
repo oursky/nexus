@@ -192,20 +192,21 @@ jobs:
 
           # The rootless bootstrap installs VM assets into root's XDG data dir
           # (/root/.local/share/nexus/vm/). E2E test daemons run as the runner
-          # user and fall back to /var/lib/nexus/ before downloading. Symlink
-          # root's assets there so per-test daemons find them instantly.
+          # user and fall back to /var/lib/nexus/ before re-downloading. Copy
+          # (using hard links when possible — instant, zero extra space) root's
+          # assets there so per-test daemons skip the expensive asset-install.
           ROOT_VM=/root/.local/share/nexus/vm
           if sudo test -d "$ROOT_VM"; then
-            sudo mkdir -p /var/lib/nexus
-            for f in vmlinux.bin rootfs.ext4 rootfs-dir; do
+            sudo install -d -m 0755 /var/lib/nexus
+            for f in vmlinux.bin rootfs.ext4; do
               SRC="$ROOT_VM/$f"
               DST="/var/lib/nexus/$f"
-              if sudo test -e "$SRC" && ! sudo test -e "$DST"; then
-                sudo ln -s "$SRC" "$DST"
+              if sudo test -f "$SRC" && ! sudo test -e "$DST"; then
+                # Hard-link first (instant); fall back to copy if cross-fs.
+                sudo ln "$SRC" "$DST" 2>/dev/null || sudo cp "$SRC" "$DST"
+                sudo chmod 644 "$DST"
               fi
             done
-            sudo chmod 0755 /var/lib/nexus
-            sudo chmod -R a+rX "$ROOT_VM"
           fi
 
           # Copy the agent-hash stamp from root's state dir to the runner user's
