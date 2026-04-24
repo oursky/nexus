@@ -124,13 +124,43 @@ jobs:
       # daemon start auto-provisions on first run; we start it briefly then stop
       # it so that every per-test daemon start finds everything already in place
       # and skips the slow setup path.
-      - name: Build nexus binary
+      - name: Build nexus binary (with libkrun embed)
         working-directory: packages/nexus
+        env:
+          SMOLVM_VERSION: v0.5.19
         run: |
-          go build -o /tmp/nexus-bin ./cmd/nexus/
+          set -euo pipefail
+          EMBED_DIR="$PWD/cmd/nexus"
+
+          # Stage libkrun shared libraries from smolvm release if nexus-libkrun-vm is present.
+          if [[ -f "$EMBED_DIR/nexus-libkrun-vm" ]]; then
+            SMOLVM_TARBALL="smolvm-${SMOLVM_VERSION#v}-linux-x86_64.tar.gz"
+            SMOLVM_URL="https://github.com/smol-machines/smolvm/releases/download/${SMOLVM_VERSION}/${SMOLVM_TARBALL}"
+            LIBS_TMP="/tmp/smolvm-libs-${SMOLVM_VERSION}"
+
+            if [[ ! -d "$LIBS_TMP" ]]; then
+              curl -fsSL --retry 3 -o "/tmp/${SMOLVM_TARBALL}" "$SMOLVM_URL"
+              mkdir -p "$LIBS_TMP"
+              tar -xzf "/tmp/${SMOLVM_TARBALL}" --strip-components=2 -C "$LIBS_TMP" \
+                "smolvm-${SMOLVM_VERSION#v}-linux-x86_64/lib"
+            fi
+
+            cp "$LIBS_TMP/libkrun.so.1" "$EMBED_DIR/libkrun-embed.so"
+            LIBKRUNFW_REAL=$(find "$LIBS_TMP" -maxdepth 1 -name 'libkrunfw.so.*.*' | sort | tail -1)
+            cp "$LIBKRUNFW_REAL" "$EMBED_DIR/libkrunfw-embed.so"
+            BUILD_TAGS="-tags libkrun"
+            echo "Building nexus with libkrun embed..."
+          else
+            BUILD_TAGS=""
+            echo "nexus-libkrun-vm not found — building without libkrun embed"
+          fi
+
+          # shellcheck disable=SC2086
+          CGO_ENABLED=0 go build $BUILD_TAGS -o /tmp/nexus-bin ./cmd/nexus/
+          rm -f "$EMBED_DIR/libkrun-embed.so" "$EMBED_DIR/libkrunfw-embed.so"
           echo "NEXUS_E2E_BINARY=/tmp/nexus-bin" >> "$GITHUB_ENV"
 
-      - name: Provision Firecracker host (bridge + kernel + rootfs)
+      - name: Provision libkrun host (kernel + rootfs)
         run: |
           SOCK=/tmp/nexus-provision.sock
           DB=/tmp/nexus-provision.db
@@ -183,12 +213,12 @@ jobs:
         run: task ci
         env:
           CI: true
-          NEXUS_FIRECRACKER_KERNEL: /var/lib/nexus/vmlinux.bin
-          NEXUS_FIRECRACKER_ROOTFS: /var/lib/nexus/rootfs.ext4
+          NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
+          NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
           # Use a small workspace image so mkfs.ext4 finishes in seconds on CI.
           NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
           # Limit VM memory to reduce peak RSS when tests run in parallel.
-          NEXUS_FIRECRACKER_MEM_MIB: "256"
+          NEXUS_LIBKRUN_MEM_MIB: "256"
 
       - name: Upload test results on failure
         if: failure()
