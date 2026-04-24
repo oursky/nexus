@@ -6,10 +6,11 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"os/exec"
 )
 
-//go:embed scripts/firecracker-implode.sh
-var firecrackerImplodeScript []byte
+//go:embed scripts/implode.sh
+var implodeScript []byte
 
 // buildImplodeScript prepends variable-export lines to the embedded implode
 // script.  installBinDir is the user-local bin directory (e.g.
@@ -19,7 +20,24 @@ func buildImplodeScript(installBinDir string) string {
 		"export NEXUS_INSTALL_BIN_DIR=%s\n\n",
 		shellQuote(installBinDir),
 	)
-	return header + string(firecrackerImplodeScript)
+	return header + string(implodeScript)
+}
+
+// killLibkrunOrphans kills any lingering nexus-libkrun-vm child processes
+// left over from a previous daemon run.
+func killLibkrunOrphans(w io.Writer) {
+	// nexus-libkrun-vm processes are standalone binaries; pkill by name.
+	_ = exec.Command("pkill", "-u", getUID(), "-f", "nexus-libkrun-vm").Run()
+	fmt.Fprintln(w, "  killed nexus-libkrun-vm orphan processes (if any)")
+}
+
+func getUID() string {
+	out, _ := exec.Command("id", "-u").Output()
+	uid := string(out)
+	for len(uid) > 0 && (uid[len(uid)-1] == '\n' || uid[len(uid)-1] == '\r') {
+		uid = uid[:len(uid)-1]
+	}
+	return uid
 }
 
 // runImplodePrivileged runs the privileged teardown script using the same

@@ -150,6 +150,7 @@ struct NexusWorkspace: Codable {
     let backend: String?
     let configBundle: String?
     let createdAt: Date?
+    let guestIp: String?
     let id: String
     let lineageRootId: String?
     let parentWorkspaceId: String?
@@ -170,6 +171,7 @@ struct NexusWorkspace: Codable {
         case backend
         case configBundle
         case createdAt = "created_at"
+        case guestIp
         case id
         case lineageRootId
         case parentWorkspaceId

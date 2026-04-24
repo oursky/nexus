@@ -7,22 +7,35 @@ on:
 jobs:
   semantic-commits:
     name: Semantic Commit Messages
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, v1]
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Validate PR commit messages
-        uses: amannn/action-semantic-pull-request@v5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          types: |
-            feat
-            fix
-            docs
-            chore
-            refactor
-            test
-            ci
-            build
-            perf
-            revert
-          requireScope: false
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          TYPES="feat|fix|docs|chore|refactor|test|ci|build|perf|revert"
+          PATTERN="^(${TYPES})(\(.+\))?(!)?: .+"
+          ERRORS=0
+          while IFS= read -r msg; do
+            if ! echo "$msg" | grep -qP "$PATTERN"; then
+              echo "FAIL: $msg"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done < <(git log --format="%s" "$BASE_SHA".."$HEAD_SHA")
+          if [ "$ERRORS" -gt 0 ]; then
+            echo ""
+            echo "Commit messages must follow the Conventional Commits format:"
+            echo "  <type>(<scope>): <description>"
+            echo "  Allowed types: ${TYPES//|/, }"
+            exit 1
+          fi
+          echo "All commit messages are valid."

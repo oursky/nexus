@@ -67,7 +67,7 @@ tasks:
   # Set REMOTE_HOST=user@hostname in .env.local (see .env.local.example).
 
   dev:remote:
-    desc: "Build for linux/amd64, deploy, and restart remote daemon"
+    desc: "Build for linux/amd64, deploy, restart remote daemon, and stage Resources so provision stays in sync"
     preconditions:
       - sh: '[ -n "{{.REMOTE_HOST}}" ]'
         msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
@@ -75,11 +75,11 @@ tasks:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
       REMOTE_BIN:  "{{.REMOTE_BIN}}"
     cmds:
-      - scripts/remote/deploy.sh
-      - scripts/remote/daemon-restart.sh
+      - scripts/remote/deploy.sh       # builds linux binary, stages to Resources/, deploys to remote
+      - scripts/remote/daemon-restart.sh  # restarts daemon + prints remote version for confirmation
 
   dev:cli:
-    desc: "dev:remote + install local CLI binary (for CLI-only changes)"
+    desc: "install local CLI binary (for CLI-only changes)"
     preconditions:
       - sh: '[ -n "{{.REMOTE_HOST}}" ]'
         msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
@@ -87,11 +87,10 @@ tasks:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
       REMOTE_BIN:  "{{.REMOTE_BIN}}"
     cmds:
-      - task: dev:remote
       - scripts/local/deploy.sh
 
-  dev:swift:
-    desc: "dev:remote + regenerate Swift SDK + build and open NexusApp"
+  dev:libkrun:
+    desc: "Build libkrun-enabled nexus (downloads libs, embeds nexus-libkrun-vm) and deploy to remote"
     preconditions:
       - sh: '[ -n "{{.REMOTE_HOST}}" ]'
         msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
@@ -99,21 +98,63 @@ tasks:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
       REMOTE_BIN:  "{{.REMOTE_BIN}}"
     cmds:
-      - task: dev:remote
+      - scripts/remote/deploy-libkrun.sh
+
+  dev:swift:
+    desc: "dev:cli + stage macOS nexus binary + regenerate Swift SDK + build and open NexusApp"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+      REMOTE_BIN:  "{{.REMOTE_BIN}}"
+    cmds:
+      - task: dev:cli
+      - task: stage:nexus-macos
+      - task: stage:nexus-linux
       - scripts/generate-sdk.sh
       - scripts/swift/build.sh
       - scripts/swift/open.sh
+
+  stage:nexus-macos:
+    desc: "Build macOS arm64 nexus CLI and stage to packages/nexus-swift/Resources/nexus"
+    cmds:
+      - |
+        BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
+        LDFLAGS="-X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
+                 -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT}"
+        echo "Staging nexus (darwin/arm64) → packages/nexus-swift/Resources/nexus (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
+        GOOS=darwin GOARCH=arm64 go build \
+          -C packages/nexus \
+          -ldflags "$LDFLAGS" \
+          -o ../../packages/nexus-swift/Resources/nexus \
+          ./cmd/nexus
+        chmod +x packages/nexus-swift/Resources/nexus
+        echo "✓ Staged $(ls -lh packages/nexus-swift/Resources/nexus | awk '{print $5}')"
+
+  stage:nexus-linux:
+    desc: "Build linux/amd64 nexus daemon and stage to packages/nexus-swift/Resources/nexus-linux-amd64 (bundled for remote provisioning)"
+    cmds:
+      - |
+        BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
+        LDFLAGS="-X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
+                 -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT}"
+        echo "Staging nexus (linux/amd64) → packages/nexus-swift/Resources/nexus-linux-amd64 (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
+        GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+          -C packages/nexus \
+          -ldflags "$LDFLAGS" \
+          -o ../../packages/nexus-swift/Resources/nexus-linux-amd64 \
+          ./cmd/nexus
+        chmod +x packages/nexus-swift/Resources/nexus-linux-amd64
+        echo "✓ Staged $(ls -lh packages/nexus-swift/Resources/nexus-linux-amd64 | awk '{print $5}')"
 
   # ── Maintenance ───────────────────────────────────────────────────────────
   generate:sdk:
     desc: "Regenerate NexusRPC.swift from Go RPC types"
     cmds:
       - scripts/generate-sdk.sh
-
-  firecracker:update:
-    desc: "Download latest Firecracker binaries for embedding"
-    cmds:
-      - scripts/nexus/update-firecracker.sh
 
   mutagen:update:
     desc: "Download latest Mutagen binaries for embedding"

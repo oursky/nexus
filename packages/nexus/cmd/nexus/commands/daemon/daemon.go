@@ -19,6 +19,8 @@ func Command() *cobra.Command {
 		disconnectCommand(),
 		profileCommand(),
 		implodeCommand(),
+		checkCommand(),
+		versionCommand(),
 	)
 	return cmd
 }

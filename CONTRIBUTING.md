@@ -42,7 +42,7 @@ Run `task --list` for all available tasks.
 
 ```
 packages/
-  nexus/        Go daemon + CLI (workspace lifecycle, RPC, Firecracker, Mutagen)
+  nexus/        Go daemon + CLI (workspace lifecycle, RPC, libkrun VMs)
 scripts/
   remote/       SSH/SCP scripts called by Taskfile
   local/        local install scripts

@@ -9,7 +9,7 @@ on:
 jobs:
   go-fix:
     name: Go Fix Check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, v1]
 
     steps:
       - name: Checkout code
@@ -40,7 +40,7 @@ jobs:
 
   coverage:
     name: Go Coverage (nexus)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, v1]
 
     steps:
       - name: Checkout code
@@ -52,19 +52,11 @@ jobs:
           go-version: '1.24.x'
 
       - name: Install Task
-        uses: arduino/setup-task@v2
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        run: go install github.com/go-task/task/v3/cmd/task@latest
 
-      - name: Download embedded binaries (firecracker + agent + tap-helper)
+      - name: Build embedded guest-agent binary
         working-directory: packages/nexus
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cd ../..
-          task firecracker:update
-          cd packages/nexus
-          go generate ./cmd/nexus/
+        run: go generate ./cmd/nexus/
 
       - name: Run full Go test coverage
         working-directory: packages/nexus
@@ -82,7 +74,7 @@ jobs:
 
   ci:
     name: Core CI (linux)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, v1]
 
     steps:
       - name: Checkout code
@@ -94,79 +86,81 @@ jobs:
           go-version: '1.24.x'
 
       - name: Install Task
-        uses: arduino/setup-task@v2
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        run: go install github.com/go-task/task/v3/cmd/task@latest
 
       # Make /dev/kvm accessible to the runner user without needing group
-      # membership. The MODE="0666" rule is sufficient for Firecracker.
+      # membership. On self-hosted runners KVM is typically pre-configured;
+      # only attempt the udev rule if /dev/kvm isn't already world-accessible.
       - name: Enable KVM access
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo "/dev/kvm already accessible — skipping udev rule"
+          elif [ -d /etc/udev/rules.d ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          else
+            sudo chmod 0666 /dev/kvm 2>/dev/null || true
+          fi
           ls -la /dev/kvm
 
-      # Tools required by firecracker-setup.sh:
+      # Tools required for rootfs and e2e tests.
       #   squashfs-tools  → unsquashfs (squashfs → rootfs tree)
       #   e2fsprogs       → mkfs.ext4, debugfs (create and modify rootfs image)
-      #   libcap2-bin     → setcap (grant cap_net_admin to nexus-tap-helper)
       #   rsync           → copy rootfs tree into ext4 image
-      # mutagen is required by e2e mirror harness (MirrorGitCheckoutToDaemon).
-      - name: Install Firecracker host prerequisites
+      - name: Install host prerequisites
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y squashfs-tools e2fsprogs libcap2-bin rsync
+          sudo apt-get install -y squashfs-tools e2fsprogs rsync
 
-
-      # Cache the Firecracker kernel — static, changes only with the upstream URL.
-      - name: Cache Firecracker kernel
-        uses: actions/cache@v4
-        with:
-          path: /tmp/nexus-vmlinux.bin
-          key: firecracker-kernel-v1.13-x86_64
-
-      # Cache the squashfs download — large (~200 MB), rarely changes.
-      - name: Cache Ubuntu squashfs
-        uses: actions/cache@v4
-        with:
-          path: /tmp/nexus-ubuntu.squashfs
-          key: firecracker-squashfs-ubuntu24-v1.13-x86_64
-
-      # Cache the pre-built ext4 rootfs — keyed on agent + setup script so it
-      # rebuilds automatically when the guest agent code changes.
-      - name: Cache Firecracker rootfs
-        uses: actions/cache@v4
-        with:
-          path: /tmp/nexus-rootfs.ext4
-          key: firecracker-rootfs-amd64-${{ hashFiles('packages/nexus/cmd/nexus-firecracker-agent/**/*.go', 'packages/nexus/cmd/nexus/scripts/firecracker-setup.sh') }}
-          restore-keys: |
-            firecracker-rootfs-amd64-
-
-      # Download external embedded binaries and build the guest agent + tap-helper
-      # so that the //go:embed directives in cmd/nexus are satisfied.
-      - name: Build embedded binaries (firecracker + agent + tap-helper)
+      # Build the guest-agent binary so the //go:embed directive in
+      # embed_agent_linux_amd64.go is satisfied before compiling nexus.
+      - name: Build embedded guest-agent binary
         working-directory: packages/nexus
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cd ../..
-          task firecracker:update
-          cd packages/nexus
-          go generate ./cmd/nexus/
+        run: go generate ./cmd/nexus/
 
-      # Pre-provision Firecracker host infrastructure once before the test suite.
+      # Pre-provision libkrun host infrastructure once before the test suite.
       # daemon start auto-provisions on first run; we start it briefly then stop
       # it so that every per-test daemon start finds everything already in place
       # and skips the slow setup path.
-      - name: Build nexus binary
+      - name: Build nexus binary (with libkrun embed)
         working-directory: packages/nexus
+        env:
+          SMOLVM_VERSION: v0.5.19
         run: |
-          go build -o /tmp/nexus-bin ./cmd/nexus/
+          set -euo pipefail
+          EMBED_DIR="$PWD/cmd/nexus"
+
+          # Stage libkrun shared libraries from smolvm release if nexus-libkrun-vm is present.
+          if [[ -f "$EMBED_DIR/nexus-libkrun-vm" ]]; then
+            SMOLVM_TARBALL="smolvm-${SMOLVM_VERSION#v}-linux-x86_64.tar.gz"
+            SMOLVM_URL="https://github.com/smol-machines/smolvm/releases/download/${SMOLVM_VERSION}/${SMOLVM_TARBALL}"
+            LIBS_TMP="/tmp/smolvm-libs-${SMOLVM_VERSION}"
+
+            if [[ ! -d "$LIBS_TMP" ]]; then
+              curl -fsSL --retry 3 -o "/tmp/${SMOLVM_TARBALL}" "$SMOLVM_URL"
+              mkdir -p "$LIBS_TMP"
+              tar -xzf "/tmp/${SMOLVM_TARBALL}" --strip-components=2 -C "$LIBS_TMP" \
+                "smolvm-${SMOLVM_VERSION#v}-linux-x86_64/lib"
+            fi
+
+            cp "$LIBS_TMP/libkrun.so.1" "$EMBED_DIR/libkrun-embed.so"
+            LIBKRUNFW_REAL=$(find "$LIBS_TMP" -maxdepth 1 -name 'libkrunfw.so.*.*' | sort | tail -1)
+            cp "$LIBKRUNFW_REAL" "$EMBED_DIR/libkrunfw-embed.so"
+            BUILD_TAGS="-tags libkrun"
+            echo "Building nexus with libkrun embed..."
+          else
+            BUILD_TAGS=""
+            echo "nexus-libkrun-vm not found — building without libkrun embed"
+          fi
+
+          # shellcheck disable=SC2086
+          CGO_ENABLED=0 go build $BUILD_TAGS -o /tmp/nexus-bin ./cmd/nexus/
+          rm -f "$EMBED_DIR/libkrun-embed.so" "$EMBED_DIR/libkrunfw-embed.so"
           echo "NEXUS_E2E_BINARY=/tmp/nexus-bin" >> "$GITHUB_ENV"
 
-      - name: Provision Firecracker host (bridge + kernel + rootfs)
+      - name: Provision libkrun host (kernel + rootfs)
         run: |
           SOCK=/tmp/nexus-provision.sock
           DB=/tmp/nexus-provision.db
@@ -187,16 +181,44 @@ jobs:
           # user can subsequently create subdirectories (e.g. .local/share/).
           sudo chown -R "$USER":"$USER" "$HOME/.local" 2>/dev/null || true
 
+          # The rootless bootstrap installs VM assets into root's XDG data dir
+          # (/root/.local/share/nexus/vm/). E2E test daemons run as the runner
+          # user and fall back to /var/lib/nexus/ before re-downloading. Copy
+          # (using hard links when possible — instant, zero extra space) root's
+          # assets there so per-test daemons skip the expensive asset-install.
+          ROOT_VM=/root/.local/share/nexus/vm
+          if sudo test -d "$ROOT_VM"; then
+            sudo install -d -m 0755 /var/lib/nexus
+            for f in vmlinux.bin rootfs.ext4; do
+              SRC="$ROOT_VM/$f"
+              DST="/var/lib/nexus/$f"
+              if sudo test -f "$SRC" && ! sudo test -e "$DST"; then
+                # Hard-link first (instant); fall back to copy if cross-fs.
+                sudo ln "$SRC" "$DST" 2>/dev/null || sudo cp "$SRC" "$DST"
+                sudo chmod 644 "$DST"
+              fi
+            done
+          fi
+
+          # Copy the agent-hash stamp from root's state dir to the runner user's
+          # so E2E test daemons skip the slow e2fsck + debugfs injection.
+          ROOT_HASH=/root/.local/state/nexus/rootfs-agent.sha256
+          USER_HASH="$HOME/.local/state/nexus/rootfs-agent.sha256"
+          if sudo test -f "$ROOT_HASH"; then
+            mkdir -p "$(dirname "$USER_HASH")"
+            sudo cat "$ROOT_HASH" > "$USER_HASH"
+          fi
+
       - name: Run CI pipeline
         run: task ci
         env:
           CI: true
-          NEXUS_FIRECRACKER_KERNEL: /var/lib/nexus/vmlinux.bin
-          NEXUS_FIRECRACKER_ROOTFS: /var/lib/nexus/rootfs.ext4
+          NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
+          NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
           # Use a small workspace image so mkfs.ext4 finishes in seconds on CI.
           NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
           # Limit VM memory to reduce peak RSS when tests run in parallel.
-          NEXUS_FIRECRACKER_MEM_MIB: "256"
+          NEXUS_LIBKRUN_MEM_MIB: "256"
 
       - name: Upload test results on failure
         if: failure()
@@ -213,14 +235,26 @@ jobs:
   # that install Xcode outside the default path.
   nexus-swift-macos:
     name: NexusApp (macOS)
-    runs-on: macos-latest
+    runs-on: [self-hosted, macOS, ARM64, v2, tw]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Select Xcode (optional)
-        if: ${{ vars.NEXUS_MACOS_DEVELOPER_DIR != '' }}
-        run: echo "DEVELOPER_DIR=${{ vars.NEXUS_MACOS_DEVELOPER_DIR }}" >> "$GITHUB_ENV"
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          if [ -n "${{ vars.NEXUS_MACOS_DEVELOPER_DIR }}" ]; then
+            XCODE_DIR="${{ vars.NEXUS_MACOS_DEVELOPER_DIR }}"
+          else
+            # Fall back to the first available Xcode under /Volumes/xcodes.
+            XCODE_DIR="$(ls -d /Volumes/xcodes/Xcode_*.app 2>/dev/null | sort -V | tail -1)/Contents/Developer"
+          fi
+          echo "DEVELOPER_DIR=$XCODE_DIR" >> "$GITHUB_ENV"
+          echo "Selected Xcode: $XCODE_DIR"
+          xcode-select -p || true
+
+      - name: Download Metal Toolchain (if missing)
+        run: xcodebuild -downloadComponent MetalToolchain 2>&1 | tail -5 || true
 
       - name: Build NexusApp (Debug)
         run: scripts/swift/build.sh

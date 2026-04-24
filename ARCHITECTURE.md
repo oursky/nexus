@@ -93,7 +93,7 @@ func (s *WorkspaceStore) Get(ctx context.Context, id string) (*workspace.Workspa
 - `infra/fsworkspace/` — filesystem operations for workspace directories on the daemon host (git, file layout); this is I/O, not a domain entity
 - `infra/config/` — reads node and workspace config from disk
 - `infra/dockercompose/` — discovers published ports from Docker Compose files (used by daemon and CLI)
-- `infra/runtime/firecracker/` — Firecracker VM adapter; implements `domain/runtime.Driver`
+- `infra/runtime/libkrun/` — libkrun microVM adapter; implements `domain/runtime.Driver`
 - `infra/runtime/sandbox/` — process-isolation fallback adapter; implements `domain/runtime.Driver`
 - `infra/secrets/inject/` — secrets injection into workspace environments
 
@@ -114,7 +114,7 @@ Orchestration layer. App services combine domain rules, infra implementations, a
 // What you can DO with a Workspace
 type Service struct {
     repo    workspace.Repository  // injected: infra/store.WorkspaceStore
-    runtime domain.Driver         // injected: infra/runtime/firecracker.Manager
+    runtime domain.Driver         // injected: infra/runtime/libkrun.Manager
     fs      *fsworkspace.Manager  // injected: infra/fsworkspace
 }
 
@@ -168,7 +168,7 @@ Unix socket listener + newline-delimited JSON-RPC 2.0 framing. Also supports TCP
 
 `daemon.go` is the only place that constructs concrete types and wires layers together. It:
 1. Opens the SQLite DB (`infra/store`)
-2. Constructs infra implementations (`WorkspaceStore`, `FirecrackerManager`, etc.)
+2. Constructs infra implementations (`WorkspaceStore`, `LibkrunManager`, etc.)
 3. Constructs app services, injecting infra implementations
 4. Constructs RPC handlers, injecting app services
 5. Registers handlers with `rpc/registry`
@@ -224,7 +224,7 @@ internal/
 │   ├── dockercompose/  Docker Compose port discovery (daemon + CLI)
 │   ├── fsworkspace/    Filesystem operations for workspace dirs on daemon host
 │   ├── runtime/
-│   │   ├── firecracker/ Firecracker VM adapter
+│   │   ├── libkrun/    libkrun microVM adapter
 │   │   └── sandbox/    Process-isolation fallback
 │   ├── secrets/
 │   │   └── inject/     Secrets injection
@@ -282,7 +282,7 @@ The daemon runs on a different machine than the user:
 
 ## VM Backend
 
-**Firecracker** — Linux/KVM microVM backend. `internal/infra/runtime/sandbox/` provides a process-isolation fallback for environments where Firecracker is unavailable.
+**libkrun** — Linux/KVM microVM backend. `internal/infra/runtime/sandbox/` provides a process-isolation fallback for environments where libkrun is unavailable.
 
 ---
 

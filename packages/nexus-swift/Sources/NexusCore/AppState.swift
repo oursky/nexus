@@ -43,14 +43,32 @@ public final class AppState: ObservableObject {
     @Published public var sidebarVisible = true
     @Published public var showInspector = true
     @Published public var error: String?
+    /// Human-readable progress message during auto-provisioning (nil when not provisioning).
+    @Published public var provisioningMessage: String?
+    /// Per-workspace in-flight operation state (start / stop / remove).
+    /// Views observe this to show spinners and disable action buttons.
+    @Published public var workspaceOps: [String: WorkspaceOpState] = [:]
 
     // MARK: - Client
     public private(set) var client: any DaemonClient
 
+    /// Daemon profile used for the current remote connection (SSH target, tunnel port, etc.).
+    public var activeDaemonProfile: DaemonProfile? { cachedProfile }
+
+    /// Active daemon WebSocket URL (e.g. `ws://127.0.0.1:<port>`).
+    /// Set after the SSH tunnel is established; nil before connecting.
+    private var daemonWebSocketURL: URL?
+    /// Bearer token for the active daemon connection.
+    private var daemonToken: String?
+
     private var refreshTask: Task<Void, Never>?
+    private var isLoadInProgress = false
     private var cachedProfile: DaemonProfile?
     private var tunnelManager: SSHTunnelManager?
     private var daemonLogStream: DaemonLogStream?
+
+    /// Headless HTTP RPC server for terminal automation (active when NEXUS_HEADLESS_RPC=1).
+    public private(set) var rpcServer: HeadlessRPCServer?
 
 
     public init() {
@@ -64,6 +82,7 @@ public final class AppState: ObservableObject {
         StartupTrace.checkpoint("app.init", "after client; scheduling load")
         Task { await self.connectRemoteAndLoad() }
         startRefreshLoop()
+        startRPCServer()
     }
 
     // Designated for dependency injection in tests only
@@ -94,8 +113,13 @@ public final class AppState: ObservableObject {
             return updated
         }
 
+        // Project-linked workspaces appear under their project group.
+        // Unlinked workspaces (created via CLI, no projectId) fall back to
+        // path-based grouping and are appended so they always stay visible.
         let projectRepos = Repo.fromProjects(projects, workspaces: carried)
-        repos = projectRepos.isEmpty ? Repo.grouping(carried) : projectRepos
+        let projectWorkspaceIDs = Set(projectRepos.flatMap { $0.workspaces.map(\.id) })
+        let unlinked = carried.filter { !projectWorkspaceIDs.contains($0.id) }
+        repos = projectRepos + Repo.grouping(unlinked)
         connectionState = .connected
         error = nil
 
@@ -108,10 +132,20 @@ public final class AppState: ObservableObject {
 
     /// Wall-clock cap for markWorkspaceReady / ports / tunnel fan-out (many actives can wedge the daemon).
     private static let workspaceEnrichmentDeadlineSeconds: UInt64 = 35
+    /// Upper bound on active workspaces to enrich per load cycle.
+    private static let workspaceEnrichmentMaxWorkspaces = 8
     /// Hard cap for the entire auto-start + first successful data fetch (independent of per-RPC timeouts).
     private static let startupDeadlineSeconds: UInt64 = 120
 
     public func load() async {
+        if isLoadInProgress {
+            StartupTrace.checkpoint("load.skip.inflight")
+            Self.logger.debug("load() skipped: already in progress")
+            return
+        }
+        isLoadInProgress = true
+        defer { isLoadInProgress = false }
+
         connectionState = .connecting
         Self.logger.debug("load() started")
         StartupTrace.checkpoint("load.enter")
@@ -178,8 +212,26 @@ public final class AppState: ObservableObject {
     private func enrichActiveWorkspaceSideEffects(workspaces: [Workspace]) async -> [Workspace] {
         var workspaces = workspaces
         var activeTunnelWorkspaceID = ""
+        let active = workspaces.filter { $0.state.isActive }
+        if active.isEmpty {
+            return workspaces
+        }
+
+        let selectedID = selectedWorkspaceID
+        let prioritized = active.sorted { lhs, rhs in
+            let l = (lhs.id == selectedID)
+            let r = (rhs.id == selectedID)
+            if l != r { return l && !r }
+            return lhs.id < rhs.id
+        }
+        let target = Array(prioritized.prefix(Self.workspaceEnrichmentMaxWorkspaces))
+        if active.count > target.count {
+            StartupTrace.checkpoint("load.phase2.trimmed", "active=\(active.count) cap=\(Self.workspaceEnrichmentMaxWorkspaces)")
+            Self.logger.notice("load() enrichment trimmed: active=\(active.count, privacy: .public) cap=\(Self.workspaceEnrichmentMaxWorkspaces, privacy: .public)")
+        }
+
         await withTaskGroup(of: (String, [ForwardedPort], String).self) { group in
-            for ws in workspaces where ws.state.isActive {
+            for ws in target {
                 group.addTask { [c = self.client] in
                     try? await c.markWorkspaceReady(id: ws.id)
                     let discovered = (try? await c.discoverPorts(workspaceID: ws.id)) ?? []
@@ -196,8 +248,10 @@ public final class AppState: ObservableObject {
                 if !activeID.isEmpty { activeTunnelWorkspaceID = activeID }
             }
         }
-        for i in workspaces.indices {
-            workspaces[i].hasActiveTunnels = (workspaces[i].id == activeTunnelWorkspaceID)
+        if !activeTunnelWorkspaceID.isEmpty {
+            for i in workspaces.indices {
+                workspaces[i].hasActiveTunnels = (workspaces[i].id == activeTunnelWorkspaceID)
+            }
         }
         return workspaces
     }
@@ -246,6 +300,216 @@ public final class AppState: ObservableObject {
 
     // MARK: - Background refresh (4 s polling)
 
+    private func startRPCServer() {
+        let server = HeadlessRPCServer(clientProvider: { [weak self] in
+            self?.client as? WebSocketDaemonClient
+        })
+        server.openEditorAction = { [weak self] workspaceID, app, checkOnly in
+            guard let self else { return (false, "AppState deallocated") }
+            return await self.openEditorViaCLI(workspaceID: workspaceID, app: app, checkOnly: checkOnly)
+        }
+        server.daemonCheckAction = { [weak self] driver in
+            guard let self else { return (false, "AppState deallocated") }
+            return await self.runDaemonCheckViaCLI(driver: driver)
+        }
+        // Wire workspace lifecycle + provisioning providers for headless RPC.
+        server.daemonClientProvider = { [weak self] in
+            guard let self else { return nil }
+            return self.client
+        }
+        server.daemonProfileProvider = { [weak self] in
+            self?.activeDaemonProfile
+        }
+        rpcServer = server
+        server.start()
+    }
+
+    // MARK: - Editor open via CLI
+
+    private static let openEditorLogger = Logger(subsystem: "com.nexus.NexusApp", category: "OpenEditor")
+
+    /// Spawns `nexus workspace open-editor <id> [--check]` and returns (ok, combinedOutput).
+    /// Passes the app's current daemon WebSocket URL + token so the subprocess reuses
+    /// the existing SSH tunnel without needing its own profile or SSH agent.
+    public func openEditorViaCLI(workspaceID: String, app: String, checkOnly: Bool) async -> (Bool, String) {
+        let log = Self.openEditorLogger
+        let wsURL = daemonWebSocketURL?.absoluteString
+        let tok = daemonToken
+        let sshHost = cachedProfile?.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sshPort = cachedProfile?.sshPort
+        let sshIdentity = cachedProfile?.sshIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let sshHost, !sshHost.isEmpty,
+           let workspace = repos.flatMap(\.workspaces).first(where: { $0.id == workspaceID }),
+           let spec = workspace.remoteSSHFolderOpen(jumpHost: sshHost, identityFile: sshIdentity),
+           let guestIP = spec.vmGuestIP,
+           !guestIP.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            do {
+                try NexusSSHConfigSnippet.installIncludeIfNeeded()
+                try NexusSSHConfigSnippet.writeVMJumpHost(
+                    hostAlias: spec.sshHostForURI,
+                    guestIP: guestIP,
+                    proxyJump: spec.proxyJump,
+                    identityFile: spec.identityFile
+                )
+                log.info("open-editor prewrote SSH alias \(spec.sshHostForURI, privacy: .public)")
+            } catch {
+                // Sandboxed app builds may not have direct access to the real
+                // ~/.ssh config. Fall back to the CLI path, which still writes
+                // its own alias snippet before opening the editor.
+                log.error("open-editor prewrite skipped: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        log.info("open-editor start workspaceID=\(workspaceID, privacy: .public) app=\(app, privacy: .public) checkOnly=\(checkOnly, privacy: .public)")
+        log.debug("open-editor daemonURL=\(wsURL ?? "(nil)", privacy: .public) hasToken=\(tok != nil, privacy: .public)")
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let nexusBin = Self.nexusBinaryPath()
+                log.info("open-editor binary=\(nexusBin, privacy: .public)")
+
+                var env = ProcessInfo.processInfo.environment
+                env["SHELL"] = "/bin/sh"
+                if let u = wsURL    { env["NEXUS_E2E_DAEMON_WEBSOCKET"] = u }
+                if let t = tok      { env["NEXUS_DAEMON_TOKEN"] = t }
+                if let h = sshHost, !h.isEmpty { env["NEXUS_DAEMON_SSH_HOST"] = h }
+                if let p = sshPort, p > 0 { env["NEXUS_DAEMON_SSH_PORT"] = "\(p)" }
+                if let id = sshIdentity, !id.isEmpty {
+                    env["NEXUS_DAEMON_SSH_IDENTITY"] = id
+                }
+
+                var args = ["workspace", "open-editor", workspaceID, "--app", app]
+                if checkOnly { args.append("--check") }
+                log.info("open-editor running: \(nexusBin) \(args.joined(separator: " "), privacy: .public)")
+
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: nexusBin)
+                proc.arguments = args
+                proc.environment = env
+
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                proc.standardOutput = outPipe
+                proc.standardError  = errPipe
+
+                do {
+                    try proc.run()
+                } catch {
+                    log.error("open-editor launch failed: \(error.localizedDescription, privacy: .public)")
+                    continuation.resume(returning: (false, "Could not launch nexus: \(error.localizedDescription)"))
+                    return
+                }
+                proc.waitUntilExit()
+
+                let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let combined = [out, err].filter { !$0.isEmpty }.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let ok = proc.terminationStatus == 0
+
+                if ok {
+                    log.info("open-editor succeeded workspaceID=\(workspaceID, privacy: .public)")
+                    continuation.resume(returning: (true, combined))
+                } else {
+                    log.error("open-editor failed (exit \(proc.terminationStatus, privacy: .public)): \(combined, privacy: .public)")
+                    continuation.resume(returning: (false, combined))
+                }
+            }
+        }
+    }
+
+    // MARK: - Daemon health check (runs on daemon host via SSH)
+
+    private static let daemonCheckLogger = Logger(subsystem: "com.nexus.NexusApp", category: "DaemonCheck")
+
+    /// Runs `nexus daemon check [--driver <driver>]` **on the daemon host** via SSH and
+    /// returns (allPassed, combinedOutput).
+    ///
+    /// The checks verify the daemon host's environment (KVM access, kernel image, rootfs,
+    /// guest agent, SSH keys, auth tokens, etc.) so they must run on the remote machine,
+    /// not locally on the Mac.
+    public func runDaemonCheckViaCLI(driver: String? = nil) async -> (Bool, String) {
+        let log = Self.daemonCheckLogger
+        log.info("daemon check start driver=\(driver ?? "(auto)", privacy: .public)")
+
+        guard let profile = cachedProfile,
+              let sshTarget = profile.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sshTarget.isEmpty else {
+            return (false, "No daemon profile configured — connect to a daemon host first.")
+        }
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                // Build the remote nexus command.
+                var remoteCmd = "~/.local/bin/nexus daemon check"
+                if let d = driver, !d.isEmpty { remoteCmd += " --driver \(d)" }
+                log.info("daemon check ssh target=\(sshTarget, privacy: .public) cmd=\(remoteCmd, privacy: .public)")
+
+                // Build ssh arguments.
+                let sshBin = "/usr/bin/ssh"
+                var sshArgs: [String] = [
+                    "-o", "BatchMode=yes",
+                    "-o", "ConnectTimeout=15",
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "UserKnownHostsFile=/dev/null",
+                    "-o", "GlobalKnownHostsFile=/dev/null",
+                    "-o", "LogLevel=ERROR",
+                ]
+                if let port = profile.sshPort, port != 22 {
+                    sshArgs += ["-p", "\(port)"]
+                }
+                if let identity = profile.sshIdentity, !identity.isEmpty {
+                    sshArgs += ["-i", identity]
+                }
+                sshArgs += [sshTarget, remoteCmd]
+
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: sshBin)
+                proc.arguments = sshArgs
+
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                proc.standardOutput = outPipe
+                proc.standardError  = errPipe
+
+                var env = ProcessInfo.processInfo.environment
+                env["SHELL"] = "/bin/sh"
+                proc.environment = env
+
+                do {
+                    try proc.run()
+                } catch {
+                    log.error("daemon check ssh failed: \(error.localizedDescription, privacy: .public)")
+                    continuation.resume(returning: (false, "SSH launch failed: \(error.localizedDescription)"))
+                    return
+                }
+                proc.waitUntilExit()
+
+                let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let combined = [out, err].filter { !$0.isEmpty }.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let ok = proc.terminationStatus == 0
+                log.info("daemon check finished ok=\(ok, privacy: .public)")
+                continuation.resume(returning: (ok, combined))
+            }
+        }
+    }
+
+    private static func nexusBinaryPath() -> String {
+        // Prefer the binary bundled inside the app bundle.
+        if let url = Bundle.main.url(forResource: "nexus", withExtension: nil) {
+            return url.path
+        }
+        // Development fallback when running without a full app bundle.
+        let devPaths = [
+            "/Users/\(NSUserName())/.local/bin/nexus",
+            "/usr/local/bin/nexus",
+        ]
+        return devPaths.first { FileManager.default.isExecutableFile(atPath: $0) } ?? devPaths[0]
+    }
+
     private func startRefreshLoop() {
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
@@ -255,6 +519,16 @@ public final class AppState: ObservableObject {
                 // Never poll `load()` during initial handshake — it stacks concurrent RPCs,
                 // duplicates WebSocket work, and grows memory while the UI stays on "Starting…".
                 if self.connectionState == .starting || self.connectionState == .connecting {
+                    continue
+                }
+                // Auto-heal transient tunnel/bootstrap failures. If we are disconnected
+                // and still on a null client, re-run full remote connect flow instead
+                // of repeatedly polling load() against a known-disconnected client.
+                if self.connectionState == .disconnected,
+                   self.client is NullDaemonClient,
+                   self.tunnelManager == nil {
+                    StartupTrace.checkpoint("remote.autoReconnect.tick")
+                    await self.connectRemoteAndLoad()
                     continue
                 }
                 // Avoid hammering JSON-RPC when the daemon is too old (handled by restart/upgrade flows).
@@ -298,6 +572,41 @@ public final class AppState: ObservableObject {
         }
         connectionState = .connecting
         StartupTrace.checkpoint("remote.tunnel.start", "sshTarget=\(sshTarget) port=\(profile.port)")
+
+        // ── Auto-provision: ensure the remote has a running nexus daemon ──
+        // provision() returns only when daemon is provably ready (healthz passes).
+        let provisioner = RemoteProvisioner(profile: profile)
+        do {
+            try await provisioner.provision { [weak self] step in
+                guard let self else { return }
+                let msg: String
+                switch step {
+                case .checkingHost:
+                    msg = "Checking remote host…"
+                case .uploadingBinary(let pct):
+                    msg = String(format: "Uploading Nexus (%.0f%%)…", pct * 100)
+                case .startingDaemon:
+                    msg = "Starting daemon…"
+                case .bootstrapPhase(_, let message):
+                    msg = message.isEmpty ? "Bootstrapping…" : message
+                case .waitingForDaemon(let attempt):
+                    msg = attempt <= 1 ? "Waiting for daemon…" : "Waiting for daemon (attempt \(attempt))…"
+                case .ready:
+                    msg = "Daemon ready"
+                }
+                await MainActor.run { [weak self] in
+                    self?.connectionState = .provisioning(step: msg)
+                    self?.provisioningMessage = msg
+                }
+            }
+            Self.logger.info("connectRemoteAndLoad: provisioning complete for \(sshTarget, privacy: .public)")
+        } catch {
+            // If daemon is already running (provisioning skipped), this succeeds silently.
+            // Only surface provision errors if they actually prevent connection.
+            Self.logger.warning("connectRemoteAndLoad: provision step failed (\(error.localizedDescription, privacy: .public)); attempting connection anyway")
+        }
+        provisioningMessage = nil
+
         let mgr = SSHTunnelManager(profile: profile)
         self.tunnelManager = mgr
         let daemonURL: URL
@@ -313,6 +622,8 @@ public final class AppState: ObservableObject {
                 return
             }
             daemonURL = url
+            daemonWebSocketURL = url
+            daemonToken = resolvedToken.isEmpty ? nil : resolvedToken
         } catch {
             connectionState = .disconnected
             self.error = "SSH tunnel failed: \(error.localizedDescription)"
@@ -372,6 +683,46 @@ public final class AppState: ObservableObject {
         self.cachedProfile = profile
         connectionState = .starting
         await connectRemoteAndLoad()
+    }
+
+    /// Manually trigger remote daemon provisioning (upload binary + start daemon).
+    /// Useful after changing the host profile or when the automatic provisioning at
+    /// connect-time failed. The full connection is re-established afterward.
+    public func installDaemon() {
+        Task {
+            guard let profile = cachedProfile, profile.sshTarget != nil else {
+                error = "No SSH host configured. Open daemon settings to add one."
+                return
+            }
+            connectionState = .provisioning(step: "Provisioning daemon…")
+            provisioningMessage = "Provisioning daemon…"
+            let provisioner = RemoteProvisioner(profile: profile)
+            do {
+                try await provisioner.provision { [weak self] step in
+                    guard let self else { return }
+                    let msg: String
+                    switch step {
+                    case .checkingHost:                msg = "Checking remote host…"
+                    case .uploadingBinary(let pct):   msg = String(format: "Uploading Nexus (%.0f%%)…", pct * 100)
+                    case .startingDaemon:             msg = "Starting daemon…"
+                    case .bootstrapPhase(_, let m):   msg = m.isEmpty ? "Bootstrapping…" : m
+                    case .waitingForDaemon(let n):    msg = n <= 1 ? "Waiting for daemon…" : "Waiting (\(n))…"
+                    case .ready:                      msg = "Daemon ready"
+                    }
+                    await MainActor.run { [weak self] in
+                        self?.connectionState = .provisioning(step: msg)
+                        self?.provisioningMessage = msg
+                    }
+                }
+                Self.logger.info("installDaemon: provisioning succeeded")
+            } catch {
+                Self.logger.error("installDaemon: \(error.localizedDescription, privacy: .public)")
+                self.error = "Daemon installation failed: \(error.localizedDescription)"
+            }
+            provisioningMessage = nil
+            // Re-connect after provisioning completes (success or failure).
+            await reconnect()
+        }
     }
 
     // MARK: - Workspace actions
@@ -504,16 +855,30 @@ public final class AppState: ObservableObject {
     }
 
     public func start(_ workspace: Workspace) async {
-        await perform { try await self.client.startWorkspace(id: workspace.id) }
+        await perform(workspaceID: workspace.id, opState: .starting) {
+            try await self.client.startWorkspace(id: workspace.id)
+            // Daemon returns immediately with state=starting; poll until running or rolled-back.
+            let deadline = Date().addingTimeInterval(15 * 60) // 15 min ceiling
+            while Date() < deadline {
+                try await Task.sleep(nanoseconds: 2_000_000_000) // 2 s
+                let all = try await self.client.listWorkspaces()
+                guard let ws = all.first(where: { $0.id == workspace.id }) else { return }
+                if ws.state != .starting { return }
+            }
+        }
     }
 
     public func stop(_ workspace: Workspace) async {
-        await perform { try await self.client.stopWorkspace(id: workspace.id) }
+        await perform(workspaceID: workspace.id, opState: .stopping) {
+            try await self.client.stopWorkspace(id: workspace.id)
+        }
     }
 
     public func remove(_ workspace: Workspace) async {
         if selectedWorkspaceID == workspace.id { selectedWorkspaceID = nil }
-        await perform { try await self.client.removeWorkspace(id: workspace.id) }
+        await perform(workspaceID: workspace.id, opState: .removing) {
+            try await self.client.removeWorkspace(id: workspace.id)
+        }
     }
 
     /// Removes a daemon project record, clears local mirror/bind state, and refreshes lists.
@@ -557,7 +922,15 @@ public final class AppState: ObservableObject {
         }
     }
 
-    private func perform(_ op: @escaping () async throws -> Void) async {
+    private func perform(workspaceID: String? = nil, opState: WorkspaceOpState? = nil, _ op: @escaping () async throws -> Void) async {
+        if let id = workspaceID, let state = opState {
+            workspaceOps[id] = state
+        }
+        defer {
+            if let id = workspaceID {
+                workspaceOps.removeValue(forKey: id)
+            }
+        }
         do {
             try await op()
             await load()
@@ -584,6 +957,8 @@ public final class AppState: ObservableObject {
 
 public enum ConnectionState: Equatable {
     case starting, disconnected, connecting, connected
+    /// Auto-provisioning a fresh remote host (uploading binary, starting daemon).
+    case provisioning(step: String)
 }
 
 /// The compatibility status of the running daemon.

@@ -23,7 +23,6 @@ import (
 
 	"github.com/oursky/nexus/packages/nexus/internal/infra/config"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/dockercompose"
-	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/firecracker"
 
 	daemoncmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon"
 	projectcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/project"
@@ -53,6 +52,10 @@ type initOptions struct {
 
 const execKVMGroupReexecEnv = "NEXUS_EXEC_KVM_GROUP_REEXEC"
 
+// extraCommands holds optional cobra commands registered by platform-specific
+// init() functions (e.g. the hidden "libkrun-vm" subcommand on Linux+libkrun).
+var extraCommands []*cobra.Command
+
 func main() {
 	root := &cobra.Command{
 		Use:           "nexus",
@@ -70,6 +73,9 @@ func main() {
 		execCommand(),
 		doctorCommand(),
 	)
+	for _, cmd := range extraCommands {
+		root.AddCommand(cmd)
+	}
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -257,7 +263,7 @@ func runExec(opts execOptions) error {
 
 	defer func() {
 		if cleanupErr := runDoctorExecContextCleanup(); cleanupErr != nil {
-			fmt.Printf("exec warning: firecracker cleanup failed: %v\n", cleanupErr)
+			fmt.Printf("exec warning: cleanup failed: %v\n", cleanupErr)
 		}
 	}()
 	execCtx := loadDoctorExecContext()
@@ -296,7 +302,7 @@ func shouldReexecExecWithKVMGroup(backend string, runErr error) bool {
 	if runErr == nil {
 		return false
 	}
-	if backend != "firecracker" {
+	if backend != "firecracker" && backend != "libkrun" {
 		return false
 	}
 	if os.Getenv(execKVMGroupReexecEnv) == "1" {
@@ -333,11 +339,6 @@ func run(opts options) error {
 	}
 
 	execCtx := loadDoctorExecContext()
-	if execCtx.backend == "firecracker" {
-		if err := config.ValidateFirecrackerEnv(); err != nil {
-			return fmt.Errorf("firecracker configuration error: %w", err)
-		}
-	}
 
 	if opts.composeFile == "" {
 		opts.composeFile = "docker-compose.yml"
@@ -383,7 +384,7 @@ func run(opts options) error {
 
 	defer func() {
 		if cleanupErr := runDoctorExecContextCleanup(); cleanupErr != nil {
-			fmt.Printf("doctor warning: firecracker cleanup failed: %v\n", cleanupErr)
+			fmt.Printf("doctor warning: cleanup failed: %v\n", cleanupErr)
 		}
 	}()
 	if err := doctorExecBootstrapRunner(opts.projectRoot); err != nil {
@@ -398,12 +399,6 @@ func run(opts options) error {
 			}
 		}
 		return err
-	}
-
-	if execCtx.backend == "firecracker" {
-		if err := doctorFirecrackerRuntimeVerifier(); err != nil {
-			return err
-		}
 	}
 
 	if err := doctorLifecycleSetupRunner(opts.projectRoot, execCtx); err != nil {
@@ -509,7 +504,6 @@ type doctorExecContext struct {
 
 type firecrackerDoctorSession struct {
 	workspaceID string
-	manager     *firecracker.Manager
 	vsockPath   string
 	serialLog   string
 }
@@ -645,15 +639,17 @@ func waitForFirecrackerAgent(vsockSocketPath string, timeout time.Duration) (net
 	return nil, fmt.Errorf("agent was not ready after %s on vsock port %d", timeout, port)
 }
 
+const defaultAgentVSockPort uint32 = 10789
+
 func firecrackerAgentVSockPort() uint32 {
 	raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_AGENT_VSOCK_PORT"))
 	if raw == "" {
-		return firecracker.DefaultAgentVSockPort
+		return defaultAgentVSockPort
 	}
 
 	parsed, err := strconv.Atoi(raw)
 	if err != nil || parsed <= 0 {
-		return firecracker.DefaultAgentVSockPort
+		return defaultAgentVSockPort
 	}
 
 	return uint32(parsed)
@@ -873,87 +869,7 @@ func validateFirecrackerBridge() error {
 }
 
 func bootstrapFirecrackerExecContextNative(projectRoot string, execCtx doctorExecContext) error {
-	if execCtx.backend != "firecracker" {
-		return fmt.Errorf("invalid backend for firecracker bootstrap: %s", execCtx.backend)
-	}
-
-	if err := validateFirecrackerHostPrerequisites(execCtx); err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-
-	kernelPath := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_KERNEL"))
-	rootfsPath := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_ROOTFS"))
-	firecrackerBin := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_BIN"))
-	if firecrackerBin == "" {
-		firecrackerBin = "firecracker"
-	}
-
-	workDirRoot := strings.TrimSpace(os.Getenv("NEXUS_DOCTOR_FIRECRACKER_WORKDIR_ROOT"))
-	if workDirRoot == "" {
-		workDirRoot = filepath.Join(os.TempDir(), "nexus-firecracker-doctor")
-	}
-	if err := os.MkdirAll(workDirRoot, 0o755); err != nil {
-		return fmt.Errorf("create firecracker workdir root: %w", err)
-	}
-
-	manager := firecracker.NewManager(firecracker.ManagerConfig{
-		FirecrackerBin: firecrackerBin,
-		KernelPath:     kernelPath,
-		RootFSPath:     rootfsPath,
-		WorkDirRoot:    workDirRoot,
-	})
-	doctorMemoryMiB, doctorVCPUs := doctorFirecrackerMachineSpec()
-
-	workspaceID := fmt.Sprintf("doctor-%d", time.Now().UnixNano())
-	instance, err := manager.Spawn(ctx, firecracker.SpawnSpec{
-		WorkspaceID: workspaceID,
-		ProjectRoot: projectRoot,
-		MemoryMiB:   doctorMemoryMiB,
-		VCPUs:       doctorVCPUs,
-	})
-	if err != nil {
-		return fmt.Errorf("bootstrap firecracker manager spawn failed: %w", err)
-	}
-
-	agentConn, err := waitForFirecrackerAgent(instance.VSockPath, 60*time.Second)
-	if err != nil {
-		logTail := readFileTail(instance.SerialLog, 262144)
-		_ = manager.Stop(context.Background(), workspaceID)
-		if logTail != "" {
-			return fmt.Errorf("bootstrap firecracker agent connection failed: %w\nfirecracker serial log tail:\n%s", err, logTail)
-		}
-		return fmt.Errorf("bootstrap firecracker agent connection failed: %w", err)
-	}
-
-	session := &firecrackerDoctorSession{
-		workspaceID: workspaceID,
-		manager:     manager,
-		vsockPath:   instance.VSockPath,
-		serialLog:   instance.SerialLog,
-	}
-	setFirecrackerDoctorSession(session)
-	_ = agentConn.Close()
-
-	setDoctorExecContextCleanup(func() error {
-		clearFirecrackerDoctorSession()
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer stopCancel()
-		if session.manager != nil {
-			if err := session.manager.Stop(stopCtx, session.workspaceID); err != nil {
-				return fmt.Errorf("stop firecracker workspace %s: %w", session.workspaceID, err)
-			}
-		}
-		return nil
-	})
-
-	if err := firecrackerWorkspaceVerifier(); err != nil {
-		return err
-	}
-
-	return nil
+	return fmt.Errorf("firecracker backend is no longer supported; use libkrun")
 }
 
 func verifyFirecrackerWorkspaceReady() error {
@@ -986,106 +902,7 @@ func verifyFirecrackerWorkspaceReady() error {
 }
 
 func runFirecrackerCheckCommand(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-	session, err := getFirecrackerDoctorSession()
-	if err != nil {
-		return "", err
-	}
-
-	conn, err := waitForFirecrackerAgent(session.vsockPath, 10*time.Second)
-	if err != nil {
-		if logTail := readFileTail(session.serialLog, 262144); logTail != "" {
-			return "", fmt.Errorf("%w\nfirecracker serial log tail:\n%s", err, logTail)
-		}
-		return "", err
-	}
-	defer conn.Close()
-
-	agentClient := firecracker.NewAgentClient(conn)
-	hostUID := os.Getuid()
-	hostGID := os.Getgid()
-	if hostUID == 0 {
-		if raw := strings.TrimSpace(os.Getenv("SUDO_UID")); raw != "" {
-			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
-				hostUID = parsed
-			}
-		}
-	}
-	if hostGID == 0 {
-		if raw := strings.TrimSpace(os.Getenv("SUDO_GID")); raw != "" {
-			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
-				hostGID = parsed
-			}
-		}
-	}
-	env := []string{
-		fmt.Sprintf("UID=%d", hostUID),
-		fmt.Sprintf("GID=%d", hostGID),
-		fmt.Sprintf("HOST_UID=%d", hostUID),
-		fmt.Sprintf("HOST_GID=%d", hostGID),
-	}
-	if backend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND")); backend != "" {
-		env = append(env, "NEXUS_RUNTIME_BACKEND="+backend)
-	}
-	if mirror := strings.TrimSpace(os.Getenv("NEXUS_DOCKER_REGISTRY_MIRROR")); mirror != "" {
-		env = append(env, "NEXUS_DOCKER_REGISTRY_MIRROR="+mirror)
-	}
-	if username := strings.TrimSpace(os.Getenv("NEXUS_DOCKERHUB_USERNAME")); username != "" {
-		env = append(env, "NEXUS_DOCKERHUB_USERNAME="+username)
-	}
-	if token := strings.TrimSpace(os.Getenv("NEXUS_DOCKERHUB_TOKEN")); token != "" {
-		env = append(env, "NEXUS_DOCKERHUB_TOKEN="+token)
-	}
-	if value := strings.TrimSpace(os.Getenv("NEXUS_API_BASE_URL")); value != "" {
-		env = append(env, "NEXUS_API_BASE_URL="+value)
-	} else {
-		env = append(env, "NEXUS_API_BASE_URL=http://127.0.0.1:8000")
-	}
-	if value := strings.TrimSpace(os.Getenv("NEXUS_AUTHGEAR_STUDENT_BASE_URL")); value != "" {
-		env = append(env, "NEXUS_AUTHGEAR_STUDENT_BASE_URL="+value)
-	} else {
-		env = append(env, "NEXUS_AUTHGEAR_STUDENT_BASE_URL=http://127.0.0.1:3001")
-	}
-	if value := strings.TrimSpace(os.Getenv("NEXUS_AUTHGEAR_ADMIN_BASE_URL")); value != "" {
-		env = append(env, "NEXUS_AUTHGEAR_ADMIN_BASE_URL="+value)
-	} else {
-		env = append(env, "NEXUS_AUTHGEAR_ADMIN_BASE_URL=http://127.0.0.1:4001")
-	}
-
-	request := firecracker.ExecRequest{
-		ID:      firecrackerRequestID(),
-		Command: command,
-		Args:    args,
-		WorkDir: "/workspace",
-		Env:     env,
-		Stream:  true,
-	}
-	result, err := agentClient.ExecStreaming(ctx, request, func(_ string, data string) {
-		if data == "" {
-			return
-		}
-		fmt.Print(data)
-	})
-	if err != nil {
-		if logTail := readFileTail(session.serialLog, 262144); logTail != "" {
-			return "", fmt.Errorf("%w\nfirecracker serial log tail:\n%s", err, logTail)
-		}
-		return "", err
-	}
-
-	out := strings.TrimSpace(result.Stdout + "\n" + result.Stderr)
-	if result.ID != "" && result.ID != request.ID {
-		if out == "" {
-			out = fmt.Sprintf("firecracker agent response id mismatch: got %q want %q", result.ID, request.ID)
-		}
-		return out, fmt.Errorf("firecracker agent response id mismatch: got %q want %q", result.ID, request.ID)
-	}
-	if result.ExitCode != 0 {
-		if out == "" {
-			out = fmt.Sprintf("exit code %d", result.ExitCode)
-		}
-		return out, fmt.Errorf("command failed with exit code %d", result.ExitCode)
-	}
-	return out, nil
+	return "", fmt.Errorf("firecracker backend is no longer supported; use libkrun")
 }
 
 func detectHostDockerSocket() string {
@@ -1556,10 +1373,10 @@ func runBuiltInRuntimeBackendCheck() (checkResult, error) {
 	}
 
 	backend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND"))
-	if backend != "firecracker" && backend != "seatbelt" {
+	if backend != "libkrun" && backend != "firecracker" && backend != "seatbelt" {
 		result.Status = "failed_required"
 		result.DurationMs = time.Since(start).Milliseconds()
-		result.Error = fmt.Sprintf("unsupported runtime backend %q: doctor command only supports firecracker or seatbelt", backend)
+		result.Error = fmt.Sprintf("unsupported runtime backend %q: doctor command only supports libkrun or seatbelt", backend)
 		return result, fmt.Errorf("required probes failed: %s", checkName)
 	}
 
@@ -1578,10 +1395,13 @@ func bootstrapDoctorExecContext(projectRoot string) error {
 			return err
 		}
 		return containerBootstrapRunner(projectRoot, execCtx, "firecracker", true)
+	case "libkrun":
+		// libkrun workspaces run on the remote daemon; no local bootstrap needed.
+		return nil
 	case "seatbelt":
 		return nil
 	default:
-		return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker or seatbelt", execCtx.backend)
+		return fmt.Errorf("unsupported runtime backend %q: doctor command only supports libkrun or seatbelt", execCtx.backend)
 	}
 }
 
@@ -1591,10 +1411,13 @@ func bootstrapExecCommandContext(projectRoot string) error {
 	switch execCtx.backend {
 	case "firecracker":
 		return bootstrapFirecrackerExecContext(projectRoot, execCtx)
+	case "libkrun":
+		// libkrun workspaces run on the remote daemon; no local bootstrap needed.
+		return nil
 	case "seatbelt":
 		return nil
 	default:
-		return fmt.Errorf("unsupported runtime backend %q: exec command only supports firecracker or seatbelt", execCtx.backend)
+		return fmt.Errorf("unsupported runtime backend %q: exec command only supports libkrun or seatbelt", execCtx.backend)
 	}
 }
 
@@ -1704,7 +1527,7 @@ func applyRuntimeBackendFromWorkspace(projectRoot string) error {
 	if rawBackend := strings.TrimSpace(os.Getenv("NEXUS_RUNTIME_BACKEND")); rawBackend != "" {
 		backend, ok := normalizeRuntimeBackend(rawBackend)
 		if !ok {
-			return fmt.Errorf("unsupported runtime backend %q: doctor command only supports firecracker or seatbelt", rawBackend)
+			return fmt.Errorf("unsupported runtime backend %q: supported: libkrun, seatbelt (firecracker is deprecated)", rawBackend)
 		}
 		if err := os.Setenv("NEXUS_RUNTIME_BACKEND", backend); err != nil {
 			return fmt.Errorf("set runtime backend env: %w", err)
@@ -1810,7 +1633,11 @@ func selectRuntimeBackend(required []string) string {
 
 func normalizeRuntimeBackend(raw string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "libkrun":
+		return "libkrun", true
 	case "firecracker":
+		// Legacy alias — firecracker is no longer supported but recognized for
+		// backward compatibility with existing configs; bootstrap will fail gracefully.
 		return "firecracker", true
 	case "seatbelt":
 		return "seatbelt", true

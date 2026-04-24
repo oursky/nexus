@@ -125,6 +125,7 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
     // MARK: - Connect / disconnect
 
     private func connect() async throws {
+        let tConnect = Date()
         connectionLock.lock()
         StartupTrace.checkpoint("ws.connect.enter", daemonURL.absoluteString)
         // Guard on task != nil, NOT task?.state == .running.
@@ -133,10 +134,13 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         // one finished its TCP handshake, leaking tasks+buffers and growing RAM unboundedly.
         if task != nil {
             let existingReady = readyTask
+            let taskState = task?.state.rawValue ?? -1
             connectionLock.unlock()
-            StartupTrace.checkpoint("ws.connect.noop", "task already exists (state=\(task?.state.rawValue ?? -1))")
+            StartupTrace.checkpoint("ws.connect.noop", "task already exists (state=\(taskState))")
+            print("[WS.connect] FAST-PATH task=exists state=\(taskState) readyTask=\(existingReady != nil ? "pending" : "nil")")
             // Wait for the in-progress handshake to complete before returning to caller.
             try await existingReady?.value
+            print("[WS.connect] FAST-PATH done elapsed_ms=\(Int(Date().timeIntervalSince(tConnect)*1000))")
             return
         }
         let token = injectedToken ?? Self.readToken()
@@ -168,7 +172,9 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         }
         readyTask = ready
         connectionLock.unlock()
+        print("[WS.connect] NEW-CONN waiting for handshake url=\(daemonURL.absoluteString)")
         try await ready.value
+        print("[WS.connect] NEW-CONN handshake done elapsed_ms=\(Int(Date().timeIntervalSince(tConnect)*1000))")
     }
 
     /// Called by WebSocketDelegate when the upgrade handshake succeeds for the tracked task.
@@ -275,14 +281,22 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
 
         // JSON-RPC response (has "id")
         guard let id = json["id"] as? String else { return }
-        lock.withLock {
-            guard let cont = pending.removeValue(forKey: id) else { return }
+        let hadPending = lock.withLock { () -> Bool in
+            guard let cont = pending.removeValue(forKey: id) else { return false }
             if let errObj = json["error"] as? [String: Any],
                let msg    = errObj["message"] as? String {
+                print("[WS.resp] RESPONSE id=\(id) error=\(msg)")
                 cont.resume(throwing: RPCError(message: msg))
             } else {
+                print("[WS.resp] RESPONSE id=\(id) result=ok")
                 cont.resume(returning: json["result"] as Any? ?? NSNull())
             }
+            return true
+        }
+        if !hadPending {
+            // Response arrived after the caller cancelled (deadline exceeded). This is the
+            // smoking gun for the 20s race: daemon responded exactly at the deadline.
+            print("[WS.resp] ORPHAN-RESPONSE id=\(id) — arrived after caller cancelled (deadline race)")
         }
     }
 
@@ -374,8 +388,10 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
     }
 
     private func performRPC(method: String, params: [String: Any]) async throws -> Any {
+        let tRPC = Date()
         StartupTrace.rpc(method: method)
         try await connect()
+        let connectMs = Int(Date().timeIntervalSince(tRPC) * 1000)
         var id = ""
         lock.withLock {
             requestCounter += 1
@@ -383,6 +399,8 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         }
         let payload: [String: Any] = ["jsonrpc": "2.0", "id": id, "method": method, "params": params]
         let text = String(data: try JSONSerialization.data(withJSONObject: payload), encoding: .utf8)!
+        print("[WS.rpc] SEND method=\(method) id=\(id) connect_ms=\(connectMs)")
+        let tSend = Date()
         // withTaskCancellationHandler ensures that if the enclosing task is cancelled (e.g. by
         // withTimeoutRPC's group.cancelAll()), the pending continuation is removed from the dict
         // immediately. Without this, the cancelled task's continuation stays in pending[] and is
@@ -400,9 +418,10 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
                 }
                 sock.send(.string(text)) { [weak self] err in
                     guard let self else { return }
+                    let sendMs = Int(Date().timeIntervalSince(tSend) * 1000)
                     if let err {
                         let nsErr = err as NSError
-                        print("[WS.send] FAIL method=\(method) id=\(id) domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
+                        print("[WS.send] FAIL method=\(method) id=\(id) send_ms=\(sendMs) domain=\(nsErr.domain) code=\(nsErr.code) desc=\(nsErr.localizedDescription)")
                         if self.isConnectionFatalSendError(err) {
                             // Transport-level send failure means the shared socket is no longer
                             // trustworthy. Tear down shared state so the next RPC reconnects.
@@ -411,12 +430,15 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
                             let cont2 = self.lock.withLock { self.pending.removeValue(forKey: id) }
                             cont2?.resume(throwing: err)
                         }
+                    } else {
+                        print("[WS.send] OK method=\(method) id=\(id) send_ms=\(sendMs) awaiting_response...")
                     }
                 }
             }
         } onCancel: { [weak self] in
             guard let self else { return }
             let cont = self.lock.withLock { self.pending.removeValue(forKey: id) }
+            print("[WS.rpc] CANCELLED method=\(method) id=\(id) elapsed_ms=\(Int(Date().timeIntervalSince(tRPC)*1000))")
             cont?.resume(throwing: CancellationError())
         }
     }
@@ -656,6 +678,40 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         settings
     }
 
+    public func checkVMSSH(workspaceId: String) async throws -> VMSSHCheckResult {
+        let result = try await call("workspace.sshcheck", params: ["id": workspaceId])
+        guard let dict = result as? [String: Any] else {
+            throw RPCError(message: "unexpected workspace.sshcheck response")
+        }
+        let ok = dict["ok"] as? Bool ?? false
+        let guestIP = dict["guestIp"] as? String ?? ""
+        let whoami = dict["whoami"] as? String ?? ""
+        let error = dict["error"] as? String ?? ""
+        let stderr = dict["stderr"] as? String ?? ""
+        return VMSSHCheckResult(ok: ok, guestIP: guestIP, whoami: whoami, error: error, stderr: stderr)
+    }
+
+    public func workspaceSerialLog(workspaceId: String, lines: Int = 200) async throws -> WorkspaceSerialLog {
+        let result = try await call("workspace.serial-log", params: ["id": workspaceId, "lines": lines])
+        guard let dict = result as? [String: Any] else {
+            throw RPCError(message: "unexpected workspace.serial-log response")
+        }
+        let logLines = dict["lines"] as? [String] ?? []
+        let path = dict["path"] as? String ?? ""
+        let available = dict["available"] as? Bool ?? false
+        return WorkspaceSerialLog(lines: logLines, path: path, available: available)
+    }
+
+    public func daemonLogTail(lines: Int = 200) async throws -> DaemonLogTail {
+        let result = try await call("daemon.log.tail", params: ["lines": lines])
+        guard let dict = result as? [String: Any] else {
+            throw RPCError(message: "unexpected daemon.log.tail response")
+        }
+        let logLines = dict["lines"] as? [String] ?? []
+        let path = dict["path"] as? String ?? ""
+        return DaemonLogTail(lines: logLines, path: path)
+    }
+
     private func parseSpotlightForwards(from raw: Any?) -> [ForwardedPort] {
         guard let items = raw as? [[String: Any]] else { return [] }
         return items.compactMap { item in
@@ -718,9 +774,11 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         _ = try await call("pty.close", params: ["sessionId": sessionId])
     }
 
-    /// Legacy hook; PTY I/O is multiplexed on the WebSocket via `pty.data` notifications.
+    /// Re-attaches an existing PTY session to the current WebSocket connection so
+    /// that pty.data notifications reach this client.  Called when the app reconnects
+    /// and finds sessions that were live on a previous connection.
     public func attachPTY(sessionId: String) async throws -> Bool {
-        _ = sessionId
+        _ = try await call("pty.reattach", params: ["sessionId": sessionId])
         return true
     }
 
@@ -755,7 +813,7 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         let result = try await call("pty.create", params: [
             "workspaceId": workspaceId,
             "name": name,
-            "shell": "/bin/bash",
+            "shell": "bash",
             "args": ["-l"],
             "workDir": "",
             "cols": cols,

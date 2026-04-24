@@ -23,6 +23,8 @@ func Command() *cobra.Command {
 		shellCommand(),
 		runCommand(),
 		portalCommand(),
+		sshVMCommand(),
+		openEditorCommand(),
 	)
 	return cmd
 }

@@ -99,7 +99,20 @@ private struct RepoSection: View {
     @State private var confirmDeleteProject = false
 
     private var isRegisteredProject: Bool {
-        appState.projects.contains { $0.id == repo.id }
+        resolvedProjectID != nil
+    }
+
+    private var resolvedProjectID: String? {
+        if appState.projects.contains(where: { $0.id == repo.id }) {
+            return repo.id
+        }
+        for ws in repo.workspaces {
+            let pid = (ws.projectId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !pid.isEmpty, appState.projects.contains(where: { $0.id == pid }) {
+                return pid
+            }
+        }
+        return nil
     }
     
     private var hasRootWorkspace: Bool {
@@ -143,7 +156,7 @@ private struct RepoSection: View {
                 .accessibilityIdentifier("project_header_\(repo.id)")
 
                 Button {
-                    appState.createIntent = .newSandbox(projectID: repo.id)
+                    appState.createIntent = .newSandbox(projectID: resolvedProjectID ?? repo.id)
                     appState.showNewWorkspace = true
                 } label: {
                     Image(systemName: "plus")
@@ -170,7 +183,8 @@ private struct RepoSection: View {
                 titleVisibility: .visible
             ) {
                 Button("Delete", role: .destructive) {
-                    Task { await appState.removeProject(id: repo.id) }
+                    guard let projectID = resolvedProjectID else { return }
+                    Task { await appState.removeProject(id: projectID) }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -246,32 +260,40 @@ private struct WorkspaceRow: View {
     let isSelected: Bool
     @EnvironmentObject var appState: AppState
     @State private var hover = false
-    
+
     private var isRoot: Bool { (workspace.parentWorkspaceId ?? "").isEmpty }
     private var displayName: String { isRoot ? "Base" : workspace.name }
+    private var currentOp: WorkspaceOpState? { appState.workspaceOps[workspace.id] }
 
     var body: some View {
         HStack(spacing: 7) {
-            StatusDot(status: workspace.status)
+            StatusDot(status: workspace.status, opState: currentOp)
             Text(displayName)
                 .font(.system(size: 13))
                 .foregroundColor(Theme.label)
                 .lineLimit(1)
-            if isRoot {
-                Text("root")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(Theme.labelTertiary)
-            }
-            if workspace.hasActiveTunnels {
-                Image(systemName: "dot.radiowaves.left.and.right")
-                    .font(.system(size: 10))
-                    .foregroundColor(Theme.accent)
-            }
-            if !workspace.shortRuntimeBadge.isEmpty {
-                Text(workspace.shortRuntimeBadge)
-                    .font(.system(size: 9, weight: .medium))
+            if let op = currentOp {
+                Text(op.label)
+                    .font(.system(size: 11))
                     .foregroundColor(Theme.labelTertiary)
                     .lineLimit(1)
+            } else {
+                if isRoot {
+                    Text("root")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Theme.labelTertiary)
+                }
+                if workspace.hasActiveTunnels {
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.accent)
+                }
+                if !workspace.shortRuntimeBadge.isEmpty {
+                    Text(workspace.shortRuntimeBadge)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(Theme.labelTertiary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -296,15 +318,24 @@ private struct WorkspaceContextMenu: View {
     let workspace: Workspace
     @EnvironmentObject var appState: AppState
 
+    private var isBusy: Bool { appState.workspaceOps[workspace.id] != nil }
+
     var body: some View {
         switch workspace.state {
         case .stopped, .created:
             Button("Start") { Task { await appState.start(workspace) } }
+                .disabled(isBusy)
+        case .starting:
+            Button("Starting…") { }
+                .disabled(true)
         case .running, .restored:
             Button("Stop") { Task { await appState.stop(workspace) } }
+                .disabled(isBusy)
         case .paused:
             Button("Start") { Task { await appState.start(workspace) } }
+                .disabled(isBusy)
             Button("Stop") { Task { await appState.stop(workspace) } }
+                .disabled(isBusy)
         }
 
         Divider()
@@ -312,6 +343,7 @@ private struct WorkspaceContextMenu: View {
         Button("Remove…", role: .destructive) {
             Task { await appState.remove(workspace) }
         }
+        .disabled(isBusy)
     }
 }
 
@@ -319,29 +351,39 @@ private struct WorkspaceContextMenu: View {
 
 struct StatusDot: View {
     let status: WorkspaceStatus
+    var opState: WorkspaceOpState? = nil
     @State private var pulse = false
 
     var body: some View {
-        ZStack {
-            if status == .running || status == .restored {
-                Circle()
-                    .fill(Theme.green.opacity(0.22))
-                    .frame(width: 14)
-                    .scaleEffect(pulse ? 2.0 : 1.0)
-                    .opacity(pulse ? 0 : 0.5)
-                    .animation(.easeOut(duration: 1.9).repeatForever(autoreverses: false), value: pulse)
+        Group {
+            if opState != nil {
+                ProgressView()
+                    .scaleEffect(0.45)
+                    .frame(width: 14, height: 14)
+            } else {
+                ZStack {
+                    if status == .running || status == .restored {
+                        Circle()
+                            .fill(Theme.green.opacity(0.22))
+                            .frame(width: 14)
+                            .scaleEffect(pulse ? 2.0 : 1.0)
+                            .opacity(pulse ? 0 : 0.5)
+                            .animation(.easeOut(duration: 1.9).repeatForever(autoreverses: false), value: pulse)
+                    }
+                    Circle()
+                        .fill(Theme.statusColor(status).opacity(status == .stopped || status == .created ? 0 : 1))
+                        .overlay(Circle().stroke(
+                            (status == .stopped || status == .created) ? Theme.labelTertiary : .clear,
+                            lineWidth: 1.5))
+                        .frame(width: 7)
+                }
+                .frame(width: 14, height: 14)
+                // Pulse scales up to 2x; without clipping it paints over the sandbox name.
+                .clipped()
+                .onAppear { if status == .running || status == .restored { pulse = true } }
             }
-            Circle()
-                .fill(Theme.statusColor(status).opacity(status == .stopped || status == .created ? 0 : 1))
-                .overlay(Circle().stroke(
-                    (status == .stopped || status == .created) ? Theme.labelTertiary : .clear,
-                    lineWidth: 1.5))
-                .frame(width: 7)
         }
         .frame(width: 14, height: 14)
-        // Pulse scales up to 2×; without clipping it paints over the sandbox name (“ghost” text).
-        .clipped()
-        .onAppear { if status == .running || status == .restored { pulse = true } }
     }
 }
 
@@ -356,10 +398,11 @@ private struct SidebarFooter: View {
         // Outdated overrides connection state — the daemon is reachable but incompatible.
         if case .outdated = appState.daemonStatus { return "Outdated" }
         switch appState.connectionState {
-        case .starting:     return "Starting…"
-        case .connecting:   return "Connecting…"
-        case .connected:    return "Connected"
-        case .disconnected: return "Offline"
+        case .starting:               return "Starting…"
+        case .connecting:             return "Connecting…"
+        case .provisioning(let step): return step
+        case .connected:              return "Connected"
+        case .disconnected:           return "Offline"
         }
     }
 
@@ -375,9 +418,10 @@ private struct SidebarFooter: View {
     private var connectionTextColor: Color {
         if case .outdated = appState.daemonStatus { return Theme.labelSecondary }
         switch appState.connectionState {
-        case .connected:             return Theme.labelSecondary
-        case .starting, .connecting: return Theme.labelSecondary
-        case .disconnected:          return Theme.labelTertiary
+        case .connected:                         return Theme.labelSecondary
+        case .starting, .connecting:             return Theme.labelSecondary
+        case .provisioning:                      return Theme.labelSecondary
+        case .disconnected:                      return Theme.labelTertiary
         }
     }
 
@@ -487,6 +531,10 @@ private struct FooterMenuBtn: View {
 
             Button("Connect to Daemon…") {
                 showDaemonPanel = true
+            }
+
+            Button("Install / Update Daemon…") {
+                appState.installDaemon()
             }
 
             Divider()

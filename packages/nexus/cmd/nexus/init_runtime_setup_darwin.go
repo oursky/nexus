@@ -19,10 +19,10 @@ var (
 )
 
 // runInitRuntimeBootstrapDarwin handles darwin init bootstrap.
-// Firecracker is Linux-only; on darwin we always write seatbelt as the
-// runtime backend hint so nexus exec falls back to the seatbelt sandbox.
+// libkrun is Linux-only; on darwin we write seatbelt as the runtime backend
+// hint so nexus exec falls back to the seatbelt sandbox.
 func runInitRuntimeBootstrapDarwin(projectRoot, runtimeName string) error {
-	if runtimeName != "firecracker" {
+	if runtimeName != "libkrun" {
 		return nil
 	}
 	_ = writeNexusInitEnv(projectRoot, map[string]string{

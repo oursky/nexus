@@ -3,13 +3,14 @@ package workspace
 import "testing"
 
 func TestStateCanTransitionTo(t *testing.T) {
-	allStates := []State{StateCreated, StateRunning, StatePaused, StateStopped, StateRestored, StateRemoved}
+	allStates := []State{StateCreated, StateStarting, StateRunning, StatePaused, StateStopped, StateRestored, StateRemoved}
 
 	validTransitions := map[State][]State{
-		StateCreated:  {StateRunning},
+		StateCreated:  {StateStarting, StateRunning},
+		StateStarting: {StateRunning, StateCreated},
 		StateRunning:  {StatePaused, StateStopped},
 		StatePaused:   {StateRunning, StateStopped},
-		StateStopped:  {StateRunning, StateRestored},
+		StateStopped:  {StateStarting, StateRunning, StateRestored},
 		StateRestored: {StateRunning},
 		StateRemoved:  {},
 	}
@@ -43,6 +44,7 @@ func TestStateIsTerminal(t *testing.T) {
 		terminal bool
 	}{
 		{StateCreated, false},
+		{StateStarting, false},
 		{StateRunning, false},
 		{StatePaused, false},
 		{StateStopped, false},
@@ -59,7 +61,7 @@ func TestStateIsTerminal(t *testing.T) {
 }
 
 func TestRemovedIsAlwaysReachable(t *testing.T) {
-	states := []State{StateCreated, StateRunning, StatePaused, StateStopped, StateRestored}
+	states := []State{StateCreated, StateStarting, StateRunning, StatePaused, StateStopped, StateRestored}
 	for _, s := range states {
 		if !s.CanTransitionTo(StateRemoved) {
 			t.Errorf("state %q should always be able to transition to Removed", s)

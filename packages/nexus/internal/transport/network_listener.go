@@ -245,7 +245,20 @@ func (nl *NetworkListener) serveWSConn(ctx context.Context, conn *websocket.Conn
 			continue
 		}
 
+		// Probe: log method + timing for every incoming message so we can see
+		// if pty.create is queued behind another slow handler.
+		var probe struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(raw, &probe)
+		tHandle := time.Now()
+		log.Printf("transport: ws RECV method=%s id=%v len=%d", probe.Method, probe.ID, len(raw))
+
 		resp := nl.handle(ctx, raw)
+		handleMs := time.Since(tHandle).Milliseconds()
+		log.Printf("transport: ws DONE method=%s id=%v handle_ms=%d", probe.Method, probe.ID, handleMs)
+
 		out, err := json.Marshal(resp)
 		if err != nil {
 			log.Printf("transport: ws marshal response: %v", err)

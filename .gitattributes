@@ -1,0 +1,5 @@
+# Pre-built platform binaries committed to the repo.
+# Marked as binary so git: treats them as opaque blobs (no text diff / EOL
+# conversion), shows "Binary files differ" instead of garbage in git diff, and
+# doesn't attempt to merge them on conflict.
+packages/nexus/cmd/nexus/nexus-libkrun-vm binary

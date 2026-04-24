@@ -30,13 +30,20 @@ type Handler struct {
 	ws     domainws.Repository
 	proj   domainproj.Repository
 	dialer VsockDialer
+	ready  WorkspaceReadyChecker
 }
 
-// VsockDialer is implemented by the Firecracker driver to open an agent
+// VsockDialer is implemented by VM runtime drivers to open an agent
 // connection and map workspace IDs to guest workdirs.
 type VsockDialer interface {
 	AgentConn(ctx context.Context, workspaceID string) (net.Conn, error)
 	GuestWorkdir(workspaceID string) string
+}
+
+// WorkspaceReadyChecker lets the PTY handler gate terminal creation on
+// runtime-specific readiness checks (toolchain/bootstrap completed).
+type WorkspaceReadyChecker interface {
+	WorkspaceReady(ctx context.Context, workspaceID string) (bool, error)
 }
 
 // HandlerOption configures handler dependencies.
@@ -52,9 +59,14 @@ func WithProjectRepo(proj domainproj.Repository) HandlerOption {
 	return func(h *Handler) { h.proj = proj }
 }
 
-// WithVsockDialer enables remote PTY sessions for firecracker workspaces.
+// WithVsockDialer enables remote PTY sessions for VM workspaces.
 func WithVsockDialer(d VsockDialer) HandlerOption {
 	return func(h *Handler) { h.dialer = d }
+}
+
+// WithWorkspaceReadyChecker wires runtime readiness probing into PTY create.
+func WithWorkspaceReadyChecker(c WorkspaceReadyChecker) HandlerOption {
+	return func(h *Handler) { h.ready = c }
 }
 
 // New creates a new Handler backed by the given Registry.
@@ -74,6 +86,7 @@ func (h *Handler) Register(r registry.Registry) {
 	r.Register("pty.rename", h.rename)
 	r.Register("pty.close", h.close)
 	r.Register("pty.write", h.write)
+	r.Register("pty.reattach", h.reattach)
 }
 
 // ── DTOs ─────────────────────────────────────────────────────────────────────
@@ -112,6 +125,10 @@ type writeParams struct {
 	Data      string `json:"data"`
 }
 
+type reattachParams struct {
+	SessionID string `json:"sessionId"`
+}
+
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 func (h *Handler) create(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -131,24 +148,48 @@ func (h *Handler) create(ctx context.Context, raw json.RawMessage) (any, error) 
 		rows = 24
 	}
 
-	if h.dialer != nil && h.ws != nil {
-		ws, err := h.ws.Get(ctx, p.WorkspaceID)
-		if err == nil && ws != nil && ws.Backend == "firecracker" {
-			return h.createFirecrackerSession(ctx, p, ws, cols, rows)
+	// Look up workspace once; used for both the state guard and session routing.
+	var ws *domainws.Workspace
+	if h.ws != nil {
+		if found, err := h.ws.Get(ctx, p.WorkspaceID); err == nil && found != nil {
+			ws = found
 		}
+	}
+
+	// Guard: reject PTY connections until the workspace is fully running.
+	// The workspace transitions to StateRunning only after driver.Start()
+	// completes (including any guest toolchain bootstrap).  Enforcing this here
+	// prevents the UI from opening a terminal into a partially-started workspace.
+	if ws != nil && ws.State != domainws.StateRunning {
+		return nil, fmt.Errorf("workspace %s is not ready (state: %s); wait for it to finish starting", p.WorkspaceID, ws.State)
+	}
+	if h.ready != nil && ws != nil && backendUsesGuestControlChannel(ws.Backend) {
+		ready, err := h.ready.WorkspaceReady(ctx, p.WorkspaceID)
+		if err != nil {
+			return nil, fmt.Errorf("workspace %s readiness probe failed: %w", p.WorkspaceID, err)
+		}
+		if !ready {
+			return nil, fmt.Errorf("workspace %s is not ready (guest provisioning still in progress); wait for workspace.ready=true", p.WorkspaceID)
+		}
+	}
+
+	if h.dialer != nil && ws != nil && backendUsesGuestControlChannel(ws.Backend) {
+		return h.createVMSession(ctx, p, ws, cols, rows)
 	}
 
 	return h.createLocalSession(ctx, p, cols, rows)
 }
 
-func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, ws *domainws.Workspace, cols, rows int) (any, error) {
-	log.Printf("pty: createFirecrackerSession: connecting to agent for %s", p.WorkspaceID)
+func (h *Handler) createVMSession(ctx context.Context, p createParams, ws *domainws.Workspace, cols, rows int) (any, error) {
+	tStart := time.Now()
+	log.Printf("pty: createVMSession: START wsID=%s", p.WorkspaceID)
 	conn, err := h.dialer.AgentConn(ctx, p.WorkspaceID)
+	agentMs := time.Since(tStart).Milliseconds()
 	if err != nil {
-		log.Printf("pty: createFirecrackerSession: agent connect failed: %v", err)
-		return nil, fmt.Errorf("firecracker agent connect: %w", err)
+		log.Printf("pty: createVMSession: AgentConn FAIL wsID=%s agent_ms=%d err=%v", p.WorkspaceID, agentMs, err)
+		return nil, fmt.Errorf("guest agent connect: %w", err)
 	}
-	log.Printf("pty: createFirecrackerSession: agent connected")
+	log.Printf("pty: createVMSession: AgentConn OK wsID=%s agent_ms=%d", p.WorkspaceID, agentMs)
 
 	workDir := h.dialer.GuestWorkdir(p.WorkspaceID)
 	if workDir == "" {
@@ -195,7 +236,7 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 	}
 	if err := enc.Encode(shellOpenMsg); err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("firecracker shell.open send: %w", err)
+		return nil, fmt.Errorf("guest shell.open send: %w", err)
 	}
 
 	_ = ws
@@ -209,7 +250,7 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 				Stderr   string `json:"stderr"`
 			}
 			if err := dec.Decode(&env); err != nil {
-				ackCh <- fmt.Errorf("firecracker shell.open ack: %w", err)
+				ackCh <- fmt.Errorf("guest shell.open ack: %w", err)
 				return
 			}
 			if env.ID != "" && env.ID != sessionID {
@@ -219,7 +260,7 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 				continue
 			}
 			if env.Type == "" {
-				ackCh <- errors.New("firecracker guest agent is outdated: shell.open/shell.write protocol not supported; refresh rootfs agent payload")
+				ackCh <- errors.New("guest agent is outdated: shell.open/shell.write protocol not supported; refresh rootfs agent payload")
 				return
 			}
 			// Accept both "ack" (new protocol) and "result" (legacy protocol).
@@ -227,7 +268,7 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 				continue
 			}
 			if env.ExitCode != 0 {
-				ackCh <- fmt.Errorf("firecracker shell.open failed: %s", env.Stderr)
+				ackCh <- fmt.Errorf("guest shell.open failed: %s", env.Stderr)
 				return
 			}
 			ackCh <- nil
@@ -235,27 +276,40 @@ func (h *Handler) createFirecrackerSession(ctx context.Context, p createParams, 
 		}
 	}()
 
+	tAck := time.Now()
 	select {
 	case err := <-ackCh:
+		ackMs := time.Since(tAck).Milliseconds()
 		if err != nil {
-			log.Printf("pty: createFirecrackerSession: ack error: %v", err)
+			log.Printf("pty: createVMSession: ACK ERROR wsID=%s ack_ms=%d err=%v", p.WorkspaceID, ackMs, err)
 			_ = conn.Close()
 			return nil, err
 		}
-		log.Printf("pty: createFirecrackerSession: ack received OK")
+		log.Printf("pty: createVMSession: ACK OK wsID=%s ack_ms=%d total_ms=%d", p.WorkspaceID, ackMs, time.Since(tStart).Milliseconds())
 	case <-time.After(8 * time.Second):
+		log.Printf("pty: createVMSession: ACK TIMEOUT wsID=%s total_ms=%d", p.WorkspaceID, time.Since(tStart).Milliseconds())
 		_ = conn.Close()
-		return nil, errors.New("firecracker shell.open ack timed out")
+		return nil, errors.New("guest shell.open ack timed out")
 	}
 
+	s.SetNotifier(notifier)
 	h.reg.Register(s)
-	go h.streamFirecrackerSession(s, dec, notifier)
-	log.Printf("pty: createFirecrackerSession: session %s registered, streaming", s.ID)
+	go h.streamVMSession(s, dec)
+	log.Printf("pty: createVMSession: REGISTERED session=%s wsID=%s total_ms=%d", s.ID, p.WorkspaceID, time.Since(tStart).Milliseconds())
 	return s.Info(), nil
 }
 
-func (h *Handler) streamFirecrackerSession(s *appty.Session, dec *json.Decoder, notifier transport.Notifier) {
-	log.Printf("pty: streamFirecrackerSession: starting for %s", s.ID)
+func backendUsesGuestControlChannel(backend string) bool {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case "", "firecracker", "libkrun":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *Handler) streamVMSession(s *appty.Session, dec *json.Decoder) {
+	log.Printf("pty: streamVMSession: starting for %s", s.ID)
 	defer func() {
 		_ = s.RemoteConn.Close()
 		h.reg.Unregister(s.ID)
@@ -276,23 +330,26 @@ func (h *Handler) streamFirecrackerSession(s *appty.Session, dec *json.Decoder, 
 		if err := dec.Decode(&env); err != nil {
 			if !s.Closing.Load() {
 				log.Printf("pty: vsock read error for session %s: %v", s.ID, err)
-				notifier.Notify("pty.exit", map[string]any{"sessionId": s.ID, "exitCode": -1})
+				// Read the current notifier so pty.exit reaches whoever is attached now.
+				s.GetNotifier().Notify("pty.exit", map[string]any{"sessionId": s.ID, "exitCode": -1})
 			}
 			return
 		}
-		log.Printf("pty: streamFirecrackerSession: received type=%q id=%q", env.Type, env.ID)
+		log.Printf("pty: streamVMSession: received type=%q id=%q", env.Type, env.ID)
+		n := s.GetNotifier()
 		switch env.Type {
 		case "chunk":
-			notifier.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Data})
+			s.AppendScrollback(env.Data)
+			n.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Data})
 		case "result", "":
-			log.Printf("pty: streamFirecrackerSession: sending pty.exit exitCode=%d", env.ExitCode)
+			log.Printf("pty: streamVMSession: sending pty.exit exitCode=%d", env.ExitCode)
 			if env.Stdout != "" {
-				notifier.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Stdout})
+				n.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Stdout})
 			}
 			if env.Stderr != "" {
-				notifier.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Stderr})
+				n.Notify("pty.data", map[string]any{"sessionId": s.ID, "data": env.Stderr})
 			}
-			notifier.Notify("pty.exit", map[string]any{"sessionId": s.ID, "exitCode": env.ExitCode})
+			n.Notify("pty.exit", map[string]any{"sessionId": s.ID, "exitCode": env.ExitCode})
 			return
 		case "ack":
 			// shell.write ack
@@ -365,9 +422,11 @@ func (h *Handler) createLocalSession(ctx context.Context, p createParams, cols, 
 		for {
 			n, err := ptmx.Read(buf)
 			if n > 0 {
+				chunk := string(buf[:n])
+				s.AppendScrollback(chunk)
 				notifier.Notify("pty.data", map[string]any{
 					"sessionId": s.ID,
-					"data":      string(buf[:n]),
+					"data":      chunk,
 				})
 			}
 			if err != nil {
@@ -483,11 +542,10 @@ func (h *Handler) write(_ context.Context, raw json.RawMessage) (any, error) {
 		return nil, rpcerrors.NotFound("session not found")
 	}
 	if s.Remote && s.Enc != nil {
-		data := strings.ReplaceAll(p.Data, "\r", "\n")
 		if err := s.Enc.Encode(map[string]any{
 			"id":   p.SessionID,
 			"type": "shell.write",
-			"data": data,
+			"data": p.Data,
 		}); err != nil {
 			return nil, fmt.Errorf("write to remote shell: %w", err)
 		}
@@ -500,6 +558,29 @@ func (h *Handler) write(_ context.Context, raw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("write to PTY: %w", err)
 	}
 	return map[string]any{}, nil
+}
+
+// reattach redirects an existing PTY session's pty.data notifications to the
+// current WebSocket connection. Called by the Mac app whenever it reconnects
+// and finds live sessions from a previous connection — without this, the stream
+// goroutine keeps pushing to the old (dead) notifier and the terminal is blank.
+func (h *Handler) reattach(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p reattachParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, rpcerrors.InvalidParams(err.Error())
+	}
+	s := h.reg.Get(p.SessionID)
+	if s == nil {
+		return nil, rpcerrors.NotFound("session not found")
+	}
+	n := transport.NotifierFromCtx(ctx)
+	s.SetNotifier(n)
+	// Replay buffered output so the freshly-connected client sees existing content.
+	if sb := s.Scrollback(); sb != "" {
+		n.Notify("pty.data", map[string]any{"sessionId": p.SessionID, "data": sb})
+	}
+	log.Printf("pty: reattach: session %s reattached to new client (scrollback=%d bytes)", p.SessionID, len(s.Scrollback()))
+	return map[string]bool{"ok": true}, nil
 }
 
 func defaultShell() string {

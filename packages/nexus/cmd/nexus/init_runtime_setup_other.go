@@ -18,8 +18,8 @@ var (
 )
 
 func runInitRuntimeBootstrapOther(projectRoot, runtimeName string) error {
-	if runtimeName != "firecracker" {
+	if runtimeName != "libkrun" {
 		return nil
 	}
-	return fmt.Errorf("firecracker is only supported on Linux (with KVM); current platform is %s", runtime.GOOS)
+	return fmt.Errorf("libkrun is only supported on Linux (with KVM); current platform is %s", runtime.GOOS)
 }

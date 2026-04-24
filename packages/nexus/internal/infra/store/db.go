@@ -28,7 +28,13 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("create store dir: %w", err)
 	}
 
-	sqlDB, err := sql.Open("sqlite", path)
+	// _busy_timeout: SQLite will retry writes for up to 30 s before returning
+	// SQLITE_BUSY. Without this, concurrent workspace starts cause the
+	// persist-state write to fail immediately with "database is locked".
+	// _journal_mode=WAL: allows concurrent readers + one writer without
+	// blocking reads during long write transactions (workspace start).
+	dsn := path + "?_busy_timeout=30000&_journal_mode=WAL"
+	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}

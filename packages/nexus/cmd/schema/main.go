@@ -471,6 +471,7 @@ func buildSchema() Schema {
 				"parentWorkspaceId": str(true),
 				"lineageRootId":     str(true),
 				"backend":           str(true),
+				"guestIp":           str(true),
 				"configBundle":      str(true),
 				"created_at":        timestamp(true),
 				"updated_at":        timestamp(true),

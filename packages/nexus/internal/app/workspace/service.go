@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -19,11 +20,19 @@ type Service struct {
 	repo        workspace.Repository
 	projectRepo project.Repository
 	driver      runtime.Driver
+	// bgCtx is a long-lived context used for async workspace starts so they
+	// are not cancelled when the originating RPC request context expires.
+	bgCtx context.Context
+}
+
+type runtimeReadinessDriver interface {
+	WorkspaceReady(ctx context.Context, ws *workspace.Workspace) (bool, error)
 }
 
 // NewService constructs a Service. driver may be nil if no runtime backend is available.
-func NewService(repo workspace.Repository, projectRepo project.Repository, driver runtime.Driver) *Service {
-	return &Service{repo: repo, projectRepo: projectRepo, driver: driver}
+// bgCtx should be the daemon's root context (cancelled only on shutdown).
+func NewService(repo workspace.Repository, projectRepo project.Repository, driver runtime.Driver, bgCtx context.Context) *Service {
+	return &Service{repo: repo, projectRepo: projectRepo, driver: driver, bgCtx: bgCtx}
 }
 
 // Relations is a graph of workspaces grouped by repo.
@@ -68,7 +77,7 @@ func (s *Service) Info(ctx context.Context, id string) (*workspace.Workspace, er
 	if err != nil {
 		return nil, workspace.ErrNotFound
 	}
-	return ws, nil
+	return s.cloneWithGuestIP(ctx, ws), nil
 }
 
 func (s *Service) List(ctx context.Context) ([]*workspace.Workspace, error) {
@@ -77,9 +86,16 @@ func (s *Service) List(ctx context.Context) ([]*workspace.Workspace, error) {
 		return nil, fmt.Errorf("list workspaces: %w", err)
 	}
 	sort.Slice(all, func(i, j int) bool {
+		if all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].ID < all[j].ID
+		}
 		return all[i].CreatedAt.Before(all[j].CreatedAt)
 	})
-	return all, nil
+	out := make([]*workspace.Workspace, len(all))
+	for i, ws := range all {
+		out[i] = s.cloneWithGuestIP(ctx, ws)
+	}
+	return out, nil
 }
 
 func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*workspace.Workspace, error) {
@@ -146,6 +162,9 @@ func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*works
 	return ws, nil
 }
 
+// Start transitions a workspace to StateStarting immediately and boots the VM
+// in the background. The caller should poll workspace.info until state==running.
+// If the workspace is already starting or running, it returns the current state.
 func (s *Service) Start(ctx context.Context, id string) (*workspace.Workspace, error) {
 	ws, err := s.repo.Get(ctx, id)
 	if err != nil {
@@ -154,24 +173,95 @@ func (s *Service) Start(ctx context.Context, id string) (*workspace.Workspace, e
 	if ws.State == workspace.StateRemoved {
 		return nil, fmt.Errorf("cannot start removed workspace: %s", id)
 	}
-
-	if s.driver != nil {
-		if err := s.driver.Start(ctx, ws); err != nil {
-			return nil, fmt.Errorf("runtime start: %w", err)
-		}
-		// Backfill backend for workspaces created before the backend field was stamped.
-		if ws.Backend == "" {
-			ws.Backend = s.driver.Backend()
-		}
+	// Idempotent: if already starting or running, return current state.
+	if ws.State == workspace.StateStarting || ws.State == workspace.StateRunning {
+		return s.cloneWithGuestIP(ctx, ws), nil
 	}
 
-	ws.State = workspace.StateRunning
+	// Transition to starting immediately so the caller can return to the client.
+	ws.State = workspace.StateStarting
 	ws.UpdatedAt = time.Now().UTC()
 	if err := s.repo.Update(ctx, ws); err != nil {
-		return nil, fmt.Errorf("persist start: %w", err)
+		return nil, fmt.Errorf("persist starting: %w", err)
 	}
 
-	return ws, nil
+	wsCopy := *ws
+	go s.runStartAsync(&wsCopy)
+
+	return s.cloneWithGuestIP(ctx, ws), nil
+}
+
+// runStartAsync performs the slow driver.Start work in the background and
+// transitions the workspace to running (success) or created (failure).
+// If the driver supports WorkspaceReady, it polls until tools are fully
+// provisioned before marking the workspace as running (keeping it in the
+// starting state during package installation to block premature PTY access).
+func (s *Service) runStartAsync(ws *workspace.Workspace) {
+	ctx := s.bgCtx
+	id := ws.ID
+
+	var startErr error
+	if s.driver != nil {
+		startErr = s.driver.Start(ctx, ws)
+	}
+
+	// Re-fetch latest state in case it was updated externally while we were starting.
+	current, fetchErr := s.repo.Get(ctx, id)
+	if fetchErr != nil {
+		log.Printf("[workspace] runStartAsync: workspace %s disappeared during start: %v", id, fetchErr)
+		return
+	}
+
+	if startErr != nil {
+		log.Printf("[workspace] runStartAsync: start failed for %s: %v", id, startErr)
+		// Roll back to created so the user can retry.
+		current.State = workspace.StateCreated
+		current.UpdatedAt = time.Now().UTC()
+		_ = s.repo.Update(ctx, current)
+		return
+	}
+
+	// If the driver supports readiness probing, keep the workspace in
+	// StateStarting until tools are fully provisioned (apt-get installs,
+	// opencode/codex npm installs, Docker startup, etc.).  This prevents the
+	// Mac app from prematurely showing "running" and keeps PTY sessions blocked
+	// until the guest is truly ready.
+	if rd, ok := s.driver.(runtimeReadinessDriver); ok {
+		wsCopy := *current
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		log.Printf("[workspace] runStartAsync: waiting for workspace %s to be ready (tool provisioning)...", id)
+		for {
+			ready, err := rd.WorkspaceReady(ctx, &wsCopy)
+			if err != nil {
+				log.Printf("[workspace] runStartAsync: readiness probe error for %s: %v", id, err)
+			}
+			if ready {
+				log.Printf("[workspace] runStartAsync: workspace %s is ready", id)
+				break
+			}
+			select {
+			case <-ctx.Done():
+				log.Printf("[workspace] runStartAsync: context cancelled waiting for %s readiness", id)
+				return
+			case <-ticker.C:
+			}
+		}
+		// Re-fetch in case state was mutated externally during the wait.
+		if cur, err := s.repo.Get(ctx, id); err == nil {
+			current = cur
+		}
+	}
+
+	// Backfill backend for workspaces created before the backend field was stamped.
+	if current.Backend == "" && s.driver != nil {
+		current.Backend = s.driver.Backend()
+	}
+	current.State = workspace.StateRunning
+	current.UpdatedAt = time.Now().UTC()
+	if err := s.repo.Update(ctx, current); err != nil {
+		log.Printf("[workspace] runStartAsync: persist running failed for %s: %v", id, err)
+	}
 }
 
 // DiscoveredPort is a port discovered from docker-compose or workspace config.
@@ -269,7 +359,7 @@ func (s *Service) Stop(ctx context.Context, id string) (*workspace.Workspace, er
 	if err := s.repo.Update(ctx, ws); err != nil {
 		return nil, fmt.Errorf("persist stop: %w", err)
 	}
-	return ws, nil
+	return s.cloneWithGuestIP(ctx, ws), nil
 }
 
 func (s *Service) Remove(ctx context.Context, id string) error {
@@ -316,7 +406,14 @@ func (s *Service) Ready(ctx context.Context, id string) (bool, error) {
 	if err != nil {
 		return false, workspace.ErrNotFound
 	}
-	return ws.State == workspace.StateRunning, nil
+	if ws.State != workspace.StateRunning {
+		return false, nil
+	}
+	checker, ok := s.driver.(runtimeReadinessDriver)
+	if !ok || checker == nil {
+		return true, nil
+	}
+	return checker.WorkspaceReady(ctx, ws)
 }
 
 func (s *Service) Relations(ctx context.Context, id string) (*Relations, error) {
@@ -372,6 +469,36 @@ func (s *Service) Relations(ctx context.Context, id string) (*Relations, error) 
 		return result.Groups[i].RepoID < result.Groups[j].RepoID
 	})
 	return result, nil
+}
+
+func (s *Service) cloneWithGuestIP(ctx context.Context, ws *workspace.Workspace) *workspace.Workspace {
+	if ws == nil {
+		return nil
+	}
+	out := *ws
+	s.attachGuestIP(ctx, &out)
+	return &out
+}
+
+func (s *Service) attachGuestIP(ctx context.Context, ws *workspace.Workspace) {
+	ws.GuestIP = ""
+	if s.driver == nil {
+		return
+	}
+	if ws.State != workspace.StateRunning && ws.State != workspace.StateRestored {
+		return
+	}
+	backend := strings.ToLower(strings.TrimSpace(ws.Backend))
+	if backend != "firecracker" && backend != "libkrun" {
+		return
+	}
+	ip, ok := s.driver.GuestSSHHost(ctx, ws.ID)
+	if ok {
+		ip = strings.TrimSpace(ip)
+		if ip != "" {
+			ws.GuestIP = ip
+		}
+	}
 }
 
 func normalizeRef(ref string) string {

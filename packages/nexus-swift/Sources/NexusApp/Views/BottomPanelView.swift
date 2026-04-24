@@ -1,18 +1,216 @@
 import NexusCore
 import SwiftUI
 
-// The inspector panel shows only the Ports pane.
-
 // MARK: - Panel root
 
 struct BottomPanelView: View {
     let workspace: Workspace
+    @State private var selectedTab: InspectorTab = .ports
+
+    enum InspectorTab: String, CaseIterable {
+        case ports  = "Ports"
+        case vmLog  = "VM Log"
+    }
 
     var body: some View {
-        PortsPane(workspace: workspace)
-            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
-            // Opaque surface: vibrancy behind dense tables causes ghosting on liquid glass styles.
+        VStack(spacing: 0) {
+            // Tab bar
+            HStack(spacing: 0) {
+                ForEach(InspectorTab.allCases, id: \.self) { tab in
+                    Button {
+                        selectedTab = tab
+                    } label: {
+                        Text(tab.rawValue)
+                            .font(.system(size: 11, weight: selectedTab == tab ? .semibold : .regular))
+                            .foregroundColor(selectedTab == tab ? Theme.label : Theme.labelSecondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .frame(maxHeight: .infinity)
+                    }
+                    .buttonStyle(.plain)
+                    .background(
+                        VStack {
+                            Spacer()
+                            Rectangle()
+                                .fill(selectedTab == tab ? Theme.accent : Color.clear)
+                                .frame(height: 2)
+                        }
+                    )
+                }
+                Spacer()
+            }
+            .frame(height: 30)
             .background(Theme.bgContent)
+            .overlay(alignment: .bottom) {
+                Divider().overlay(Theme.separator)
+            }
+
+            Group {
+                switch selectedTab {
+                case .ports:
+                    PortsPane(workspace: workspace)
+                case .vmLog:
+                    VMLogPane(workspace: workspace)
+                }
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+            .background(Theme.bgContent)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+        .background(Theme.bgContent)
+    }
+}
+
+// MARK: - VM Log pane
+
+private struct VMLogPane: View {
+    let workspace: Workspace
+    @EnvironmentObject var appState: AppState
+    @State private var result: WorkspaceSerialLog = WorkspaceSerialLog()
+    @State private var isLoading = false
+    @State private var lastError: String?
+    @State private var refreshTask: Task<Void, Never>?
+
+    private var isVM: Bool {
+        let b = (workspace.backend ?? "").lowercased()
+        return b == "firecracker" || b == "libkrun"
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack(spacing: 8) {
+                if isLoading {
+                    ProgressView().scaleEffect(0.6).frame(width: 12, height: 12)
+                }
+                Text(result.available ? result.path : "VM Serial Log")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(Theme.labelTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if !result.lines.isEmpty {
+                    Button {
+                        let text = result.lines.joined(separator: "\n")
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(text, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.labelSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy all log lines")
+                }
+
+                Button {
+                    Task { await fetch() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.labelSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Refresh")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Theme.bgContent)
+            .overlay(alignment: .bottom) {
+                Divider().overlay(Theme.separator)
+            }
+
+            // Content
+            if !isVM {
+                VStack(spacing: 6) {
+                    Image(systemName: "desktopcomputer")
+                        .font(.system(size: 20, weight: .ultraLight))
+                        .foregroundColor(Theme.labelTertiary)
+                    Text("Serial log is available for VM workspaces (Firecracker / libkrun)")
+                        .font(Theme.fontSm)
+                        .foregroundColor(Theme.labelTertiary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if !result.available && !isLoading {
+                VStack(spacing: 6) {
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 20, weight: .ultraLight))
+                        .foregroundColor(Theme.labelTertiary)
+                    Text(workspace.state.isActive ? "No log yet" : "Start the workspace to see the serial log")
+                        .font(Theme.fontSm)
+                        .foregroundColor(Theme.labelTertiary)
+                        .multilineTextAlignment(.center)
+                    if let err = lastError {
+                        Text(err)
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.labelTertiary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 16)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(result.lines.enumerated()), id: \.offset) { _, line in
+                                Text(line.isEmpty ? " " : line)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(Theme.label)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 1)
+                            }
+                            Color.clear.frame(height: 1).id("bottom")
+                        }
+                        .padding(.vertical, 6)
+                    }
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                    .onChange(of: result.lines.count) {
+                        withAnimation(.none) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+        .task(id: workspace.id) {
+            await startPolling()
+        }
+        .onDisappear {
+            refreshTask?.cancel()
+            refreshTask = nil
+        }
+    }
+
+    private func startPolling() async {
+        refreshTask?.cancel()
+        await fetch()
+        refreshTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                await fetch()
+            }
+        }
+    }
+
+    @MainActor
+    private func fetch() async {
+        guard let client = appState.client as? WebSocketDaemonClient else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            result = try await client.workspaceSerialLog(workspaceId: workspace.id, lines: 300)
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
     }
 }
 

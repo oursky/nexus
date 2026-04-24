@@ -21,7 +21,7 @@ func runInitRuntimeBootstrap(projectRoot, runtimeName string) error {
 }
 
 func runInitRuntimeBootstrapUnsupported(projectRoot, runtimeName string) error {
-	if runtimeName != "firecracker" {
+	if runtimeName != "libkrun" {
 		return nil
 	}
 	return &unsupportedPlatformError{goos: runtime.GOOS}
@@ -32,5 +32,5 @@ type unsupportedPlatformError struct {
 }
 
 func (e *unsupportedPlatformError) Error() string {
-	return "firecracker is only supported on Linux (with KVM); current platform is " + e.goos
+	return "libkrun is only supported on Linux (with KVM); current platform is " + e.goos
 }

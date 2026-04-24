@@ -28,7 +28,8 @@ func (s *ProjectStore) Create(ctx context.Context, p *project.Project) error {
 	created := p.CreatedAt.UTC().Format(time.RFC3339Nano)
 	updated := p.UpdatedAt.UTC().Format(time.RFC3339Nano)
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO projects(id, name, data, created_at, updated_at) VALUES(?, ?, ?, ?, ?)`,
+		`INSERT INTO projects(id, name, data, created_at, updated_at) VALUES(?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, data=excluded.data, updated_at=excluded.updated_at`,
 		p.ID, p.Name, string(data), created, updated,
 	)
 	if err != nil {

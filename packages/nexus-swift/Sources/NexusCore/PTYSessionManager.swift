@@ -1,9 +1,11 @@
 import Foundation
 import Combine
+import OSLog
 
 /// Manages multiple PTY sessions (tabs) for a workspace
 @MainActor
 public final class PTYSessionManager: ObservableObject {
+    private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "PTYSessionManager")
 
     /// A single terminal tab
     public struct Tab: Identifiable, Equatable {
@@ -40,6 +42,8 @@ public final class PTYSessionManager: ObservableObject {
     public let workspaceId: String
     private let client: WebSocketDaemonClient
     private var refreshTask: Task<Void, Never>?
+    /// Guard against concurrent createTab calls (e.g. from SwiftUI re-evaluating onAppear).
+    private var isCreatingTab = false
 
     public init(workspaceId: String, client: WebSocketDaemonClient) {
         self.workspaceId = workspaceId
@@ -54,8 +58,32 @@ public final class PTYSessionManager: ObservableObject {
 
     /// Create a new terminal tab
     public func createTab(name: String? = nil) async {
+        let t0 = Date()
+        // Prevent concurrent creation (e.g. SwiftUI calling onAppear multiple times).
+        guard !isCreatingTab else {
+            Self.logger.warning("pty.tab.create SKIPPED-BUSY workspace=\(self.workspaceId, privacy: .public) existing_tabs=\(self.tabs.count, privacy: .public)")
+            return
+        }
+        isCreatingTab = true
+        defer { isCreatingTab = false }
         let tabName = name ?? "Tab \(tabs.count + 1)"
         let tempId = UUID().uuidString
+        let startedAt = Date()
+        let loadingTimeoutSeconds: UInt64 = 20
+
+        let timeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: loadingTimeoutSeconds * 1_000_000_000)
+            guard let self else { return }
+            guard let index = self.tabs.firstIndex(where: { $0.id == tempId }), self.tabs[index].isLoading else {
+                return
+            }
+            Self.logger.error("pty.tab.create UI-TIMEOUT workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public)")
+            self.tabs[index].isLoading = false
+            self.tabs[index].error = "Timed out opening terminal (\(loadingTimeoutSeconds)s)."
+        }
+        defer { timeoutTask.cancel() }
+
+        Self.logger.notice("pty.tab.create ENTER workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) guard_wait_ms=\(Int(Date().timeIntervalSince(t0)*1000), privacy: .public)")
 
         // Add loading tab
         await MainActor.run {
@@ -69,13 +97,21 @@ public final class PTYSessionManager: ObservableObject {
             let cols = 120
             let rows = 40
 
-            let sessionId = try await client.openPTY(
-                workspaceId: workspaceId,
-                name: tabName,
-                cols: cols,
-                rows: rows,
-                useTmux: true
-            )
+            let tOpenPTY = Date()
+            Self.logger.notice("pty.tab.create CALLING-openPTY workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) ms_since_enter=\(Int(Date().timeIntervalSince(startedAt)*1000), privacy: .public)")
+            let sessionId = try await AsyncDeadline.withSeconds(20) {
+                try await self.client.openPTY(
+                    workspaceId: self.workspaceId,
+                    name: tabName,
+                    cols: cols,
+                    rows: rows,
+                    useTmux: true
+                )
+            }
+            let openPTYMs = Int(Date().timeIntervalSince(tOpenPTY) * 1000)
+
+            let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+            Self.logger.notice("pty.tab.create SUCCESS workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) session=\(sessionId, privacy: .public) openPTY_ms=\(openPTYMs, privacy: .public) total_ms=\(elapsedMs, privacy: .public)")
 
             // Update with real session ID
             await MainActor.run {
@@ -94,10 +130,20 @@ public final class PTYSessionManager: ObservableObject {
             setupPTYHandlers(sessionId: sessionId)
 
         } catch {
+            let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+            if case let AsyncDeadlineError.exceeded(seconds) = error {
+                Self.logger.error("pty.tab.create TIMEOUT workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) timeout_s=\(seconds, privacy: .public) elapsed_ms=\(elapsedMs, privacy: .public)")
+            } else {
+                Self.logger.error("pty.tab.create FAILED workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) elapsed_ms=\(elapsedMs, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            }
             await MainActor.run {
                 if let index = tabs.firstIndex(where: { $0.id == tempId }) {
                     tabs[index].isLoading = false
-                    tabs[index].error = error.localizedDescription
+                    if case let AsyncDeadlineError.exceeded(seconds) = error {
+                        tabs[index].error = "Timed out opening terminal (\(seconds)s)."
+                    } else {
+                        tabs[index].error = error.localizedDescription
+                    }
                 }
             }
         }
@@ -132,6 +178,11 @@ public final class PTYSessionManager: ObservableObject {
         }
     }
 
+    /// Write text input to a PTY session (used by headless RPC).
+    public func writePTY(sessionId: String, text: String) async throws {
+        try await client.writePTY(sessionId: sessionId, data: text)
+    }
+
     /// Switch to a different tab
     public func switchToTab(id: String) {
         activeTabId = id
@@ -152,7 +203,7 @@ public final class PTYSessionManager: ObservableObject {
                             id: session.id,
                             name: session.name,
                             isActive: session.id == activeTabId,
-                            isLoading: existing.isLoading,
+                            isLoading: false,
                             error: existing.error
                         ))
                     } else {
@@ -207,7 +258,11 @@ public final class PTYSessionManager: ObservableObject {
     private func setupPTYHandlers(sessionId: String) {
         client.subscribePTY(
             sessionId: sessionId,
-            onData: { _ in /* Data handled by terminal view */ },
+            onData: { text in
+                Task { @MainActor in
+                    TerminalRegistry.shared.appendOutput(text, for: sessionId)
+                }
+            },
             onExit: { [weak self] _ in
                 Task { @MainActor [weak self] in
                     await self?.handleSessionExit(sessionId: sessionId)

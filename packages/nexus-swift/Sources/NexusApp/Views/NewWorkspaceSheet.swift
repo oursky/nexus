@@ -17,6 +17,7 @@ struct NewWorkspaceSheet: View {
     @State private var selectedProjectID = ""
     @State private var createNewProject = false
     @State private var sourceMode: SourceMode = .projectRoot
+    @State private var backend: RuntimeBackend = .firecracker
     @State private var selectedSourceWorkspaceID = ""
     @State private var workspaceNameEdited = false
     @State private var updatingNameFromBranch = false
@@ -38,6 +39,21 @@ struct NewWorkspaceSheet: View {
         case specificSandbox
         case fresh
         var id: String { rawValue }
+    }
+
+    private enum RuntimeBackend: String, CaseIterable, Identifiable {
+        case firecracker
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .firecracker: return "Firecracker"
+            }
+        }
+
+        static func from(_ raw: String) -> RuntimeBackend {
+            return .firecracker
+        }
     }
 
     private var selectedProject: Project? {
@@ -165,6 +181,20 @@ struct NewWorkspaceSheet: View {
                         }
                         .labelsHidden()
                         .accessibilityIdentifier("sandbox_fork_source_picker")
+                    }
+
+                    FormField(
+                        label: "Runtime backend",
+                        hint: sourceMode == .fresh ? "Used for fresh sandbox creation." : "Applies when Fork source is Fresh."
+                    ) {
+                        Picker("Runtime backend", selection: $backend) {
+                            ForEach(RuntimeBackend.allCases) { option in
+                                Text(option.label).tag(option)
+                            }
+                        }
+                        .labelsHidden()
+                        .disabled(sourceMode != .fresh)
+                        .accessibilityIdentifier("sandbox_backend_picker")
                     }
 
                     if sourceMode == .specificSandbox {
@@ -337,6 +367,7 @@ struct NewWorkspaceSheet: View {
             }
             if selectedSourceWorkspaceID.isEmpty, let root = projectRootWorkspace {
                 selectedSourceWorkspaceID = root.id
+                backend = RuntimeBackend.from(root.backend ?? "")
             }
         }
     }
@@ -398,7 +429,8 @@ struct NewWorkspaceSheet: View {
             sourceBranch: nil,
             sourceWorkspaceId: explicitSourceID,
             fresh: useFresh,
-            workspaceName: name
+            workspaceName: name,
+            backend: backend.rawValue
         )
         await appState.createSandbox(request: request)
 

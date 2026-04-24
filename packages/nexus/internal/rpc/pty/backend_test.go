@@ -8,10 +8,9 @@ func TestBackendUsesGuestControlChannel(t *testing.T) {
 		want    bool
 	}{
 		{backend: "firecracker", want: true},
-		{backend: "krun", want: true},
-		{backend: "KRuN", want: true},
+		{backend: "Firecracker", want: true},
 		{backend: "process", want: false},
-		{backend: "", want: false},
+		{backend: "", want: true},
 	}
 
 	for _, tt := range tests {

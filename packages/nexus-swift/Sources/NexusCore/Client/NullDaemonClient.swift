@@ -29,4 +29,7 @@ public struct NullDaemonClient: DaemonClient {
     public func workspaceInfo(id: String) async throws -> WorkspaceInfo { throw Self.err }
     public func getDaemonSandboxResourceSettings() async throws -> SandboxResourceSettings { throw Self.err }
     public func updateDaemonSandboxResourceSettings(_ settings: SandboxResourceSettings) async throws -> SandboxResourceSettings { throw Self.err }
+    public func checkVMSSH(workspaceId: String) async throws -> VMSSHCheckResult { throw Self.err }
+    public func workspaceSerialLog(workspaceId: String, lines: Int) async throws -> WorkspaceSerialLog { throw Self.err }
+    public func daemonLogTail(lines: Int) async throws -> DaemonLogTail { throw Self.err }
 }

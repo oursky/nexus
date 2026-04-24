@@ -63,9 +63,18 @@ func (s *Service) Fork(ctx context.Context, parentID string, spec ForkSpec) (*wo
 	}
 
 	if s.driver != nil {
-		if err := s.driver.Fork(ctx, parent, child); err != nil {
+		childRoot, err := s.driver.Fork(ctx, parent, child)
+		if err != nil {
 			_ = s.repo.Delete(ctx, child.ID)
 			return nil, fmt.Errorf("runtime fork: %w", err)
+		}
+		// Persist the child's project root when the backend created a new
+		// path (e.g. a git worktree). This survives daemon restarts because
+		// firecrackerProjectRoot reads child.Repo from the DB.
+		if childRoot != "" && childRoot != child.Repo {
+			child.Repo = childRoot
+			child.UpdatedAt = time.Now().UTC()
+			_ = s.repo.Update(ctx, child)
 		}
 	}
 

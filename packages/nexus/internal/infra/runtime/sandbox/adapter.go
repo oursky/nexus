@@ -58,10 +58,26 @@ func (a *Adapter) Restore(ctx context.Context, ws *workspace.Workspace, _ *domai
 	return a.d.Restore(ctx, ws.ID)
 }
 
-func (a *Adapter) Fork(ctx context.Context, parent *workspace.Workspace, child *workspace.Workspace) error {
-	return a.d.Fork(ctx, parent.ID, child.ID)
+func (a *Adapter) Fork(ctx context.Context, parent *workspace.Workspace, child *workspace.Workspace) (string, error) {
+	if err := a.d.Fork(ctx, parent.ID, child.ID); err != nil {
+		return "", err
+	}
+	// Return the child root so the service can persist it as child.Repo.
+	return a.d.ProjectRoot(child.ID), nil
 }
 
 func (a *Adapter) Destroy(ctx context.Context, ws *workspace.Workspace) error {
 	return a.d.Destroy(ctx, ws.ID)
+}
+
+func (a *Adapter) GuestSSHHost(ctx context.Context, workspaceID string) (string, bool) {
+	_ = ctx
+	_ = workspaceID
+	return "", false
+}
+
+// WorkspaceReady always returns true for sandbox workspaces since they run as
+// host processes and don't require a separate provisioning phase.
+func (a *Adapter) WorkspaceReady(_ context.Context, _ *workspace.Workspace) (bool, error) {
+	return true, nil
 }

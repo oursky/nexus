@@ -38,18 +38,22 @@ type Harness struct {
 type Option func(*config)
 
 type config struct {
-	firecrackerBin    string
-	firecrackerKernel string
-	firecrackerRootfs string
-	nodeName          string
+	vmKernel string
+	vmRootfs string
+	nodeName string
 }
 
-func WithFirecracker(bin, kernel, rootfs string) Option {
+// WithVM configures the harness to start the daemon with a specific kernel and rootfs.
+func WithVM(kernel, rootfs string) Option {
 	return func(c *config) {
-		c.firecrackerBin = bin
-		c.firecrackerKernel = kernel
-		c.firecrackerRootfs = rootfs
+		c.vmKernel = kernel
+		c.vmRootfs = rootfs
 	}
+}
+
+// WithFirecracker is deprecated; use WithVM.
+func WithFirecracker(bin, kernel, rootfs string) Option {
+	return WithVM(kernel, rootfs)
 }
 
 func WithNodeName(name string) Option {
@@ -66,10 +70,10 @@ func New(t *testing.T, opts ...Option) *Harness {
 		o(cfg)
 	}
 
-	// Check Firecracker availability before building the binary so that skips
+	// Check VM backend availability before building the binary so that skips
 	// happen fast (no multi-second compile) on unsupported platforms / CI
-	// environments that lack Firecracker configuration.
-	RequireFirecracker(t)
+	// environments that lack VM configuration.
+	RequireVM(t)
 
 	dbPath := TempDB(t)
 	socketPath := TempSocket(t)
@@ -100,11 +104,11 @@ func New(t *testing.T, opts ...Option) *Harness {
 		"--network=false", // tests use Unix socket only; avoids port-7777 conflicts
 		"--foreground",    // skip self-daemonize so the child is directly visible
 	}
-	if cfg.firecrackerBin != "" {
+	if cfg.vmKernel != "" {
 		args = append(args,
-			"--firecracker-bin", cfg.firecrackerBin,
-			"--kernel", cfg.firecrackerKernel,
-			"--rootfs", cfg.firecrackerRootfs,
+			"--kernel", cfg.vmKernel,
+			"--rootfs", cfg.vmRootfs,
+			"--driver", "libkrun",
 		)
 	}
 	if cfg.nodeName != "" {

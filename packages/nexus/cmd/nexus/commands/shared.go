@@ -48,8 +48,8 @@ func SetupCommandPath() string {
 
 func NormalizeRuntimeBackend(raw string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "firecracker":
-		return "firecracker", true
+	case "libkrun":
+		return "libkrun", true
 	case "process":
 		return "process", true
 	default:

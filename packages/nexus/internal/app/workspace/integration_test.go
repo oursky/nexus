@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/oursky/nexus/packages/nexus/internal/domain/project"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
@@ -29,7 +30,7 @@ func TestIntegration_CreateAndGetLifecycle(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil) // no runtime driver for integration
+	svc := NewService(wsStore, projStore, nil, context.Background()) // no runtime driver for integration
 	ctx := context.Background()
 
 	// Create
@@ -61,18 +62,20 @@ func TestIntegration_CreateAndGetLifecycle(t *testing.T) {
 		t.Errorf("persisted state: got %q, want %q", persisted.State, workspace.StateCreated)
 	}
 
-	// Start
-	started, err := svc.Start(ctx, ws.ID)
+	// Start returns StateStarting immediately; poll until StateRunning.
+	_, err = svc.Start(ctx, ws.ID)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if started.State != workspace.StateRunning {
-		t.Errorf("started state: got %q", started.State)
+	var check *workspace.Workspace
+	for i := 0; i < 20; i++ {
+		check, _ = wsStore.Get(ctx, ws.ID)
+		if check != nil && check.State == workspace.StateRunning {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-
-	// Verify state persisted
-	check, _ := wsStore.Get(ctx, ws.ID)
-	if check.State != workspace.StateRunning {
+	if check == nil || check.State != workspace.StateRunning {
 		t.Errorf("persisted running state: got %q", check.State)
 	}
 
@@ -113,7 +116,7 @@ func TestIntegration_ForkWithRealPersistence(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil)
+	svc := NewService(wsStore, projStore, nil, context.Background())
 	ctx := context.Background()
 
 	// Create parent
@@ -127,10 +130,7 @@ func TestIntegration_ForkWithRealPersistence(t *testing.T) {
 		t.Fatalf("create parent: %v", err)
 	}
 
-	// Start parent so it's running
-	_, _ = svc.Start(ctx, parent.ID)
-
-	// Fork
+	// Fork (no need to start parent; Fork only rejects removed workspaces)
 	child, err := svc.Fork(ctx, parent.ID, ForkSpec{
 		ChildWorkspaceName: "child-ws",
 		ChildRef:           "feature",
@@ -168,7 +168,7 @@ func TestIntegration_PortsPersistence(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil)
+	svc := NewService(wsStore, projStore, nil, context.Background())
 	ctx := context.Background()
 
 	ws, _ := svc.Create(ctx, workspace.CreateSpec{
@@ -212,7 +212,7 @@ func TestIntegration_CheckoutPersistence(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil)
+	svc := NewService(wsStore, projStore, nil, context.Background())
 	ctx := context.Background()
 
 	ws, _ := svc.Create(ctx, workspace.CreateSpec{
@@ -242,7 +242,7 @@ func TestIntegration_WithProject(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil)
+	svc := NewService(wsStore, projStore, nil, context.Background())
 	ctx := context.Background()
 
 	// Create a project first

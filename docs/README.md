@@ -1,12 +1,16 @@
 # Nexus Docs
 
-Remote workspace platform — run workspaces on a Linux host, controlled from your Mac.
+Remote workspace platform — run workspaces in isolated Linux microVMs on a Linux host, controlled from your Mac.
 
 ## Quick Start
 
+The primary interface is **NexusApp** (macOS). Connect it to a Linux host via SSH; it deploys the daemon and manages workspaces for you.
+
+For CLI / scripting use:
+
 ```bash
 # Connect the CLI to a remote daemon
-nexus daemon connect newman@linuxbox --port 7777
+nexus daemon connect user@linuxbox --port 7777
 
 # Create and start a workspace
 nexus workspace create

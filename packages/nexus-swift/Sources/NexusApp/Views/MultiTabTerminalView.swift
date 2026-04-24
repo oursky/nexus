@@ -21,13 +21,13 @@ struct MultiTabTerminalView: View {
     @State private var newTabName = ""
     private let client: WebSocketDaemonClient
 
+    @MainActor
     init(workspace: Workspace, client: WebSocketDaemonClient) {
         self.workspace = workspace
         self.client = client
-        _sessionManager = StateObject(wrappedValue: PTYSessionManager(
-            workspaceId: workspace.id,
-            client: client
-        ))
+        _sessionManager = StateObject(
+            wrappedValue: TerminalRegistry.shared.ensureManager(workspaceId: workspace.id, client: client)
+        )
     }
 
     // Colours shared by tab bar and terminal so the card is one unified dark surface.
@@ -53,7 +53,7 @@ struct MultiTabTerminalView: View {
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .background(Self.termBg)
         .onAppear {
-            sessionManager.startRefreshLoop()
+            TerminalRegistry.shared.register(sessionManager)
             Task {
                 await sessionManager.refreshTabs()
                 // Create initial tab only when there are no persisted sessions.
@@ -61,9 +61,6 @@ struct MultiTabTerminalView: View {
                     await sessionManager.createTab(name: "Terminal 1")
                 }
             }
-        }
-        .onDisappear {
-            sessionManager.stopRefreshLoop()
         }
         .alert("Rename Tab", isPresented: $showingRenameSheet) {
             TextField("Tab name", text: $newTabName)
@@ -374,7 +371,15 @@ private struct TabTerminalView: NSViewRepresentable {
             client.subscribePTY(
                 sessionId: sessionId,
                 onData: { [weak self] text in
-                    DispatchQueue.main.async { self?.termView?.feed(text: text) }
+                    DispatchQueue.main.async {
+                        self?.termView?.feed(text: text)
+                        let sid = self?.sessionId ?? ""
+                        if !sid.isEmpty {
+                            Task { @MainActor in
+                                TerminalRegistry.shared.appendOutput(text, for: sid)
+                            }
+                        }
+                    }
                 },
                 onExit: { [weak self] code in
                     DispatchQueue.main.async {
@@ -387,6 +392,9 @@ private struct TabTerminalView: NSViewRepresentable {
 
         func unsubscribe() {
             client.unsubscribePTY(sessionId: sessionId)
+            Task { @MainActor in
+                TerminalRegistry.shared.removeBuffer(for: sessionId)
+            }
         }
 
         // MARK: TerminalViewDelegate
