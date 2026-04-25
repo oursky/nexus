@@ -224,7 +224,11 @@ func startCommand() *cobra.Command {
 
 				// Pre-bake developer tools into the base rootfs so workspaces start
 				// instantly instead of spending 5-10 min on apt-get/npm install.
-				if isLibkrun && LibkrunBakeFn != nil {
+				// CI/provisioning lanes can opt out to avoid long synchronous daemon
+				// startup by setting NEXUS_LIBKRUN_SKIP_BAKE=1.
+				skipLibkrunBake := strings.EqualFold(strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_SKIP_BAKE")), "1") ||
+					strings.EqualFold(strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_SKIP_BAKE")), "true")
+				if isLibkrun && LibkrunBakeFn != nil && !skipLibkrunBake {
 					LibkrunBakeFn(cfg.RootFSPath, cfg.KernelPath)
 				}
 			}
