@@ -6,6 +6,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -77,6 +79,14 @@ func rootlessLibkrunLibDir() string {
 
 func rootlessStateFilePath() string {
 	return filepath.Join(rootlessRootlessDirState(), "state.json")
+}
+
+func prebuiltVMBundleURL() string {
+	return strings.TrimSpace(os.Getenv("NEXUS_PREBUILT_VM_ASSET_URL"))
+}
+
+func prebuiltVMBundleSHA256() string {
+	return strings.TrimSpace(os.Getenv("NEXUS_PREBUILT_VM_ASSET_SHA256"))
 }
 
 func rootlessSubnetFilePath() string {
@@ -405,6 +415,13 @@ func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
 		return fmt.Errorf("asset-install: passt: %w", err)
 	}
 
+	// Optional fast path: hydrate kernel/rootfs from a prebuilt VM bundle
+	// published by CI/release. This avoids repeated local rootfs baking.
+	if err := installPrebuiltVMBundleRootless(w, emitJSON); err != nil {
+		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
+		return fmt.Errorf("asset-install: prebuilt-vm-bundle: %w", err)
+	}
+
 	if err := installVMKernelRootless(w, emitJSON); err != nil {
 		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
 		return fmt.Errorf("asset-install: kernel: %w", err)
@@ -435,6 +452,99 @@ func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
 	}
 
 	// daemon-launch phase is emitted by the caller after this returns.
+	return nil
+}
+
+func installPrebuiltVMBundleRootless(w io.Writer, emitJSON bool) error {
+	url := prebuiltVMBundleURL()
+	if url == "" {
+		return nil
+	}
+
+	// Skip if both core artifacts already exist.
+	if _, kerr := os.Stat(rootlessKernelPath()); kerr == nil {
+		if _, rerr := os.Stat(rootlessRootfsPath()); rerr == nil {
+			fmt.Fprintf(w, "  prebuilt VM bundle configured but assets already present; skipping download\n")
+			return nil
+		}
+	}
+
+	fmt.Fprintf(w, "  downloading prebuilt VM bundle from %s ...\n", url)
+	emitPhase(w, emitJSON, "asset-install", "start", "downloading prebuilt VM bundle")
+	data, err := httpDownload(url)
+	if err != nil {
+		return fmt.Errorf("download prebuilt vm bundle: %w", err)
+	}
+
+	if want := prebuiltVMBundleSHA256(); want != "" {
+		sum := sha256.Sum256(data)
+		got := hex.EncodeToString(sum[:])
+		if !strings.EqualFold(got, want) {
+			return fmt.Errorf("prebuilt vm bundle checksum mismatch: want %s got %s", want, got)
+		}
+	}
+
+	gzr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("open bundle gzip: %w", err)
+	}
+	defer gzr.Close()
+
+	tr := tar.NewReader(gzr)
+	var kernelData []byte
+	var rootfsData []byte
+	var agentHashData []byte
+	var bakedStampData []byte
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read bundle tar: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+
+		name := filepath.Base(strings.TrimSpace(hdr.Name))
+		switch name {
+		case "vmlinux.bin":
+			kernelData, err = io.ReadAll(tr)
+		case "rootfs.ext4":
+			rootfsData, err = io.ReadAll(tr)
+		case "rootfs-agent.sha256":
+			agentHashData, err = io.ReadAll(tr)
+		case "rootfs-baked-v4":
+			bakedStampData, err = io.ReadAll(tr)
+		default:
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read %s from bundle: %w", name, err)
+		}
+	}
+
+	if len(kernelData) == 0 || len(rootfsData) == 0 {
+		return fmt.Errorf("prebuilt vm bundle missing required files (vmlinux.bin, rootfs.ext4)")
+	}
+
+	if err := atomicWriteFile(rootlessKernelPath(), kernelData, 0o644); err != nil {
+		return fmt.Errorf("install bundled kernel: %w", err)
+	}
+	if err := atomicWriteFile(rootlessRootfsPath(), rootfsData, 0o600); err != nil {
+		return fmt.Errorf("install bundled rootfs: %w", err)
+	}
+
+	if len(agentHashData) > 0 {
+		_ = atomicWriteFile(filepath.Join(xdgStateNexus(), "rootfs-agent.sha256"), bytes.TrimSpace(agentHashData), 0o644)
+	}
+	if len(bakedStampData) > 0 {
+		_ = atomicWriteFile(filepath.Join(xdgStateNexus(), "rootfs-baked-v4"), bytes.TrimSpace(bakedStampData), 0o644)
+	}
+
+	fmt.Fprintf(w, "  installed prebuilt VM assets (kernel + rootfs)\n")
 	return nil
 }
 

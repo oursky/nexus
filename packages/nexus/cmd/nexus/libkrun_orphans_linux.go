@@ -21,4 +21,3 @@ func killLibkrunOrphans(w io.Writer) {
 		fmt.Fprintf(w, "killed lingering process: %s\n", name)
 	}
 }
-
