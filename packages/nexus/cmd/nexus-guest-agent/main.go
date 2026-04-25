@@ -965,7 +965,7 @@ func ensureGuestBasePackages() error {
 	}
 
 	emitDiagnostic("agent base packages: running apt-get update...")
-	if err := runStreamed(ctx, env, "apt-get update", "apt-get", "update"); err != nil {
+	if err := runAptGetWithRetry(ctx, env, "apt-get update", "update"); err != nil {
 		emitDiagnostic("agent base packages: apt-get update FAILED: %v", err)
 		return fmt.Errorf("apt-get update: %w", err)
 	}
@@ -973,7 +973,7 @@ func ensureGuestBasePackages() error {
 
 	for _, pkg := range pkgs {
 		emitDiagnostic("agent base packages: installing %s...", pkg)
-		if err := runStreamed(ctx, env, "apt-get install "+pkg, "apt-get", "install", "-y", "--no-install-recommends", pkg); err != nil {
+		if err := runAptGetWithRetry(ctx, env, "apt-get install "+pkg, "install", "-y", "--no-install-recommends", pkg); err != nil {
 			emitDiagnostic("agent base packages: install %s FAILED: %v", pkg, err)
 			return fmt.Errorf("apt-get install %s: %w", pkg, err)
 		}
@@ -990,6 +990,37 @@ func ensureGuestBasePackages() error {
 	_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
 	emitDiagnostic("agent base packages: installed successfully")
 	return nil
+}
+
+func runAptGetWithRetry(ctx context.Context, env []string, label string, args ...string) error {
+	const maxAttempts = 4
+
+	aptArgs := []string{
+		"-o", "Acquire::Retries=5",
+		"-o", "Acquire::http::Timeout=20",
+		"-o", "Acquire::https::Timeout=20",
+	}
+	aptArgs = append(aptArgs, args...)
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			emitDiagnostic("agent base packages: retrying %s (%d/%d)", label, attempt, maxAttempts)
+		}
+		if err := runStreamed(ctx, env, label, "apt-get", aptArgs...); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+
+		if ctx.Err() != nil {
+			break
+		}
+		if attempt < maxAttempts {
+			time.Sleep(time.Duration(attempt*2) * time.Second)
+		}
+	}
+	return lastErr
 }
 
 // installDockerComposePlugin installs the Docker Compose v2 CLI plugin binary

@@ -284,7 +284,7 @@ func runExec(opts execOptions) error {
 	defer cancel()
 
 	fmt.Printf("exec exec: %s (attempt %d/%d, timeout=%s, context=%s): %s\n", opts.command, 1, 1, opts.timeout, execCtx.backend, formatCommand(opts.command, opts.args))
-	out, err := runCheckCommandWithExecContext(ctx, opts.projectRoot, "exec", opts.command, 1, 1, opts.timeout, opts.command, opts.args, execCtx)
+	out, err := execCheckCommandRunner(ctx, opts.projectRoot, "exec", opts.command, 1, 1, opts.timeout, opts.command, opts.args, execCtx)
 
 	if strings.TrimSpace(out) != "" {
 		fmt.Println(strings.TrimSpace(out))
@@ -476,6 +476,8 @@ type doctorExecContext struct {
 }
 
 var doctorCheckCommandRunner = runCheckCommandWithExecContext
+
+var execCheckCommandRunner = runCheckCommandWithExecContext
 
 var bootstrapInstallCommandRunner = runBootstrapInstallCommand
 
