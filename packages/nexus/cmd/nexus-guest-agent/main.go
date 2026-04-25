@@ -979,9 +979,13 @@ func ensureGuestBasePackages() error {
 	emitDiagnostic("agent base packages: install package set OK")
 
 	// Install docker compose plugin (v2) from the GitHub release.
-	// Ubuntu's default repos only ship docker.io which has no compose plugin;
-	// Docker's official CLI plugin binary must be installed separately.
-	installDockerComposePlugin(ctx, env)
+	// Skip this in bake mode to keep rootfs baking bounded/reliable; the
+	// plugin is optional for daemon readiness and can install on normal boots.
+	if !isBakeMode() {
+		installDockerComposePlugin(ctx, env)
+	} else {
+		emitDiagnostic("agent docker-compose-plugin: skipping in bake mode")
+	}
 
 	// Write stamp so subsequent boots skip this step.
 	_ = os.MkdirAll("/var/lib", 0o755)
