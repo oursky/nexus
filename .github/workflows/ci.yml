@@ -135,18 +135,19 @@ jobs:
         with:
           path: ${{ env.LIBKRUN_BAKED_CACHE_DIR }}
           key: libkrun-baked-v1-${{ runner.os }}-${{ hashFiles('packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/cmd/nexus-guest-agent/main.go', 'packages/nexus/cmd/nexus/nexus-libkrun-vm') }}
+          restore-keys: |
+            libkrun-baked-v1-${{ runner.os }}-
 
       - name: Hydrate cached VM assets to host paths
-        if: steps.libkrun-baked-cache.outputs.cache-hit == 'true'
         run: |
           set -euo pipefail
           CACHE_DIR="${LIBKRUN_BAKED_CACHE_DIR}"
+          if [[ ! -f "$CACHE_DIR/vmlinux.bin" || ! -f "$CACHE_DIR/rootfs.ext4" ]]; then
+            echo "No complete baked cache payload found; continuing with cold provisioning."
+            exit 0
+          fi
           sudo install -d -m 0755 /var/lib/nexus /root/.local/share/nexus/vm /root/.local/state/nexus
           for f in vmlinux.bin rootfs.ext4; do
-            if [[ ! -f "$CACHE_DIR/$f" ]]; then
-              echo "cache hit but missing $f in $CACHE_DIR"
-              exit 1
-            fi
             sudo cp "$CACHE_DIR/$f" "/var/lib/nexus/$f"
             sudo cp "$CACHE_DIR/$f" "/root/.local/share/nexus/vm/$f"
             sudo chmod 644 "/var/lib/nexus/$f" "/root/.local/share/nexus/vm/$f"
