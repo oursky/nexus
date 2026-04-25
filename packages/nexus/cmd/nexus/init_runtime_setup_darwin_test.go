@@ -9,20 +9,20 @@ import (
 	"testing"
 )
 
-func TestDarwinBootstrapIsNoOpForNonFirecrackerRuntime(t *testing.T) {
+func TestDarwinBootstrapIsNoOpForNonLibkrunRuntime(t *testing.T) {
 	err := runInitRuntimeBootstrapDarwin(t.TempDir(), "local")
 	if err != nil {
 		t.Fatalf("expected no error for local runtime, got: %v", err)
 	}
 }
 
-func TestDarwinBootstrapWritesSeatbeltForFirecrackerRuntime(t *testing.T) {
+func TestDarwinBootstrapWritesSeatbeltForLibkrunRuntime(t *testing.T) {
 	projectRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(projectRoot, ".nexus"), 0o755); err != nil {
 		t.Fatalf("create .nexus: %v", err)
 	}
 
-	if err := runInitRuntimeBootstrapDarwin(projectRoot, "firecracker"); err != nil {
+	if err := runInitRuntimeBootstrapDarwin(projectRoot, "libkrun"); err != nil {
 		t.Fatalf("expected nil, got: %v", err)
 	}
 

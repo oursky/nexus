@@ -14,14 +14,15 @@ lima_fix_workspace_if_broken() {
   if ! command -v limactl >/dev/null 2>&1; then
     return 0
   fi
-  if ! limactl list 2>/dev/null | grep -q 'nexus-firecracker'; then
+  local inst="${NEXUS_LIMA_INSTANCE:-nexus-libkrun}"
+  if ! limactl list 2>/dev/null | grep -q "$inst"; then
     return 0
   fi
   local w
-  w="$(limactl shell nexus-firecracker -- sh -lc 'if [ -L /workspace ] && [ ! -e /workspace ]; then echo broken; elif [ -f /workspace ]; then echo file; else echo ok; fi' 2>/dev/null || true)"
+  w="$(limactl shell "$inst" -- sh -lc 'if [ -L /workspace ] && [ ! -e /workspace ]; then echo broken; elif [ -f /workspace ]; then echo file; else echo ok; fi' 2>/dev/null || true)"
   if [[ "$w" == "broken" ]] || [[ "$w" == "file" ]]; then
     echo "verify-codex-auth: fixing stale /workspace in Lima guest (was: $w)" >&2
-    limactl shell nexus-firecracker -- sh -lc 'sudo rm -f /workspace; sudo mkdir -p /workspace' >&2
+    limactl shell "$inst" -- sh -lc 'sudo rm -f /workspace; sudo mkdir -p /workspace' >&2
   fi
 }
 

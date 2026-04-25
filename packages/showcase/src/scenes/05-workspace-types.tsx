@@ -17,7 +17,7 @@ const CARDS: Card[] = [
     title: "Next.js webapp",
     description: "Full-stack React development environment with hot reload",
     color: "#89b4fa",
-    details: ["Port: 3000", "Runtime: Node 20", "Template: webapp-nextjs", "Backend: firecracker"],
+    details: ["Port: 3000", "Runtime: Node 20", "Template: webapp-nextjs", "Backend: libkrun"],
     startFrame: 30,
   },
   {
@@ -25,7 +25,7 @@ const CARDS: Card[] = [
     title: "Full-stack Compose",
     description: "Multi-service environment with database and cache",
     color: "#a6e3a1",
-    details: ["Services: app / db / cache", "Ports: 3000 / 5432 / 6379", "Template: compose-fullstack", "Backend: firecracker"],
+    details: ["Services: app / db / cache", "Ports: 3000 / 5432 / 6379", "Template: compose-fullstack", "Backend: libkrun"],
     startFrame: 330,
   },
   {

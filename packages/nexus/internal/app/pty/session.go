@@ -46,7 +46,7 @@ type Session struct {
 	Cmd  *exec.Cmd
 	File *os.File
 
-	// Remote shell (firecracker agent)
+	// Remote shell (guest agent)
 	RemoteConn net.Conn
 	Enc        *json.Encoder
 	Dec        *json.Decoder

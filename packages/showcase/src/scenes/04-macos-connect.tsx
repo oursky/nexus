@@ -120,7 +120,7 @@ export const MacOSConnectScene: React.FC = () => {
 
           {/* Main area */}
           <div style={{ flex: 1, display: "flex", flexDirection: "column", opacity: detailOpacity }}>
-            <SessionInfoStrip branch="main" runtime="firecracker" path="/workspace" />
+            <SessionInfoStrip branch="main" runtime="libkrun" path="/workspace" />
             <AppTerminal />
           </div>
 

@@ -677,8 +677,6 @@ public final class HeadlessRPCServer {
             echo "==> Stopping all nexus daemon processes..."
             pkill -f "nexus daemon" 2>/dev/null || true
             pkill -f "nexus-libkrun" 2>/dev/null || true
-            pkill -f "nexus-firecracker" 2>/dev/null || true
-            pkill -f "firecracker" 2>/dev/null || true
             sleep 2
             echo "==> Removing nexus state..."
             rm -rf "$HOME/.local/share/nexus" || true
@@ -686,8 +684,7 @@ public final class HeadlessRPCServer {
             rm -rf "$HOME/.local/run/nexus" || true
             rm -f "$HOME/.local/bin/nexus" || true
             rm -f "$HOME/.local/bin/nexus-libkrun" || true
-            rm -f "$HOME/.local/bin/nexus-firecracker-agent" || true
-            rm -f "$HOME/.local/bin/firecracker" || true
+            rm -f "$HOME/.local/bin/nexus-guest-agent" || true
             rm -f "$HOME/.local/bin/passt" || true
             rm -f "$HOME/.local/bin/pasta" || true
             echo "==> Verifying removal..."

@@ -25,21 +25,9 @@ func RequireVM(t *testing.T) {
 	}
 	kernel := os.Getenv("NEXUS_VM_KERNEL")
 	rootfs := os.Getenv("NEXUS_VM_ROOTFS")
-	if kernel == "" {
-		kernel = os.Getenv("NEXUS_FIRECRACKER_KERNEL") // legacy fallback
-	}
-	if rootfs == "" {
-		rootfs = os.Getenv("NEXUS_FIRECRACKER_ROOTFS") // legacy fallback
-	}
 	if kernel == "" || rootfs == "" {
 		t.Skip("VM not configured (NEXUS_VM_KERNEL/ROOTFS not set); skipping VM-specific test")
 	}
-}
-
-// RequireFirecracker is deprecated; use RequireVM.
-func RequireFirecracker(t *testing.T) {
-	t.Helper()
-	RequireVM(t)
 }
 
 // SkipIfVMBoot skips the test when running in short mode (-short flag).

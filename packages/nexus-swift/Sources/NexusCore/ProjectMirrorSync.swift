@@ -4,7 +4,7 @@ import os
 private let mirrorLogger = Logger(subsystem: "com.nexus.app", category: "ProjectMirror")
 
 /// Keeps a per-project directory on the SSH daemon host in sync with a Mac folder via Mutagen,
-/// so Firecracker and host-side PTY see a real Linux path.
+/// so the libkrun guest and host-side PTY see a real Linux path.
 public enum ProjectMirrorError: Error, LocalizedError {
     case noSSHTarget
     case mutagenNotFound

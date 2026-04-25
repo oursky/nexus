@@ -7,8 +7,8 @@ type Box = { label: string; color: string; x: number; y: number; w: number; h: n
 const BOXES: Box[] = [
   { label: "Mac\n(you)", color: "#89b4fa", x: 40, y: 220, w: 160, h: 80 },
   { label: "nexus daemon\n(linuxbox)", color: "#a6e3a1", x: 320, y: 220, w: 200, h: 80 },
-  { label: "Firecracker VM\n(workspace)", color: "#cba6f7", x: 640, y: 120, w: 200, h: 80 },
-  { label: "Firecracker VM\n(workspace)", color: "#cba6f7", x: 640, y: 320, w: 200, h: 80 },
+  { label: "libkrun VM\n(workspace)", color: "#cba6f7", x: 640, y: 120, w: 200, h: 80 },
+  { label: "libkrun VM\n(workspace)", color: "#cba6f7", x: 640, y: 320, w: 200, h: 80 },
 ];
 
 const ARROWS = [

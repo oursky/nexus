@@ -33,7 +33,7 @@ const LINES: TerminalLine[] = [
   { type: "blank",   text: "", startFrame: 130 },
   // start
   { type: "command", text: "nexus workspace start my-project", startFrame: 190, charsPerFrame: 3 },
-  { type: "output",  text: "  Booting Firecracker VM...", startFrame: 240 },
+  { type: "output",  text: "  Booting libkrun VM...", startFrame: 240 },
   { type: "output",  text: "  Discovered: 3000 (web)  5432 (db)  8080 (api)", startFrame: 310, color: "#569CD6" },
   { type: "output",  text: "✓  workspace ready", startFrame: 360, color: "#4EC994" },
   { type: "blank",   text: "", startFrame: 380 },
@@ -132,7 +132,7 @@ export const AppTerminalScene: React.FC = () => {
           <div style={{ flex: 1, display: "flex", flexDirection: "column", opacity: detailOpacity }}>
             <SessionInfoStrip
               branch="main"
-              runtime="firecracker"
+              runtime="libkrun"
               path="/workspace"
               ports={showActivePorts ? [3000, 5432, 8080] : []}
             />

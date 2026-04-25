@@ -46,17 +46,17 @@ Type "nexus daemon connect newman@linuxbox"
 Enter
 Sleep 2200ms
 
-# Start workspace — Firecracker VM boots
+# Start workspace — libkrun VM boots
 Type "nexus workspace start ws-1776759737416718098"
 Enter
 Sleep 8000ms
 
-# ── LEFT PANE: shell inside the Firecracker VM ────────────────────────────
+# ── LEFT PANE: shell inside the libkrun VM ────────────────────────────
 Ctrl+b
 Left
 Sleep 200ms
 
-# Open an interactive shell in the workspace (runs inside the Firecracker VM)
+# Open an interactive shell in the workspace (runs inside the libkrun VM)
 Type "nexus workspace shell ws-1776759737416718098"
 Enter
 Sleep 2000ms

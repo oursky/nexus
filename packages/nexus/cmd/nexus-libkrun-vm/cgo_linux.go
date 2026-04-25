@@ -94,7 +94,7 @@ func krunSetKernel(ctx uint32, kernelPath, initramfs, cmdline string, format uin
 // krunSetEmbeddedKernelCmdline applies a kernel cmdline without specifying an
 // external kernel file. Passing a NULL kernel_path to krun_set_kernel tells
 // libkrun to use the kernel embedded in libkrunfw.so (which includes virtiofs,
-// among other features not present in the Firecracker CI kernel).
+// among other features not present in the minimal stock CI kernel).
 func krunSetEmbeddedKernelCmdline(ctx uint32, cmdline string) error {
 	var cl *C.char
 	if cmdline != "" {
@@ -203,7 +203,7 @@ func krunSetConsoleOutput(ctx uint32, path string) error {
 // The directory is shared via virtiofs (tag "/dev/root"). Calling krun_set_root
 // without krun_set_kernel triggers libkrun to use the kernel embedded in
 // libkrunfw.so — which includes virtiofs, overlayfs, and other drivers that
-// the Firecracker CI kernel (vmlinux.bin) lacks.
+// the minimal stock CI kernel (vmlinux.bin) lacks.
 func krunSetRoot(ctx uint32, rootPath string) error {
 	p := C.CString(rootPath)
 	defer C.free(unsafe.Pointer(p))

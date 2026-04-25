@@ -29,7 +29,7 @@ respectively.
 **`PTY-014`** — If `args` is empty or absent, the shell is launched interactively with `-l`.
 If `args` is provided (e.g. `["-c", "echo hello"]`), the shell executes that command and exits.
 
-**`PTY-015`** — In Firecracker backend mode, the PTY session is created on the guest via the
+**`PTY-015`** — In libkrun backend mode, the PTY session is created on the guest via the
 vsock agent connection. The agent protocol is internal (see `PTY-008` in `01-concepts.md`).
 
 **`PTY-016`** — Post-condition: session appears in `pty.list` for the given workspace.
@@ -78,7 +78,7 @@ dimensions to the underlying PTY immediately.
 
 **`PTY-026`** — Request: `{"sessionId": "string"}`.
 
-**`PTY-027`** — Terminates the PTY process (kills if local; sends `shell.close` if Firecracker),
+**`PTY-027`** — Terminates the PTY process (kills if local; sends `shell.close` if libkrun VM),
 closes any underlying connections, and removes the session from the registry.
 
 **`PTY-028`** — Response: `{"ok": true}`. Returns `ERR-061` if session is not found.
@@ -110,6 +110,6 @@ connections only):
   "cols":        "int",
   "rows":        "int",
   "createdAt":   "RFC3339",
-  "isRemote":    "bool (true for Firecracker vsock sessions)"
+  "isRemote":    "bool (true for libkrun vsock sessions)"
 }
 ```

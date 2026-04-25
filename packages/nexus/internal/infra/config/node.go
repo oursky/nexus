@@ -38,7 +38,7 @@ type NodeIdentity struct {
 type NodeCapabilities struct {
 	// Provide is the explicit list of capabilities this node advertises as available.
 	// Values should match the capability names used in workspace requirements
-	// (e.g. "runtime.firecracker", "toolchain.xcodebuild", "auth.profile.git").
+	// (e.g. "runtime.libkrun", "toolchain.xcodebuild", "auth.profile.git").
 	Provide []string `json:"provide,omitempty"`
 }
 

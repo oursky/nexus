@@ -11,7 +11,7 @@ func TestProjectFields(t *testing.T) {
 		ID:        "proj-1",
 		Name:      "My Project",
 		RepoURL:   "https://github.com/example/repo",
-		Config:    ProjectConfig{DefaultBackend: "firecracker", DefaultRef: "main"},
+		Config:    ProjectConfig{DefaultBackend: "libkrun", DefaultRef: "main"},
 		CreatedAt: now,
 		UpdatedAt: now,
 	}

@@ -84,16 +84,16 @@ final class WorkspaceModelTests: XCTestCase {
             "workspaceName": "dev",
             "ref": "main",
             "state": "running",
-            "backend": "firecracker",
-            "runtimeLabel": "backend=firecracker isolation=vm"
+            "backend": "libkrun",
+            "runtimeLabel": "backend=libkrun isolation=vm"
         }
         """.data(using: .utf8)!
 
         let ws = try JSONDecoder().decode(Workspace.self, from: json)
-        XCTAssertEqual(ws.backend, "firecracker")
-        XCTAssertEqual(ws.runtimeLabel, "backend=firecracker isolation=vm")
+        XCTAssertEqual(ws.backend, "libkrun")
+        XCTAssertEqual(ws.runtimeLabel, "backend=libkrun isolation=vm")
         XCTAssertEqual(ws.shortRuntimeBadge, "VM")
-        XCTAssertEqual(ws.detailRuntimeLine, "backend=firecracker isolation=vm")
+        XCTAssertEqual(ws.detailRuntimeLine, "backend=libkrun isolation=vm")
     }
 
     func testWorkspaceStatusDisplayNames() {
@@ -548,7 +548,7 @@ final class WorkspaceRemoteSSHPathTests: XCTestCase {
         XCTAssertNil(ws.remoteSSHRepoPath)
     }
 
-    func testRemoteSSHFolderOpenUsesGuestForFirecracker() {
+    func testRemoteSSHFolderOpenUsesGuestForLibkrun() {
         let ws = Workspace(
             id: "ws-abc",
             workspaceName: "w",
@@ -557,7 +557,7 @@ final class WorkspaceRemoteSSHPathTests: XCTestCase {
             state: .running,
             rootPath: "",
             agentProfile: "default",
-            backend: "firecracker",
+            backend: "libkrun",
             guestIp: "172.26.1.2"
         )
         let spec = ws.remoteSSHFolderOpen(jumpHost: "dev@linux", identityFile: nil)

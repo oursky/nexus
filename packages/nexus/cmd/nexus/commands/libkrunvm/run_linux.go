@@ -87,7 +87,7 @@ func launchVM(spec libkrun.VMSpec) error {
 		return fmt.Errorf("libkrun-vm: %w", err)
 	}
 
-	// Custom kernel (same kernel used by Firecracker).
+	// Custom kernel (same vmlinux image used for libkrun guests).
 	// Our vmlinux.bin is a statically-linked ELF kernel.
 	logf("set_kernel: path=%s cmdline=%q", spec.KernelPath, spec.KernelCmdline)
 	if err := krunSetKernel(ctx, spec.KernelPath, "", spec.KernelCmdline, 1 /* KRUN_KERNEL_FORMAT_ELF */); err != nil {
@@ -98,7 +98,7 @@ func launchVM(spec libkrun.VMSpec) error {
 		}
 	}
 
-	// Root filesystem (same rootfs.ext4 used by Firecracker).
+	// Root filesystem (rootfs.ext4 for libkrun guests).
 	logf("add_disk: rootfs=%s", spec.RootFSPath)
 	if err := krunAddDisk(ctx, "rootfs", spec.RootFSPath, false); err != nil {
 		return fmt.Errorf("libkrun-vm: add rootfs disk: %w", err)

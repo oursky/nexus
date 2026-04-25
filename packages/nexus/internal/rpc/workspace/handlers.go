@@ -268,7 +268,7 @@ type SSHCheckResult struct {
 // and returns whether the connection succeeded, along with any error details.
 // This lets the Mac app verify SSH connectivity via RPC before opening Cursor.
 //
-// GuestIP may be a bare host (firecracker bridge) or host:port (libkrun port-
+// GuestIP may be a bare host (bridge networking) or host:port (libkrun port-
 // forward). Both forms are handled: host:port is split into -p PORT root@host.
 func (h *Handler) handleSSHCheck(ctx context.Context, raw json.RawMessage) (any, error) {
 	req, err := decode[sshCheckReq](raw)

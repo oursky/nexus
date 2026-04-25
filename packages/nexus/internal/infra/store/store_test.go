@@ -52,7 +52,7 @@ func newTestWorkspace(id, name string) *workspace.Workspace {
 		AgentProfile:  "default",
 		State:         workspace.StateStopped,
 		RootPath:      "/tmp/ws",
-		Backend:       "firecracker",
+		Backend:       "libkrun",
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -216,7 +216,7 @@ func newTestProject(id, name string) *project.Project {
 		ID:        id,
 		Name:      name,
 		RepoURL:   "https://github.com/example/" + name,
-		Config:    project.ProjectConfig{DefaultBackend: "firecracker", DefaultRef: "main"},
+		Config:    project.ProjectConfig{DefaultBackend: "libkrun", DefaultRef: "main"},
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -245,8 +245,8 @@ func TestProjectStore_CreateAndGet(t *testing.T) {
 	if got.RepoURL != original.RepoURL {
 		t.Errorf("RepoURL: got %q, want %q", got.RepoURL, original.RepoURL)
 	}
-	if got.Config.DefaultBackend != "firecracker" {
-		t.Errorf("Config.DefaultBackend: got %q, want %q", got.Config.DefaultBackend, "firecracker")
+	if got.Config.DefaultBackend != "libkrun" {
+		t.Errorf("Config.DefaultBackend: got %q, want %q", got.Config.DefaultBackend, "libkrun")
 	}
 }
 

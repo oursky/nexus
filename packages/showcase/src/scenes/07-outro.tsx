@@ -7,7 +7,7 @@ const FULL_URL = "github.com/oursky/nexus";
 const BADGES = [
   { label: "Open Source", color: "#89b4fa", frame: 160 },
   { label: "Go + Swift", color: "#a6e3a1", frame: 200 },
-  { label: "Firecracker", color: "#cba6f7", frame: 240 },
+  { label: "libkrun", color: "#cba6f7", frame: 240 },
 ];
 
 export const OutroScene: React.FC = () => {

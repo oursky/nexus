@@ -34,10 +34,10 @@ type CLIHarness struct {
 func NewCLIHarness(t *testing.T) *CLIHarness {
 	t.Helper()
 
-	// Check Firecracker availability before building the binary so that skips
+	// Check VM backend availability before building the binary so that skips
 	// happen fast (no multi-second compile) on unsupported platforms / CI
-	// environments that lack Firecracker configuration.
-	RequireFirecracker(t)
+	// environments that lack VM configuration.
+	RequireVM(t)
 
 	dbPath := TempDB(t)
 	socketPath := TempSocket(t)

@@ -600,7 +600,7 @@ func main() {
 	defer listener.Close()
 
 	emitDiagnostic("agent listener ready transport=%s", transport)
-	log.Printf("Firecracker agent listening (%s)", transport)
+	log.Printf("nexus guest agent listening (%s)", transport)
 
 	for {
 		conn, err := listener.Accept()
@@ -746,7 +746,7 @@ const hostConfigMount = "/run/nexus-host"
 // applyHostConfigDrive mounts the host config ext4 image at /run/nexus-host
 // and copies known config files into place.
 // Device path is resolved from NEXUS_CONFIG_DEV (libkrun) or derived from mode
-// (Firecracker virtiofs → /dev/vdd, Firecracker legacy → /dev/vdc).
+// (virtiofs layout → /dev/vdd, legacy block layout → /dev/vdc).
 func applyHostConfigDrive() error {
 	hostConfigDevice := configDevPath()
 	if _, err := os.Stat(hostConfigDevice); err != nil {
@@ -1100,7 +1100,7 @@ func ensureAgentProcessPath() {
 // isVirtiofsWorkspaceMode reports whether the workspace is virtiofs+overlayfs.
 // In libkrun container mode the kernel cmdline is not under our control, so
 // the host sets NEXUS_WORKSPACE_MODE=virtiofs via krun_set_exec. Legacy
-// Firecracker VMs set nexus.workspace=virtiofs on the kernel cmdline.
+// virtiofs guests set nexus.workspace=virtiofs on the kernel cmdline.
 func isVirtiofsWorkspaceMode() bool {
 	if os.Getenv("NEXUS_WORKSPACE_MODE") == "virtiofs" {
 		return true
@@ -1118,7 +1118,7 @@ func isVirtiofsWorkspaceMode() bool {
 }
 
 // isPrimaryAgent reports whether this agent instance should behave like PID 1
-// (mounting kernel filesystems, starting sshd, starting Docker). In Firecracker
+// (mounting kernel filesystems, starting sshd, starting Docker). In virtiofs
 // the agent IS PID 1. In libkrun container mode the agent is launched by
 // krun_set_exec and is NOT PID 1, but the host sets NEXUS_CONTAINER_MODE=1 to
 // tell it to still perform these duties.
@@ -1127,7 +1127,7 @@ func isPrimaryAgent() bool {
 }
 
 // overlayDevPath returns the block device for the workspace overlay upper layer.
-// Default /dev/vdb (Firecracker virtiofs mode); overridden to /dev/vda in
+// Default /dev/vdb (virtiofs mode); overridden to /dev/vda in
 // libkrun container mode via NEXUS_OVERLAY_DEV.
 func overlayDevPath() string {
 	if v := os.Getenv("NEXUS_OVERLAY_DEV"); v != "" {
@@ -1137,7 +1137,7 @@ func overlayDevPath() string {
 }
 
 // dockerDevPath returns the block device for docker-data.
-// Default /dev/vdc (Firecracker virtiofs mode); overridden in libkrun via NEXUS_DOCKER_DEV.
+// Default /dev/vdc (virtiofs mode); overridden in libkrun via NEXUS_DOCKER_DEV.
 func dockerDevPath() string {
 	if v := os.Getenv("NEXUS_DOCKER_DEV"); v != "" {
 		return v
@@ -1146,7 +1146,7 @@ func dockerDevPath() string {
 }
 
 // configDevPath returns the block device for the host config drive.
-// Default /dev/vdd (Firecracker virtiofs mode); overridden in libkrun via NEXUS_CONFIG_DEV.
+// Default /dev/vdd (virtiofs mode); overridden in libkrun via NEXUS_CONFIG_DEV.
 func configDevPath() string {
 	if v := os.Getenv("NEXUS_CONFIG_DEV"); v != "" {
 		return v
@@ -1163,7 +1163,7 @@ func configDevPath() string {
 //	NEXUS_DOCKER_DEV  (/dev/vdc) docker-data.ext4 → /var/lib/docker
 //	NEXUS_CONFIG_DEV  (/dev/vdd) hostconfig.ext4  → /run/nexus-host  (read-only)
 //
-// Firecracker virtiofs mode falls back to /dev/vdb, /dev/vdc, /dev/vdd.
+// virtiofs mode falls back to /dev/vdb, /dev/vdc, /dev/vdd.
 func setupVirtiofsWorkspace() error {
 	overlayDev := overlayDevPath()
 	dockerDev := dockerDevPath()
@@ -1442,7 +1442,7 @@ func ensureDockerDaemon() error {
 		return fmt.Errorf("mkdir docker exec root: %w", err)
 	}
 
-	// Firecracker's 5.10 kernel does not support nftables.  Ubuntu 24.04's
+	// Older 5.10 CI kernels do not support nftables.  Ubuntu 24.04's
 	// default `iptables` binary is nftables-backed and will fail with
 	// "Failed to initialize nft: Protocol not supported".  Switch to
 	// iptables-legacy (which ships alongside iptables in the iptables package)
@@ -1525,7 +1525,7 @@ func setupNetwork() error {
 }
 
 // maybeStartSSHDInGuest launches OpenSSH sshd when the rootfs provides it.
-// The rootfs is built by firecracker-setup.sh which installs openssh-server,
+// The rootfs is built by nexus daemon bootstrap which installs openssh-server,
 // so sshd should always be present. Host keys are generated on first boot.
 // This enables VS Code / Cursor Remote-SSH to attach directly to the micro-VM.
 func maybeStartSSHDInGuest() {

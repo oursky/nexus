@@ -135,7 +135,7 @@ forward is not found, returns `ERR-052`.
   "workspaceId": "string",
   "localPort":   "int",
   "remotePort":  "int",
-  "targetHost":  "string (Firecracker resolved host, or '' for process backend)",
+  "targetHost":  "string (libkrun guest host, or '' for process backend)",
   "protocol":    "string",
   "state":       "string ('active' | 'closed')",
   "created_at":  "RFC3339"

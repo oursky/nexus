@@ -81,11 +81,11 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public let agentProfile: String
     public var repoId: String?
     public var projectId: String?
-    /// Daemon runtime backend id, e.g. firecracker, process.
+    /// Daemon runtime backend id, e.g. libkrun, process.
     public let backend: String?
     /// Human-readable summary from daemon (`runtimeLabel` JSON), e.g. backend + isolation.
     public let runtimeLabel: String?
-    /// Firecracker guest IPv4 on the engine bridge (`guestIp` in daemon JSON) when the VM is running.
+    /// Guest IPv4 on the engine bridge (`guestIp` in daemon JSON) when the libkrun VM is running.
     public var guestIp: String?
     public var ports: [ForwardedPort]
     public var hasActiveTunnels: Bool
@@ -100,11 +100,20 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public var status: WorkspaceStatus { state }
     public var snapshotCount: Int { 0 }
 
+    private var normalizedBackendID: String {
+        (backend ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// True when the workspace uses a libkrun micro-VM backend.
+    public var usesGuestVMRuntime: Bool {
+        normalizedBackendID == "libkrun"
+    }
+
     /// Short tag for lists (sidebar); full `runtimeLabel` is shown in the workspace detail strip when present.
     public var shortRuntimeBadge: String {
-        let b = (backend ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let b = normalizedBackendID
         switch b {
-        case "firecracker": return "VM"
+        case "libkrun": return "VM"
         case "process": return "proc"
         case "":
             let label = (runtimeLabel ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -131,11 +140,10 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         return nil
     }
 
-    /// Returns true for any backend that runs a guest VM (Firecracker or libkrun)
-    /// and currently has an SSH host available.
+    /// Returns true for libkrun VM backends that currently have an SSH host available.
     private var isGuestVMBackend: Bool {
-        let b = (backend ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard b == "firecracker" || b == "libkrun" else { return false }
+        let b = normalizedBackendID
+        guard b == "libkrun" else { return false }
         guard state.isActive else { return false }
         let g = (guestIp ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return !g.isEmpty
@@ -151,14 +159,11 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         return "nexus-vm-\(safe)"
     }
 
-    /// Returns true if this workspace uses a VM backend (Firecracker or libkrun),
+    /// Returns true if this workspace uses a libkrun VM backend,
     /// regardless of its current run state.
-    private var isVMBackend: Bool {
-        let b = (backend ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return b == "firecracker" || b == "libkrun"
-    }
+    private var isVMBackend: Bool { usesGuestVMRuntime }
 
-    /// Resolves Remote-SSH parameters: VM guests (Firecracker/libkrun) use
+    /// Resolves Remote-SSH parameters: VM guests (libkrun) use
     /// `/workspace` via a ProxyJump to the guest IP; process sandboxes use the
     /// engine repo path directly.
     ///

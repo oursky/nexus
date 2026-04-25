@@ -1,5 +1,5 @@
 // Package toolchain provides a shared guest toolchain readiness probe used by
-// both the firecracker and libkrun runtime drivers.
+// the libkrun runtime driver (and process/seatbelt sandboxes where applicable).
 //
 // The probe connects to the guest agent via a vsock/unix connection, runs a
 // shell command to verify that the expected AI CLI tools are present, and

@@ -20,7 +20,7 @@ type PortForwarder interface {
 }
 
 // PortDialer dials a connection into a workspace on a specific guest port.
-// Used for Firecracker workspaces to reach services via vsock, bypassing the
+// Used for libkrun VM workspaces to reach services via vsock, bypassing the
 // bridge network and supporting loopback-only listeners inside the VM.
 type PortDialer interface {
 	DialPort(ctx context.Context, workspaceID string, remotePort int) (net.Conn, error)
@@ -42,7 +42,7 @@ type Service struct {
 type Option func(*Service)
 
 // WithPortDialer sets a PortDialer for workspace backends that need a
-// daemon-side TCP proxy (Firecracker). The daemon binds an ephemeral port and
+// daemon-side TCP proxy (libkrun VM). The daemon binds an ephemeral port and
 // proxies each connection via the dialer so the CLI can SSH-forward to it.
 func WithPortDialer(d PortDialer) Option {
 	return func(s *Service) { s.portDialer = d }
@@ -64,13 +64,13 @@ func New(repo spotlight.Repository, workspaceRepo workspace.Repository, opts ...
 // StartSpotlight creates and activates a port forward for the given workspace.
 //
 // Design:
-//   - Non-Firecracker workspaces: the service runs directly on the daemon host.
+//   - Non-VM workspaces: the service runs directly on the daemon host.
 //     No TCP proxy is needed — we record the forward and return
 //     targetHost=127.0.0.1 + targetPort=remotePort so the CLI can SSH-forward
 //     directly to the service. Binding a proxy would collide with the service
 //     itself (same port on the same host).
 //
-//   - Firecracker workspaces: the service is inside a VM where loopback is not
+//   - libkrun VM workspaces: the service is inside a VM where loopback is not
 //     reachable from outside. We bind an ephemeral TCP port on the daemon host
 //     and proxy each connection via vsock (PortDialer) to the guest port. The
 //     ephemeral port is returned as targetPort so the CLI SSH-tunnels to it.
@@ -105,11 +105,11 @@ func (s *Service) StartSpotlight(ctx context.Context, workspaceID string, spec s
 	}
 	fwd.TargetHost = "127.0.0.1"
 
-	// Firecracker workspaces: bind an ephemeral host-side TCP port and proxy
+	// libkrun VM workspaces: bind an ephemeral host-side TCP port and proxy
 	// each connection via vsock into the VM. The guest agent's spotlight
 	// listener (DefaultSpotlightVSockPort) dials 127.0.0.1:<remotePort> inside
 	// the VM, so this works even for loopback-only services.
-	if ws.Backend == "firecracker" && s.portDialer != nil {
+	if workspace.UsesGuestVM(ws.Backend) && s.portDialer != nil {
 		guestPort := spec.RemotePort
 		dialer := s.portDialer
 
@@ -140,7 +140,7 @@ func (s *Service) StartSpotlight(ctx context.Context, workspaceID string, spec s
 		return &copy, nil
 	}
 
-	// Non-Firecracker workspaces: the service runs on the daemon host itself.
+	// Non-VM workspaces: the service runs on the daemon host itself.
 	// Return targetHost+targetPort so the CLI can SSH-forward directly to it.
 	// No daemon-side proxy — binding the same port would collide with the
 	// service and is redundant since SSH handles the forwarding.
@@ -192,7 +192,7 @@ func (s *Service) StopWorkspaceSpotlight(ctx context.Context, workspaceID string
 }
 
 // serveForwardWithDialer accepts TCP connections on listener and proxies each
-// via a fresh connection returned by dial. Used for Firecracker vsock proxying.
+// via a fresh connection returned by dial. Used for libkrun vsock proxying.
 func serveForwardWithDialer(listener net.Listener, dial func(ctx context.Context) (net.Conn, error)) {
 	for {
 		clientConn, err := listener.Accept()

@@ -423,13 +423,6 @@ func resolveGuestAgentBinary() (string, error) {
 		}
 		return raw, nil
 	}
-	// Legacy env var for backwards compatibility.
-	if raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_AGENT_BIN")); raw != "" {
-		if _, err := os.Stat(raw); err != nil {
-			return "", fmt.Errorf("NEXUS_FIRECRACKER_AGENT_BIN=%s: %w", raw, err)
-		}
-		return raw, nil
-	}
 	if EmbeddedAgentFn == nil {
 		return "", fmt.Errorf("guest agent binary is not embedded in this build (linux/amd64 or linux/arm64 required)")
 	}

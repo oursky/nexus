@@ -6,7 +6,7 @@ import { TerminalWindow, TerminalLine } from "../components/TerminalWindow";
 const LINES: TerminalLine[] = [
   { type: "command", text: "nexus create --template webapp-nextjs", startFrame: 0 },
   { type: "output", text: "Creating workspace...", startFrame: 60 },
-  { type: "output", text: "Provisioning Firecracker VM...", startFrame: 90 },
+  { type: "output", text: "Provisioning libkrun VM...", startFrame: 90 },
   { type: "output", text: "Installing dependencies...", startFrame: 130 },
   { type: "output", text: "✓ Workspace ready: ws-abc123", startFrame: 200, color: "#a6e3a1" },
   { type: "command", text: "nexus connect ws-abc123", startFrame: 250 },
@@ -91,7 +91,7 @@ export const CreateWorkspaceScene: React.FC = () => {
               ["Status", "Running", "#a6e3a1"],
               ["ID", "ws-abc123", "#cdd6f4"],
               ["Port", "3000", "#89b4fa"],
-              ["Backend", "firecracker", "#cba6f7"],
+              ["Backend", "libkrun", "#cba6f7"],
             ].map(([key, val, color]) => (
               <div key={key} style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
                 <span style={{ color: "#6c7086", fontFamily: "sans-serif", fontSize: 20 }}>{key}</span>

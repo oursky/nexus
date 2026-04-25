@@ -66,8 +66,8 @@ func TestLoadNodeConfig_Full(t *testing.T) {
 	if !cfg.ProvidesCapability("toolchain.xcodebuild") {
 		t.Error("expected toolchain.xcodebuild capability")
 	}
-	if cfg.ProvidesCapability("runtime.firecracker") {
-		t.Error("did not expect runtime.firecracker capability")
+	if cfg.ProvidesCapability("runtime.obsolete-backend") {
+		t.Error("did not expect runtime.obsolete-backend capability")
 	}
 }
 

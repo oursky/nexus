@@ -11,11 +11,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// ImplodePrivilegedFn, if non-nil, runs the privileged half of implode
-// (removing the bridge, iptables rules, VM assets, installed binaries, etc.).
-// On Linux this is wired to runImplodePrivileged by the main package.
-var ImplodePrivilegedFn func(w io.Writer) error
-
 // ImplodeUserCleanupFn, if non-nil, runs unprivileged driver-specific cleanup
 // before user-state directories are removed (e.g. killing libkrun/passt PIDs).
 var ImplodeUserCleanupFn func(w io.Writer)
@@ -25,18 +20,16 @@ func implodeCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "implode",
-		Short: "Tear down all Nexus daemon state and host prerequisites",
+		Short: "Tear down all Nexus daemon state",
 		Long: `Implode removes every trace of the Nexus daemon from this machine:
 
   • Stops the running daemon
+  • Kills any lingering libkrun/passt child processes
   • Removes all workspace runtime state (DB, socket, VM dirs)
-  • Removes the auth token
-  • Removes the stored connection profile
-  • [Linux] Removes libkrun and passt binaries from ~/.local/bin/
-  • [Linux] Removes the VM kernel and rootfs from ~/.local/share/nexus/
+  • Removes the auth token and stored connection profile
+  • Removes libkrun, passt, kernel, and rootfs from ~/.local/share/nexus/
 
-After implode, running ` + "`nexus daemon start`" + ` will re-provision
-everything from scratch.`,
+Run ` + "`nexus daemon start`" + ` afterward — bootstrap runs automatically.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
 
@@ -56,29 +49,22 @@ everything from scratch.`,
 			stopCmd := stopCommand()
 			stopCmd.SetOut(w)
 			stopCmd.SetErr(cmd.ErrOrStderr())
-			stopCmd.SetArgs([]string{}) // prevent cobra re-parsing os.Args
+			stopCmd.SetArgs([]string{})
 			_ = stopCmd.Execute()
 
-			// 2a. Driver-specific unprivileged cleanup (e.g. kill libkrun/passt PIDs).
+			// 2. Driver-specific unprivileged cleanup (kill libkrun/passt orphans).
 			if ImplodeUserCleanupFn != nil {
 				ImplodeUserCleanupFn(w)
 			}
 
-			// 2b. Remove user-space state (no sudo needed).
+			// 3. Remove user-space state.
 			if err := implodeUserState(w); err != nil {
 				fmt.Fprintf(w, "warning: user-space cleanup: %v\n", err)
 			}
 
-			// 3. Privileged cleanup (Linux: bridge, iptables, VM assets, binaries).
-			if ImplodePrivilegedFn != nil {
-				if err := ImplodePrivilegedFn(w); err != nil {
-					return fmt.Errorf("implode: privileged cleanup: %w", err)
-				}
-			}
-
 			fmt.Fprintln(w, "")
 			fmt.Fprintln(w, "✓ Nexus daemon state removed.")
-			fmt.Fprintln(w, "  To start fresh: nexus daemon start")
+			fmt.Fprintln(w, "  Run: nexus daemon start")
 			return nil
 		},
 	}
@@ -103,10 +89,10 @@ func implodeUserState(w io.Writer) error {
 		xdgData = filepath.Join(home, ".local", "share")
 	}
 
-	stateDir := filepath.Join(xdgState, "nexus")
-	dataDir := filepath.Join(xdgData, "nexus")
-
-	for _, dir := range []string{stateDir, dataDir} {
+	for _, dir := range []string{
+		filepath.Join(xdgState, "nexus"),
+		filepath.Join(xdgData, "nexus"),
+	} {
 		if _, err := os.Stat(dir); os.IsNotExist(err) {
 			continue
 		}
@@ -115,6 +101,5 @@ func implodeUserState(w io.Writer) error {
 			return fmt.Errorf("remove %s: %w", dir, err)
 		}
 	}
-
 	return nil
 }

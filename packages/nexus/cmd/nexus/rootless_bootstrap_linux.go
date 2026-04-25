@@ -126,8 +126,7 @@ const (
 )
 
 // vmKernelURL returns the URL for the Linux kernel image (vmlinux ELF).
-// The URL uses AWS S3 bucket "spec.ccfc.min" maintained by the Firecracker
-// project — it is a public mirror of standard Linux kernels, not FC-specific.
+// Hosted on AWS S3 by the upstream Linux CI project.
 func vmKernelURL() string {
 	switch runtime.GOARCH {
 	case "arm64":
@@ -147,7 +146,7 @@ func vmSquashfsURL() string {
 }
 
 // vmRootfsIsSquashfs reports whether the cached rootfs archive is squashfs
-// (legacy Firecracker CI format) rather than a tar.xz (Ubuntu CDN format).
+// (legacy squashfs CI format) rather than a tar.xz (Ubuntu CDN format).
 func vmRootfsIsSquashfs(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -411,7 +410,7 @@ func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
 		return fmt.Errorf("asset-install: kernel: %w", err)
 	}
 
-	// Both Firecracker and libkrun require a block-backed rootfs image so guest
+	// libkrun requires a block-backed rootfs image so guest
 	// root behaves like a real VM filesystem (root can install arbitrary packages).
 	if err := installVMRootfsRootless(w, emitJSON); err != nil {
 		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
@@ -455,10 +454,6 @@ func ensureRootlessDirs() error {
 	}
 	return nil
 }
-
-// ── Firecracker installation (removed) ───────────────────────────────────────
-// Firecracker is no longer supported. This section intentionally left empty.
-
 
 func needsInstall(dest string, newContent []byte) bool {
 	existing, err := os.ReadFile(dest)
@@ -574,7 +569,7 @@ func installVMRootfsRootless(w io.Writer, emitJSON bool) error {
 		return err
 	}
 	// A freshly-built rootfs does NOT have the agent injected yet.
-	// Remove the cached agent hash so ensureFirecrackerGuestAgent knows to
+	// Remove the cached agent hash so ensureGuestAgent knows to
 	// re-inject rather than skip because the old hash still matches.
 	_ = os.Remove(filepath.Join(xdgStateNexus(), "rootfs-agent.sha256"))
 	// Also remove the bake stamp so the next daemon start re-bakes the rootfs
@@ -588,7 +583,7 @@ func installVMRootfsRootless(w io.Writer, emitJSON bool) error {
 // It deliberately skips building rootfs.ext4, saving 5–10 min of ext4 work.
 //
 // Download format: Ubuntu 24.04 minimal cloud image tar.xz (~30 MB compressed).
-// Served from Ubuntu's CDN (Akamai) — much faster than the Firecracker CI S3 bucket.
+// Served from Ubuntu's CDN (Akamai).
 //
 // Legacy upgrade path: if the old ubuntu.squashfs cache file is present it is
 // extracted with unsquashfs so users who already downloaded it don't re-download.

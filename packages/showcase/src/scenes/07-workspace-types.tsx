@@ -50,7 +50,7 @@ export const WorkspaceTypesScene: React.FC = () => {
       </span>
       <span style={{ color: C.labelTertiary, fontSize: 11 }}>›</span>
       <span style={{ fontFamily: "monospace", fontSize: 13, color: C.labelSecondary }}>main</span>
-      {/* firecracker badge */}
+      {/* libkrun badge */}
       <div
         style={{
           marginLeft: 4,
@@ -62,7 +62,7 @@ export const WorkspaceTypesScene: React.FC = () => {
           color: C.labelSecondary,
         }}
       >
-        firecracker
+        libkrun
       </div>
     </div>
   );
@@ -119,7 +119,7 @@ export const WorkspaceTypesScene: React.FC = () => {
           <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
             <SessionInfoStrip
               branch="main"
-              runtime="firecracker"
+              runtime="libkrun"
               path="/workspace"
               ports={isTunneledActive ? [3000, 5432, 8080] : []}
             />

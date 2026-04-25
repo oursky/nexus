@@ -1,6 +1,14 @@
 package workspace
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+// UsesGuestVM reports whether the backend runs code inside a micro-VM (libkrun).
+func UsesGuestVM(backend string) bool {
+	return strings.ToLower(strings.TrimSpace(backend)) == "libkrun"
+}
 
 // Workspace is the core domain entity representing a remote development environment.
 type Workspace struct {
@@ -19,7 +27,7 @@ type Workspace struct {
 	ParentWorkspaceID string            `json:"parentWorkspaceId,omitempty"`
 	LineageRootID     string            `json:"lineageRootId,omitempty"`
 	Backend           string            `json:"backend,omitempty"`
-	// GuestIP is the micro-VM address on the engine bridge (Firecracker only).
+	// GuestIP is the micro-VM address on the engine bridge (libkrun VM).
 	// Populated for API responses when the VM is running; not persisted in the workspace store.
 	GuestIP           string            `json:"guestIp,omitempty"`
 	ConfigBundle      string            `json:"configBundle,omitempty"`

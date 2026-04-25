@@ -18,7 +18,7 @@ import (
 )
 
 // Driver implements the libkrun runtime driver.
-// It mirrors FCDriver from the firecracker package.
+// It mirrors the historical VM driver layout (workspace-scoped state paths).
 type Driver struct {
 	manager      *Manager
 	projectRoots map[string]string
@@ -415,15 +415,11 @@ func (d *Driver) Destroy(ctx context.Context, workspaceID string) error {
 }
 
 func defaultMemMiB() int {
-	if raw := strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_MEM_MIB")); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
-			return n
-		}
-	}
-	// Also respect the Firecracker env for compatibility.
-	if raw := strings.TrimSpace(os.Getenv("NEXUS_FIRECRACKER_MEM_MIB")); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
-			return n
+	for _, key := range []string{"NEXUS_LIBKRUN_MEM_MIB", "NEXUS_VM_MEM_MIB"} {
+		if raw := strings.TrimSpace(os.Getenv(key)); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+				return n
+			}
 		}
 	}
 	return 4096

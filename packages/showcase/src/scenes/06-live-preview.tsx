@@ -16,7 +16,7 @@ const MAC_LINES: TerminalLine[] = [
 // VM shell — git workflow inside the workspace
 const VM_LINES: TerminalLine[] = [
   { type: "command", text: "nexus workspace shell my-project", startFrame: 60 },
-  { type: "output", text: "  Connected to Firecracker VM", startFrame: 110, color: "#a6e3a1" },
+  { type: "output", text: "  Connected to libkrun VM", startFrame: 110, color: "#a6e3a1" },
   { type: "blank", text: "", startFrame: 130 },
   { type: "command", text: "echo 'fix: typo' >> api/handler.go", startFrame: 160 },
   { type: "command", text: "git add . && git commit -m 'fix: typo'", startFrame: 230 },
@@ -45,7 +45,7 @@ const MockPage: React.FC<{ frame: number }> = ({ frame }) => {
       }}
     >
       <div style={{ fontSize: 13, color: "#6c7086", letterSpacing: 2, textTransform: "uppercase" }}>
-        running on firecracker via spotlight
+        running on libkrun via spotlight
       </div>
       <div style={{ fontSize: 36, fontWeight: 700, color: "#cdd6f4" }}>my-project</div>
       <div
@@ -108,7 +108,7 @@ export const LivePreviewScene: React.FC = () => {
             <div style={{ color: "#6c7086", fontFamily: "sans-serif", fontSize: 16, marginBottom: 10, letterSpacing: 1 }}>
               VM — git inside workspace
             </div>
-            <TerminalWindow title="my-project (firecracker)" lines={VM_LINES} frame={f} />
+            <TerminalWindow title="my-project (libkrun)" lines={VM_LINES} frame={f} />
           </div>
         </div>
 

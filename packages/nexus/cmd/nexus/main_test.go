@@ -198,8 +198,8 @@ func TestMarkProbesNotRun(t *testing.T) {
 	}
 }
 
-func TestRunBuiltInRuntimeBackendCheckFirecrackerPasses(t *testing.T) {
-	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
+func TestRunBuiltInRuntimeBackendCheckLibkrunPasses(t *testing.T) {
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "libkrun")
 	result, err := runBuiltInRuntimeBackendCheck()
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -220,8 +220,8 @@ func TestRunBuiltInRuntimeBackendCheckUnsupportedBackendFails(t *testing.T) {
 	}
 }
 
-func TestRunBuiltInOpencodeSessionCheckSkipsFirecracker(t *testing.T) {
-	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
+func TestRunBuiltInOpencodeSessionCheckSkipsVMBackend(t *testing.T) {
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "libkrun")
 	result, err := runBuiltInOpencodeSessionCheck(t.TempDir())
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -297,7 +297,7 @@ func TestRunDoctorLifecycleStartFallsBackToCompose(t *testing.T) {
 		return "ok", nil
 	}
 
-	if err := runDoctorLifecycleStart(root, doctorExecContext{backend: "firecracker"}); err != nil {
+	if err := runDoctorLifecycleStart(root, doctorExecContext{backend: "libkrun"}); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 	if !called {
@@ -343,7 +343,7 @@ func TestRunDoctorLifecycleStartPrefersMakeStartOverLifecycleScript(t *testing.T
 		return "ok", nil
 	}
 
-	if err := runDoctorLifecycleStart(root, doctorExecContext{backend: "firecracker"}); err != nil {
+	if err := runDoctorLifecycleStart(root, doctorExecContext{backend: "libkrun"}); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 	if !called {
@@ -374,7 +374,7 @@ func TestRunDoctorLifecycleSetupSkipsWhenMakeStartTargetExists(t *testing.T) {
 		return "ok", nil
 	}
 
-	if err := runDoctorLifecycleSetup(root, doctorExecContext{backend: "firecracker"}); err != nil {
+	if err := runDoctorLifecycleSetup(root, doctorExecContext{backend: "libkrun"}); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 	if called {
@@ -406,41 +406,6 @@ func TestResolveDoctorLifecycleStartCommandReturnsSummary(t *testing.T) {
 	}
 }
 
-func TestRunDoctorLifecycleStartIncludesFirecrackerWorkspaceDiagnosticsOnFailure(t *testing.T) {
-	originalRunner := doctorCheckCommandRunner
-	t.Cleanup(func() {
-		doctorCheckCommandRunner = originalRunner
-	})
-
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".nexus", "lifecycles"), 0o755); err != nil {
-		t.Fatalf("mkdir lifecycles: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".nexus", "lifecycles", "start.sh"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write start.sh: %v", err)
-	}
-
-	calls := 0
-	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
-		calls++
-		if calls == 1 {
-			return "/usr/bin/bash: .nexus/lifecycles/start.sh: No such file or directory", errors.New("start missing")
-		}
-		if name != "lifecycle-start-workspace-diagnostics" {
-			t.Fatalf("expected diagnostics runner name, got %q", name)
-		}
-		return "--- ls /workspace/.nexus/lifecycles ---\nls: cannot access '/workspace/.nexus/lifecycles': No such file or directory", nil
-	}
-
-	err := runDoctorLifecycleStart(root, doctorExecContext{backend: "firecracker"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "firecracker workspace diagnostics") {
-		t.Fatalf("expected diagnostics in error, got: %v", err)
-	}
-}
-
 func TestRunBootstrapInstallCommandDoesNotInstallOpencode(t *testing.T) {
 	originalRunner := doctorCheckCommandRunner
 	t.Cleanup(func() {
@@ -455,7 +420,7 @@ func TestRunBootstrapInstallCommandDoesNotInstallOpencode(t *testing.T) {
 		return "", nil
 	}
 
-	_, err := runBootstrapInstallCommand(context.Background(), t.TempDir(), 30*time.Second, doctorExecContext{backend: "firecracker"})
+	_, err := runBootstrapInstallCommand(context.Background(), t.TempDir(), 30*time.Second, doctorExecContext{backend: "libkrun"})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -485,7 +450,7 @@ func TestRunBootstrapInstallCommandVerifiesMakeIsInstalled(t *testing.T) {
 		return "", nil
 	}
 
-	_, err := runBootstrapInstallCommand(context.Background(), t.TempDir(), 30*time.Second, doctorExecContext{backend: "firecracker"})
+	_, err := runBootstrapInstallCommand(context.Background(), t.TempDir(), 30*time.Second, doctorExecContext{backend: "libkrun"})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -495,283 +460,6 @@ func TestRunBootstrapInstallCommandVerifiesMakeIsInstalled(t *testing.T) {
 	}
 	if !strings.Contains(installScript, "command -v make >/dev/null 2>&1 || exit 1") {
 		t.Fatalf("expected install script to verify make availability, got: %q", installScript)
-	}
-}
-
-
-func TestBootstrapContainerExecContextDindNoLongerSupported(t *testing.T) {
-	err := bootstrapContainerExecContext(t.TempDir(), doctorExecContext{backend: "dind"}, "dind", true)
-	if err == nil {
-		t.Fatal("expected error when using dind backend")
-	}
-	if !strings.Contains(err.Error(), "unsupported runtime backend") {
-		t.Fatalf("expected unsupported backend error, got: %v", err)
-	}
-}
-
-func TestBootstrapContainerExecContextFirecrackerUsesGuestRoot(t *testing.T) {
-	originalRunner := doctorCheckCommandRunner
-	t.Cleanup(func() {
-		doctorCheckCommandRunner = originalRunner
-	})
-
-	observedProjectRoot := ""
-	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
-		if command == "docker" && observedProjectRoot == "" {
-			observedProjectRoot = projectRoot
-		}
-		return "ok", nil
-	}
-
-	err := bootstrapContainerExecContext(t.TempDir(), doctorExecContext{backend: "firecracker"}, "firecracker", false)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if observedProjectRoot != "/" {
-		t.Fatalf("expected firecracker bootstrap checks to run from guest root '/', got %q", observedProjectRoot)
-	}
-}
-
-func TestBootstrapContainerExecContextFirecrackerRequiresMakeWhenStartTargetExists(t *testing.T) {
-	originalRunner := doctorCheckCommandRunner
-	t.Cleanup(func() {
-		doctorCheckCommandRunner = originalRunner
-	})
-
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "Makefile"), []byte("start:\n\t@echo make-start\n"), 0o644); err != nil {
-		t.Fatalf("write Makefile: %v", err)
-	}
-
-	seenMakeCheck := false
-	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
-		if command == "make" && len(args) == 1 && args[0] == "--version" {
-			seenMakeCheck = true
-			return "GNU Make 4.3", nil
-		}
-		if command == "docker" {
-			return "ok", nil
-		}
-		return "ok", nil
-	}
-
-	err := bootstrapContainerExecContext(root, doctorExecContext{backend: "firecracker"}, "firecracker", false)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if !seenMakeCheck {
-		t.Fatal("expected make --version capability check when Makefile start target exists")
-	}
-}
-
-func TestBootstrapContainerExecContextFirecrackerStartScriptMountsCgroups(t *testing.T) {
-	originalRunner := doctorCheckCommandRunner
-	t.Cleanup(func() {
-		doctorCheckCommandRunner = originalRunner
-	})
-
-	checksSeen := 0
-	startScript := ""
-	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
-		if command == "docker" {
-			checksSeen++
-			if checksSeen <= 2 {
-				return "docker unavailable", errors.New("docker unavailable")
-			}
-			return "ok", nil
-		}
-
-		if command == "sh" && len(args) == 2 && args[0] == "-lc" {
-			script := args[1]
-			if strings.Contains(script, "dockerd --host=unix:///var/run/docker.sock") {
-				startScript = script
-				return "started", nil
-			}
-		}
-
-		return "", nil
-	}
-
-	err := bootstrapContainerExecContext(t.TempDir(), doctorExecContext{backend: "firecracker"}, "firecracker", false)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if startScript == "" {
-		t.Fatal("expected docker start script to be executed")
-	}
-	if !strings.Contains(startScript, "mount -t cgroup2 none /sys/fs/cgroup") {
-		t.Fatalf("expected cgroup2 mount in docker start script, got: %s", startScript)
-	}
-	if !strings.Contains(startScript, "mount -t cgroup -o $s cgroup /sys/fs/cgroup/$s") {
-		t.Fatalf("expected cgroup v1 controller mount fallback in docker start script, got: %s", startScript)
-	}
-}
-
-func TestFirecrackerAgentVSockPortDefaultsToRuntimeConstant(t *testing.T) {
-	t.Setenv("NEXUS_FIRECRACKER_AGENT_VSOCK_PORT", "")
-	if got := firecrackerAgentVSockPort(); got != defaultAgentVSockPort {
-		t.Fatalf("expected default agent vsock port %d, got %d", defaultAgentVSockPort, got)
-	}
-}
-
-func TestFirecrackerAgentVSockPortHonorsEnvOverride(t *testing.T) {
-	t.Setenv("NEXUS_FIRECRACKER_AGENT_VSOCK_PORT", "25000")
-	if got := firecrackerAgentVSockPort(); got != 25000 {
-		t.Fatalf("expected env override agent vsock port 25000, got %d", got)
-	}
-}
-
-func TestFirecrackerAgentVSockPortInvalidEnvFallsBackToDefault(t *testing.T) {
-	t.Setenv("NEXUS_FIRECRACKER_AGENT_VSOCK_PORT", "invalid")
-	if got := firecrackerAgentVSockPort(); got != defaultAgentVSockPort {
-		t.Fatalf("expected fallback agent vsock port %d, got %d", defaultAgentVSockPort, got)
-	}
-}
-
-func TestDoctorFirecrackerMachineSpecDefaults(t *testing.T) {
-	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_MEMORY_MIB", "")
-	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_VCPUS", "")
-	memoryMiB, vcpus := doctorFirecrackerMachineSpec()
-	if memoryMiB != 4096 || vcpus != 2 {
-		t.Fatalf("expected defaults memory=4096 vcpus=2, got memory=%d vcpus=%d", memoryMiB, vcpus)
-	}
-}
-
-func TestDoctorFirecrackerMachineSpecHonorsOverrides(t *testing.T) {
-	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_MEMORY_MIB", "6144")
-	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_VCPUS", "4")
-	memoryMiB, vcpus := doctorFirecrackerMachineSpec()
-	if memoryMiB != 6144 || vcpus != 4 {
-		t.Fatalf("expected overrides memory=6144 vcpus=4, got memory=%d vcpus=%d", memoryMiB, vcpus)
-	}
-}
-
-func TestDoctorFirecrackerMachineSpecIgnoresInvalidValues(t *testing.T) {
-	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_MEMORY_MIB", "256")
-	t.Setenv("NEXUS_DOCTOR_FIRECRACKER_VCPUS", "0")
-	memoryMiB, vcpus := doctorFirecrackerMachineSpec()
-	if memoryMiB != 4096 || vcpus != 2 {
-		t.Fatalf("expected fallback defaults memory=4096 vcpus=2, got memory=%d vcpus=%d", memoryMiB, vcpus)
-	}
-}
-
-func TestValidateFirecrackerHostPrerequisitesSkipsNonFirecrackerBackend(t *testing.T) {
-	if err := validateFirecrackerHostPrerequisites(doctorExecContext{backend: "dind"}); err != nil {
-		t.Fatalf("expected non-firecracker backend to skip preflight, got %v", err)
-	}
-}
-
-func TestValidateFirecrackerHostPrerequisitesRequiresLinuxHost(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-	})
-
-	firecrackerHostGOOS = "darwin"
-	err := validateFirecrackerHostPrerequisites(doctorExecContext{backend: "firecracker"})
-	if err == nil {
-		t.Fatal("expected darwin host to fail firecracker preflight")
-	}
-	if !strings.Contains(err.Error(), "requires Linux with KVM") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateFirecrackerHostPrerequisitesFailsWhenBinaryMissing(t *testing.T) {
-	originalLookup := firecrackerHostBinaryLookup
-	originalGOOS := firecrackerHostGOOS
-	t.Cleanup(func() {
-		firecrackerHostBinaryLookup = originalLookup
-		firecrackerHostGOOS = originalGOOS
-	})
-
-	firecrackerHostGOOS = "linux"
-	firecrackerHostBinaryLookup = func(string) (string, error) {
-		return "", errors.New("not found")
-	}
-
-	err := validateFirecrackerHostPrerequisites(doctorExecContext{backend: "firecracker"})
-	if err == nil {
-		t.Fatal("expected missing firecracker binary error")
-	}
-	if !strings.Contains(err.Error(), "binary") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateFirecrackerHostPrerequisitesFailsWhenKVMInaccessible(t *testing.T) {
-	originalLookup := firecrackerHostBinaryLookup
-	originalStat := firecrackerHostStat
-	originalOpen := firecrackerHostOpenFile
-	originalGOOS := firecrackerHostGOOS
-	t.Cleanup(func() {
-		firecrackerHostBinaryLookup = originalLookup
-		firecrackerHostStat = originalStat
-		firecrackerHostOpenFile = originalOpen
-		firecrackerHostGOOS = originalGOOS
-	})
-
-	t.Setenv("NEXUS_FIRECRACKER_KERNEL", "/kernel")
-	t.Setenv("NEXUS_FIRECRACKER_ROOTFS", "/rootfs")
-
-	firecrackerHostGOOS = "linux"
-	firecrackerHostBinaryLookup = func(string) (string, error) {
-		return "/usr/bin/firecracker", nil
-	}
-	firecrackerHostStat = func(path string) (os.FileInfo, error) {
-		return fakeSocketFileInfo{name: filepath.Base(path)}, nil
-	}
-	firecrackerHostOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
-		return nil, os.ErrPermission
-	}
-
-	err := validateFirecrackerHostPrerequisites(doctorExecContext{backend: "firecracker"})
-	if err == nil {
-		t.Fatal("expected /dev/kvm permission failure")
-	}
-	if !strings.Contains(err.Error(), "kvm group") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateFirecrackerHostPrerequisitesPassesWhenHostReady(t *testing.T) {
-	originalLookup := firecrackerHostBinaryLookup
-	originalStat := firecrackerHostStat
-	originalOpen := firecrackerHostOpenFile
-	originalGOOS := firecrackerHostGOOS
-	originalTapHelper := firecrackerTapHelperValidator
-	originalBridge := firecrackerBridgeValidator
-	t.Cleanup(func() {
-		firecrackerHostBinaryLookup = originalLookup
-		firecrackerHostStat = originalStat
-		firecrackerHostOpenFile = originalOpen
-		firecrackerHostGOOS = originalGOOS
-		firecrackerTapHelperValidator = originalTapHelper
-		firecrackerBridgeValidator = originalBridge
-	})
-
-	t.Setenv("NEXUS_FIRECRACKER_KERNEL", "/kernel")
-	t.Setenv("NEXUS_FIRECRACKER_ROOTFS", "/rootfs")
-
-	firecrackerHostGOOS = "linux"
-	firecrackerHostBinaryLookup = func(string) (string, error) {
-		return "/usr/bin/firecracker", nil
-	}
-	firecrackerHostStat = func(path string) (os.FileInfo, error) {
-		return fakeSocketFileInfo{name: filepath.Base(path)}, nil
-	}
-	firecrackerHostOpenFile = func(name string, flag int, perm os.FileMode) (*os.File, error) {
-		f, err := os.CreateTemp(t.TempDir(), "kvm-probe")
-		if err != nil {
-			t.Fatalf("create temp file: %v", err)
-		}
-		return f, nil
-	}
-	firecrackerTapHelperValidator = func() error { return nil }
-	firecrackerBridgeValidator = func() error { return nil }
-
-	if err := validateFirecrackerHostPrerequisites(doctorExecContext{backend: "firecracker"}); err != nil {
-		t.Fatalf("expected firecracker preflight to pass, got %v", err)
 	}
 }
 
@@ -928,8 +616,8 @@ func TestRunInitCreatesNexusWorkspaceFiles(t *testing.T) {
 	orig := initRuntimeBootstrapRunner
 	t.Cleanup(func() { initRuntimeBootstrapRunner = orig })
 	initRuntimeBootstrapRunner = func(projectRoot, runtimeName string) error {
-		if runtimeName != "firecracker" {
-			t.Fatalf("expected firecracker runtime, got %q", runtimeName)
+		if runtimeName != "libkrun" {
+			t.Fatalf("expected libkrun runtime, got %q", runtimeName)
 		}
 		return nil
 	}
@@ -985,15 +673,15 @@ func TestRunInitDoesNotOverwriteExistingFilesWithoutForce(t *testing.T) {
 	}
 }
 
-func TestRunInitCallsRuntimeBootstrapForFirecracker(t *testing.T) {
+func TestRunInitCallsRuntimeBootstrapForLibkrun(t *testing.T) {
 	root := t.TempDir()
 	called := false
 	orig := initRuntimeBootstrapRunner
 	t.Cleanup(func() { initRuntimeBootstrapRunner = orig })
 	initRuntimeBootstrapRunner = func(projectRoot, runtimeName string) error {
 		called = true
-		if runtimeName != "firecracker" {
-			t.Fatalf("expected firecracker runtime, got %q", runtimeName)
+		if runtimeName != "libkrun" {
+			t.Fatalf("expected libkrun runtime, got %q", runtimeName)
 		}
 		return nil
 	}
@@ -1012,8 +700,8 @@ func TestRunInitCallsRuntimeBootstrapByDefault(t *testing.T) {
 	t.Cleanup(func() { initRuntimeBootstrapRunner = orig })
 	initRuntimeBootstrapRunner = func(projectRoot, runtimeName string) error {
 		called = true
-		if runtimeName != "firecracker" {
-			t.Fatalf("expected firecracker runtime, got %q", runtimeName)
+		if runtimeName != "libkrun" {
+			t.Fatalf("expected libkrun runtime, got %q", runtimeName)
 		}
 		return nil
 	}
@@ -1025,11 +713,11 @@ func TestRunInitCallsRuntimeBootstrapByDefault(t *testing.T) {
 	}
 }
 
-func TestRunInitFirecrackerReturnsManualStepsInNonInteractiveMode(t *testing.T) {
+func TestRunInitBootstrapFailureReturnsManualStepsInNonInteractiveMode(t *testing.T) {
 	origRunner := initRuntimeBootstrapRunner
 	t.Cleanup(func() { initRuntimeBootstrapRunner = origRunner })
 	initRuntimeBootstrapRunner = func(projectRoot, runtimeName string) error {
-		return fmt.Errorf("firecracker runtime setup failed: bootstrap setup failed\n\nmanual next steps:\n  sudo -E nexus init --project-root %s", projectRoot)
+		return fmt.Errorf("runtime setup failed: bootstrap setup failed\n\nmanual next steps:\n  sudo -E nexus init --project-root %s", projectRoot)
 	}
 
 	err := runInit(initOptions{projectRoot: t.TempDir()})
@@ -1097,7 +785,7 @@ func TestRunInitRuntimeBootstrapIgnoresKVMRefreshNeededWhenPrivileged(t *testing
 	setupVerifyFn = func() error { return errKVMGroupRefreshNeeded }
 	setupKVMGroupReexecFn = func(commandPath string) error { return errors.New("simulated sg failure") }
 
-	err := runInitRuntimeBootstrap(t.TempDir(), "firecracker")
+	err := runInitRuntimeBootstrap(t.TempDir(), "libkrun")
 	if err != nil {
 		t.Fatalf("expected nil error when privileged and only kvm refresh is needed, got: %v", err)
 	}
@@ -1145,26 +833,18 @@ func setupDoctorTestWorkspace(t *testing.T, doctorConfig config.DoctorConfig) st
 
 func TestDoctor_StillRunsTestsWhenRequiredProbeFails(t *testing.T) {
 	t.Setenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS", "1")
-	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
-	originalGOOS := firecrackerHostGOOS
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "libkrun")
 	originalBootstrap := doctorExecBootstrapRunner
-	originalVerifier := doctorFirecrackerRuntimeVerifier
 	originalLifecycleSetup := doctorLifecycleSetupRunner
 	originalLifecycleStart := doctorLifecycleStartRunner
 	originalRunner := doctorCheckCommandRunner
-	originalFirecrackerRunner := firecrackerCheckCommandRunner
 	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
 		doctorExecBootstrapRunner = originalBootstrap
-		doctorFirecrackerRuntimeVerifier = originalVerifier
 		doctorLifecycleSetupRunner = originalLifecycleSetup
 		doctorLifecycleStartRunner = originalLifecycleStart
 		doctorCheckCommandRunner = originalRunner
-		firecrackerCheckCommandRunner = originalFirecrackerRunner
 	})
-	firecrackerHostGOOS = "linux"
 	doctorExecBootstrapRunner = func(projectRoot string) error { return nil }
-	doctorFirecrackerRuntimeVerifier = func() error { return nil }
 	doctorLifecycleSetupRunner = func(projectRoot string, execCtx doctorExecContext) error { return nil }
 	doctorLifecycleStartRunner = func(projectRoot string, execCtx doctorExecContext) error { return nil }
 	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
@@ -1174,12 +854,6 @@ func TestDoctor_StillRunsTestsWhenRequiredProbeFails(t *testing.T) {
 		default:
 			return "ok", nil
 		}
-	}
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		if command == "bash" && len(args) >= 2 && args[0] == "-lc" && strings.Contains(args[1], "exit 1") {
-			return "", errors.New("simulated failure")
-		}
-		return "ok", nil
 	}
 
 	workspaceRoot := setupDoctorTestWorkspace(t, config.DoctorConfig{
@@ -1245,32 +919,21 @@ func TestDoctor_StillRunsTestsWhenRequiredProbeFails(t *testing.T) {
 
 func TestDoctor_ProbesPassThenTestsRun(t *testing.T) {
 	t.Setenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS", "1")
-	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
-	originalGOOS := firecrackerHostGOOS
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "libkrun")
 	originalBootstrap := doctorExecBootstrapRunner
-	originalVerifier := doctorFirecrackerRuntimeVerifier
 	originalLifecycleSetup := doctorLifecycleSetupRunner
 	originalLifecycleStart := doctorLifecycleStartRunner
 	originalRunner := doctorCheckCommandRunner
-	originalFirecrackerRunner := firecrackerCheckCommandRunner
 	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
 		doctorExecBootstrapRunner = originalBootstrap
-		doctorFirecrackerRuntimeVerifier = originalVerifier
 		doctorLifecycleSetupRunner = originalLifecycleSetup
 		doctorLifecycleStartRunner = originalLifecycleStart
 		doctorCheckCommandRunner = originalRunner
-		firecrackerCheckCommandRunner = originalFirecrackerRunner
 	})
-	firecrackerHostGOOS = "linux"
 	doctorExecBootstrapRunner = func(projectRoot string) error { return nil }
-	doctorFirecrackerRuntimeVerifier = func() error { return nil }
 	doctorLifecycleSetupRunner = func(projectRoot string, execCtx doctorExecContext) error { return nil }
 	doctorLifecycleStartRunner = func(projectRoot string, execCtx doctorExecContext) error { return nil }
 	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
-		return "ok", nil
-	}
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
 		return "ok", nil
 	}
 
@@ -1320,26 +983,18 @@ func TestDoctor_ProbesPassThenTestsRun(t *testing.T) {
 
 func TestDoctor_RequiredTestFailureReturnsError(t *testing.T) {
 	t.Setenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS", "1")
-	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
-	originalGOOS := firecrackerHostGOOS
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "libkrun")
 	originalBootstrap := doctorExecBootstrapRunner
-	originalVerifier := doctorFirecrackerRuntimeVerifier
 	originalLifecycleSetup := doctorLifecycleSetupRunner
 	originalLifecycleStart := doctorLifecycleStartRunner
 	originalRunner := doctorCheckCommandRunner
-	originalFirecrackerRunner := firecrackerCheckCommandRunner
 	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
 		doctorExecBootstrapRunner = originalBootstrap
-		doctorFirecrackerRuntimeVerifier = originalVerifier
 		doctorLifecycleSetupRunner = originalLifecycleSetup
 		doctorLifecycleStartRunner = originalLifecycleStart
 		doctorCheckCommandRunner = originalRunner
-		firecrackerCheckCommandRunner = originalFirecrackerRunner
 	})
-	firecrackerHostGOOS = "linux"
 	doctorExecBootstrapRunner = func(projectRoot string) error { return nil }
-	doctorFirecrackerRuntimeVerifier = func() error { return nil }
 	doctorLifecycleSetupRunner = func(projectRoot string, execCtx doctorExecContext) error { return nil }
 	doctorLifecycleStartRunner = func(projectRoot string, execCtx doctorExecContext) error { return nil }
 	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
@@ -1349,12 +1004,6 @@ func TestDoctor_RequiredTestFailureReturnsError(t *testing.T) {
 		default:
 			return "ok", nil
 		}
-	}
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		if command == "bash" && len(args) >= 2 && args[0] == "-lc" && strings.Contains(args[1], "exit 1") {
-			return "", errors.New("simulated failure")
-		}
-		return "ok", nil
 	}
 
 	workspaceRoot := setupDoctorTestWorkspace(t, config.DoctorConfig{
@@ -1436,7 +1085,7 @@ func TestRunCheckCommandCapturesOutput(t *testing.T) {
 	}
 }
 
-func TestResolveCheckCommandNonFirecrackerFallsBackToHost(t *testing.T) {
+func TestResolveCheckCommandNonLibkrunFallsBackToHost(t *testing.T) {
 	cmd, args, env, label := resolveCheckCommand("/tmp/project", "bash", []string{"-lc", "echo ok"}, doctorExecContext{
 		backend: "host",
 	})
@@ -1455,16 +1104,16 @@ func TestResolveCheckCommandNonFirecrackerFallsBackToHost(t *testing.T) {
 	}
 }
 
-func TestResolveCheckCommandFirecracker(t *testing.T) {
+func TestResolveCheckCommandLibkrunUsesHost(t *testing.T) {
 	cmd, args, env, label := resolveCheckCommand("/tmp/project", "bash", []string{"-lc", "echo ok"}, doctorExecContext{
-		backend: "firecracker",
+		backend: "libkrun",
 	})
 
 	if cmd != "bash" {
 		t.Fatalf("expected bash command, got %q", cmd)
 	}
-	if label != "firecracker" {
-		t.Fatalf("expected label firecracker, got %q", label)
+	if label != "host" {
+		t.Fatalf("expected label host, got %q", label)
 	}
 	if len(env) != 0 {
 		t.Fatalf("expected no extra env, got %v", env)
@@ -1536,218 +1185,6 @@ func TestRunCheckCommandWithExecContextHostExportsUIDAndGID(t *testing.T) {
 	}
 }
 
-func TestRunCheckCommandWithExecContextFirecrackerUsesNativeRunner(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	original := firecrackerCheckCommandRunner
-	root := t.TempDir()
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerCheckCommandRunner = original
-	})
-
-	firecrackerHostGOOS = "linux"
-
-	called := false
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		called = true
-		if projectRoot != root {
-			t.Fatalf("expected firecracker checks to use project root %q, got %q", root, projectRoot)
-		}
-		if command != "bash" {
-			t.Fatalf("expected command bash, got %q", command)
-		}
-		if !reflect.DeepEqual(args, []string{"-lc", "echo ok"}) {
-			t.Fatalf("unexpected args: %v", args)
-		}
-		return "ok", nil
-	}
-
-	out, err := runCheckCommandWithExecContext(
-		context.Background(),
-		root,
-		"probe",
-		"example",
-		1,
-		1,
-		30*time.Second,
-		"bash",
-		[]string{"-lc", "echo ok"},
-		doctorExecContext{backend: "firecracker"},
-	)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if !called {
-		t.Fatal("expected firecracker native runner to be called")
-	}
-	if out != "ok" {
-		t.Fatalf("expected output ok, got %q", out)
-	}
-}
-
-func TestRunCheckCommandWithExecContextFirecrackerPropagatesMissingWorkdirError(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	original := firecrackerCheckCommandRunner
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerCheckCommandRunner = original
-	})
-
-	firecrackerHostGOOS = "linux"
-
-	called := false
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		called = true
-		return "chdir " + projectRoot + ": no such file or directory", errors.New("guest command failed")
-	}
-
-	root := t.TempDir()
-	out, err := runCheckCommandWithExecContext(
-		context.Background(),
-		root,
-		"probe",
-		"missing-workdir",
-		1,
-		1,
-		30*time.Second,
-		"bash",
-		[]string{"-lc", "printf host-ok"},
-		doctorExecContext{backend: "firecracker"},
-	)
-	if err == nil {
-		t.Fatal("expected firecracker probe to fail when guest workdir is missing")
-	}
-	if !called {
-		t.Fatal("expected firecracker runner to be called")
-	}
-	if !strings.Contains(out, "chdir") {
-		t.Fatalf("expected original guest error output, got %q", out)
-	}
-}
-
-func TestRunCheckCommandWithExecContextFirecrackerPropagatesMissingBinaryError(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	original := firecrackerCheckCommandRunner
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerCheckCommandRunner = original
-	})
-
-	firecrackerHostGOOS = "linux"
-
-	called := false
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		called = true
-		return "exec: \"docker\": executable file not found in $PATH", errors.New("guest command failed")
-	}
-
-	root := t.TempDir()
-	out, err := runCheckCommandWithExecContext(
-		context.Background(),
-		root,
-		"probe",
-		"missing-binary",
-		1,
-		1,
-		30*time.Second,
-		"bash",
-		[]string{"-lc", "printf host-ok"},
-		doctorExecContext{backend: "firecracker"},
-	)
-	if err == nil {
-		t.Fatal("expected firecracker probe to fail when guest binary is missing")
-	}
-	if !called {
-		t.Fatal("expected firecracker runner to be called")
-	}
-	if !strings.Contains(out, "executable file not found") {
-		t.Fatalf("expected original guest missing binary output, got %q", out)
-	}
-}
-
-func TestRunCheckCommandWithExecContextFirecrackerExecReturnsGuestFailure(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	original := firecrackerCheckCommandRunner
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerCheckCommandRunner = original
-	})
-
-	firecrackerHostGOOS = "linux"
-
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		return "chdir " + projectRoot + ": no such file or directory", errors.New("guest command failed")
-	}
-
-	root := t.TempDir()
-	out, err := runCheckCommandWithExecContext(
-		context.Background(),
-		root,
-		"exec",
-		"bash",
-		1,
-		1,
-		30*time.Second,
-		"bash",
-		[]string{"-lc", "printf host-ok"},
-		doctorExecContext{backend: "firecracker"},
-	)
-	if err == nil {
-		t.Fatal("expected firecracker exec failure")
-	}
-	if !strings.Contains(out, "chdir") {
-		t.Fatalf("expected guest error output, got %q", out)
-	}
-}
-
-func TestVerifyFirecrackerWorkspaceReadyPasses(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	original := firecrackerCheckCommandRunner
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerCheckCommandRunner = original
-	})
-
-	firecrackerHostGOOS = "linux"
-
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		if projectRoot != "/workspace" {
-			t.Fatalf("expected workspace verification at /workspace, got %q", projectRoot)
-		}
-		if command != "sh" {
-			t.Fatalf("expected sh command, got %q", command)
-		}
-		return "", nil
-	}
-
-	if err := verifyFirecrackerWorkspaceReady(); err != nil {
-		t.Fatalf("expected workspace verification to pass, got %v", err)
-	}
-}
-
-func TestVerifyFirecrackerWorkspaceReadyProvidesSetupGuidanceOnMissingWorkspace(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	original := firecrackerCheckCommandRunner
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerCheckCommandRunner = original
-	})
-
-	firecrackerHostGOOS = "linux"
-
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		return "chdir /workspace: no such file or directory", errors.New("guest command failed")
-	}
-
-	err := verifyFirecrackerWorkspaceReady()
-	if err == nil {
-		t.Fatal("expected workspace verification error")
-	}
-	if !strings.Contains(err.Error(), "nexus init --project-root <abs-path> --force") {
-		t.Fatalf("expected setup guidance, got %v", err)
-	}
-}
-
 func TestRunExecHostBackendNoLongerSupported(t *testing.T) {
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "host")
 
@@ -1784,39 +1221,9 @@ func TestRunExecUnsupportedBackendFails(t *testing.T) {
 	}
 }
 
-func TestRunExecFirecrackerUsesGuestWorkspaceWorkdir(t *testing.T) {
-	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
-	originalGOOS := firecrackerHostGOOS
+func TestRunExecLibkrunUsesHostRunner(t *testing.T) {
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "libkrun")
 	root := t.TempDir()
-
-	originalBootstrap := firecrackerBootstrapRunner
-	originalFirecrackerRunner := firecrackerCheckCommandRunner
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerBootstrapRunner = originalBootstrap
-		firecrackerCheckCommandRunner = originalFirecrackerRunner
-	})
-
-	firecrackerHostGOOS = "linux"
-
-	firecrackerBootstrapRunner = func(projectRoot string, execCtx doctorExecContext) error {
-		return nil
-	}
-
-	called := false
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		called = true
-		if projectRoot != root {
-			t.Fatalf("expected firecracker exec to use project root %q, got %q", root, projectRoot)
-		}
-		if command == "docker" {
-			return "", nil
-		}
-		if command != "pwd" {
-			t.Fatalf("expected command pwd (or docker bootstrap checks), got %q", command)
-		}
-		return "/workspace\n", nil
-	}
 
 	err := runExec(execOptions{
 		projectRoot: root,
@@ -1825,26 +1232,15 @@ func TestRunExecFirecrackerUsesGuestWorkspaceWorkdir(t *testing.T) {
 		args:        nil,
 	})
 	if err != nil {
-		t.Fatalf("expected runExec firecracker to succeed, got %v", err)
-	}
-	if !called {
-		t.Fatal("expected firecracker runner to be called")
+		t.Fatalf("expected runExec to succeed, got %v", err)
 	}
 }
 
-func TestRunExecSelectsBackendFromWorkspaceRuntimeWhenEnvUnset(t *testing.T) {
+func TestRunExecSelectsLibkrunFromWorkspaceWhenEnvUnsetOnLinux(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("default backend selection for linux is libkrun")
+	}
 	t.Setenv("NEXUS_RUNTIME_BACKEND", "")
-	originalGOOS := firecrackerHostGOOS
-
-	originalBootstrap := firecrackerBootstrapRunner
-	originalFirecrackerRunner := firecrackerCheckCommandRunner
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerBootstrapRunner = originalBootstrap
-		firecrackerCheckCommandRunner = originalFirecrackerRunner
-	})
-
-	firecrackerHostGOOS = "linux"
 
 	root := t.TempDir()
 	nexusDir := filepath.Join(root, ".nexus")
@@ -1855,19 +1251,19 @@ func TestRunExecSelectsBackendFromWorkspaceRuntimeWhenEnvUnset(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	calledFirecrackerBootstrap := false
-	firecrackerBootstrapRunner = func(projectRoot string, execCtx doctorExecContext) error {
-		calledFirecrackerBootstrap = true
-		if execCtx.backend != "firecracker" {
-			t.Fatalf("expected backend firecracker from default backend selection, got %q", execCtx.backend)
+	originalRunner := doctorCheckCommandRunner
+	t.Cleanup(func() { doctorCheckCommandRunner = originalRunner })
+
+	called := false
+	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
+		called = true
+		if execCtx.backend != "libkrun" {
+			t.Fatalf("expected libkrun backend from default selection, got %q", execCtx.backend)
 		}
-		return nil
-	}
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
 		if projectRoot != root {
-			t.Fatalf("expected firecracker runExec to use project root %q, got %q", root, projectRoot)
+			t.Fatalf("expected project root %q, got %q", root, projectRoot)
 		}
-		return "/workspace\n", nil
+		return root + "\n", nil
 	}
 
 	err := runExec(execOptions{
@@ -1878,39 +1274,34 @@ func TestRunExecSelectsBackendFromWorkspaceRuntimeWhenEnvUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected runExec to succeed, got %v", err)
 	}
-	if !calledFirecrackerBootstrap {
-		t.Fatal("expected firecracker backend bootstrap from default selection")
+	if !called {
+		t.Fatal("expected exec runner to be called")
 	}
 }
 
-func TestSelectRuntimeBackendLinuxRequirementPrefersFirecrackerOnDarwin(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	t.Cleanup(func() { firecrackerHostGOOS = originalGOOS })
-	firecrackerHostGOOS = "darwin"
-
+func TestSelectRuntimeBackendLinuxRequirementMapsToSeatbeltOnDarwin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-specific default")
+	}
 	if got := selectRuntimeBackend([]string{"linux"}); got != "seatbelt" {
 		t.Fatalf("expected linux->seatbelt on darwin, got %q", got)
 	}
 }
 
 func TestRunExecReexecsWithSGKVMOnKVMPermissionError(t *testing.T) {
-	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "libkrun")
 	t.Setenv(execKVMGroupReexecEnv, "")
-	originalGOOS := firecrackerHostGOOS
 	addFakeSGToPath(t)
 
-	originalBootstrap := firecrackerBootstrapRunner
+	originalBootstrap := execCommandBootstrapRunner
 	originalReexec := execKVMGroupReexecRunner
 	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerBootstrapRunner = originalBootstrap
+		execCommandBootstrapRunner = originalBootstrap
 		execKVMGroupReexecRunner = originalReexec
 	})
 
-	firecrackerHostGOOS = "linux"
-
-	firecrackerBootstrapRunner = func(projectRoot string, execCtx doctorExecContext) error {
-		return errors.New("firecracker requires read/write access to /dev/kvm")
+	execCommandBootstrapRunner = func(projectRoot string) error {
+		return errors.New("libkrun requires read/write access to /dev/kvm")
 	}
 	called := false
 	var gotArgs []string
@@ -1937,18 +1328,18 @@ func TestRunExecReexecsWithSGKVMOnKVMPermissionError(t *testing.T) {
 }
 
 func TestRunExecDoesNotReexecWithSGKVMWhenAlreadyReexeced(t *testing.T) {
-	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "libkrun")
 	t.Setenv(execKVMGroupReexecEnv, "1")
 
-	originalBootstrap := firecrackerBootstrapRunner
+	originalBootstrap := execCommandBootstrapRunner
 	originalReexec := execKVMGroupReexecRunner
 	t.Cleanup(func() {
-		firecrackerBootstrapRunner = originalBootstrap
+		execCommandBootstrapRunner = originalBootstrap
 		execKVMGroupReexecRunner = originalReexec
 	})
 
-	firecrackerBootstrapRunner = func(projectRoot string, execCtx doctorExecContext) error {
-		return errors.New("firecracker requires read/write access to /dev/kvm")
+	execCommandBootstrapRunner = func(projectRoot string) error {
+		return errors.New("libkrun requires read/write access to /dev/kvm")
 	}
 	called := false
 	execKVMGroupReexecRunner = func(commandPath string, args []string) error {
@@ -1970,7 +1361,7 @@ func TestRunExecDoesNotReexecWithSGKVMWhenAlreadyReexeced(t *testing.T) {
 }
 
 func TestRunDoctorReexecsWithSGKVMOnKVMPermissionError(t *testing.T) {
-	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "libkrun")
 	t.Setenv(execKVMGroupReexecEnv, "")
 	t.Setenv("NEXUS_DOCTOR_DISABLE_BUILTIN_CHECKS", "1")
 	addFakeSGToPath(t)
@@ -1987,7 +1378,7 @@ func TestRunDoctorReexecsWithSGKVMOnKVMPermissionError(t *testing.T) {
 	})
 
 	doctorExecBootstrapRunner = func(projectRoot string) error {
-		return errors.New("firecracker requires read/write access to /dev/kvm")
+		return errors.New("libkrun requires read/write access to /dev/kvm")
 	}
 
 	called := false
@@ -2013,82 +1404,6 @@ func TestRunDoctorReexecsWithSGKVMOnKVMPermissionError(t *testing.T) {
 	}
 }
 
-func TestVerifyFirecrackerGuestDockerRuntime(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	original := firecrackerCheckCommandRunner
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerCheckCommandRunner = original
-	})
-
-	firecrackerHostGOOS = "linux"
-
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		if projectRoot != "/workspace" {
-			t.Fatalf("expected /workspace project root, got %q", projectRoot)
-		}
-		if command != "sh" {
-			t.Fatalf("expected sh command, got %q", command)
-		}
-		return "", nil
-	}
-
-	if err := verifyFirecrackerGuestDockerRuntime(); err != nil {
-		t.Fatalf("expected guest docker runtime verification to pass, got %v", err)
-	}
-}
-
-func TestVerifyFirecrackerGuestDockerRuntimeFailureMessage(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	original := firecrackerCheckCommandRunner
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerCheckCommandRunner = original
-	})
-
-	firecrackerHostGOOS = "linux"
-
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		return "docker: not found", errors.New("guest command failed")
-	}
-
-	err := verifyFirecrackerGuestDockerRuntime()
-	if err == nil {
-		t.Fatal("expected guest docker runtime verification failure")
-	}
-	if !strings.Contains(err.Error(), "host docker is not used") {
-		t.Fatalf("expected explicit host docker guidance, got %v", err)
-	}
-}
-
-func TestVerifyFirecrackerGuestDockerRuntimePassesWithSudoDockerInfo(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	original := firecrackerCheckCommandRunner
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerCheckCommandRunner = original
-	})
-
-	firecrackerHostGOOS = "linux"
-
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		if command != "sh" {
-			t.Fatalf("expected sh command, got %q", command)
-		}
-		if len(args) < 2 || args[0] != "-lc" {
-			t.Fatalf("unexpected args: %v", args)
-		}
-		if !strings.Contains(args[1], "sudo -n docker info") {
-			t.Fatalf("expected sudo fallback in verify command, got: %s", args[1])
-		}
-		return "sudo docker info ok", nil
-	}
-
-	if err := verifyFirecrackerGuestDockerRuntime(); err != nil {
-		t.Fatalf("expected guest docker runtime verification to pass with sudo fallback, got %v", err)
-	}
-}
-
 func TestSelectRuntimeBackend(t *testing.T) {
 	if got := selectRuntimeBackend([]string{"libkrun"}); got != "libkrun" {
 		t.Fatalf("expected libkrun->libkrun, got %q", got)
@@ -2106,15 +1421,15 @@ func TestApplyRuntimeBackendFromWorkspaceUsesInitHintWhenPresent(t *testing.T) {
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(runDir, "nexus-init-env"), []byte("NEXUS_RUNTIME_BACKEND=firecracker\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(runDir, "nexus-init-env"), []byte("NEXUS_RUNTIME_BACKEND=libkrun\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := applyRuntimeBackendFromWorkspace(root); err != nil {
 		t.Fatalf("expected init hint backend to apply, got %v", err)
 	}
-	if got := os.Getenv("NEXUS_RUNTIME_BACKEND"); got != "firecracker" {
-		t.Fatalf("expected hinted runtime backend firecracker, got %q", got)
+	if got := os.Getenv("NEXUS_RUNTIME_BACKEND"); got != "libkrun" {
+		t.Fatalf("expected init hint to set libkrun, got %q", got)
 	}
 }
 
@@ -2160,249 +1475,9 @@ func TestApplyRuntimeBackendFromWorkspaceRejectsDind(t *testing.T) {
 	}
 }
 
-func TestApplyFirecrackerAssetDefaultsSetsKernelAndRootfsWhenPresent(t *testing.T) {
-	originalStat := firecrackerDefaultAssetStat
-	originalKernelPath := firecrackerDefaultKernelPath
-	originalRootfsPath := firecrackerDefaultRootFSPath
-	t.Cleanup(func() {
-		firecrackerDefaultAssetStat = originalStat
-		firecrackerDefaultKernelPath = originalKernelPath
-		firecrackerDefaultRootFSPath = originalRootfsPath
-	})
-
-	t.Setenv("NEXUS_FIRECRACKER_KERNEL", "")
-	t.Setenv("NEXUS_FIRECRACKER_ROOTFS", "")
-
-	firecrackerDefaultKernelPath = "/fake/kernel"
-	firecrackerDefaultRootFSPath = "/fake/rootfs"
-	firecrackerDefaultAssetStat = func(path string) (os.FileInfo, error) {
-		if path == "/fake/kernel" || path == "/fake/rootfs" {
-			return fakeSocketFileInfo{name: filepath.Base(path)}, nil
-		}
-		return nil, os.ErrNotExist
-	}
-
-	applyFirecrackerAssetDefaults()
-
-	if got := os.Getenv("NEXUS_FIRECRACKER_KERNEL"); got != "/fake/kernel" {
-		t.Fatalf("expected default kernel path, got %q", got)
-	}
-	if got := os.Getenv("NEXUS_FIRECRACKER_ROOTFS"); got != "/fake/rootfs" {
-		t.Fatalf("expected default rootfs path, got %q", got)
-	}
-}
-
-func TestApplyFirecrackerAssetDefaultsDoesNotOverrideExistingEnv(t *testing.T) {
-	originalStat := firecrackerDefaultAssetStat
-	originalKernelPath := firecrackerDefaultKernelPath
-	originalRootfsPath := firecrackerDefaultRootFSPath
-	t.Cleanup(func() {
-		firecrackerDefaultAssetStat = originalStat
-		firecrackerDefaultKernelPath = originalKernelPath
-		firecrackerDefaultRootFSPath = originalRootfsPath
-	})
-
-	t.Setenv("NEXUS_FIRECRACKER_KERNEL", "/already/kernel")
-	t.Setenv("NEXUS_FIRECRACKER_ROOTFS", "/already/rootfs")
-
-	firecrackerDefaultKernelPath = "/fake/kernel"
-	firecrackerDefaultRootFSPath = "/fake/rootfs"
-	firecrackerDefaultAssetStat = func(path string) (os.FileInfo, error) {
-		return fakeSocketFileInfo{name: filepath.Base(path)}, nil
-	}
-
-	applyFirecrackerAssetDefaults()
-
-	if got := os.Getenv("NEXUS_FIRECRACKER_KERNEL"); got != "/already/kernel" {
-		t.Fatalf("expected existing kernel env to be preserved, got %q", got)
-	}
-	if got := os.Getenv("NEXUS_FIRECRACKER_ROOTFS"); got != "/already/rootfs" {
-		t.Fatalf("expected existing rootfs env to be preserved, got %q", got)
-	}
-}
-
-// ---- setup/bootstrap tests ----
-
-// TestDetectPrivilegeModeRoot verifies that detectPrivilegeMode returns
-// privilegeModeRoot when EUID is 0.
-func TestDetectPrivilegeModeRoot(t *testing.T) {
-	requireLinux(t)
-
-	mode := detectPrivilegeMode(true, false, false)
-	if mode != privilegeModeRoot {
-		t.Fatalf("expected privilegeModeRoot for EUID==0, got %v", mode)
-	}
-}
-
-// TestDetectPrivilegeModeSudoN verifies that detectPrivilegeMode returns
-// privilegeModeSudoN when sudo -n would succeed (CI passwordless sudo).
-func TestDetectPrivilegeModeSudoN(t *testing.T) {
-	requireLinux(t)
-
-	mode := detectPrivilegeMode(false, true, false)
-	if mode != privilegeModeSudoN {
-		t.Fatalf("expected privilegeModeSudoN for passwordless sudo, got %v", mode)
-	}
-}
-
-// TestDetectPrivilegeModeInteractive verifies that detectPrivilegeMode returns
-// privilegeModeInteractive when stdin is a TTY.
-func TestDetectPrivilegeModeInteractive(t *testing.T) {
-	requireLinux(t)
-
-	mode := detectPrivilegeMode(false, false, true)
-	if mode != privilegeModeInteractive {
-		t.Fatalf("expected privilegeModeInteractive for TTY stdin, got %v", mode)
-	}
-}
-
-// TestDetectPrivilegeModeFallback verifies that detectPrivilegeMode returns
-// privilegeModeManual when no privilege escalation path is available.
-func TestDetectPrivilegeModeFallback(t *testing.T) {
-	requireLinux(t)
-
-	mode := detectPrivilegeMode(false, false, false)
-	if mode != privilegeModeManual {
-		t.Fatalf("expected privilegeModeManual for non-interactive no-sudo, got %v", mode)
-	}
-}
-
-func TestBootstrapDoctorExecContextFirecrackerUsesNativeBootstrap(t *testing.T) {
-	t.Setenv("NEXUS_RUNTIME_BACKEND", "firecracker")
-
-	original := firecrackerBootstrapRunner
-	originalContainerBootstrap := containerBootstrapRunner
-	t.Cleanup(func() {
-		firecrackerBootstrapRunner = original
-		containerBootstrapRunner = originalContainerBootstrap
-	})
-
-	called := false
-	containerCalled := false
-	firecrackerBootstrapRunner = func(projectRoot string, execCtx doctorExecContext) error {
-		called = true
-		if execCtx.backend != "firecracker" {
-			t.Fatalf("expected firecracker backend, got %q", execCtx.backend)
-		}
-		if projectRoot == "" {
-			t.Fatal("project root should not be empty")
-		}
-		return nil
-	}
-	containerBootstrapRunner = func(projectRoot string, execCtx doctorExecContext, backendLabel string, allowInstall bool) error {
-		containerCalled = true
-		if execCtx.backend != "firecracker" {
-			t.Fatalf("expected firecracker container bootstrap backend, got %q", execCtx.backend)
-		}
-		if backendLabel != "firecracker" {
-			t.Fatalf("expected backend label firecracker, got %q", backendLabel)
-		}
-		if !allowInstall {
-			t.Fatal("expected allowInstall=true for firecracker runtime bootstrap")
-		}
-		return nil
-	}
-
+func TestBootstrapDoctorExecContextLibkrunIsNoOp(t *testing.T) {
+	t.Setenv("NEXUS_RUNTIME_BACKEND", "libkrun")
 	if err := bootstrapDoctorExecContext(t.TempDir()); err != nil {
 		t.Fatalf("expected no error, got %v", err)
-	}
-	if !called {
-		t.Fatal("expected firecracker bootstrap runner to be called")
-	}
-	if !containerCalled {
-		t.Fatal("expected firecracker container bootstrap runner to be called")
-	}
-}
-
-func TestBootstrapFirecrackerExecContextUsesNativeBootstrapOnLinux(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	originalBootstrapRunner := firecrackerBootstrapRunner
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerBootstrapRunner = originalBootstrapRunner
-	})
-
-	firecrackerHostGOOS = "linux"
-	nativeCalled := false
-	firecrackerBootstrapRunner = func(projectRoot string, execCtx doctorExecContext) error {
-		nativeCalled = true
-		return nil
-	}
-
-	err := bootstrapFirecrackerExecContext(t.TempDir(), doctorExecContext{backend: "firecracker"})
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if !nativeCalled {
-		t.Fatal("expected native bootstrap function to be called on linux host")
-	}
-}
-
-func TestRunFirecrackerCheckCommandForHostLinux(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	originalNativeFn := firecrackerCheckCommandRunner
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerCheckCommandRunner = originalNativeFn
-	})
-
-	firecrackerHostGOOS = "linux"
-	nativeCalled := false
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		nativeCalled = true
-		if command != "bash" {
-			t.Fatalf("expected bash command, got %q", command)
-		}
-		return "native-output", nil
-	}
-
-	out, err := runFirecrackerCheckCommandForHost(context.Background(), "/workspace", "bash", []string{"-lc", "echo test"})
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if !nativeCalled {
-		t.Fatal("expected native check command function to be called on linux host")
-	}
-	if out != "native-output" {
-		t.Fatalf("expected native output, got %q", out)
-	}
-}
-
-func TestRunCheckCommandWithExecContextUsesFirecrackerRunner(t *testing.T) {
-	originalGOOS := firecrackerHostGOOS
-	originalNativeFn := firecrackerCheckCommandRunner
-	t.Cleanup(func() {
-		firecrackerHostGOOS = originalGOOS
-		firecrackerCheckCommandRunner = originalNativeFn
-	})
-
-	firecrackerHostGOOS = "darwin"
-	firecrackerCheckCommandRunner = func(ctx context.Context, projectRoot, command string, args []string) (string, error) {
-		if projectRoot != "/tmp/project" {
-			t.Fatalf("expected project root /tmp/project, got %q", projectRoot)
-		}
-		if command != "bash" {
-			t.Fatalf("expected bash command, got %q", command)
-		}
-		return "darwin-dispatch-output", nil
-	}
-
-	out, err := runCheckCommandWithExecContext(
-		context.Background(),
-		"/tmp/project",
-		"probe",
-		"dispatch-check",
-		1,
-		1,
-		30*time.Second,
-		"bash",
-		[]string{"-lc", "echo ok"},
-		doctorExecContext{backend: "firecracker"},
-	)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if out != "darwin-dispatch-output" {
-		t.Fatalf("expected darwin dispatch output, got %q", out)
 	}
 }

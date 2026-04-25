@@ -8,7 +8,7 @@ const LINES: TerminalLine[] = [
   { type: "output", text: "✓  workspace created: my-project", startFrame: 110, color: "#4EC994" },
   { type: "blank", text: "", startFrame: 130 },
   { type: "command", text: "nexus workspace start my-project", startFrame: 150 },
-  { type: "output", text: "  Booting Firecracker VM...", startFrame: 200 },
+  { type: "output", text: "  Booting libkrun VM...", startFrame: 200 },
   { type: "output", text: "  Discovered ports: 3000 (web)  5432 (db)  8080 (api)", startFrame: 280, color: "#569CD6" },
   { type: "output", text: "✓  workspace ready", startFrame: 340, color: "#4EC994" },
   { type: "blank", text: "", startFrame: 360 },
