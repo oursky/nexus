@@ -26,6 +26,7 @@
   "scripts": {
     "dev": "remotion studio",
     "build": "remotion bundle",
+    "rerecord": "bash ./scripts/rerecord-via-headless-rpc.sh",
     "upgrade": "remotion upgrade",
     "lint": "eslint src && tsc"
   },

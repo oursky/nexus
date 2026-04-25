@@ -46,9 +46,24 @@ func BakeRootfsIfNeeded(ctx context.Context, cfg ManagerConfig, stampDir string)
 
 	log.Printf("[libkrun] rootfs bake: pre-installing developer tools into base rootfs (first run, ~5-10 min)...")
 
-	bakedRootfsPath, err := runBakeVM(ctx, cfg)
-	if err != nil {
-		return fmt.Errorf("bake VM: %w", err)
+	var bakedRootfsPath string
+	var bakeErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			log.Printf("[libkrun] rootfs bake: retrying bake (attempt %d/3)...", attempt)
+		}
+		bakedRootfsPath, bakeErr = runBakeVM(ctx, cfg)
+		if bakeErr == nil {
+			break
+		}
+		log.Printf("[libkrun] rootfs bake: attempt %d failed: %v", attempt, bakeErr)
+		if attempt < 3 {
+			// Wait before retrying — network/DNS issues may be transient.
+			time.Sleep(time.Duration(attempt) * 10 * time.Second)
+		}
+	}
+	if bakeErr != nil {
+		return fmt.Errorf("bake VM failed after 3 attempts: %w", bakeErr)
 	}
 	// Always remove the temp baked rootfs when we're done with it.
 	defer os.Remove(bakedRootfsPath)
@@ -118,22 +133,43 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 
 	serialLog := filepath.Join(workDir, "bake.log")
 
-	// The bake VM uses TSI networking (simpler than virtio-net+passt for an
-	// ephemeral install-only VM). TSI doesn't support UDP DNS, but the bake
-	// agent adds "nexus.tsi=1" awareness which forces "options use-vc" in
-	// /etc/resolv.conf so all DNS queries use TCP (which TSI proxies).
-	// SSH port forwarding is handled by TSI's port map via krun_set_port_map.
+	// The bake VM needs outbound internet access to download packages from
+	// Ubuntu repositories. We use virtio-net + passt (same as regular VMs)
+	// instead of TSI, because TSI only provides local port forwarding and
+	// does not proxy arbitrary outbound TCP connections.
 	sshPort, err := pickFreePort()
 	if err != nil {
 		return "", fmt.Errorf("pick free port: %w", err)
 	}
 
+	log.Printf("[libkrun] bake VM: starting passt for outbound internet access")
+	vmSideFD, hostSideFD, err := createPasstSocketPair()
+	if err != nil {
+		return "", fmt.Errorf("create passt socketpair: %w", err)
+	}
+	// NOTE: Do NOT use a timeout context for passt — it is a daemon that runs
+	// for the lifetime of the VM. Using a timeout would kill it prematurely.
+	passtProc, err := startPasstProcess(ctx, workDir, hostSideFD, sshPort, passtGuestIPv4ForWorkspace("rootfs-bake"))
+	if err != nil {
+		_ = vmSideFD.Close()
+		_ = hostSideFD.Close()
+		return "", fmt.Errorf("start passt: %w", err)
+	}
+	// NOTE: Do NOT close hostSideFD here — passt owns it via ExtraFiles.
+	// It will be closed after childCmd starts (same pattern as manager.go).
+
+	kernelCmdline := "console=hvc0 root=/dev/vda rw init=/usr/local/bin/nexus-guest-agent nexus.bake=1"
+	if gw := strings.TrimSpace(hostDefaultGatewayIP()); gw != "" {
+		kernelCmdline += " nexus.gw=" + gw
+	}
+	if dns := strings.Join(hostDNSServers(), ","); dns != "" {
+		kernelCmdline += " nexus.dns=" + dns
+	}
+
 	vmSpec := VMSpec{
-		WorkspaceID: "rootfs-bake",
-		KernelPath:  cfg.KernelPath,
-		// nexus.tsi=1 tells the agent to write "options use-vc" in resolv.conf
-		// so DNS queries use TCP and work through TSI's TCP proxy.
-		KernelCmdline:   "console=hvc0 root=/dev/vda rw init=/usr/local/bin/nexus-guest-agent nexus.bake=1 nexus.tsi=1",
+		WorkspaceID:     "rootfs-bake",
+		KernelPath:      cfg.KernelPath,
+		KernelCmdline:   kernelCmdline,
 		RootFSImage:     rootfsPath,
 		AgentPath:       "/usr/local/bin/nexus-guest-agent",
 		WorkspaceImage:  workspacePath,
@@ -141,8 +177,9 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 		MemoryMiB:       1024,
 		VCPUs:           2,
 		SerialLog:       serialLog,
-		NetworkBackend:  "tsi",
+		NetworkBackend:  "virtio-net",
 		PortMap:         []string{fmt.Sprintf("%d:22", sshPort)},
+		PasstFDIndex:    0,
 		LibkrunLogLevel: 1, // errors only — suppress the DEBUG interrupt flood
 	}
 
@@ -161,6 +198,7 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 	childCmd := exec.CommandContext(ctx, cfg.LibkrunVMBin, "--config="+specPath)
 	childCmd.Env = env
 	childCmd.Dir = workDir
+	childCmd.ExtraFiles = []*os.File{vmSideFD}
 
 	// Redirect bake VM stdout/stderr to the log file rather than the operator's
 	// terminal — libkrun emits thousands of interrupt lines even at lower log
@@ -177,11 +215,17 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 	log.Printf("[libkrun] bake VM: starting — apt-get + npm install in progress")
 
 	if err := childCmd.Start(); err != nil {
+		if passtProc != nil {
+			_ = passtProc.Kill()
+		}
+		_ = vmSideFD.Close()
 		if vmLogFile != nil {
 			_ = vmLogFile.Close()
 		}
 		return "", fmt.Errorf("start bake VM: %w", err)
 	}
+	_ = vmSideFD.Close()
+	_ = hostSideFD.Close()
 	if vmLogFile != nil {
 		_ = vmLogFile.Close()
 	}
@@ -246,6 +290,9 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 					case <-exitWait.C:
 						log.Printf("[libkrun] bake VM: process did not exit in 30 s — force-killing")
 						_ = childCmd.Process.Kill()
+						if passtProc != nil {
+							_ = passtProc.Kill()
+						}
 						break flushWait
 					case <-exitPoll.C:
 						// still waiting
@@ -256,11 +303,17 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 
 			if elapsed > bakeTimeout {
 				_ = childCmd.Process.Kill()
+				if passtProc != nil {
+					_ = passtProc.Kill()
+				}
 				return "", fmt.Errorf("bake VM timed out after %v — check %s", bakeTimeout, hvc0Path)
 			}
 
 		case <-ctx.Done():
 			_ = childCmd.Process.Kill()
+			if passtProc != nil {
+				_ = passtProc.Kill()
+			}
 			return "", ctx.Err()
 		}
 	}
@@ -282,17 +335,34 @@ verify:
 	hvc0Data, _ := os.ReadFile(hvc0Path)
 	hvc0 := string(hvc0Data)
 
-	bakeSucceeded := strings.Contains(hvc0, "agent bake: all tools installed") ||
-		strings.Contains(hvc0, "agent cli tools: all tools present")
+	// Only consider bake successful if the agent explicitly reported success.
+	// Do NOT match "agent cli tools: all tools present" — that message can
+	// appear when npm is missing (base packages failed) and the CLI tool
+	// install is skipped, creating a false positive.
+	bakeSucceeded := strings.Contains(hvc0, "agent bake: all tools installed")
 
 	if !bakeSucceeded {
 		// Log the tail for debugging, then fail.
 		lines := strings.Split(hvc0, "\n")
-		if len(lines) > 50 {
-			lines = lines[len(lines)-50:]
+		if len(lines) > 100 {
+			lines = lines[len(lines)-100:]
 		}
 		log.Printf("[libkrun] bake VM: serial log tail:\n%s", strings.Join(lines, "\n"))
-		return "", fmt.Errorf("bake VM: tools-installed marker not found in serial log (check above for details)")
+
+		// Check for common failure patterns to provide a better error message.
+		var failureReason string
+		if strings.Contains(hvc0, "Temporary failure resolving") {
+			failureReason = "DNS resolution failed — the bake VM could not reach Ubuntu package repositories. Check host internet connectivity and passt networking configuration."
+		} else if strings.Contains(hvc0, "Could not resolve") {
+			failureReason = "DNS resolution failed — the bake VM could not reach Ubuntu package repositories. Check host internet connectivity and passt networking configuration."
+		} else if strings.Contains(hvc0, "agent bake: FAILED") {
+			failureReason = "package installation failed inside the bake VM — see serial log above for details"
+		} else if strings.Contains(hvc0, "reboot: System halted") {
+			failureReason = "VM powered off without reporting success — package installation may have failed silently"
+		} else {
+			failureReason = "tools-installed marker not found in serial log — package installation may have failed or timed out"
+		}
+		return "", fmt.Errorf("bake VM: %s", failureReason)
 	}
 
 	// The agent confirmed all tools are installed. Write the v4 stamp

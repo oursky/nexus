@@ -40,11 +40,15 @@ func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 	nexusBin, _ := os.Executable()
 
 	// VM state (overlays, docker-data images, snapshots) lives under the data dir.
-	// No XFS or reflink requirement: workspace files are passed through via virtiofs
-	// and overlays are sparse ext4 files copied with --sparse=always on fork.
+	// Default to /data/nexus/libkrun-vms for O(1) CoW clones via reflink on XFS/btrfs.
+	// Falls back to $dataDir/libkrun-vms if /data/nexus is not available.
 	workDirRoot := cfg.WorkDirRoot
 	if workDirRoot == "" {
-		workDirRoot = filepath.Join(defaultDataDir(), "libkrun-vms")
+		if _, err := os.Stat("/data/nexus"); err == nil {
+			workDirRoot = "/data/nexus/libkrun-vms"
+		} else {
+			workDirRoot = filepath.Join(defaultDataDir(), "libkrun-vms")
+		}
 	}
 
 	// Prefer the extracted standalone nexus-libkrun-vm binary (set during bootstrap
@@ -182,7 +186,7 @@ func prewarmLibkrunBaseImages(wsStore *store.WorkspaceStore, basesDir string) {
 		seen[root] = struct{}{}
 		go func(projectRoot string) {
 			log.Printf("daemon: prewarm base image for %s", projectRoot)
-			_, err := lkruntime.EnsureBaseImage(projectRoot, basesDir)
+			_, err := lkruntime.EnsureBaseImage(context.Background(), projectRoot, basesDir)
 			if err != nil {
 				log.Printf("daemon: prewarm base image for %s: %v", projectRoot, err)
 			} else {

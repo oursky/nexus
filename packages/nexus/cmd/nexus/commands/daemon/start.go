@@ -95,6 +95,7 @@ func startCommand() *cobra.Command {
 		sandboxMode bool   // internal: use process sandbox backend
 		jsonOutput  bool   // --json: emit structured phase events (rootless bootstrap)
 		driver      string // --driver: runtime driver override (libkrun, sandbox)
+		readyTimeout time.Duration
 	)
 
 	defaultData := defaultDataDir()
@@ -230,7 +231,7 @@ func startCommand() *cobra.Command {
 
 			// Self-daemonize: re-exec in background, wait for socket, return.
 			if !foreground && !isForegroundChild {
-				return launchDaemonBackground(cmd.OutOrStdout(), socketPath, jsonOutput)
+				return launchDaemonBackground(cmd.OutOrStdout(), socketPath, jsonOutput, readyTimeout)
 			}
 
 			d, err := daemon.New(cfg)
@@ -269,13 +270,14 @@ func startCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Stay in foreground instead of self-daemonizing")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON phase events during bootstrap (for RemoteProvisioner / CI)")
 	cmd.Flags().StringVar(&driver, "driver", "", "Runtime driver override: libkrun | sandbox (default: auto)")
+	cmd.Flags().DurationVar(&readyTimeout, "ready-timeout", 30*time.Second, "Max time to wait for daemon socket readiness in self-daemonizing mode")
 
 	return cmd
 }
 
 // launchDaemonBackground re-execs the current binary with NEXUS_DAEMON_FOREGROUND=1,
 // detached from the terminal (new session, stdout/stderr → log file).
-func launchDaemonBackground(out io.Writer, socketPath string, jsonOut bool) error {
+func launchDaemonBackground(out io.Writer, socketPath string, jsonOut bool, readyTimeout time.Duration) error {
 	emitPhase := func(status, message string) {
 		if jsonOut {
 			fmt.Fprintf(out, `{"phase":"daemon-launch","status":%q,"message":%q}`+"\n", status, message)
@@ -313,7 +315,10 @@ func launchDaemonBackground(out io.Writer, socketPath string, jsonOut bool) erro
 	emitPhase("start", fmt.Sprintf("background process pid=%d", child.Process.Pid))
 
 	// Poll for socket readiness.
-	deadline := time.Now().Add(30 * time.Second)
+	if readyTimeout <= 0 {
+		readyTimeout = 30 * time.Second
+	}
+	deadline := time.Now().Add(readyTimeout)
 	for time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
 		if _, statErr := os.Stat(socketPath); statErr == nil {
@@ -325,7 +330,7 @@ func launchDaemonBackground(out io.Writer, socketPath string, jsonOut bool) erro
 				child.ProcessState.ExitCode(), logPath)
 		}
 	}
-	return fmt.Errorf("daemon did not become ready within 30s — check log: %s", logPath)
+	return fmt.Errorf("daemon did not become ready within %s — check log: %s", readyTimeout, logPath)
 }
 
 // agentHashFile returns a user-writable path for the agent SHA-256 cache.

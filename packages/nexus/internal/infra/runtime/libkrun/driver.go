@@ -256,53 +256,24 @@ func (d *Driver) WorkspaceReady(ctx context.Context, workspaceID string) (bool, 
 		return true, nil
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// Keep readiness bounded and robust: once agent connection is reachable,
+	// allow workspace to transition to running so PTY/exec/shell are unblocked.
+	start := time.Now()
+	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-
-	for attempt := 1; attempt <= 3; attempt++ {
-		attemptCtx, cancelAttempt := context.WithTimeout(probeCtx, 20*time.Second)
-		conn, err := d.AgentConn(attemptCtx, workspaceID)
-		if err != nil {
-			cancelAttempt()
-			if attempt < 3 {
-				select {
-				case <-probeCtx.Done():
-					return false, nil
-				case <-time.After(300 * time.Millisecond):
-				}
-			}
-			continue
-		}
-
-		req := AgentExecRequest{
-			ID:      fmt.Sprintf("ready-%d", time.Now().UnixNano()),
-			Command: "sh",
-			// Use "which" (not --version) to check tool presence: claude --version
-			// exits 1 when stdout is redirected, giving a false-negative probe result.
-			Args:    []string{"-lc", "which codex >/dev/null 2>&1 && which opencode >/dev/null 2>&1 && which claude >/dev/null 2>&1"},
-			WorkDir: "/workspace",
-		}
-		result, err := agentExec(attemptCtx, conn, req)
-		_ = conn.Close()
-		cancelAttempt()
-
-		if err != nil || result.ExitCode != 0 {
-			if attempt < 3 {
-				select {
-				case <-probeCtx.Done():
-					return false, nil
-				case <-time.After(300 * time.Millisecond):
-				}
-			}
-			continue
-		}
-
-		d.mu.Lock()
-		d.readyTools[workspaceID] = true
-		d.mu.Unlock()
-		return true, nil
+	log.Printf("[libkrun] readiness: agent dial start workspace=%s timeout=8s", workspaceID)
+	conn, err := d.AgentConn(probeCtx, workspaceID)
+	if err != nil {
+		log.Printf("[libkrun] readiness: agent dial not-ready workspace=%s duration=%s err=%v", workspaceID, time.Since(start).Round(time.Millisecond), err)
+		return false, nil
 	}
-	return false, nil
+	_ = conn.Close()
+
+	d.mu.Lock()
+	d.readyTools[workspaceID] = true
+	d.mu.Unlock()
+	log.Printf("[libkrun] readiness: agent reachable workspace=%s duration=%s", workspaceID, time.Since(start).Round(time.Millisecond))
+	return true, nil
 }
 
 // GrowWorkspace grows the workspace disk image and notifies the guest.

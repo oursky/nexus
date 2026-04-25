@@ -26,9 +26,9 @@ import (
 
 // vsock port constants shared with the host-side runtime drivers.
 const (
-	defaultAgentVSockPort    uint32 = 10789
+	defaultAgentVSockPort     uint32 = 10789
 	defaultSpotlightVSockPort uint32 = 10792
-	vendingVSockPort         uint32 = 10790
+	vendingVSockPort          uint32 = 10790
 )
 
 const (
@@ -558,11 +558,20 @@ func main() {
 	// rootfs.ext4 as the pre-baked base image for all future workspaces.
 	if isBakeMode() {
 		emitDiagnostic("agent bake: starting rootfs pre-bake")
-		ensureGuestBasePackages()
-		ensureGuestCLITools()
-		emitDiagnostic("agent bake: all tools installed — powering off VM")
-		// Give the serial console a moment to flush.
-		time.Sleep(500 * time.Millisecond)
+		bakeErr := ensureGuestBasePackages()
+		if bakeErr == nil {
+			ensureGuestCLITools()
+		}
+		if bakeErr != nil {
+			emitDiagnostic("agent bake: FAILED — base packages could not be installed: %v", bakeErr)
+			// Stay alive briefly so the host can read the failure from the serial log,
+			// then power off so the host detects the VM exit and can retry.
+			time.Sleep(5 * time.Second)
+		} else {
+			emitDiagnostic("agent bake: all tools installed — powering off VM")
+			// Give the serial console a moment to flush.
+			time.Sleep(500 * time.Millisecond)
+		}
 		_ = unix.Reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
 		os.Exit(0) // unreachable, but satisfies the compiler
 	}
@@ -899,16 +908,16 @@ func runStreamed(ctx context.Context, env []string, prefix, name string, args ..
 //
 // A versioned stamp file in the rootfs prevents
 // re-running on every workspace start — packages only install once per rootfs.
-func ensureGuestBasePackages() {
+func ensureGuestBasePackages() error {
 	const stampFile = "/var/lib/nexus-tools-installed-v4"
 	if _, err := os.Stat(stampFile); err == nil {
 		emitDiagnostic("agent base packages: already installed (stamp found)")
-		return
+		return nil
 	}
 
 	if _, err := exec.LookPath("apt-get"); err != nil {
 		emitDiagnostic("agent base packages: apt-get not found, skipping")
-		return
+		return fmt.Errorf("apt-get not found")
 	}
 
 	emitDiagnostic("agent base packages: installing (make, nodejs, npm, docker.io, build-essential, git, busybox-static)...")
@@ -958,14 +967,17 @@ func ensureGuestBasePackages() {
 	emitDiagnostic("agent base packages: running apt-get update...")
 	if err := runStreamed(ctx, env, "apt-get update", "apt-get", "update"); err != nil {
 		emitDiagnostic("agent base packages: apt-get update FAILED: %v", err)
-		return
+		return fmt.Errorf("apt-get update: %w", err)
 	}
+	emitDiagnostic("agent base packages: apt-get update OK")
 
-	emitDiagnostic("agent base packages: running apt-get install...")
-	installArgs := append([]string{"install", "-y", "--no-install-recommends"}, pkgs...)
-	if err := runStreamed(ctx, env, "apt-get install", "apt-get", installArgs...); err != nil {
-		emitDiagnostic("agent base packages: apt-get install FAILED: %v", err)
-		return
+	for _, pkg := range pkgs {
+		emitDiagnostic("agent base packages: installing %s...", pkg)
+		if err := runStreamed(ctx, env, "apt-get install "+pkg, "apt-get", "install", "-y", "--no-install-recommends", pkg); err != nil {
+			emitDiagnostic("agent base packages: install %s FAILED: %v", pkg, err)
+			return fmt.Errorf("apt-get install %s: %w", pkg, err)
+		}
+		emitDiagnostic("agent base packages: install %s OK", pkg)
 	}
 
 	// Install docker compose plugin (v2) from the GitHub release.
@@ -977,6 +989,7 @@ func ensureGuestBasePackages() {
 	_ = os.MkdirAll("/var/lib", 0o755)
 	_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
 	emitDiagnostic("agent base packages: installed successfully")
+	return nil
 }
 
 // installDockerComposePlugin installs the Docker Compose v2 CLI plugin binary
@@ -1642,18 +1655,50 @@ func realSetupNetwork() error {
 // default route. Some DHCP clients can exit 0 after configuring only IPv6,
 // which leaves host->guest TCP forwarding broken for passt/libkrun SSH.
 func hasUsableIPv4OnEth0() bool {
-	addrOut, addrErr := exec.Command("sh", "-lc", "ip -4 addr show dev eth0 scope global | grep -q 'inet '").CombinedOutput()
-	routeOut, routeErr := exec.Command("sh", "-lc", "ip route show default | grep -q '^default '").CombinedOutput()
-	if addrErr == nil && routeErr == nil {
+	addrOut, addrErr := exec.Command("ip", "-4", "addr", "show", "dev", "eth0", "scope", "global").CombinedOutput()
+	routeOut, routeErr := exec.Command("ip", "route", "show", "default").CombinedOutput()
+	if addrErr == nil && routeErr == nil && networkLooksUsable(string(addrOut), string(routeOut)) {
 		return true
 	}
 	emitDiagnostic(
-		"network verify: missing IPv4 or default route after DHCP (addrErr=%v routeErr=%v addr=%q route=%q)",
+		"network verify: unusable IPv4/default route after DHCP (addrErr=%v routeErr=%v addr=%q route=%q)",
 		addrErr,
 		routeErr,
 		strings.TrimSpace(string(addrOut)),
 		strings.TrimSpace(string(routeOut)),
 	)
+	return false
+}
+
+func networkLooksUsable(addrOutput, routeOutput string) bool {
+	hasUsableAddr := false
+	for _, line := range strings.Split(addrOutput, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "inet ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		ipStr, _, _ := strings.Cut(fields[1], "/")
+		ip := net.ParseIP(strings.TrimSpace(ipStr))
+		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			continue
+		}
+		hasUsableAddr = true
+		break
+	}
+	if !hasUsableAddr {
+		return false
+	}
+
+	for _, line := range strings.Split(routeOutput, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "default via ") && strings.Contains(line, " dev eth0") {
+			return true
+		}
+	}
 	return false
 }
 
@@ -1746,22 +1791,40 @@ var setupDNSPath = "/etc/resolv.conf"
 // glibc's resolver to use TCP for all DNS queries so they transit TSI.
 func setupDNS() {
 	tsiMode := isTSINetworkMode()
-	var content string
+	kernelDNS := readNexusDNSServers()
+	useKernelDNS := len(kernelDNS) > 0
+
+	dnsServers := kernelDNS
+	if len(dnsServers) == 0 {
+		dnsServers = []string{"8.8.8.8", "1.1.1.1"}
+	}
+
+	var b strings.Builder
+	for _, server := range dnsServers {
+		b.WriteString("nameserver ")
+		b.WriteString(server)
+		b.WriteString("\n")
+	}
 	if tsiMode {
 		// TSI: force DNS over TCP (use-vc) so queries go through TSI, not UDP.
-		content = "nameserver 8.8.8.8\nnameserver 1.1.1.1\noptions use-vc\n"
-	} else {
-		content = "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"
+		b.WriteString("options use-vc\n")
 	}
+	content := b.String()
 
 	// Prefer host-provided resolver config when present and valid (real file,
 	// not a broken symlink). Always ensure use-vc is set in TSI mode.
 	if fi, statErr := os.Lstat(setupDNSPath); statErr == nil && fi.Mode()&os.ModeSymlink == 0 {
 		if data, err := os.ReadFile(setupDNSPath); err == nil && dnsConfigLooksUsable(string(data)) {
-			if !tsiMode {
+			if !tsiMode && !useKernelDNS {
 				return
 			}
 			// In TSI mode: patch existing config to add use-vc if not present.
+			// When kernel DNS is provided (bake mode), force writing the provided
+			// nameservers to avoid relying on stale host image defaults.
+			if useKernelDNS {
+				_ = os.WriteFile(setupDNSPath, []byte(content), 0o644)
+				return
+			}
 			existing := string(data)
 			if !strings.Contains(existing, "use-vc") {
 				existing = strings.TrimRight(existing, "\n") + "\noptions use-vc\n"
@@ -1779,6 +1842,45 @@ func setupDNS() {
 	// unlinking first ensures we create a real file at the path.
 	_ = os.Remove(setupDNSPath)
 	_ = os.WriteFile(setupDNSPath, []byte(content), 0o644)
+}
+
+func readNexusDNSServers() []string {
+	cmdline, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return nil
+	}
+	return parseNexusDNSServersFromCmdline(string(cmdline))
+}
+
+func parseNexusDNSServersFromCmdline(cmdline string) []string {
+	for _, field := range strings.Fields(cmdline) {
+		if !strings.HasPrefix(field, "nexus.dns=") {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(field, "nexus.dns="))
+		if raw == "" {
+			return nil
+		}
+		seen := map[string]struct{}{}
+		servers := make([]string, 0, 2)
+		for _, part := range strings.Split(raw, ",") {
+			ip := net.ParseIP(strings.TrimSpace(part))
+			if ip == nil || ip.IsLoopback() {
+				continue
+			}
+			key := ip.String()
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			servers = append(servers, key)
+			if len(servers) >= 3 {
+				break
+			}
+		}
+		return servers
+	}
+	return nil
 }
 
 func isTSINetworkMode() bool {

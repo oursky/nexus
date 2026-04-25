@@ -242,6 +242,7 @@ public actor RemoteProvisioner {
             # daemon in the background, and exits once the socket is ready (~10s).
             exec "$NEXUS" daemon start \\
               --json \\
+              --ready-timeout 180s \\
               --network --bind 127.0.0.1 --port \(remotePort)
             """
 

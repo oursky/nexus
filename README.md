@@ -15,19 +15,44 @@ Download from TestFlight or build from source:
 cd packages/nexus-swift && xcodebuild
 ```
 
-### 2. Connect to your Linux host
+### 2. Prepare your Linux host
+
+**Storage volume (strongly recommended)**  
+Workspace images are multi-GB sparse files. For fast, space-efficient Copy-on-Write (CoW) clones, mount an **XFS** or **btrfs** volume with reflink support at `/data/nexus`:
+
+```bash
+# Example: create a 200 GB XFS loop file
+sudo mkdir -p /data/nexus
+sudo dd if=/dev/zero of=/data/nexus.img bs=1M count=204800
+sudo mkfs.xfs -m reflink=1 /data/nexus.img
+sudo mount -o loop /data/nexus.img /data/nexus
+sudo chown $(whoami) /data/nexus
+
+# Make it permanent in /etc/fstab
+# /data/nexus.img /data/nexus xfs loop,defaults 0 0
+```
+
+Then start the daemon pointing VM storage at that mount:
+
+```bash
+nexus daemon start --workdir-root=/data/nexus/libkrun-vms
+```
+
+Without an XFS/btrfs volume, workspace start falls back to sparse `cp` on ext4, which is **much slower** for multi-GB images.
+
+### 3. Connect from the Mac app
 
 Open NexusApp → **Add Host** → enter your SSH connection string (e.g. `user@192.168.1.100`).
 
-The app deploys the daemon automatically on first connection — no manual setup on the Linux host required.
+The app deploys the daemon automatically on first connection.
 
-### 3. Create and start a workspace
+### 4. Create and start a workspace
 
 From the app: **New Workspace** → point it at a Git repository or local path → **Start**.
 
 The workspace boots as an isolated Linux microVM. Your code lives inside it; Docker, your toolchain, and ports are all contained.
 
-### 4. Access your workspace
+### 5. Access your workspace
 
 - **Ports** — detected automatically and tunnelled to `localhost` on your Mac.
 - **Shell** — open a terminal directly into the VM from the app.

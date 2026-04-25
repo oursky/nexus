@@ -160,3 +160,8 @@ tasks:
     desc: "Download latest Mutagen binaries for embedding"
     cmds:
       - scripts/nexus/update-mutagen.sh
+
+  showcase:rerecord:
+    desc: "Re-record showcase flow by controlling NexusApp through headless RPC, then render remotion"
+    cmds:
+      - pnpm --dir packages/showcase run rerecord
