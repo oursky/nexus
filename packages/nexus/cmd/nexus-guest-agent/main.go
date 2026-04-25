@@ -971,14 +971,13 @@ func ensureGuestBasePackages() error {
 	}
 	emitDiagnostic("agent base packages: apt-get update OK")
 
-	for _, pkg := range pkgs {
-		emitDiagnostic("agent base packages: installing %s...", pkg)
-		if err := runAptGetWithRetry(ctx, env, "apt-get install "+pkg, "install", "-y", "--no-install-recommends", pkg); err != nil {
-			emitDiagnostic("agent base packages: install %s FAILED: %v", pkg, err)
-			return fmt.Errorf("apt-get install %s: %w", pkg, err)
-		}
-		emitDiagnostic("agent base packages: install %s OK", pkg)
+	emitDiagnostic("agent base packages: installing package set (%d packages)...", len(pkgs))
+	installArgs := append([]string{"install", "-y", "--no-install-recommends"}, pkgs...)
+	if err := runAptGetWithRetry(ctx, env, "apt-get install base-package-set", installArgs...); err != nil {
+		emitDiagnostic("agent base packages: install package set FAILED: %v", err)
+		return fmt.Errorf("apt-get install package set: %w", err)
 	}
+	emitDiagnostic("agent base packages: install package set OK")
 
 	// Install docker compose plugin (v2) from the GitHub release.
 	// Ubuntu's default repos only ship docker.io which has no compose plugin;

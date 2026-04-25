@@ -213,7 +213,7 @@ jobs:
         run: |
           SOCK=/tmp/nexus-provision.sock
           DB=/tmp/nexus-provision.db
-          sudo NEXUS_LIBKRUN_SKIP_BAKE=1 /tmp/nexus-bin daemon start \
+          sudo /tmp/nexus-bin daemon start \
             --db "$DB" --socket "$SOCK" \
             --workdir-root /tmp/nexus-provision-work &
           DPID=$!
@@ -282,9 +282,6 @@ jobs:
         run: task ci
         env:
           CI: true
-          # CI should not block on synchronous base-rootfs bake during daemon
-          # start; provisioning validates runtime assets separately.
-          NEXUS_LIBKRUN_SKIP_BAKE: "1"
           NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
           NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
           # Use a small workspace image so mkfs.ext4 finishes in seconds on CI.
