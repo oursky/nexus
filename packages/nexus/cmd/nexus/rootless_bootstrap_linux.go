@@ -136,22 +136,22 @@ const (
 )
 
 // vmKernelURL returns the URL for the Linux kernel image (vmlinux ELF).
-// Hosted on AWS S3 by the upstream Linux CI project.
+// Prefer Ubuntu cloud image kernels, which are generally more available.
 func vmKernelURL() string {
 	switch runtime.GOARCH {
 	case "arm64":
-		return "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/vmlinux-5.10.239"
+		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-arm64-vmlinuz-generic"
 	default:
-		return "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/x86_64/vmlinux-5.10.239"
+		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-amd64-vmlinuz-generic"
 	}
 }
 
 func vmKernelFallbackURL() string {
 	switch runtime.GOARCH {
 	case "arm64":
-		return "https://github.com/firecracker-microvm/firecracker/releases/download/v1.13.0/vmlinux-5.10-aarch64.bin"
+		return "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/vmlinux-5.10.239"
 	default:
-		return "https://github.com/firecracker-microvm/firecracker/releases/download/v1.13.0/vmlinux-5.10-x86_64.bin"
+		return "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/x86_64/vmlinux-5.10.239"
 	}
 }
 
