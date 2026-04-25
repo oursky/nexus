@@ -654,13 +654,12 @@ func installVMKernelRootless(w io.Writer, emitJSON bool) error {
 	var data []byte
 	var lastErr error
 	for i, url := range urls {
-		if i > 0 {
-			fmt.Fprintf(w, "  retrying kernel download via fallback URL: %s\n", url)
-		}
-		data, lastErr = httpDownloadWithRetry(url, 4)
+		fmt.Fprintf(w, "  kernel source %d/%d: %s\n", i+1, len(urls), url)
+		data, lastErr = httpDownloadWithRetry(url, 3, 75*time.Second)
 		if lastErr == nil {
 			break
 		}
+		fmt.Fprintf(w, "  kernel download failed from source %d/%d: %v\n", i+1, len(urls), lastErr)
 	}
 	if lastErr != nil {
 		return fmt.Errorf("download kernel failed: %w", lastErr)
@@ -1157,7 +1156,11 @@ func atomicWriteExec(dest string, data []byte) error {
 }
 
 func httpDownload(url string) ([]byte, error) {
-	client := &http.Client{Timeout: 10 * time.Minute}
+	return httpDownloadWithTimeout(url, 10*time.Minute)
+}
+
+func httpDownloadWithTimeout(url string, timeout time.Duration) ([]byte, error) {
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, err
@@ -1169,13 +1172,16 @@ func httpDownload(url string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-func httpDownloadWithRetry(url string, attempts int) ([]byte, error) {
+func httpDownloadWithRetry(url string, attempts int, timeout time.Duration) ([]byte, error) {
 	if attempts < 1 {
 		attempts = 1
 	}
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
-		data, err := httpDownload(url)
+		data, err := httpDownloadWithTimeout(url, timeout)
 		if err == nil {
 			return data, nil
 		}
