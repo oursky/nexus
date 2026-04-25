@@ -146,6 +146,15 @@ func vmKernelURL() string {
 	}
 }
 
+func vmKernelFallbackURL() string {
+	switch runtime.GOARCH {
+	case "arm64":
+		return "https://github.com/firecracker-microvm/firecracker/releases/download/v1.13.0/vmlinux-5.10-aarch64.bin"
+	default:
+		return "https://github.com/firecracker-microvm/firecracker/releases/download/v1.13.0/vmlinux-5.10-x86_64.bin"
+	}
+}
+
 func vmSquashfsURL() string {
 	switch runtime.GOARCH {
 	case "arm64":
@@ -641,10 +650,20 @@ func installVMKernelRootless(w io.Writer, emitJSON bool) error {
 	}
 
 	fmt.Fprintf(w, "  downloading VM kernel...\n")
-	url := vmKernelURL()
-	data, err := httpDownload(url)
-	if err != nil {
-		return fmt.Errorf("download kernel from %s: %w", url, err)
+	urls := []string{vmKernelURL(), vmKernelFallbackURL()}
+	var data []byte
+	var lastErr error
+	for i, url := range urls {
+		if i > 0 {
+			fmt.Fprintf(w, "  retrying kernel download via fallback URL: %s\n", url)
+		}
+		data, lastErr = httpDownloadWithRetry(url, 4)
+		if lastErr == nil {
+			break
+		}
+	}
+	if lastErr != nil {
+		return fmt.Errorf("download kernel failed: %w", lastErr)
 	}
 	if err := atomicWriteFile(dest, data, 0o644); err != nil {
 		return fmt.Errorf("install kernel: %w", err)
@@ -1148,6 +1167,24 @@ func httpDownload(url string) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 	return io.ReadAll(resp.Body)
+}
+
+func httpDownloadWithRetry(url string, attempts int) ([]byte, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		data, err := httpDownload(url)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		if attempt < attempts {
+			time.Sleep(time.Duration(attempt*2) * time.Second)
+		}
+	}
+	return nil, fmt.Errorf("download %s failed after %d attempts: %w", url, attempts, lastErr)
 }
 
 func downloadAndExtractTarGz(url, innerPath string) ([]byte, error) {
