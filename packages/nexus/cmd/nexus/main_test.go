@@ -1251,11 +1251,11 @@ func TestRunExecSelectsLibkrunFromWorkspaceWhenEnvUnsetOnLinux(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	originalRunner := doctorCheckCommandRunner
-	t.Cleanup(func() { doctorCheckCommandRunner = originalRunner })
+	originalRunner := execCheckCommandRunner
+	t.Cleanup(func() { execCheckCommandRunner = originalRunner })
 
 	called := false
-	doctorCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
+	execCheckCommandRunner = func(ctx context.Context, projectRoot, phase, name string, attempt, attempts int, timeout time.Duration, command string, args []string, execCtx doctorExecContext) (string, error) {
 		called = true
 		if execCtx.backend != "libkrun" {
 			t.Fatalf("expected libkrun backend from default selection, got %q", execCtx.backend)
