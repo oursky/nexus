@@ -124,6 +124,45 @@ jobs:
             sleep $((attempt * 5))
           done
 
+      - name: Prepare libkrun bake cache paths
+        run: |
+          mkdir -p "$RUNNER_TEMP/libkrun-baked-cache"
+          echo "LIBKRUN_BAKED_CACHE_DIR=$RUNNER_TEMP/libkrun-baked-cache" >> "$GITHUB_ENV"
+
+      - name: Restore pre-baked libkrun VM assets
+        id: libkrun-baked-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LIBKRUN_BAKED_CACHE_DIR }}
+          key: libkrun-baked-v1-${{ runner.os }}-${{ hashFiles('packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/cmd/nexus-guest-agent/main.go', 'packages/nexus/cmd/nexus/nexus-libkrun-vm') }}
+
+      - name: Hydrate cached VM assets to host paths
+        if: steps.libkrun-baked-cache.outputs.cache-hit == 'true'
+        run: |
+          set -euo pipefail
+          CACHE_DIR="${LIBKRUN_BAKED_CACHE_DIR}"
+          sudo install -d -m 0755 /var/lib/nexus /root/.local/share/nexus/vm /root/.local/state/nexus
+          for f in vmlinux.bin rootfs.ext4; do
+            if [[ ! -f "$CACHE_DIR/$f" ]]; then
+              echo "cache hit but missing $f in $CACHE_DIR"
+              exit 1
+            fi
+            sudo cp "$CACHE_DIR/$f" "/var/lib/nexus/$f"
+            sudo cp "$CACHE_DIR/$f" "/root/.local/share/nexus/vm/$f"
+            sudo chmod 644 "/var/lib/nexus/$f" "/root/.local/share/nexus/vm/$f"
+          done
+          if [[ -f "$CACHE_DIR/rootfs-agent.sha256" ]]; then
+            sudo cp "$CACHE_DIR/rootfs-agent.sha256" /root/.local/state/nexus/rootfs-agent.sha256
+          fi
+          if [[ -f "$CACHE_DIR/rootfs-baked-v4" ]]; then
+            sudo cp "$CACHE_DIR/rootfs-baked-v4" /root/.local/state/nexus/rootfs-baked-v4
+          fi
+          # Keep runner user state aligned with root state for e2e daemon startup.
+          mkdir -p "$HOME/.local/state/nexus"
+          if sudo test -f /root/.local/state/nexus/rootfs-agent.sha256; then
+            sudo cat /root/.local/state/nexus/rootfs-agent.sha256 > "$HOME/.local/state/nexus/rootfs-agent.sha256"
+          fi
+
       # Build the guest-agent binary so the //go:embed directive in
       # embed_agent_linux_amd64.go is satisfied before compiling nexus.
       - name: Build embedded guest-agent binary
@@ -218,6 +257,25 @@ jobs:
           if sudo test -f "$ROOT_HASH"; then
             mkdir -p "$(dirname "$USER_HASH")"
             sudo cat "$ROOT_HASH" > "$USER_HASH"
+          fi
+
+      - name: Refresh baked VM cache contents
+        if: always()
+        run: |
+          set -euo pipefail
+          CACHE_DIR="${LIBKRUN_BAKED_CACHE_DIR}"
+          mkdir -p "$CACHE_DIR"
+          if sudo test -f /root/.local/share/nexus/vm/vmlinux.bin; then
+            sudo cp /root/.local/share/nexus/vm/vmlinux.bin "$CACHE_DIR/vmlinux.bin"
+          fi
+          if sudo test -f /root/.local/share/nexus/vm/rootfs.ext4; then
+            sudo cp /root/.local/share/nexus/vm/rootfs.ext4 "$CACHE_DIR/rootfs.ext4"
+          fi
+          if sudo test -f /root/.local/state/nexus/rootfs-agent.sha256; then
+            sudo cp /root/.local/state/nexus/rootfs-agent.sha256 "$CACHE_DIR/rootfs-agent.sha256"
+          fi
+          if sudo test -f /root/.local/state/nexus/rootfs-baked-v4; then
+            sudo cp /root/.local/state/nexus/rootfs-baked-v4 "$CACHE_DIR/rootfs-baked-v4"
           fi
 
       - name: Run CI pipeline
