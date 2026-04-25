@@ -559,15 +559,14 @@ func main() {
 	if isBakeMode() {
 		emitDiagnostic("agent bake: starting rootfs pre-bake")
 		bakeErr := ensureGuestBasePackages()
-		if bakeErr == nil {
-			ensureGuestCLITools()
-		}
 		if bakeErr != nil {
 			emitDiagnostic("agent bake: FAILED — base packages could not be installed: %v", bakeErr)
 			// Stay alive briefly so the host can read the failure from the serial log,
 			// then power off so the host detects the VM exit and can retry.
 			time.Sleep(5 * time.Second)
 		} else {
+			// Keep bake fast/reliable: CLI tools are installed asynchronously on
+			// normal boots and do not need to block base-rootfs baking.
 			emitDiagnostic("agent bake: all tools installed — powering off VM")
 			// Give the serial console a moment to flush.
 			time.Sleep(500 * time.Millisecond)

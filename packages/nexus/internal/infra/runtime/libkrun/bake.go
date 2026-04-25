@@ -212,7 +212,7 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 		childCmd.Stderr = vmLogFile
 	}
 
-	log.Printf("[libkrun] bake VM: starting — apt-get + npm install in progress")
+	log.Printf("[libkrun] bake VM: starting — guest bootstrap in progress")
 
 	if err := childCmd.Start(); err != nil {
 		if passtProc != nil {
