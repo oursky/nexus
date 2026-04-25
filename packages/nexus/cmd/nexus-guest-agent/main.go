@@ -1000,6 +1000,11 @@ func runAptGetWithRetry(ctx context.Context, env []string, label string, args ..
 		"-o", "Acquire::http::Timeout=20",
 		"-o", "Acquire::https::Timeout=20",
 	}
+	if len(args) > 0 && args[0] == "update" {
+		// apt-get update can otherwise return zero even when some index fetches
+		// fail. Force non-zero so retry logic handles transient DNS outages.
+		aptArgs = append(aptArgs, "-o", "APT::Update::Error-Mode=any")
+	}
 	aptArgs = append(aptArgs, args...)
 
 	var lastErr error
