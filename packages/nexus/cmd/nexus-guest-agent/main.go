@@ -919,7 +919,7 @@ func ensureGuestBasePackages() error {
 		return fmt.Errorf("apt-get not found")
 	}
 
-	emitDiagnostic("agent base packages: installing (make, nodejs, npm, docker.io, build-essential, git, busybox-static)...")
+	emitDiagnostic("agent base packages: installing (make, nodejs, npm, docker.io, docker-compose-v2, build-essential, git, busybox-static)...")
 
 	pkgs := []string{
 		"make",
@@ -927,6 +927,7 @@ func ensureGuestBasePackages() error {
 		"nodejs",
 		"npm",
 		"docker.io",
+		"docker-compose-v2",
 		"containerd",
 		"git",
 		"curl",
@@ -978,15 +979,6 @@ func ensureGuestBasePackages() error {
 	}
 	emitDiagnostic("agent base packages: install package set OK")
 
-	// Install docker compose plugin (v2) from the GitHub release.
-	// Skip this in bake mode to keep rootfs baking bounded/reliable; the
-	// plugin is optional for daemon readiness and can install on normal boots.
-	if !isBakeMode() {
-		installDockerComposePlugin(ctx, env)
-	} else {
-		emitDiagnostic("agent docker-compose-plugin: skipping in bake mode")
-	}
-
 	// Write stamp so subsequent boots skip this step.
 	_ = os.MkdirAll("/var/lib", 0o755)
 	_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
@@ -1028,58 +1020,6 @@ func runAptGetWithRetry(ctx context.Context, env []string, label string, args ..
 		}
 	}
 	return lastErr
-}
-
-// installDockerComposePlugin installs the Docker Compose v2 CLI plugin binary
-// directly from the GitHub release.  Ubuntu's default repos ship docker.io
-// which does not include the compose plugin; this is the canonical way to add
-// `docker compose` support alongside the ubuntu-packaged docker.io.
-func installDockerComposePlugin(ctx context.Context, env []string) {
-	const pluginPath = "/usr/local/lib/docker/cli-plugins/docker-compose"
-
-	if _, err := os.Stat(pluginPath); err == nil {
-		emitDiagnostic("agent docker-compose-plugin: already installed")
-		return
-	}
-
-	// Find the curl binary that was just installed.
-	curlPath, err := exec.LookPath("curl")
-	if err != nil {
-		emitDiagnostic("agent docker-compose-plugin: curl not found, skipping: %v", err)
-		return
-	}
-
-	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o755); err != nil {
-		emitDiagnostic("agent docker-compose-plugin: mkdir failed: %v", err)
-		return
-	}
-
-	// Pin to a known-good version that is compatible with docker.io on Ubuntu 24.04.
-	const composeVersion = "v2.24.6"
-	url := fmt.Sprintf(
-		"https://github.com/docker/compose/releases/download/%s/docker-compose-linux-x86_64",
-		composeVersion,
-	)
-	emitDiagnostic("agent docker-compose-plugin: downloading %s...", composeVersion)
-
-	tmpPath := pluginPath + ".tmp"
-	if err := runStreamed(ctx, env, "curl docker-compose", curlPath, "-fSL", "--retry", "3", "--progress-bar", "-o", tmpPath, url); err != nil {
-		_ = os.Remove(tmpPath)
-		emitDiagnostic("agent docker-compose-plugin: download FAILED: %v", err)
-		return
-	}
-
-	if err := os.Chmod(tmpPath, 0o755); err != nil {
-		_ = os.Remove(tmpPath)
-		emitDiagnostic("agent docker-compose-plugin: chmod failed: %v", err)
-		return
-	}
-	if err := os.Rename(tmpPath, pluginPath); err != nil {
-		_ = os.Remove(tmpPath)
-		emitDiagnostic("agent docker-compose-plugin: rename failed: %v", err)
-		return
-	}
-	emitDiagnostic("agent docker-compose-plugin: installed %s at %s", composeVersion, pluginPath)
 }
 
 func ensureGuestCLITools() {
