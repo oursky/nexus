@@ -92,42 +92,17 @@ jobs:
       # membership. On self-hosted runners KVM is typically pre-configured;
       # only attempt the udev rule if /dev/kvm isn't already world-accessible.
       - name: Enable KVM access
-        run: |
-          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-            echo "/dev/kvm already accessible — skipping udev rule"
-          elif [ -d /etc/udev/rules.d ]; then
-            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-            sudo udevadm control --reload-rules
-            sudo udevadm trigger --name-match=kvm
-          else
-            sudo chmod 0666 /dev/kvm 2>/dev/null || true
-          fi
-          ls -la /dev/kvm
+        run: scripts/ci/enable-kvm.sh
 
       # Tools required for rootfs and e2e tests.
       #   squashfs-tools  → unsquashfs (squashfs → rootfs tree)
       #   e2fsprogs       → mkfs.ext4, debugfs (create and modify rootfs image)
       #   rsync           → copy rootfs tree into ext4 image
       - name: Install host prerequisites
-        run: |
-          for attempt in 1 2 3; do
-            if sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq \
-              && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y squashfs-tools e2fsprogs rsync; then
-              break
-            fi
-            if [ "$attempt" -eq 3 ]; then
-              echo "host prerequisite install failed after 3 attempts"
-              exit 1
-            fi
-            echo "host prerequisite install failed (attempt $attempt/3), retrying..."
-            sleep $((attempt * 5))
-          done
+        run: scripts/ci/install-host-prereqs.sh
 
       - name: Prepare libkrun bake cache paths
-        run: |
-          mkdir -p "$RUNNER_TEMP/libkrun-baked-cache"
-          echo "LIBKRUN_BAKED_CACHE_DIR=$RUNNER_TEMP/libkrun-baked-cache" >> "$GITHUB_ENV"
+        run: scripts/ci/prepare-libkrun-cache-env.sh
 
       - name: Restore pre-baked libkrun VM assets
         id: libkrun-baked-cache
@@ -139,202 +114,33 @@ jobs:
             libkrun-baked-v2-${{ runner.os }}-
 
       - name: Hydrate cached VM assets to host paths
-        run: |
-          set -euo pipefail
-          CACHE_DIR="${LIBKRUN_BAKED_CACHE_DIR}"
-          if [[ ! -f "$CACHE_DIR/vmlinux.bin" || ! -f "$CACHE_DIR/rootfs.ext4" ]]; then
-            echo "No complete baked cache payload found; continuing with cold provisioning."
-            exit 0
-          fi
-          sudo install -d -m 0755 /var/lib/nexus /root/.local/share/nexus/vm /root/.local/state/nexus
-          for f in vmlinux.bin rootfs.ext4; do
-            sudo cp "$CACHE_DIR/$f" "/var/lib/nexus/$f"
-            sudo cp "$CACHE_DIR/$f" "/root/.local/share/nexus/vm/$f"
-            sudo chmod 644 "/var/lib/nexus/$f" "/root/.local/share/nexus/vm/$f"
-          done
-          if [[ -f "$CACHE_DIR/rootfs-agent.sha256" ]]; then
-            sudo cp "$CACHE_DIR/rootfs-agent.sha256" /root/.local/state/nexus/rootfs-agent.sha256
-          fi
-          if [[ -f "$CACHE_DIR/rootfs-baked-v5" ]]; then
-            sudo cp "$CACHE_DIR/rootfs-baked-v5" /root/.local/state/nexus/rootfs-baked-v5
-          elif [[ -f "$CACHE_DIR/rootfs-baked-v4" ]]; then
-            # Backward-compat: migrate cache stamp name without forcing rebake.
-            sudo cp "$CACHE_DIR/rootfs-baked-v4" /root/.local/state/nexus/rootfs-baked-v5
-          fi
-          # Keep runner user state aligned with root state for e2e daemon startup.
-          mkdir -p "$HOME/.local/state/nexus"
-          if sudo test -f /root/.local/state/nexus/rootfs-agent.sha256; then
-            sudo cat /root/.local/state/nexus/rootfs-agent.sha256 > "$HOME/.local/state/nexus/rootfs-agent.sha256"
-          fi
+        run: scripts/ci/hydrate-libkrun-cache.sh
 
       - name: Verify pre-baked VM assets (cache hint)
-        run: |
-          set -euo pipefail
-          missing=0
-          for f in /var/lib/nexus/vmlinux.bin /var/lib/nexus/rootfs.ext4; do
-            if [[ ! -f "$f" ]]; then
-              echo "missing prebuilt asset: $f"
-              missing=1
-            fi
-          done
-          if [[ "$missing" -ne 0 ]]; then
-            echo "Prebuilt cache not fully hydrated; provisioning step will populate assets."
-          fi
+        run: scripts/ci/verify-vm-assets.sh hint
 
       # Build the guest-agent binary so the //go:embed directive in
       # embed_agent_linux_amd64.go is satisfied before compiling nexus.
       - name: Build embedded guest-agent binary
-        working-directory: packages/nexus
-        run: go generate ./cmd/nexus/
+        run: scripts/ci/build-nexus-libkrun.sh
 
       # Pre-provision libkrun host infrastructure once before the test suite.
       # daemon start auto-provisions on first run; we start it briefly then stop
       # it so that every per-test daemon start finds everything already in place
       # and skips the slow setup path.
-      - name: Build nexus binary (with libkrun embed)
-        working-directory: packages/nexus
-        env:
-          SMOLVM_VERSION: v0.5.19
-        run: |
-          set -euo pipefail
-          EMBED_DIR="$PWD/cmd/nexus"
-
-          # Stage libkrun shared libraries from smolvm release if nexus-libkrun-vm is present.
-          if [[ -f "$EMBED_DIR/nexus-libkrun-vm" ]]; then
-            SMOLVM_TARBALL="smolvm-${SMOLVM_VERSION#v}-linux-x86_64.tar.gz"
-            SMOLVM_URL="https://github.com/smol-machines/smolvm/releases/download/${SMOLVM_VERSION}/${SMOLVM_TARBALL}"
-            LIBS_TMP="/tmp/smolvm-libs-${SMOLVM_VERSION}"
-
-            if [[ ! -d "$LIBS_TMP" ]]; then
-              curl -fsSL --retry 3 -o "/tmp/${SMOLVM_TARBALL}" "$SMOLVM_URL"
-              mkdir -p "$LIBS_TMP"
-              tar -xzf "/tmp/${SMOLVM_TARBALL}" --strip-components=2 -C "$LIBS_TMP" \
-                "smolvm-${SMOLVM_VERSION#v}-linux-x86_64/lib"
-            fi
-
-            cp "$LIBS_TMP/libkrun.so.1" "$EMBED_DIR/libkrun-embed.so"
-            LIBKRUNFW_REAL=$(find "$LIBS_TMP" -maxdepth 1 -name 'libkrunfw.so.*.*' | sort | tail -1)
-            cp "$LIBKRUNFW_REAL" "$EMBED_DIR/libkrunfw-embed.so"
-            BUILD_TAGS="-tags libkrun"
-            echo "Building nexus with libkrun embed..."
-          else
-            BUILD_TAGS=""
-            echo "nexus-libkrun-vm not found — building without libkrun embed"
-          fi
-
-          # shellcheck disable=SC2086
-          CGO_ENABLED=0 go build $BUILD_TAGS -o /tmp/nexus-bin ./cmd/nexus/
-          rm -f "$EMBED_DIR/libkrun-embed.so" "$EMBED_DIR/libkrunfw-embed.so"
-          echo "NEXUS_E2E_BINARY=/tmp/nexus-bin" >> "$GITHUB_ENV"
-
       - name: Provision libkrun host (kernel + rootfs)
-        run: |
-          SOCK=/tmp/nexus-provision.sock
-          DB=/tmp/nexus-provision.db
-          sudo NEXUS_LIBKRUN_SKIP_BAKE=1 NEXUS_LIBKRUN_BAKE_TIMEOUT=120s NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS=1 /tmp/nexus-bin daemon start \
-            --db "$DB" --socket "$SOCK" \
-            --workdir-root /tmp/nexus-provision-work &
-          DPID=$!
-          # CI is prebuilt-only; daemon should be ready quickly.
-          # The daemon starts accepting connections only after provisioning.
-          timeout 180 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
-            || { echo "daemon setup timed out after 180s"; kill $DPID; exit 1; }
-          # Gracefully stop the provisioning daemon.
-          sudo /tmp/nexus-bin daemon stop --socket "$SOCK" 2>/dev/null \
-            || kill $DPID 2>/dev/null || true
-          wait $DPID 2>/dev/null || true
-          # The provisioning daemon (running as root) creates $HOME/.local as
-          # root:root 755 via resolveInstallBinDir. Fix ownership so the runner
-          # user can subsequently create subdirectories (e.g. .local/share/).
-          sudo chown -R "$USER":"$USER" "$HOME/.local" 2>/dev/null || true
-
-          # The rootless bootstrap installs VM assets into root's XDG data dir
-          # (/root/.local/share/nexus/vm/). E2E test daemons run as the runner
-          # user and fall back to /var/lib/nexus/ before re-downloading. Copy
-          # (using hard links when possible — instant, zero extra space) root's
-          # assets there so per-test daemons skip the expensive asset-install.
-          ROOT_VM=/root/.local/share/nexus/vm
-          if sudo test -d "$ROOT_VM"; then
-            sudo install -d -m 0755 /var/lib/nexus
-            for f in vmlinux.bin rootfs.ext4; do
-              SRC="$ROOT_VM/$f"
-              DST="/var/lib/nexus/$f"
-              if sudo test -f "$SRC" && ! sudo test -e "$DST"; then
-                # Hard-link first (instant); fall back to copy if cross-fs.
-                sudo ln "$SRC" "$DST" 2>/dev/null || sudo cp "$SRC" "$DST"
-                sudo chmod 644 "$DST"
-              fi
-            done
-          fi
-
-          # Copy the agent-hash stamp from root's state dir to the runner user's
-          # so E2E test daemons skip the slow e2fsck + debugfs injection.
-          ROOT_HASH=/root/.local/state/nexus/rootfs-agent.sha256
-          USER_HASH="$HOME/.local/state/nexus/rootfs-agent.sha256"
-          if sudo test -f "$ROOT_HASH"; then
-            mkdir -p "$(dirname "$USER_HASH")"
-            sudo cat "$ROOT_HASH" > "$USER_HASH"
-          fi
+        run: scripts/ci/provision-libkrun-host.sh
 
       - name: Verify VM assets after provisioning
-        run: |
-          set -euo pipefail
-          missing=0
-          for f in /var/lib/nexus/vmlinux.bin /var/lib/nexus/rootfs.ext4; do
-            if [[ ! -f "$f" ]]; then
-              echo "missing VM asset after provisioning: $f"
-              missing=1
-            fi
-          done
-          if [[ "$missing" -ne 0 ]]; then
-            echo "Provisioning did not yield required VM assets."
-            exit 1
-          fi
+        run: scripts/ci/verify-vm-assets.sh required
 
       - name: Prewarm default-profile baked rootfs (best effort, bounded)
         continue-on-error: true
-        run: |
-          set -euo pipefail
-          if grep -Eq '^\s*profile\s*=\s*"minimal"\s*$' Nexusfile; then
-            echo "Nexusfile profile is minimal; skipping bake prewarm."
-            exit 0
-          fi
-          if sudo test -f /root/.local/state/nexus/rootfs-baked-v5; then
-            echo "Baked stamp already present; skipping prewarm."
-            exit 0
-          fi
-          SOCK=/tmp/nexus-prewarm.sock
-          DB=/tmp/nexus-prewarm.db
-          sudo CI=false NEXUS_LIBKRUN_BAKE_TIMEOUT=240s NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS=1 /tmp/nexus-bin daemon start \
-            --db "$DB" --socket "$SOCK" --workdir-root /tmp/nexus-prewarm-work &
-          DPID=$!
-          timeout 300 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
-            || { echo "default-profile prewarm timed out (non-fatal)"; kill $DPID 2>/dev/null || true; exit 0; }
-          sudo /tmp/nexus-bin daemon stop --socket "$SOCK" 2>/dev/null \
-            || kill $DPID 2>/dev/null || true
-          wait $DPID 2>/dev/null || true
+        run: scripts/ci/prewarm-default-profile.sh
 
       - name: Refresh baked VM cache contents
         if: always()
-        run: |
-          set -euo pipefail
-          CACHE_DIR="${LIBKRUN_BAKED_CACHE_DIR}"
-          mkdir -p "$CACHE_DIR"
-          if sudo test -f /root/.local/share/nexus/vm/vmlinux.bin; then
-            sudo cp /root/.local/share/nexus/vm/vmlinux.bin "$CACHE_DIR/vmlinux.bin"
-          fi
-          if sudo test -f /root/.local/share/nexus/vm/rootfs.ext4; then
-            sudo cp /root/.local/share/nexus/vm/rootfs.ext4 "$CACHE_DIR/rootfs.ext4"
-          fi
-          if sudo test -f /root/.local/state/nexus/rootfs-agent.sha256; then
-            sudo cp /root/.local/state/nexus/rootfs-agent.sha256 "$CACHE_DIR/rootfs-agent.sha256"
-          fi
-          if sudo test -f /root/.local/state/nexus/rootfs-baked-v5; then
-            sudo cp /root/.local/state/nexus/rootfs-baked-v5 "$CACHE_DIR/rootfs-baked-v5"
-          elif sudo test -f /root/.local/state/nexus/rootfs-baked-v4; then
-            # Keep legacy key populated for restore-key fallback compatibility.
-            sudo cp /root/.local/state/nexus/rootfs-baked-v4 "$CACHE_DIR/rootfs-baked-v4"
-          fi
+        run: scripts/ci/refresh-libkrun-cache.sh
 
       - name: Run CI pipeline
         run: task ci
