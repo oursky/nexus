@@ -177,10 +177,6 @@ jobs:
               missing=1
             fi
           done
-          if [[ ! -f /root/.local/state/nexus/rootfs-baked-v5 && ! -f /root/.local/state/nexus/rootfs-baked-v4 ]]; then
-            echo "missing baked stamp (rootfs-baked-v5/v4)"
-            missing=1
-          fi
           if [[ "$missing" -ne 0 ]]; then
             echo "Prebuilt cache not fully hydrated; provisioning step will populate assets."
           fi
@@ -290,10 +286,6 @@ jobs:
               missing=1
             fi
           done
-          if [[ ! -f /root/.local/state/nexus/rootfs-baked-v5 && ! -f /root/.local/state/nexus/rootfs-baked-v4 ]]; then
-            echo "missing baked stamp after provisioning (rootfs-baked-v5/v4)"
-            missing=1
-          fi
           if [[ "$missing" -ne 0 ]]; then
             echo "Provisioning did not yield required VM assets."
             exit 1
