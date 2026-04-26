@@ -944,12 +944,10 @@ func ensureGuestBasePackages() error {
 		return fmt.Errorf("apt-get not found")
 	}
 
-	emitDiagnostic("agent base packages: installing minimal package set (docker.io, containerd, busybox-static, git, make, curl, wget)...")
+	emitDiagnostic("agent base packages: installing minimal package set (busybox-static, git, make, curl, wget)...")
 
 	pkgs := []string{
 		"make",
-		"docker.io",
-		"containerd",
 		"git",
 		"curl",
 		"wget",
@@ -1019,6 +1017,8 @@ func ensureGuestOptionalDevPackages() {
 	}
 
 	pkgs := []string{
+		"docker.io",
+		"containerd",
 		"build-essential",
 		"nodejs",
 		"npm",
