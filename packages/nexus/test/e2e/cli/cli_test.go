@@ -21,7 +21,7 @@ func TestCLI_ProjectCreateListGetRemove(t *testing.T) {
 	}
 	name := "test-proj-" + base
 
-	out, err := h.Run(t, root, "project", "create", "--name", name)
+	out, err := h.Run(t, root, "project", "create", "--name", name, "--repo", root)
 	if err != nil {
 		t.Fatalf("project create: %v\n%s", err, out)
 	}
