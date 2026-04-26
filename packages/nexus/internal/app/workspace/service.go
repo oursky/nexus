@@ -11,7 +11,6 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/domain/project"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
-	"github.com/oursky/nexus/packages/nexus/internal/infra/config"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/dockercompose"
 )
 
@@ -339,24 +338,7 @@ func (s *Service) DiscoverPorts(ctx context.Context, id string) ([]DiscoveredPor
 		return nil, nil
 	}
 
-	// 1. Load workspace config defaults
-	configDefaults := make(map[int]DiscoveredPort) // remotePort → port
-	cfg, _, err := config.LoadWorkspaceConfig(ws.Repo)
-	if err == nil {
-		for _, d := range cfg.Spotlight.Defaults {
-			if d.RemotePort > 0 && d.LocalPort > 0 {
-				configDefaults[d.RemotePort] = DiscoveredPort{
-					LocalPort:  d.LocalPort,
-					RemotePort: d.RemotePort,
-					Service:    d.Service,
-					Protocol:   "tcp",
-					Source:     "config",
-				}
-			}
-		}
-	}
-
-	// 2. Discover docker-compose ports
+	// Discover docker-compose ports.
 	// HostPort is the port published on the daemon host (e.g., 8080 for "8080:80").
 	// Both LocalPort and RemotePort use HostPort since we tunnel to the daemon's published port.
 	composeDefaults := make(map[int]DiscoveredPort) // HostPort → port
@@ -374,14 +356,7 @@ func (s *Service) DiscoverPorts(ctx context.Context, id string) ([]DiscoveredPor
 		}
 	}
 
-	// 3. Merge: config defaults override compose ports on same port
-	merged := make(map[int]DiscoveredPort)
-	for port, p := range composeDefaults {
-		merged[port] = p
-	}
-	for _, p := range configDefaults {
-		merged[p.RemotePort] = p
-	}
+	merged := composeDefaults
 
 	// 4. Build sorted result
 	result := make([]DiscoveredPort, 0, len(merged))

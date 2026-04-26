@@ -408,12 +408,8 @@ private struct SessionInfoStrip: View {
         return Self.canonicalSandboxPathDisplay(resolvedPath)
     }
 
-    /// Daemon `repo` / `rootPath` is the Linux host mirror (e.g. `~/.local/share/nexus/mirrors/…`); the VM shell uses `/workspace`.
     private static func canonicalSandboxPathDisplay(_ raw: String) -> String {
         let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if t.contains("/nexus/mirrors/") || t.hasSuffix("/nexus/mirrors") {
-            return "/workspace"
-        }
         return t.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
     }
 

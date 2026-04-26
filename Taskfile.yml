@@ -152,30 +152,13 @@ tasks:
   stage:nexus-linux:
     desc: "Build linux/amd64 nexus daemon and stage to packages/nexus-swift/Resources/nexus-linux-amd64 (bundled for remote provisioning)"
     cmds:
-      - |
-        BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
-        LDFLAGS="-X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
-                 -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT}"
-        echo "Staging nexus (linux/amd64) → packages/nexus-swift/Resources/nexus-linux-amd64 (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
-        GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
-          -C packages/nexus \
-          -ldflags "$LDFLAGS" \
-          -o ../../packages/nexus-swift/Resources/nexus-linux-amd64 \
-          ./cmd/nexus
-        chmod +x packages/nexus-swift/Resources/nexus-linux-amd64
-        echo "✓ Staged $(ls -lh packages/nexus-swift/Resources/nexus-linux-amd64 | awk '{print $5}')"
+      - scripts/swift/stage-linux-nexus.sh amd64
 
   # ── Maintenance ───────────────────────────────────────────────────────────
   generate:sdk:
     desc: "Regenerate NexusRPC.swift from Go RPC types"
     cmds:
       - scripts/generate-sdk.sh
-
-  mutagen:update:
-    desc: "Download latest Mutagen binaries for embedding"
-    cmds:
-      - scripts/nexus/update-mutagen.sh
 
   showcase:rerecord:
     desc: "Re-record showcase flow by controlling NexusApp through headless RPC, then render remotion"

@@ -8,7 +8,7 @@
 │  (nexus ...)     │ ◄────────────────► │  Unix socket / WS    │
 └──────────────────┘                    └──────────────────────┘
         │
-        │  ~/.local/state/nexus/profile.json
+        │  ~/.config/nexus/profiles/default.json
         │  (host, port, token, sshPort)
 ```
 
@@ -18,7 +18,7 @@ The CLI runs on the local machine. All workspace operations are forwarded over a
 
 ## Connection Model
 
-**Profile** — stored at `~/.local/state/nexus/profile.json` after `nexus daemon connect`.
+**Profile** — stored at `~/.config/nexus/profiles/default.json` after `nexus daemon connect`.
 
 **SSH tunnel** — the CLI opens an SSH tunnel on demand (cached per session) and connects via WebSocket. The daemon runs on a Unix socket on the remote host; the tunnel maps a local port to the daemon's WebSocket listener.
 
@@ -117,20 +117,6 @@ Project management.
 
 ---
 
-### `nexus init`
-
-Initialize `.nexus/` workspace metadata in a project directory.
-
-```bash
-nexus init --project-root <abs-path>
-```
-
-| Flag | Description |
-|------|-------------|
-| `--project-root` | Absolute path to the project root |
-
----
-
 ### `nexus exec`
 
 Execute a command in a workspace runtime.
@@ -143,24 +129,6 @@ nexus exec --project-root <abs-path> [--timeout DURATION] -- <command>
 |------|-------------|
 | `--project-root` | Absolute path to the project root |
 | `--timeout` | Command timeout duration |
-
----
-
-### `nexus doctor`
-
-Run readiness checks against a workspace runtime.
-
-```bash
-nexus doctor --project-root <abs-path> --suite <name> [flags]
-```
-
-| Flag | Description |
-|------|-------------|
-| `--project-root` | Absolute path to the project root |
-| `--suite` | Check suite name to run |
-| `--compose-file` | Docker Compose file path |
-| `--required-host-ports` | Comma-separated list of required host ports |
-| `--report-json` | Path to write JSON report |
 
 Runtime backends: `libkrun` (Linux micro-VM), `seatbelt` (macOS sandbox).
 

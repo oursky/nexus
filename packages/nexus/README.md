@@ -33,9 +33,7 @@ go test ./...
 | `nexus workspace` | Full workspace lifecycle (create, start, stop, fork, shell, etc.) |
 | `nexus spotlight` | Port-forward management (start, stop, list, per-port controls)    |
 | `nexus project`   | Project CRUD                                                      |
-| `nexus init`      | Initialize `.nexus/` workspace metadata                           |
 | `nexus exec`      | Execute a command in a workspace runtime                          |
-| `nexus doctor`    | Run readiness checks against a workspace                          |
 
 
 ## Docs
