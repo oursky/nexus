@@ -39,7 +39,8 @@ func MirrorGitCheckoutToDaemon(t *testing.T, h *Harness, _ string, clientCheckou
 		} `json:"project"`
 	}
 	h.MustCall("project.create", map[string]any{
-		"name": projectName,
+		"name":    projectName,
+		"repoUrl": clientCheckout,
 	}, &createRes)
 	projectID = createRes.Project.ID
 	if projectID == "" {
