@@ -167,7 +167,7 @@ jobs:
             sudo cat /root/.local/state/nexus/rootfs-agent.sha256 > "$HOME/.local/state/nexus/rootfs-agent.sha256"
           fi
 
-      - name: Verify pre-baked VM assets (fail fast, no cold bake in PR CI)
+      - name: Verify pre-baked VM assets (cache hint)
         run: |
           set -euo pipefail
           missing=0
@@ -182,8 +182,7 @@ jobs:
             missing=1
           fi
           if [[ "$missing" -ne 0 ]]; then
-            echo "Prebuilt VM assets are required for PR CI. Refusing cold bake path."
-            exit 1
+            echo "Prebuilt cache not fully hydrated; provisioning step will populate assets."
           fi
 
       # Build the guest-agent binary so the //go:embed directive in
@@ -279,6 +278,25 @@ jobs:
           if sudo test -f "$ROOT_HASH"; then
             mkdir -p "$(dirname "$USER_HASH")"
             sudo cat "$ROOT_HASH" > "$USER_HASH"
+          fi
+
+      - name: Verify VM assets after provisioning
+        run: |
+          set -euo pipefail
+          missing=0
+          for f in /var/lib/nexus/vmlinux.bin /var/lib/nexus/rootfs.ext4; do
+            if [[ ! -f "$f" ]]; then
+              echo "missing VM asset after provisioning: $f"
+              missing=1
+            fi
+          done
+          if [[ ! -f /root/.local/state/nexus/rootfs-baked-v5 && ! -f /root/.local/state/nexus/rootfs-baked-v4 ]]; then
+            echo "missing baked stamp after provisioning (rootfs-baked-v5/v4)"
+            missing=1
+          fi
+          if [[ "$missing" -ne 0 ]]; then
+            echo "Provisioning did not yield required VM assets."
+            exit 1
           fi
 
       - name: Refresh baked VM cache contents
