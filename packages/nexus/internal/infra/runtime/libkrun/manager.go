@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,6 +83,11 @@ type Manager struct {
 	mu        sync.RWMutex
 }
 
+const (
+	libkrunPIDFileName = "libkrun.pid"
+	passtPIDFileName   = "passt.pid"
+)
+
 // NewManager creates a new Manager.
 func NewManager(cfg ManagerConfig) *Manager {
 	if cfg.WorkDirRoot != "" {
@@ -101,6 +107,7 @@ type SpawnSpec struct {
 	MemoryMiB       int
 	VCPUs           int
 	HostConfigDrive string
+	VMProfile       string
 }
 
 // Spawn creates and starts a new libkrun VM using block-backed root/workspace
@@ -112,7 +119,116 @@ type SpawnSpec struct {
 //	/dev/vdb  workspace.ext4          (workspace clone, rw)   → /workspace
 //	/dev/vdc  docker-data.ext4        (sparse, Docker data)   → /var/lib/docker
 //	/dev/vdd  hostconfig.ext4         (read-only)             → /run/nexus-host
+//
+// spawnTimeout is the maximum time allowed for the entire Spawn operation.
+const spawnTimeout = 5 * time.Minute
+
+// phaseTimeout returns a context with timeout for a specific spawn phase.
+func phaseTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < timeout {
+			timeout = remaining
+		}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func signalProcess(pid int, sig syscall.Signal) error {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return proc.Signal(sig)
+}
+
+func readPIDFile(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 1 {
+		return 0, fmt.Errorf("invalid pid in %s", path)
+	}
+	return pid, nil
+}
+
+func processCmdline(pid int) string {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil {
+		return ""
+	}
+	return strings.ReplaceAll(string(data), "\x00", " ")
+}
+
+func isLikelyWorkspaceVMCmdline(cmdline, workspaceID string) bool {
+	if strings.TrimSpace(cmdline) == "" {
+		return false
+	}
+	if !strings.Contains(cmdline, workspaceID) {
+		return false
+	}
+	return strings.Contains(cmdline, "nexus-libkrun-vm") || strings.Contains(cmdline, " libkrun-vm ")
+}
+
+func isLikelyPasstCmdline(cmdline string) bool {
+	if strings.TrimSpace(cmdline) == "" {
+		return false
+	}
+	return strings.Contains(cmdline, " passt ") || strings.HasPrefix(cmdline, "passt ")
+}
+
+func terminateProcessByPIDFile(pidFilePath string, verify func(cmdline string) bool) {
+	pid, err := readPIDFile(pidFilePath)
+	if err != nil {
+		_ = os.Remove(pidFilePath)
+		return
+	}
+
+	cmdline := processCmdline(pid)
+	if verify != nil && !verify(cmdline) {
+		_ = os.Remove(pidFilePath)
+		return
+	}
+
+	// Best-effort graceful stop, then hard kill.
+	_ = signalProcess(pid, syscall.SIGINT)
+	time.Sleep(150 * time.Millisecond)
+	if err := signalProcess(pid, syscall.Signal(0)); err == nil {
+		_ = signalProcess(pid, syscall.SIGKILL)
+	}
+	_ = os.Remove(pidFilePath)
+}
+
+func cleanupWorkspaceRuntimeArtifacts(workDir, workspaceID string) {
+	terminateProcessByPIDFile(
+		filepath.Join(workDir, libkrunPIDFileName),
+		func(cmdline string) bool { return isLikelyWorkspaceVMCmdline(cmdline, workspaceID) },
+	)
+	terminateProcessByPIDFile(
+		filepath.Join(workDir, passtPIDFileName),
+		isLikelyPasstCmdline,
+	)
+	for _, port := range []uint32{DefaultAgentVSockPort, DefaultSpotlightVSockPort} {
+		_ = os.Remove(filepath.Join(workDir, fmt.Sprintf("vsock_%d.sock", port)))
+	}
+}
+
 func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) {
+	spawnStart := time.Now()
+	log.Printf("[libkrun] Spawn start: workspace=%s", spec.WorkspaceID)
+	defer func() {
+		log.Printf("[libkrun] Spawn done: workspace=%s (%s)", spec.WorkspaceID, time.Since(spawnStart).Round(time.Millisecond))
+	}()
+
+	// Apply overall spawn timeout if the caller hasn't set one.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, spawnTimeout)
+		defer cancel()
+	}
+
 	m.mu.Lock()
 	if _, exists := m.instances[spec.WorkspaceID]; exists {
 		m.mu.Unlock()
@@ -124,13 +240,9 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create workdir: %w", err)
 	}
-
-	// Remove stale vsock socket files from a previous run so libkrun can
-	// recreate them. If they still exist, krun_add_vsock_port2 fails with
-	// "file exists" and the agent never comes up.
-	for _, port := range []uint32{DefaultAgentVSockPort, DefaultSpotlightVSockPort} {
-		_ = os.Remove(filepath.Join(workDir, fmt.Sprintf("vsock_%d.sock", port)))
-	}
+	// Ensure stale runtime artifacts from crashed/old daemons are cleaned before
+	// starting a new VM instance in this workdir.
+	cleanupWorkspaceRuntimeArtifacts(workDir, spec.WorkspaceID)
 
 	serialLog := filepath.Join(workDir, "libkrun.log")
 	rootfsPath := filepath.Join(workDir, "rootfs.ext4")
@@ -140,22 +252,32 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	// Rootfs: restore from snapshot for forks, otherwise clone from base rootfs.
 	// clone uses reflink when available (XFS/btrfs) and sparse-copy fallback.
 	if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
-		if err := copyFile(m.snapshotRootfsPath(snapID), rootfsPath); err != nil {
+		log.Printf("[libkrun] workspace %s: phase=restore_rootfs snapshot=%s", spec.WorkspaceID, snapID)
+		phaseCtx, cancel := phaseTimeout(ctx, 2*time.Minute)
+		if err := copyFileWithContext(phaseCtx, m.snapshotRootfsPath(snapID), rootfsPath); err != nil {
+			cancel()
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("restore rootfs from snapshot: %w", err)
 		}
+		cancel()
 		log.Printf("[libkrun] workspace %s: restored rootfs from snapshot %s", spec.WorkspaceID, snapID)
 	} else if _, err := os.Stat(rootfsPath); err != nil {
-		if err := copyFile(m.cfg.RootFSBasePath, rootfsPath); err != nil {
+		log.Printf("[libkrun] workspace %s: phase=clone_rootfs", spec.WorkspaceID)
+		phaseCtx, cancel := phaseTimeout(ctx, 2*time.Minute)
+		if err := copyFileWithContext(phaseCtx, m.cfg.RootFSBasePath, rootfsPath); err != nil {
+			cancel()
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("clone rootfs image: %w", err)
 		}
+		cancel()
+		log.Printf("[libkrun] workspace %s: cloned rootfs", spec.WorkspaceID)
 	}
 
 	// Inject current embedded agent into the rootfs so the in-VM agent always
 	// matches this nexus binary, regardless of when rootfs.ext4 was created.
 	if m.cfg.EmbeddedAgentFn != nil {
 		if agentData := m.cfg.EmbeddedAgentFn(); len(agentData) > 0 {
+			log.Printf("[libkrun] workspace %s: phase=inject_agent", spec.WorkspaceID)
 			if err := injectFileIntoExt4(rootfsPath, agentData, "/usr/local/bin/nexus-guest-agent", 0o755); err != nil {
 				log.Printf("[libkrun] workspace %s: agent inject failed (non-fatal): %v", spec.WorkspaceID, err)
 			}
@@ -164,35 +286,56 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	// Workspace image: restore from snapshot or clone repo base image.
 	if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
-		if err := copyFile(m.snapshotWorkspacePath(snapID), workspacePath); err != nil {
+		log.Printf("[libkrun] workspace %s: phase=restore_workspace snapshot=%s", spec.WorkspaceID, snapID)
+		phaseCtx, cancel := phaseTimeout(ctx, 2*time.Minute)
+		if err := copyFileWithContext(phaseCtx, m.snapshotWorkspacePath(snapID), workspacePath); err != nil {
+			cancel()
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("restore workspace from snapshot: %w", err)
 		}
+		cancel()
 		log.Printf("[libkrun] workspace %s: restored workspace from snapshot %s", spec.WorkspaceID, snapID)
 	} else if _, err := os.Stat(workspacePath); err != nil {
-		basePath, err := EnsureBaseImage(spec.ProjectRoot, m.cfg.BasesDir)
+		log.Printf("[libkrun] workspace %s: phase=ensure_base_image", spec.WorkspaceID)
+		phaseCtx, cancel := phaseTimeout(ctx, 3*time.Minute)
+		basePath, err := EnsureBaseImage(phaseCtx, spec.ProjectRoot, m.cfg.BasesDir)
+		cancel()
 		if err != nil {
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("ensure base workspace image: %w", err)
 		}
-		if err := copyFile(basePath, workspacePath); err != nil {
+		log.Printf("[libkrun] workspace %s: phase=clone_workspace", spec.WorkspaceID)
+		phaseCtx, cancel = phaseTimeout(ctx, 2*time.Minute)
+		if err := copyFileWithContext(phaseCtx, basePath, workspacePath); err != nil {
+			cancel()
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("clone workspace image: %w", err)
 		}
+		cancel()
+		log.Printf("[libkrun] workspace %s: cloned workspace image", spec.WorkspaceID)
 	}
 
 	// Docker data image: restore from snapshot for forks, otherwise create fresh.
 	if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
-		if err := copyFile(m.snapshotDockerPath(snapID), dockerDataPath); err != nil {
+		log.Printf("[libkrun] workspace %s: phase=restore_docker_data snapshot=%s", spec.WorkspaceID, snapID)
+		phaseCtx, cancel := phaseTimeout(ctx, 2*time.Minute)
+		if err := copyFileWithContext(phaseCtx, m.snapshotDockerPath(snapID), dockerDataPath); err != nil {
+			cancel()
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("restore docker-data from snapshot: %w", err)
 		}
+		cancel()
 		log.Printf("[libkrun] workspace %s: restored docker-data from snapshot %s", spec.WorkspaceID, snapID)
 	} else if _, err := os.Stat(dockerDataPath); err != nil {
-		if err := createDockerDataImage(dockerDataPath); err != nil {
+		log.Printf("[libkrun] workspace %s: phase=create_docker_data", spec.WorkspaceID)
+		phaseCtx, cancel := phaseTimeout(ctx, 1*time.Minute)
+		if err := createDockerDataImageWithContext(phaseCtx, dockerDataPath); err != nil {
+			cancel()
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("create docker-data image: %w", err)
 		}
+		cancel()
+		log.Printf("[libkrun] workspace %s: created docker-data image", spec.WorkspaceID)
 	}
 
 	// Pick a free host TCP port for SSH forwarding (TSI maps it to guest port 22).
@@ -221,10 +364,21 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		},
 	}
 
+	kernelCmdline := "console=hvc0 root=/dev/vda rw init=/usr/local/bin/nexus-guest-agent"
+	if gw := strings.TrimSpace(hostDefaultGatewayIP()); gw != "" {
+		kernelCmdline += " nexus.gw=" + gw
+	}
+	if dns := strings.Join(hostDNSServers(), ","); dns != "" {
+		kernelCmdline += " nexus.dns=" + dns
+	}
+	if profile := strings.TrimSpace(spec.VMProfile); profile != "" {
+		kernelCmdline += " nexus.profile=" + profile
+	}
+
 	vmSpec := VMSpec{
 		WorkspaceID:     spec.WorkspaceID,
 		KernelPath:      m.cfg.KernelPath,
-		KernelCmdline:   "console=hvc0 root=/dev/vda rw init=/usr/local/bin/nexus-guest-agent",
+		KernelCmdline:   kernelCmdline,
 		RootFSImage:     rootfsPath,
 		AgentPath:       "/usr/local/bin/nexus-guest-agent",
 		WorkspaceImage:  workspacePath,
@@ -245,13 +399,18 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	var vmSideFD, hostSideFD *os.File
 	var passtProc *os.Process
 	if vmSpec.NetworkBackend == "auto" || vmSpec.NetworkBackend == "virtio-net" {
+		log.Printf("[libkrun] workspace %s: phase=start_passt", spec.WorkspaceID)
 		var pairErr error
 		vmSideFD, hostSideFD, pairErr = createPasstSocketPair()
 		if pairErr != nil {
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("create passt socketpair: %w", pairErr)
 		}
-		passtProc, pairErr = startPasstProcess(workDir, hostSideFD, sshPort, passtGuestIPv4ForWorkspace(spec.WorkspaceID))
+		// passt must live for the entire VM lifetime. Do not bind it to the
+		// request-scoped start context, because that context is canceled when the
+		// RPC handler returns and would SIGKILL passt, leaving guest networking
+		// in link-local fallback only.
+		passtProc, pairErr = startPasstProcess(context.Background(), workDir, hostSideFD, sshPort, passtGuestIPv4ForWorkspace(spec.WorkspaceID))
 		if pairErr != nil {
 			_ = vmSideFD.Close()
 			_ = hostSideFD.Close()
@@ -259,6 +418,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 			return nil, fmt.Errorf("start passt: %w", pairErr)
 		}
 		vmSpec.PasstFDIndex = 0
+		log.Printf("[libkrun] workspace %s: passt started", spec.WorkspaceID)
 	}
 
 	// Write VMSpec to a temp config file.
@@ -304,6 +464,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	childCmd.Stdout = vmLogFile
 	childCmd.Stderr = vmLogFile
 
+	log.Printf("[libkrun] workspace %s: phase=start_vm", spec.WorkspaceID)
 	if err := childCmd.Start(); err != nil {
 		if passtProc != nil {
 			_ = passtProc.Kill()
@@ -317,6 +478,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		os.RemoveAll(workDir)
 		return nil, fmt.Errorf("spawn libkrun-vm child: %w", err)
 	}
+	log.Printf("[libkrun] workspace %s: vm started (pid=%d)", spec.WorkspaceID, childCmd.Process.Pid)
 	if vmSideFD != nil {
 		_ = vmSideFD.Close()
 	}
@@ -326,7 +488,10 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	_ = vmLogFile.Close()
 
 	// Write PID file.
-	_ = os.WriteFile(filepath.Join(workDir, "libkrun.pid"), []byte(strconv.Itoa(childCmd.Process.Pid)), 0o600)
+	_ = os.WriteFile(filepath.Join(workDir, libkrunPIDFileName), []byte(strconv.Itoa(childCmd.Process.Pid)), 0o600)
+	if passtProc != nil {
+		_ = os.WriteFile(filepath.Join(workDir, passtPIDFileName), []byte(strconv.Itoa(passtProc.Pid)), 0o600)
+	}
 
 	inst := &Instance{
 		WorkspaceID:     spec.WorkspaceID,
@@ -351,6 +516,17 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	log.Printf("[libkrun] started workspace %s (pid=%d ssh=127.0.0.1:%d)",
 		spec.WorkspaceID, childCmd.Process.Pid, sshPort)
 
+	// Reap passt in the background to prevent zombie accumulation when it exits.
+	if passtProc != nil {
+		go func(wsID string, p *os.Process) {
+			if _, err := p.Wait(); err != nil {
+				log.Printf("[libkrun] workspace %s: passt exited: %v", wsID, err)
+			} else {
+				log.Printf("[libkrun] workspace %s: passt exited", wsID)
+			}
+		}(spec.WorkspaceID, passtProc)
+	}
+
 	// Reap the VM/passt processes in the background so unexpected exits are
 	// visible in daemon logs and stale "running" instances don't linger forever.
 	go m.monitorInstance(spec.WorkspaceID, inst)
@@ -368,25 +544,44 @@ func (m *Manager) monitorInstance(workspaceID string, inst *Instance) {
 
 	for range ticker.C {
 		// Signal 0 checks liveness without delivering a real signal.
-		err := inst.Process.Signal(syscall.Signal(0))
-		if err == nil {
-			continue
+		if err := inst.Process.Signal(syscall.Signal(0)); err != nil {
+			log.Printf("[libkrun] workspace %s: vm process no longer alive: %v", workspaceID, err)
+			if inst.PasstProcess != nil {
+				if pErr := inst.PasstProcess.Signal(syscall.Signal(0)); pErr == nil {
+					_ = inst.PasstProcess.Kill()
+				}
+			}
+			_ = os.Remove(filepath.Join(inst.WorkDir, libkrunPIDFileName))
+			_ = os.Remove(filepath.Join(inst.WorkDir, passtPIDFileName))
+
+			m.mu.Lock()
+			current, ok := m.instances[workspaceID]
+			if ok && current == inst {
+				delete(m.instances, workspaceID)
+			}
+			m.mu.Unlock()
+			return
 		}
 
-		log.Printf("[libkrun] workspace %s: vm process no longer alive: %v", workspaceID, err)
 		if inst.PasstProcess != nil {
-			if pErr := inst.PasstProcess.Signal(syscall.Signal(0)); pErr == nil {
-				_ = inst.PasstProcess.Kill()
+			if pErr := inst.PasstProcess.Signal(syscall.Signal(0)); pErr != nil {
+				log.Printf("[libkrun] workspace %s: passt process no longer alive: %v", workspaceID, pErr)
+				// If passt dies, networking is irrecoverable for this VM (the shared
+				// socketpair endpoint is gone). Kill the VM so callers get a clean
+				// restart path instead of hanging on a half-dead instance.
+				_ = inst.Process.Kill()
+				_ = os.Remove(filepath.Join(inst.WorkDir, libkrunPIDFileName))
+				_ = os.Remove(filepath.Join(inst.WorkDir, passtPIDFileName))
+
+				m.mu.Lock()
+				current, ok := m.instances[workspaceID]
+				if ok && current == inst {
+					delete(m.instances, workspaceID)
+				}
+				m.mu.Unlock()
+				return
 			}
 		}
-
-		m.mu.Lock()
-		current, ok := m.instances[workspaceID]
-		if ok && current == inst {
-			delete(m.instances, workspaceID)
-		}
-		m.mu.Unlock()
-		return
 	}
 }
 
@@ -408,14 +603,14 @@ func (m *Manager) Stop(_ context.Context, workspaceID string) error {
 		if err := inst.Process.Signal(os.Interrupt); err != nil {
 			_ = inst.Process.Kill()
 		}
-		done := make(chan struct{})
-		go func() {
-			_, _ = inst.Process.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(8 * time.Second):
+		deadline := time.Now().Add(8 * time.Second)
+		for time.Now().Before(deadline) {
+			if err := inst.Process.Signal(syscall.Signal(0)); err != nil {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		if err := inst.Process.Signal(syscall.Signal(0)); err == nil {
 			_ = inst.Process.Kill()
 		}
 	}
@@ -423,17 +618,19 @@ func (m *Manager) Stop(_ context.Context, workspaceID string) error {
 		if err := inst.PasstProcess.Signal(os.Interrupt); err != nil {
 			_ = inst.PasstProcess.Kill()
 		}
-		done := make(chan struct{})
-		go func() {
-			_, _ = inst.PasstProcess.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if err := inst.PasstProcess.Signal(syscall.Signal(0)); err != nil {
+				break
+			}
+			time.Sleep(150 * time.Millisecond)
+		}
+		if err := inst.PasstProcess.Signal(syscall.Signal(0)); err == nil {
 			_ = inst.PasstProcess.Kill()
 		}
 	}
+	_ = os.Remove(filepath.Join(inst.WorkDir, libkrunPIDFileName))
+	_ = os.Remove(filepath.Join(inst.WorkDir, passtPIDFileName))
 	return nil
 }
 
@@ -504,7 +701,7 @@ func (m *Manager) ForkWorkspaceImage(_ context.Context, parentWorkspaceID, child
 			}
 			rootSrcPath = m.cfg.RootFSBasePath
 
-			basePath, baseErr := EnsureBaseImage(fallbackProjectRoot, m.cfg.BasesDir)
+			basePath, baseErr := EnsureBaseImage(context.Background(), fallbackProjectRoot, m.cfg.BasesDir)
 			if baseErr != nil {
 				return fmt.Errorf("ensure base workspace image for fork fallback: %w", baseErr)
 			}
@@ -572,6 +769,31 @@ func (m *Manager) ReconcileOrphans(_ context.Context, liveIDs map[string]struct{
 	for _, id := range toStop {
 		log.Printf("[libkrun] reconcile: stopping orphan %s", id)
 		_ = m.Stop(context.Background(), id)
+	}
+
+	entries, err := os.ReadDir(m.cfg.WorkDirRoot)
+	if err != nil {
+		return nil
+	}
+	workspaceDirs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		id := entry.Name()
+		if !strings.HasPrefix(id, "ws-") {
+			continue
+		}
+		if _, ok := liveIDs[id]; ok {
+			continue
+		}
+		workspaceDirs = append(workspaceDirs, id)
+	}
+	sort.Strings(workspaceDirs)
+	for _, id := range workspaceDirs {
+		workDir := filepath.Join(m.cfg.WorkDirRoot, id)
+		log.Printf("[libkrun] reconcile: cleaning runtime artifacts for %s", id)
+		cleanupWorkspaceRuntimeArtifacts(workDir, id)
 	}
 	return nil
 }

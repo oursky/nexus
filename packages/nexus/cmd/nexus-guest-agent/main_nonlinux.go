@@ -9,6 +9,6 @@ import (
 )
 
 func main() {
-	fmt.Fprintf(os.Stderr, "nexus-firecracker-agent is only supported on Linux (current: %s)\n", runtime.GOOS)
+	fmt.Fprintf(os.Stderr, "nexus-guest-agent is only supported on Linux (current: %s)\n", runtime.GOOS)
 	os.Exit(1)
 }

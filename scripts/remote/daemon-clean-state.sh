@@ -3,12 +3,12 @@
 # Normalize remote runtime state by removing stale libkrun workspace VMs and
 # lingering processes before restarting the daemon.
 #
-# Usage: REMOTE_HOST=user@host [REMOTE_BIN=~/.local/bin/nexus] [REMOTE_PORT=7777] \
+# Usage: REMOTE_HOST=user@host [REMOTE_BIN='$HOME/.local/bin/nexus'] [REMOTE_PORT=7777] \
 #        [DRY_RUN=1] scripts/remote/daemon-clean-state.sh
 set -euo pipefail
 
 REMOTE_HOST="${REMOTE_HOST:?REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname}"
-REMOTE_BIN="${REMOTE_BIN:-~/.local/bin/nexus}"
+REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin/nexus}"
 REMOTE_PORT="${REMOTE_PORT:-7777}"
 DRY_RUN="${DRY_RUN:-0}"
 

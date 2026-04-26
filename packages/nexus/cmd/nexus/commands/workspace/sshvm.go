@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
+	domainws "github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
 	"github.com/spf13/cobra"
 )
@@ -24,8 +25,8 @@ func sshVMCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "ssh-vm <workspace>",
-		Short: "SSH into the Firecracker VM of a workspace",
-		Long: `Connects to the Firecracker micro-VM running a workspace over SSH.
+		Short: "SSH into the libkrun VM of a workspace",
+		Long: `Connects to the libkrun micro-VM running a workspace over SSH.
 
 The engine host is used as a ProxyJump (configured via 'nexus daemon connect').
 The VM must be in 'running' state, and the rootfs must include openssh-server
@@ -65,9 +66,8 @@ Without flags an interactive SSH session is opened.`,
 
 			ws := result.Workspace
 			if ws.GuestIP == "" {
-				backend := strings.ToLower(strings.TrimSpace(ws.Backend))
-				if backend != "libkrun" {
-					return fmt.Errorf("nexus workspace ssh-vm: workspace %q uses backend %q — only Firecracker/libkrun workspaces have a guest VM", args[0], ws.Backend)
+				if !domainws.UsesGuestVM(ws.Backend) {
+					return fmt.Errorf("nexus workspace ssh-vm: workspace %q uses backend %q — only libkrun workspaces have a guest VM", args[0], ws.Backend)
 				}
 				return fmt.Errorf("nexus workspace ssh-vm: workspace %q (state: %s) has no guest IP — is it running?\n  hint: nexus workspace start %s", args[0], ws.State, args[0])
 			}
@@ -209,7 +209,7 @@ func runSSHCheck(sshTarget string, sshArgs []string, cmd *cobra.Command) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "\nTroubleshooting:\n")
 		fmt.Fprintf(cmd.OutOrStdout(), "  1. Run --diagnose to check sshd/key status inside the VM\n")
 		fmt.Fprintf(cmd.OutOrStdout(), "  2. If sshd is not installed, rebuild the rootfs:\n")
-		fmt.Fprintf(cmd.OutOrStdout(), "       nexus daemon implode && sudo nexus daemon start --setup\n")
+		fmt.Fprintf(cmd.OutOrStdout(), "       nexus daemon implode && nexus daemon start\n")
 		fmt.Fprintf(cmd.OutOrStdout(), "  3. Or install sshd in a running VM:\n")
 		fmt.Fprintf(cmd.OutOrStdout(), "       nexus workspace exec <ws> -- apt-get install -y openssh-server\n")
 		fmt.Fprintf(cmd.OutOrStdout(), "       nexus workspace exec <ws> -- sshd\n")
@@ -419,8 +419,8 @@ func printDiagnosticAdvice(out io.Writer, port22Open bool, sshdPath, sshdRunning
 		fmt.Fprintln(out, "    nexus workspace exec <ws> -- bash -c 'apt-get install -y openssh-server'")
 		fmt.Fprintln(out, "    nexus workspace exec <ws> -- /usr/sbin/sshd")
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "  Permanent fix (rebuild rootfs — requires sudo):")
-		fmt.Fprintln(out, "    nexus daemon implode && sudo nexus daemon start --setup")
+		fmt.Fprintln(out, "  Permanent fix (rebuild rootfs from scratch):")
+		fmt.Fprintln(out, "    nexus daemon implode && nexus daemon start")
 		return
 	}
 

@@ -41,17 +41,17 @@ authoritative controller of workspace lifecycle, port forwarding, and PTY sessio
 `**DAEMON-005**` — Default socket path: `<data-dir>/nexusd.sock`.  
 Default database path: `<data-dir>/nexus.db`.
 
-`**DAEMON-006**` — The runtime backend is Firecracker (VM-based isolation) unless `--sandbox` is
+`**DAEMON-006**` — The runtime backend is libkrun (VM-based isolation) on Linux unless `--sandbox` is
 specified, in which case the process-sandbox backend is used. macOS builds MUST use `--sandbox`
-because Firecracker is not supported on macOS.
+because libkrun is not supported on macOS.
 
 `**DAEMON-007**` — The daemon self-daemonizes by re-executing itself with
 `NEXUS_DAEMON_FOREGROUND=1` in the environment. The parent process waits for the socket file to
 appear (up to 30 seconds) before returning to the caller. The `--foreground` flag disables this
 behavior.
 
-`**DAEMON-008**` — The guest agent binary (`nexus-firecracker-agent`) is injected into the rootfs
-image at daemon startup (Firecracker mode only). Injection is skipped when the agent binary hash
+`**DAEMON-008**` — The guest agent binary (`nexus-guest-agent`) is injected into the rootfs
+image at daemon startup (libkrun mode on Linux). Injection is skipped when the agent binary hash
 matches the cached hash in `<data-dir>/rootfs-agent.sha256`.
 
 `**DAEMON-009**` — The daemon log file is written to `<socket-dir>/daemon.log` in background mode.

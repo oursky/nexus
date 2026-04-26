@@ -8,7 +8,7 @@
 ## Workspace — `WS-001`–`WS-009`
 
 `**WS-001`** — A **workspace** is the primary runtime unit. It binds a git repository at a specific
-ref to a runtime backend instance (Firecracker VM or process sandbox).
+ref to a runtime backend instance (libkrun micro-VM or process sandbox).
 
 `**WS-002`** — Every workspace has a globally unique string ID (UUID format). IDs MUST NOT be
 reused, even after a workspace enters state `removed`.
@@ -32,7 +32,7 @@ project is removed).
 - `lineageRootId`: the ID of the original (non-forked) ancestor; for a root workspace,
 `lineageRootId == id`
 
-`**WS-008**` — `backend` specifies the runtime: `"firecracker"` or `"process"`. If omitted at
+`**WS-008**` — `backend` specifies the runtime: `"libkrun"` or `"process"`. If omitted at
 creation time, the daemon selects based on its startup configuration.
 
 `**WS-009**` — `policy` controls workspace automation behaviour:
@@ -79,7 +79,7 @@ workspace runtime. `protocol` is `"tcp"` (default), `"udp"`, or `"http"`.
 `**SPOT-005**` — In process-sandbox backend mode, the daemon binds `127.0.0.1:<localPort>` and
 proxies TCP connections to `127.0.0.1:<remotePort>` inside the workspace process namespace.
 
-`**SPOT-006**` — In Firecracker mode, the spotlight service uses the VM's vsock connection
+`**SPOT-006**` — In libkrun VM mode, the spotlight service uses the VM's vsock connection
 (port `10792`) to reach the guest. The returned `Forward.targetHost` holds the resolved guest
 endpoint. SSH tunnels from the CLI target `targetHost:remotePort` on the daemon host.
 
@@ -115,7 +115,7 @@ raw string, not base64).
 `**PTY-007**` — When a PTY session exits, the daemon MUST push a `pty.exit` notification with
 `{sessionId, exitCode: int}`.
 
-`**PTY-008**` — In Firecracker mode, PTY sessions communicate with the guest via a vsock
+`**PTY-008**` — In libkrun VM mode, PTY sessions communicate with the guest via a vsock
 connection to the agent. The guest agent protocol uses JSON envelopes with `shell.open`,
 `shell.write`, `shell.resize`, `shell.close` message types. This protocol is internal and not
 part of the public RPC surface.

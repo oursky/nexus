@@ -7,7 +7,7 @@ public enum RemoteEditorApp: String, Sendable, CaseIterable {
     case vscode = "vscode"
 }
 
-/// Parameters for opening a folder via Remote SSH (daemon host path or Firecracker guest via ProxyJump).
+/// Parameters for opening a folder via Remote SSH (daemon host path or libkrun guest via ProxyJump).
 public struct RemoteSSHFolderOpenSpec: Sendable {
     public let sshHostForURI: String
     public let remotePath: String
@@ -24,7 +24,7 @@ public struct RemoteSSHFolderOpenSpec: Sendable {
     }
 }
 
-/// Writes `~/.nexus/ssh` snippets so Remote-SSH can reach Firecracker guests via `ProxyJump` through the engine host.
+/// Writes `~/.nexus/ssh` snippets so Remote-SSH can reach libkrun VM guests via `ProxyJump` through the engine host.
 /// `~/.ssh/config` must already contain `Include ~/.nexus/ssh/*.ssh.config` (added by `installIncludeIfNeeded`).
 public enum NexusSSHConfigSnippet {
     private static let marker = "# nexus-vm-remote-editor (managed by Nexus — do not remove)"

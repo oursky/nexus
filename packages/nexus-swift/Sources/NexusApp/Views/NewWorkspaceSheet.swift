@@ -17,7 +17,7 @@ struct NewWorkspaceSheet: View {
     @State private var selectedProjectID = ""
     @State private var createNewProject = false
     @State private var sourceMode: SourceMode = .projectRoot
-    @State private var backend: RuntimeBackend = .firecracker
+    @State private var backend: RuntimeBackend = .libkrun
     @State private var selectedSourceWorkspaceID = ""
     @State private var workspaceNameEdited = false
     @State private var updatingNameFromBranch = false
@@ -42,17 +42,19 @@ struct NewWorkspaceSheet: View {
     }
 
     private enum RuntimeBackend: String, CaseIterable, Identifiable {
-        case firecracker
+        case libkrun
         var id: String { rawValue }
 
         var label: String {
             switch self {
-            case .firecracker: return "Firecracker"
+            case .libkrun: return "libkrun (VM)"
             }
         }
 
         static func from(_ raw: String) -> RuntimeBackend {
-            return .firecracker
+            let r = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if r == "libkrun" { return .libkrun }
+            return .libkrun
         }
     }
 

@@ -13,7 +13,7 @@ import (
 )
 
 // Adapter wraps Driver to satisfy domain/runtime.Driver.
-// It mirrors firecracker.Adapter.
+// It mirrors the VM runtime adapter shape used elsewhere in the daemon.
 type Adapter struct {
 	d *Driver
 }

@@ -71,10 +71,7 @@ private struct VMLogPane: View {
     @State private var lastError: String?
     @State private var refreshTask: Task<Void, Never>?
 
-    private var isVM: Bool {
-        let b = (workspace.backend ?? "").lowercased()
-        return b == "firecracker" || b == "libkrun"
-    }
+    private var isVM: Bool { workspace.usesGuestVMRuntime }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -127,7 +124,7 @@ private struct VMLogPane: View {
                     Image(systemName: "desktopcomputer")
                         .font(.system(size: 20, weight: .ultraLight))
                         .foregroundColor(Theme.labelTertiary)
-                    Text("Serial log is available for VM workspaces (Firecracker / libkrun)")
+                    Text("Serial log is available for libkrun VM workspaces")
                         .font(Theme.fontSm)
                         .foregroundColor(Theme.labelTertiary)
                         .multilineTextAlignment(.center)

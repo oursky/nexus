@@ -2,6 +2,7 @@ package libkrun
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io/fs"
@@ -11,9 +12,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 const workspaceOverlaySizeBytes = 16 * 1024 * 1024 * 1024 // 16 GiB sparse
+
+// baseImageLocks prevents concurrent builds of the same repo base image.
+var baseImageLocks sync.Map // key string -> *sync.Mutex
 
 func repoBaseKey(repoRoot string) string {
 	h := sha256.Sum256([]byte(filepath.Clean(repoRoot)))
@@ -21,7 +27,9 @@ func repoBaseKey(repoRoot string) string {
 }
 
 // EnsureBaseImage returns or builds a cached read-only base ext4 for the repo.
-func EnsureBaseImage(repoRoot, basesDir string) (string, error) {
+// It uses a per-repo mutex to prevent concurrent builds of the same base image.
+// The context is used to bound the mkfs.ext4 operation.
+func EnsureBaseImage(ctx context.Context, repoRoot, basesDir string) (string, error) {
 	key := repoBaseKey(repoRoot)
 	dir := filepath.Join(basesDir, key)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -32,11 +40,26 @@ func EnsureBaseImage(repoRoot, basesDir string) (string, error) {
 		log.Printf("[libkrun] base image cache hit: %s", basePath)
 		return basePath, nil
 	}
+
+	// Acquire per-repo lock to prevent concurrent builds.
+	muVal, _ := baseImageLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := muVal.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Double-check after acquiring lock.
+	if _, err := os.Stat(basePath); err == nil {
+		log.Printf("[libkrun] base image cache hit (after lock): %s", basePath)
+		return basePath, nil
+	}
+
 	log.Printf("[libkrun] building base image %s → %s", repoRoot, basePath)
-	if err := buildBaseImage(repoRoot, basePath); err != nil {
+	start := time.Now()
+	if err := buildBaseImageWithContext(ctx, repoRoot, basePath); err != nil {
 		_ = os.Remove(basePath)
 		return "", fmt.Errorf("build base image: %w", err)
 	}
+	log.Printf("[libkrun] built base image %s in %s", basePath, time.Since(start).Round(time.Millisecond))
 	return basePath, nil
 }
 
@@ -186,6 +209,125 @@ func copyFile(src, dst string) error {
 		return fmt.Errorf("cp %s → %s: %w: %s", src, dst, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// copyFileWithContext copies src→dst using reflink clone when available (O(1) CoW on XFS/btrfs),
+// falling back to sparse copy on filesystems that don't support reflinks.
+// Retries transient failures up to 3 times with exponential backoff.
+func copyFileWithContext(ctx context.Context, src, dst string) error {
+	start := time.Now()
+	log.Printf("[libkrun] copyFile start: %s → %s", src, dst)
+	defer func() {
+		log.Printf("[libkrun] copyFile done: %s → %s (%s)", src, dst, time.Since(start).Round(time.Millisecond))
+	}()
+
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			backoff := time.Duration(attempt-1) * 500 * time.Millisecond
+			log.Printf("[libkrun] copyFile retry attempt=%d backoff=%s: %s → %s", attempt, backoff, src, dst)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		// Try reflink first (O(1) CoW); if unsupported fall back to sparse copy.
+		cmd := exec.CommandContext(ctx, "cp", "--reflink=always", "--sparse=auto", src, dst)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		lastErr = fmt.Errorf("cp %s → %s: %w: %s", src, dst, err, strings.TrimSpace(string(out)))
+
+		// Reflink failed (non-XFS/btrfs host); use sparse copy instead.
+		cmd = exec.CommandContext(ctx, "cp", "--sparse=always", src, dst)
+		out, err = cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		lastErr = fmt.Errorf("cp %s → %s: %w: %s", src, dst, err, strings.TrimSpace(string(out)))
+	}
+	return fmt.Errorf("copyFile failed after 3 attempts: %w", lastErr)
+}
+
+// createDockerDataImageWithContext creates an empty sparse ext4 image with context support.
+// Retries transient failures up to 3 times with exponential backoff.
+func createDockerDataImageWithContext(ctx context.Context, imagePath string) error {
+	start := time.Now()
+	log.Printf("[libkrun] createDockerDataImage start: %s", imagePath)
+	defer func() {
+		log.Printf("[libkrun] createDockerDataImage done: %s (%s)", imagePath, time.Since(start).Round(time.Millisecond))
+	}()
+
+	if err := createSparseFile(imagePath, dockerDataSizeBytes); err != nil {
+		return err
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			backoff := time.Duration(attempt-1) * 500 * time.Millisecond
+			log.Printf("[libkrun] createDockerDataImage retry attempt=%d backoff=%s: %s", attempt, backoff, imagePath)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		cmd := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-L", "nexus-docker", imagePath)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		lastErr = fmt.Errorf("mkfs.ext4 docker-data: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	_ = os.Remove(imagePath)
+	return fmt.Errorf("createDockerDataImage failed after 3 attempts: %w", lastErr)
+}
+
+// buildBaseImageWithContext builds a base image with context support and timeout.
+// Retries transient failures up to 3 times with exponential backoff.
+func buildBaseImageWithContext(ctx context.Context, repoRoot, imagePath string) error {
+	start := time.Now()
+	log.Printf("[libkrun] buildBaseImage start: %s → %s", repoRoot, imagePath)
+	defer func() {
+		log.Printf("[libkrun] buildBaseImage done: %s → %s (%s)", repoRoot, imagePath, time.Since(start).Round(time.Millisecond))
+	}()
+
+	if strings.TrimSpace(repoRoot) == "" {
+		return fmt.Errorf("repoRoot is required")
+	}
+	size, err := directorySizeBytes(repoRoot)
+	if err != nil {
+		return fmt.Errorf("compute project size: %w", err)
+	}
+	if err := createSparseFile(imagePath, workspaceImageSizeBytes(size)); err != nil {
+		return err
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			backoff := time.Duration(attempt-1) * 500 * time.Millisecond
+			log.Printf("[libkrun] buildBaseImage retry attempt=%d backoff=%s: %s → %s", attempt, backoff, repoRoot, imagePath)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		cmd := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-d", repoRoot, imagePath)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		lastErr = fmt.Errorf("mkfs.ext4 base image: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return fmt.Errorf("buildBaseImage failed after 3 attempts: %w", lastErr)
 }
 
 // resizeImage grows a workspace image to newSizeBytes using truncate + resize2fs.

@@ -162,7 +162,7 @@ nexus doctor --project-root <abs-path> --suite <name> [flags]
 | `--required-host-ports` | Comma-separated list of required host ports |
 | `--report-json` | Path to write JSON report |
 
-Runtime backends: `firecracker` (Linux/KVM), `seatbelt` (macOS sandbox).
+Runtime backends: `libkrun` (Linux micro-VM), `seatbelt` (macOS sandbox).
 
 ---
 

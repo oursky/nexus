@@ -11,11 +11,11 @@
 # needed for CGO).  Only rebuild nexus-libkrun-vm itself (rarely) via:
 #   scripts/remote/deploy-libkrun.sh
 #
-# Usage: REMOTE_HOST=user@host [REMOTE_BIN=~/.local/bin/nexus] scripts/remote/deploy.sh
+# Usage: REMOTE_HOST=user@host [REMOTE_BIN='$HOME/.local/bin/nexus'] scripts/remote/deploy.sh
 set -euo pipefail
 
 REMOTE_HOST="${REMOTE_HOST:?REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname}"
-REMOTE_BIN="${REMOTE_BIN:-~/.local/bin/nexus}"
+REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin/nexus}"
 # v0.5.20 libkrun is built without virtio-net symbols.
 # v0.5.19 exports krun_add_net_unixstream and krun_set_passt_fd.
 SMOLVM_VERSION="${SMOLVM_VERSION:-v0.5.19}"

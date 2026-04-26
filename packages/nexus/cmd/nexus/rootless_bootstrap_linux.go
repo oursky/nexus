@@ -6,6 +6,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -79,6 +81,14 @@ func rootlessStateFilePath() string {
 	return filepath.Join(rootlessRootlessDirState(), "state.json")
 }
 
+func prebuiltVMBundleURL() string {
+	return strings.TrimSpace(os.Getenv("NEXUS_PREBUILT_VM_ASSET_URL"))
+}
+
+func prebuiltVMBundleSHA256() string {
+	return strings.TrimSpace(os.Getenv("NEXUS_PREBUILT_VM_ASSET_SHA256"))
+}
+
 func rootlessSubnetFilePath() string {
 	return filepath.Join(xdgShareNexus(), "rootless", "bridge-subnet")
 }
@@ -126,9 +136,17 @@ const (
 )
 
 // vmKernelURL returns the URL for the Linux kernel image (vmlinux ELF).
-// The URL uses AWS S3 bucket "spec.ccfc.min" maintained by the Firecracker
-// project — it is a public mirror of standard Linux kernels, not FC-specific.
+// Prefer Ubuntu cloud image kernels, which are generally more available.
 func vmKernelURL() string {
+	switch runtime.GOARCH {
+	case "arm64":
+		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-arm64-vmlinuz-generic"
+	default:
+		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-amd64-vmlinuz-generic"
+	}
+}
+
+func vmKernelFallbackURL() string {
 	switch runtime.GOARCH {
 	case "arm64":
 		return "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/vmlinux-5.10.239"
@@ -147,7 +165,7 @@ func vmSquashfsURL() string {
 }
 
 // vmRootfsIsSquashfs reports whether the cached rootfs archive is squashfs
-// (legacy Firecracker CI format) rather than a tar.xz (Ubuntu CDN format).
+// (legacy squashfs CI format) rather than a tar.xz (Ubuntu CDN format).
 func vmRootfsIsSquashfs(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -324,8 +342,25 @@ func extractLibkrunEmbeds(libDir, binDir string) error {
 
 // writeFileAtomic writes data to path atomically (write to .tmp, then rename).
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	tmpFile, err := os.CreateTemp(dir, base+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := tmpFile.Name()
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := tmpFile.Chmod(mode); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -406,12 +441,19 @@ func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
 		return fmt.Errorf("asset-install: passt: %w", err)
 	}
 
+	// Optional fast path: hydrate kernel/rootfs from a prebuilt VM bundle
+	// published by CI/release. This avoids repeated local rootfs baking.
+	if err := installPrebuiltVMBundleRootless(w, emitJSON); err != nil {
+		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
+		return fmt.Errorf("asset-install: prebuilt-vm-bundle: %w", err)
+	}
+
 	if err := installVMKernelRootless(w, emitJSON); err != nil {
 		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
 		return fmt.Errorf("asset-install: kernel: %w", err)
 	}
 
-	// Both Firecracker and libkrun require a block-backed rootfs image so guest
+	// libkrun requires a block-backed rootfs image so guest
 	// root behaves like a real VM filesystem (root can install arbitrary packages).
 	if err := installVMRootfsRootless(w, emitJSON); err != nil {
 		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
@@ -439,6 +481,99 @@ func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
 	return nil
 }
 
+func installPrebuiltVMBundleRootless(w io.Writer, emitJSON bool) error {
+	url := prebuiltVMBundleURL()
+	if url == "" {
+		return nil
+	}
+
+	// Skip if both core artifacts already exist.
+	if _, kerr := os.Stat(rootlessKernelPath()); kerr == nil {
+		if _, rerr := os.Stat(rootlessRootfsPath()); rerr == nil {
+			fmt.Fprintf(w, "  prebuilt VM bundle configured but assets already present; skipping download\n")
+			return nil
+		}
+	}
+
+	fmt.Fprintf(w, "  downloading prebuilt VM bundle from %s ...\n", url)
+	emitPhase(w, emitJSON, "asset-install", "start", "downloading prebuilt VM bundle")
+	data, err := httpDownload(url)
+	if err != nil {
+		return fmt.Errorf("download prebuilt vm bundle: %w", err)
+	}
+
+	if want := prebuiltVMBundleSHA256(); want != "" {
+		sum := sha256.Sum256(data)
+		got := hex.EncodeToString(sum[:])
+		if !strings.EqualFold(got, want) {
+			return fmt.Errorf("prebuilt vm bundle checksum mismatch: want %s got %s", want, got)
+		}
+	}
+
+	gzr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("open bundle gzip: %w", err)
+	}
+	defer gzr.Close()
+
+	tr := tar.NewReader(gzr)
+	var kernelData []byte
+	var rootfsData []byte
+	var agentHashData []byte
+	var bakedStampData []byte
+
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read bundle tar: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+
+		name := filepath.Base(strings.TrimSpace(hdr.Name))
+		switch name {
+		case "vmlinux.bin":
+			kernelData, err = io.ReadAll(tr)
+		case "rootfs.ext4":
+			rootfsData, err = io.ReadAll(tr)
+		case "rootfs-agent.sha256":
+			agentHashData, err = io.ReadAll(tr)
+		case "rootfs-baked-v4":
+			bakedStampData, err = io.ReadAll(tr)
+		default:
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read %s from bundle: %w", name, err)
+		}
+	}
+
+	if len(kernelData) == 0 || len(rootfsData) == 0 {
+		return fmt.Errorf("prebuilt vm bundle missing required files (vmlinux.bin, rootfs.ext4)")
+	}
+
+	if err := atomicWriteFile(rootlessKernelPath(), kernelData, 0o644); err != nil {
+		return fmt.Errorf("install bundled kernel: %w", err)
+	}
+	if err := atomicWriteFile(rootlessRootfsPath(), rootfsData, 0o600); err != nil {
+		return fmt.Errorf("install bundled rootfs: %w", err)
+	}
+
+	if len(agentHashData) > 0 {
+		_ = atomicWriteFile(filepath.Join(xdgStateNexus(), "rootfs-agent.sha256"), bytes.TrimSpace(agentHashData), 0o644)
+	}
+	if len(bakedStampData) > 0 {
+		_ = atomicWriteFile(filepath.Join(xdgStateNexus(), "rootfs-baked-v4"), bytes.TrimSpace(bakedStampData), 0o644)
+	}
+
+	fmt.Fprintf(w, "  installed prebuilt VM assets (kernel + rootfs)\n")
+	return nil
+}
+
 // ── Directory setup ───────────────────────────────────────────────────────────
 
 func ensureRootlessDirs() error {
@@ -455,10 +590,6 @@ func ensureRootlessDirs() error {
 	}
 	return nil
 }
-
-// ── Firecracker installation (removed) ───────────────────────────────────────
-// Firecracker is no longer supported. This section intentionally left empty.
-
 
 func needsInstall(dest string, newContent []byte) bool {
 	existing, err := os.ReadFile(dest)
@@ -536,10 +667,19 @@ func installVMKernelRootless(w io.Writer, emitJSON bool) error {
 	}
 
 	fmt.Fprintf(w, "  downloading VM kernel...\n")
-	url := vmKernelURL()
-	data, err := httpDownload(url)
-	if err != nil {
-		return fmt.Errorf("download kernel from %s: %w", url, err)
+	urls := []string{vmKernelURL(), vmKernelFallbackURL()}
+	var data []byte
+	var lastErr error
+	for i, url := range urls {
+		fmt.Fprintf(w, "  kernel source %d/%d: %s\n", i+1, len(urls), url)
+		data, lastErr = httpDownloadWithRetry(url, 3, 75*time.Second)
+		if lastErr == nil {
+			break
+		}
+		fmt.Fprintf(w, "  kernel download failed from source %d/%d: %v\n", i+1, len(urls), lastErr)
+	}
+	if lastErr != nil {
+		return fmt.Errorf("download kernel failed: %w", lastErr)
 	}
 	if err := atomicWriteFile(dest, data, 0o644); err != nil {
 		return fmt.Errorf("install kernel: %w", err)
@@ -574,7 +714,7 @@ func installVMRootfsRootless(w io.Writer, emitJSON bool) error {
 		return err
 	}
 	// A freshly-built rootfs does NOT have the agent injected yet.
-	// Remove the cached agent hash so ensureFirecrackerGuestAgent knows to
+	// Remove the cached agent hash so ensureGuestAgent knows to
 	// re-inject rather than skip because the old hash still matches.
 	_ = os.Remove(filepath.Join(xdgStateNexus(), "rootfs-agent.sha256"))
 	// Also remove the bake stamp so the next daemon start re-bakes the rootfs
@@ -588,7 +728,7 @@ func installVMRootfsRootless(w io.Writer, emitJSON bool) error {
 // It deliberately skips building rootfs.ext4, saving 5–10 min of ext4 work.
 //
 // Download format: Ubuntu 24.04 minimal cloud image tar.xz (~30 MB compressed).
-// Served from Ubuntu's CDN (Akamai) — much faster than the Firecracker CI S3 bucket.
+// Served from Ubuntu's CDN (Akamai).
 //
 // Legacy upgrade path: if the old ubuntu.squashfs cache file is present it is
 // extracted with unsquashfs so users who already downloaded it don't re-download.
@@ -714,18 +854,20 @@ func copyFileRootless(src, dst string) error {
 	}
 	defer in.Close()
 
-	tmp := dst + ".tmp"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	dir := filepath.Dir(dst)
+	base := filepath.Base(dst)
+	out, err := os.CreateTemp(dir, base+".tmp-*")
 	if err != nil {
 		return err
 	}
+	tmp := out.Name()
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		os.Remove(tmp)
+		_ = out.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := out.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, dst)
@@ -1021,11 +1163,7 @@ func persistRootlessState(driver string) error {
 // ── Utility helpers ───────────────────────────────────────────────────────────
 
 func atomicWriteFile(dest string, data []byte, mode os.FileMode) error {
-	tmp := dest + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
-		return err
-	}
-	return os.Rename(tmp, dest)
+	return writeFileAtomic(dest, data, mode)
 }
 
 func atomicWriteExec(dest string, data []byte) error {
@@ -1033,7 +1171,11 @@ func atomicWriteExec(dest string, data []byte) error {
 }
 
 func httpDownload(url string) ([]byte, error) {
-	client := &http.Client{Timeout: 10 * time.Minute}
+	return httpDownloadWithTimeout(url, 10*time.Minute)
+}
+
+func httpDownloadWithTimeout(url string, timeout time.Duration) ([]byte, error) {
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, err
@@ -1043,6 +1185,27 @@ func httpDownload(url string) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 	return io.ReadAll(resp.Body)
+}
+
+func httpDownloadWithRetry(url string, attempts int, timeout time.Duration) ([]byte, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		data, err := httpDownloadWithTimeout(url, timeout)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		if attempt < attempts {
+			time.Sleep(time.Duration(attempt*2) * time.Second)
+		}
+	}
+	return nil, fmt.Errorf("download %s failed after %d attempts: %w", url, attempts, lastErr)
 }
 
 func downloadAndExtractTarGz(url, innerPath string) ([]byte, error) {

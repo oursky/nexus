@@ -51,11 +51,6 @@ func WithVM(kernel, rootfs string) Option {
 	}
 }
 
-// WithFirecracker is deprecated; use WithVM.
-func WithFirecracker(bin, kernel, rootfs string) Option {
-	return WithVM(kernel, rootfs)
-}
-
 func WithNodeName(name string) Option {
 	return func(c *config) {
 		c.nodeName = name

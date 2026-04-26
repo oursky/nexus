@@ -34,10 +34,10 @@ first tries exact ID match, then falls back to name lookup.
 |------|------|---------|-------------|
 | `--db` | string | `<data-dir>/nexus.db` | SQLite database path |
 | `--socket` | string | `<data-dir>/nexusd.sock` | Unix socket path |
-| `--firecracker-bin` | string | `firecracker` | Firecracker binary name |
-| `--kernel` | string | `$NEXUS_FIRECRACKER_KERNEL` → `/var/lib/nexus/vmlinux.bin` | Kernel image path |
-| `--rootfs` | string | `$NEXUS_FIRECRACKER_ROOTFS` → `/var/lib/nexus/rootfs.ext4` | Rootfs image path |
-| `--workdir-root` | string | `<data-dir>/firecracker-vms` | Firecracker VM work dir |
+| `--kernel` | string | `$NEXUS_VM_KERNEL` | VM kernel image path (libkrun) |
+| `--rootfs` | string | `$NEXUS_VM_ROOTFS` | VM rootfs image path (libkrun) |
+| `--workdir-root` | string | (default under state dir) | libkrun VM work dir root |
+| `--driver` | string | (auto) | `libkrun` or `sandbox` override |
 | `--node-name` | string | hostname | Node identity name |
 | `--network` | bool | `true` | Enable WebSocket network listener |
 | `--bind` | string | `127.0.0.1` | Network listener bind address |
@@ -46,7 +46,6 @@ first tries exact ID match, then falls back to name lookup.
 | `--tls-cert` | string | — | TLS cert PEM file (for `required` mode) |
 | `--tls-key` | string | — | TLS key PEM file (for `required` mode) |
 | `--token` | string | — | Static bearer token (auto-generated if blank + network enabled) |
-| `--network-cidr` | string | — | Bridge subnet for Firecracker VMs (env: `NEXUS_BRIDGE_SUBNET`) |
 | `--foreground` | bool | `false` | Stay in foreground; skip self-daemonize |
 | `--sandbox` | bool | `false` | Use process sandbox backend (hidden, testing only) |
 
@@ -60,16 +59,16 @@ for the socket file to appear before reporting success or failure.
 tokenstore (persisted to `<data-dir>/token` or equivalent). Token is required when `--network`
 is enabled.
 
-**`CLI-014`** — Firecracker is the default backend (when `--sandbox` is NOT set). On macOS,
-Firecracker is not supported; `nexus daemon start` without `--sandbox` exits with code 1 and an
+**`CLI-014`** — libkrun is the default VM backend on Linux (when `--sandbox` is NOT set). On macOS,
+libkrun is not supported; `nexus daemon start` without `--sandbox` exits with code 1 and an
 error message on macOS.
 
-**`CLI-015`** — Guest agent injection: on Firecracker builds, the daemon injects the
-`nexus-firecracker-agent` binary into the rootfs at startup. Injection is skipped if the binary
+**`CLI-015`** — Guest agent injection: on Linux libkrun builds, the daemon injects the
+`nexus-guest-agent` binary into the rootfs at startup. Injection is skipped if the binary
 hash matches the cached hash.
 
 **`CLI-016`** — Auto-setup: on Linux with `StartSetupFn` wired (release builds), the daemon runs
-the Firecracker/kernel/rootfs provisioning script before starting. This is skipped in the
+host bootstrap (libkrun libraries, kernel, rootfs) before starting. This is skipped in the
 re-exec'd background child.
 
 **`CLI-017`** — Exit code 1 if daemon fails to start (socket bind failure, DB failure, invalid
@@ -101,7 +100,7 @@ control network listener behaviour in test mode.
 | `--name` | yes | — | Workspace name |
 | `--ref` | no | `main` | Git ref |
 | `--profile` | no | `default` | Agent profile |
-| `--backend` | no | — | Runtime backend (`firecracker` \| `process`) |
+| `--backend` | no | — | Runtime backend (`libkrun` \| `process`) |
 
 **`CLI-031`** — Optional first positional argument: repo shorthand (takes precedence over `--repo`
 if both are provided — exact precedence is implementation-defined; prefer `--repo` for clarity).

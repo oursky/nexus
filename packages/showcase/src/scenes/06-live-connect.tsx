@@ -146,7 +146,7 @@ export const LiveConnectScene: React.FC = () => {
             <div style={{ background: "#0f0f23", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
               <div style={{ fontSize: 72 }}>⚡</div>
               <div style={{ color: "#cdd6f4", fontFamily: "sans-serif", fontSize: 44, fontWeight: 700 }}>webapp-nextjs</div>
-              <div style={{ color: "#6c7086", fontFamily: "sans-serif", fontSize: 22 }}>Running inside Firecracker VM · forwarded to localhost:3000</div>
+              <div style={{ color: "#6c7086", fontFamily: "sans-serif", fontSize: 22 }}>Running inside libkrun VM · forwarded to localhost:3000</div>
             </div>
           </BrowserWindow>
         </div>

@@ -283,21 +283,43 @@ public final class HeadlessRPCServer {
             return (503, jsonError("daemon client unavailable"))
         }
 
-        let before = Set(mgr.tabs.map { $0.id })
-        await mgr.createTab(name: name)
-        // If tab creation failed, surface the same error the UI would show.
-        if let errTab = mgr.tabs.last, errTab.error != nil {
-            return (500, jsonError(errTab.error ?? "unknown error"))
+        // Workspace.start is async; opening PTY immediately can race with "workspace not ready".
+        // Retry a few times and clean up transient failed tabs so headless automation remains stable.
+        let maxAttempts = 10
+        for attempt in 1...maxAttempts {
+            let before = Set(mgr.tabs.map { $0.id })
+            await mgr.createTab(name: name)
+
+            let createdTabs = mgr.tabs.filter { !before.contains($0.id) }
+            if let successTab = createdTabs.first(where: { !$0.isLoading && $0.error == nil }) ??
+                mgr.tabs.first(where: { $0.id == mgr.activeTabId && !$0.isLoading && $0.error == nil })
+            {
+                return (200, #"{"tabID":"\#(successTab.id)"}"#)
+            }
+
+            let lastError = createdTabs.last?.error ?? mgr.tabs.last?.error ?? "tab creation failed"
+            let transient = isWorkspaceNotReadyError(lastError)
+            if transient && attempt < maxAttempts {
+                Self.logger.notice(
+                    "rpc /terminal/open retry workspaceID=\(workspaceID, privacy: .public) attempt=\(attempt, privacy: .public) reason=\(lastError, privacy: .public)"
+                )
+                for tab in createdTabs where tab.error != nil {
+                    await mgr.closeTab(id: tab.id)
+                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                continue
+            }
+            return (500, jsonError(lastError))
         }
 
-        // Pick the newly created tab (or active tab as fallback).
-        if let created = mgr.tabs.first(where: { !before.contains($0.id) }) ??
-            mgr.tabs.first(where: { $0.id == mgr.activeTabId })
-        {
-            return (200, #"{"tabID":"\#(created.id)"}"#)
-        }
+        return (500, jsonError("tab creation failed after retries"))
+    }
 
-        return (500, jsonError("tab creation failed"))
+    private func isWorkspaceNotReadyError(_ message: String) -> Bool {
+        let normalized = message.lowercased()
+        return normalized.contains("not ready") ||
+            normalized.contains("state: created") ||
+            normalized.contains("state: starting")
     }
 
     private func handleWrite(body: String) async -> (Int, String) {
@@ -677,8 +699,6 @@ public final class HeadlessRPCServer {
             echo "==> Stopping all nexus daemon processes..."
             pkill -f "nexus daemon" 2>/dev/null || true
             pkill -f "nexus-libkrun" 2>/dev/null || true
-            pkill -f "nexus-firecracker" 2>/dev/null || true
-            pkill -f "firecracker" 2>/dev/null || true
             sleep 2
             echo "==> Removing nexus state..."
             rm -rf "$HOME/.local/share/nexus" || true
@@ -686,8 +706,7 @@ public final class HeadlessRPCServer {
             rm -rf "$HOME/.local/run/nexus" || true
             rm -f "$HOME/.local/bin/nexus" || true
             rm -f "$HOME/.local/bin/nexus-libkrun" || true
-            rm -f "$HOME/.local/bin/nexus-firecracker-agent" || true
-            rm -f "$HOME/.local/bin/firecracker" || true
+            rm -f "$HOME/.local/bin/nexus-guest-agent" || true
             rm -f "$HOME/.local/bin/passt" || true
             rm -f "$HOME/.local/bin/pasta" || true
             echo "==> Verifying removal..."

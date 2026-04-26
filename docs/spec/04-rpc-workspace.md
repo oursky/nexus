@@ -16,7 +16,7 @@
     "workspaceName": "string (required)",
     "projectId":     "string (optional)",
     "agentProfile":  "string (optional)",
-    "backend":       "string (optional: 'firecracker' | 'process')",
+    "backend":       "string (optional: 'libkrun' | 'process')",
     "policy": {
       "autoStop":        "bool",
       "autoStopDelay":   "string (duration)",

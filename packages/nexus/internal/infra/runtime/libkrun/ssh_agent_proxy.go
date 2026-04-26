@@ -13,7 +13,7 @@ import (
 )
 
 // VendingVSockPort is the vsock port the guest connects to for SSH agent forwarding.
-// Matches the firecracker driver's constant so the same guest agent code works.
+// Matches the historical VM driver constant so the same guest agent code works.
 const VendingVSockPort uint32 = 10790
 
 // startSSHAgentProxy starts a Unix socket listener that proxies guest vsock

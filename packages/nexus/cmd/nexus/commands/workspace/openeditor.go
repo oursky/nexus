@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
+	domainws "github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
 	"github.com/spf13/cobra"
 )
@@ -27,7 +28,7 @@ func openEditorCommand() *cobra.Command {
 		Long: `Writes the SSH host-alias config to ~/.nexus/ssh/, verifies SSH connectivity
 from this machine (Mac → ProxyJump → VM), then opens the editor deep-link.
 
-The workspace must be running with a Firecracker backend.
+The workspace must be running with a libkrun backend.
 
 Flags:
   --app cursor|vscode   Editor to open (default: cursor)
@@ -59,10 +60,9 @@ Flags:
 			}
 
 			ws := result.Workspace
-			backend := strings.ToLower(strings.TrimSpace(ws.Backend))
 			if ws.GuestIP == "" {
-				if backend != "libkrun" {
-					return fmt.Errorf("open-editor: workspace %q uses backend %q — only Firecracker/libkrun workspaces support VM remote-editor access", args[0], ws.Backend)
+				if !domainws.UsesGuestVM(ws.Backend) {
+					return fmt.Errorf("open-editor: workspace %q uses backend %q — only libkrun workspaces support VM remote-editor access", args[0], ws.Backend)
 				}
 				return fmt.Errorf("open-editor: workspace %q (state: %s) has no guest IP — is it running?\n  hint: nexus workspace start %s", args[0], ws.State, args[0])
 			}
@@ -123,7 +123,7 @@ Flags:
 			}
 
 			// ── 3. Ensure remote editor server directories exist ─────────────────
-			// On Firecracker VMs, ~/.cursor-server and ~/.vscode-server are symlinks
+			// On libkrun VMs, ~/.cursor-server and ~/.vscode-server are symlinks
 			// to /workspace/.cursor-server and /workspace/.vscode-server respectively.
 			// The symlink targets may not exist on a fresh VM, causing the editor
 			// remote install script to fail. Pre-create both unconditionally.

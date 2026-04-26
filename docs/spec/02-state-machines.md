@@ -14,7 +14,7 @@ initial state after `workspace.create` or `workspace.fork`.
 **`WS-011`** — `running`: Runtime is active and accepting connections (shell sessions, port
 forwards, etc.).
 
-**`WS-012`** — `paused`: Runtime is suspended. Only applicable to Firecracker backend. A paused
+**`WS-012`** — `paused`: Runtime is suspended. Only applicable to VM backends (libkrun). A paused
 workspace's memory is preserved but the VM is not consuming CPU.
 
 **`WS-013`** — `stopped`: Runtime has been shut down cleanly. The workspace record persists and
@@ -58,10 +58,10 @@ appear in `workspace.list` results. Its ID MUST NOT be reused.
 **`WS-017`** — `created → running`: Triggered by `workspace.start`. Pre-condition: state is
 `created`. Post-condition: state is `running`.
 
-**`WS-018`** — `running → paused`: Triggered by `workspace.pause` (Firecracker only). Pre-condition:
-state is `running` and backend is `firecracker`. Post-condition: state is `paused`.
+**`WS-018`** — `running → paused`: Triggered by `workspace.pause` (VM backend only). Pre-condition:
+state is `running` and backend is `libkrun`. Post-condition: state is `paused`.
 
-**`WS-019`** — `paused → running`: Triggered by `workspace.resume` (Firecracker only). Pre-condition:
+**`WS-019`** — `paused → running`: Triggered by `workspace.resume` (VM backend only). Pre-condition:
 state is `paused`. Post-condition: state is `running`.
 
 **`WS-020`** — `running → stopped`: Triggered by `workspace.stop`. Pre-condition: state is

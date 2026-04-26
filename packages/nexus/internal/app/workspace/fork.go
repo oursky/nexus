@@ -70,7 +70,7 @@ func (s *Service) Fork(ctx context.Context, parentID string, spec ForkSpec) (*wo
 		}
 		// Persist the child's project root when the backend created a new
 		// path (e.g. a git worktree). This survives daemon restarts because
-		// firecrackerProjectRoot reads child.Repo from the DB.
+		// Guest VM fork path reads child.Repo from the DB.
 		if childRoot != "" && childRoot != child.Repo {
 			child.Repo = childRoot
 			child.UpdatedAt = time.Now().UTC()

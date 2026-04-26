@@ -17,12 +17,12 @@
 #   REMOTE_HOST=user@host scripts/remote/deploy-libkrun.sh
 #
 # Optional overrides:
-#   REMOTE_BIN          Installation path for the nexus binary (default ~/.local/bin/nexus)
+#   REMOTE_BIN          Installation path for the nexus binary (default $HOME/.local/bin/nexus)
 #   SMOLVM_VERSION      smolvm release tag to fetch libs from (default: v0.5.19)
 set -euo pipefail
 
 REMOTE_HOST="${REMOTE_HOST:?REMOTE_HOST is not set}"
-REMOTE_BIN="${REMOTE_BIN:-~/.local/bin/nexus}"
+REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin/nexus}"
 # v0.5.20 libkrun is built without virtio-net symbols.
 # v0.5.19 exports krun_add_net_unixstream and krun_set_passt_fd.
 SMOLVM_VERSION="${SMOLVM_VERSION:-v0.5.19}"

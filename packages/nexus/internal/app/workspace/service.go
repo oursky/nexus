@@ -196,9 +196,21 @@ func (s *Service) Start(ctx context.Context, id string) (*workspace.Workspace, e
 // If the driver supports WorkspaceReady, it polls until tools are fully
 // provisioned before marking the workspace as running (keeping it in the
 // starting state during package installation to block premature PTY access).
+// runStartAsyncTimeout is the maximum time for the entire start operation including VM spawn.
+const runStartAsyncTimeout = 6 * time.Minute
+
 func (s *Service) runStartAsync(ws *workspace.Workspace) {
-	ctx := s.bgCtx
 	id := ws.ID
+
+	// Apply a timeout to the start operation so it doesn't hang forever.
+	ctx, cancel := context.WithTimeout(s.bgCtx, runStartAsyncTimeout)
+	defer cancel()
+
+	startTime := time.Now()
+	log.Printf("[workspace] runStartAsync: start workspace=%s", id)
+	defer func() {
+		log.Printf("[workspace] runStartAsync: done workspace=%s (%s)", id, time.Since(startTime).Round(time.Millisecond))
+	}()
 
 	var startErr error
 	if s.driver != nil {
@@ -230,14 +242,57 @@ func (s *Service) runStartAsync(ws *workspace.Workspace) {
 		wsCopy := *current
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
+		readinessDeadline := time.Now().Add(3 * time.Minute)
+		probeAttempt := 0
 		log.Printf("[workspace] runStartAsync: waiting for workspace %s to be ready (tool provisioning)...", id)
 		for {
-			ready, err := rd.WorkspaceReady(ctx, &wsCopy)
-			if err != nil {
-				log.Printf("[workspace] runStartAsync: readiness probe error for %s: %v", id, err)
+			probeAttempt++
+			elapsed := time.Since(readinessDeadline.Add(-3 * time.Minute)).Round(time.Second)
+			log.Printf("[workspace] runStartAsync: readiness probe start attempt=%d workspace=%s elapsed=%s", probeAttempt, id, elapsed)
+
+			// Run readiness probe in a goroutine so a hung probe cannot block the loop forever.
+			type probeResult struct {
+				ready bool
+				err   error
 			}
+			resultCh := make(chan probeResult, 1)
+			probeCtx, cancelProbe := context.WithTimeout(ctx, 12*time.Second)
+			go func() {
+				ready, err := rd.WorkspaceReady(probeCtx, &wsCopy)
+				resultCh <- probeResult{ready: ready, err: err}
+			}()
+
+			var (
+				ready bool
+				err   error
+			)
+			probeStart := time.Now()
+			select {
+			case <-probeCtx.Done():
+				err = probeCtx.Err()
+			case result := <-resultCh:
+				ready = result.ready
+				err = result.err
+			}
+			cancelProbe()
+			probeDur := time.Since(probeStart).Round(time.Millisecond)
+
+			if err == context.DeadlineExceeded {
+				log.Printf("[workspace] runStartAsync: readiness probe timeout attempt=%d workspace=%s duration=%s", probeAttempt, id, probeDur)
+			} else if err == context.Canceled {
+				log.Printf("[workspace] runStartAsync: readiness probe canceled attempt=%d workspace=%s duration=%s", probeAttempt, id, probeDur)
+			} else if err != nil {
+				log.Printf("[workspace] runStartAsync: readiness probe error attempt=%d workspace=%s duration=%s err=%v", probeAttempt, id, probeDur, err)
+			} else {
+				log.Printf("[workspace] runStartAsync: readiness probe done attempt=%d workspace=%s duration=%s ready=%t", probeAttempt, id, probeDur, ready)
+			}
+
 			if ready {
 				log.Printf("[workspace] runStartAsync: workspace %s is ready", id)
+				break
+			}
+			if time.Now().After(readinessDeadline) {
+				log.Printf("[workspace] runStartAsync: readiness timeout for %s after %s; proceeding to running", id, 3*time.Minute)
 				break
 			}
 			select {
@@ -488,8 +543,7 @@ func (s *Service) attachGuestIP(ctx context.Context, ws *workspace.Workspace) {
 	if ws.State != workspace.StateRunning && ws.State != workspace.StateRestored {
 		return
 	}
-	backend := strings.ToLower(strings.TrimSpace(ws.Backend))
-	if backend != "firecracker" && backend != "libkrun" {
+	if !workspace.UsesGuestVM(ws.Backend) {
 		return
 	}
 	ip, ok := s.driver.GuestSSHHost(ctx, ws.ID)

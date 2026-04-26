@@ -301,7 +301,7 @@ func (h *Handler) createVMSession(ctx context.Context, p createParams, ws *domai
 
 func backendUsesGuestControlChannel(backend string) bool {
 	switch strings.ToLower(strings.TrimSpace(backend)) {
-	case "", "firecracker", "libkrun":
+	case "", "libkrun":
 		return true
 	default:
 		return false

@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oursky.github.io/nexus/schemas/nexusfile.schema.json",
+  "title": "Nexusfile",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "vm": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "type": "string",
+          "enum": [
+            "minimal",
+            "default"
+          ],
+          "description": "minimal keeps boot fast; default installs additional developer tooling. If omitted, default is used."
+        },
+        "image": {
+          "type": "string",
+          "description": "Reserved for future prebuilt image/channel selection."
+        }
+      }
+    }
+  }
+}

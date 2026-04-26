@@ -23,7 +23,7 @@ type Driver interface {
 	// non-empty return value as child.Repo so the path survives daemon restarts.
 	Fork(ctx context.Context, parent *workspace.Workspace, child *workspace.Workspace) (string, error)
 	Destroy(ctx context.Context, ws *workspace.Workspace) error
-	// GuestSSHHost returns the guest IPv4 on the engine host bridge when a Firecracker
+	// GuestSSHHost returns the guest IPv4 on the engine host bridge when a libkrun
 	// workspace VM is running and reachable from the daemon over the tap network.
 	GuestSSHHost(ctx context.Context, workspaceID string) (host string, ok bool)
 }

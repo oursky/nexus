@@ -3,8 +3,10 @@
 package libkrun
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,7 +56,7 @@ func createPasstSocketPair() (vmSide *os.File, hostSide *os.File, err error) {
 	return os.NewFile(uintptr(fds[0]), "passt-vm"), os.NewFile(uintptr(fds[1]), "passt-host"), nil
 }
 
-func startPasstProcess(workDir string, hostSide *os.File, sshHostPort int, guestIPv4 string) (*os.Process, error) {
+func startPasstProcess(ctx context.Context, workDir string, hostSide *os.File, sshHostPort int, guestIPv4 string) (*os.Process, error) {
 	logPath := filepath.Join(workDir, "passt.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -77,7 +79,7 @@ func startPasstProcess(workDir string, hostSide *os.File, sshHostPort int, guest
 	if sshHostPort > 0 {
 		args = append(args, "-t", fmt.Sprintf("127.0.0.1/%d:22", sshHostPort))
 	}
-	cmd := exec.Command(passtBin, args...)
+	cmd := exec.CommandContext(ctx, passtBin, args...)
 	cmd.ExtraFiles = []*os.File{hostSide}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -103,6 +105,59 @@ func passtGuestIPv4ForWorkspace(workspaceID string) string {
 	}
 	mac := passtMACForWorkspaceID(workspaceID)
 	return staticGuestIPv4ForMAC(fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]), gateway)
+}
+
+func hostDNSServers() []string {
+	sources := []string{
+		"/etc/resolv.conf",
+		"/run/systemd/resolve/resolv.conf",
+	}
+	seen := map[string]struct{}{}
+	servers := make([]string, 0, 3)
+
+	for _, src := range sources {
+		data, err := os.ReadFile(src)
+		if err != nil {
+			continue
+		}
+		for _, ns := range parseNameserversFromResolvConf(string(data)) {
+			if _, ok := seen[ns]; ok {
+				continue
+			}
+			seen[ns] = struct{}{}
+			servers = append(servers, ns)
+			if len(servers) >= 3 {
+				return servers
+			}
+		}
+	}
+	return servers
+}
+
+func parseNameserversFromResolvConf(content string) []string {
+	seen := map[string]struct{}{}
+	servers := make([]string, 0, 2)
+
+	for _, line := range strings.Split(content, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 || fields[0] != "nameserver" {
+			continue
+		}
+		ip := net.ParseIP(fields[1])
+		if ip == nil || ip.IsLoopback() {
+			continue
+		}
+		key := ip.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		servers = append(servers, key)
+		if len(servers) >= 3 {
+			break
+		}
+	}
+	return servers
 }
 
 // staticGuestIPv4ForMAC mirrors the guest agent's staticGuestIPForMAC logic so

@@ -8,7 +8,7 @@ import (
 )
 
 // AgentExecRequest is a command execution request to the guest agent.
-// Matches the protocol used by the firecracker agent client.
+// Matches the protocol used by the guest agent client.
 type AgentExecRequest struct {
 	ID      string   `json:"id"`
 	Type    string   `json:"type,omitempty"`

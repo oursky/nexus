@@ -62,11 +62,8 @@ private struct RemoteEditorOpenMenu: View {
         appState.activeDaemonProfile?.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
 
-    /// Whether the workspace uses a VM backend (Firecracker or libkrun).
-    private var isVMBackend: Bool {
-        let b = (workspace.backend ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return b == "firecracker" || b == "libkrun"
-    }
+    /// Whether the workspace uses a libkrun VM backend.
+    private var isVMBackend: Bool { workspace.usesGuestVMRuntime }
 
     private var isVMWorkspace: Bool {
         guard let ip = workspace.guestIp else { return false }

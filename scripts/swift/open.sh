@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 APP_PATH="$REPO_ROOT/packages/nexus-swift/.build/xcbuild/Build/Products/Debug/NexusApp.app"
+HEADLESS_HELPER="$SCRIPT_DIR/headless-rpc.sh"
 
 if [ ! -d "$APP_PATH" ]; then
   echo "✗ App bundle not found at $APP_PATH"
@@ -11,9 +12,13 @@ if [ ! -d "$APP_PATH" ]; then
   exit 1
 fi
 
-echo "Opening NexusApp..."
-# Kill any running instance first so we get a clean relaunch
-pkill -x NexusApp 2>/dev/null || true
-sleep 0.5
-open "$APP_PATH"
-echo "✓ NexusApp launched"
+if [[ "${NEXUS_HEADLESS_RPC_ENABLE:-1}" == "1" && -x "$HEADLESS_HELPER" ]]; then
+  "$HEADLESS_HELPER" start --relaunch
+else
+  echo "Opening NexusApp..."
+  # Kill any running instance first so we get a clean relaunch.
+  pkill -x NexusApp 2>/dev/null || true
+  sleep 0.5
+  open "$APP_PATH"
+  echo "✓ NexusApp launched"
+fi

@@ -134,7 +134,7 @@ func runEnvChecks(driver string) []CheckResult {
 		if _, err := os.Stat(rootfsPath); err != nil {
 			return false, "rootfs not present, cannot verify agent"
 		}
-		// Primary: check the injection hash file written by ensureFirecrackerGuestAgent.
+		// Primary: check the injection hash file written by ensureGuestAgent.
 		// This avoids running debugfs on a live (potentially locked) rootfs.
 		hashFile := filepath.Join(defaultDataDir(), "rootfs-agent.sha256")
 		if _, err := os.Stat(hashFile); err == nil {

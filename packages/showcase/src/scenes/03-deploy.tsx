@@ -17,7 +17,7 @@ const LINUX_LINES: TerminalLine[] = [
   { type: "output",  text: "✓  nexus installed",                startFrame: 52,  color: "#4EC994" },
   { type: "blank",   text: "",                                  startFrame: 68 },
   { type: "command", text: "nexus daemon start",                startFrame: 80 },
-  { type: "output",  text: "  Downloading Firecracker...",      startFrame: 115 },
+  { type: "output",  text: "  Downloading libkrun VM assets...",      startFrame: 115 },
   { type: "output",  text: "  Configuring network bridge...",   startFrame: 155 },
   { type: "output",  text: "  daemon ready on :7777",           startFrame: 200, color: "#4EC994" },
 ];
@@ -41,7 +41,7 @@ const MAC_LINES: TerminalLine[] = [
   { type: "blank",   text: "",                                  startFrame: 405 },
 
   { type: "command", text: "nexus workspace start my-project",  startFrame: 420, charsPerFrame: 3 },
-  { type: "output",  text: "  Booting Firecracker VM...",       startFrame: 460 },
+  { type: "output",  text: "  Booting libkrun VM...",       startFrame: 460 },
   { type: "output",  text: "  Discovered: 3000 (web)  5432 (db)  8080 (api)", startFrame: 510, color: "#569CD6" },
   { type: "output",  text: "✓  workspace ready",               startFrame: 550, color: "#4EC994" },
   { type: "blank",   text: "",                                  startFrame: 568 },
@@ -58,7 +58,7 @@ const MAC_LINES: TerminalLine[] = [
   { type: "blank",   text: "",                                  startFrame: 770 },
 
   { type: "command", text: "nexus workspace exec my-project",   startFrame: 785, charsPerFrame: 3 },
-  { type: "output",  text: "  Connected to Firecracker VM",     startFrame: 830, color: "#4EC994" },
+  { type: "output",  text: "  Connected to libkrun VM",     startFrame: 830, color: "#4EC994" },
   { type: "blank",   text: "",                                  startFrame: 848 },
 
   { type: "command", text: "git add . && git commit -m 'feat: add API endpoint'", startFrame: 863, charsPerFrame: 3 },

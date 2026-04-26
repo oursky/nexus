@@ -11,7 +11,7 @@
 #   packages/nexus-swift/Resources/nexus-linux-arm64
 #
 # Requirements:
-#   - Go 1.22+ with CGO_ENABLED=0 (pure-Go build, no Firecracker linkage)
+#   - Go 1.22+ with CGO_ENABLED=0 (pure-Go CLI build; libkrun is separate)
 #   - Or Docker for cross-compilation if building on macOS for Linux
 #
 # Note: The embedded smolvm binary (packages/nexus/cmd/nexus/smolvm-linux-{arch})

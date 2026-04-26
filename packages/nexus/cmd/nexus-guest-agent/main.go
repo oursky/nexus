@@ -26,9 +26,9 @@ import (
 
 // vsock port constants shared with the host-side runtime drivers.
 const (
-	defaultAgentVSockPort    uint32 = 10789
+	defaultAgentVSockPort     uint32 = 10789
 	defaultSpotlightVSockPort uint32 = 10792
-	vendingVSockPort         uint32 = 10790
+	vendingVSockPort          uint32 = 10790
 )
 
 const (
@@ -547,38 +547,74 @@ func isBakeMode() bool {
 	return false
 }
 
+func guestVMProfile() string {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return "default"
+	}
+	for _, field := range strings.Fields(string(data)) {
+		if strings.HasPrefix(field, "nexus.profile=") {
+			v := strings.TrimSpace(strings.TrimPrefix(field, "nexus.profile="))
+			switch v {
+			case "minimal", "default":
+				return v
+			case "dev":
+				// Backward-compat for older configs/cmdlines.
+				return "default"
+			default:
+				return "default"
+			}
+		}
+	}
+	return "default"
+}
+
 func main() {
 	pid := os.Getpid()
 	emitDiagnostic("agent boot pid=%d", pid)
 
 	bootstrapGuestEnvironment(pid)
 
-	// Bake mode: install all tools synchronously, then power off.
+	// Bake mode: install only the minimal daemon-readiness base layer
+	// synchronously, then power off.
 	// The host waits for the VM process to exit and uses the resulting
 	// rootfs.ext4 as the pre-baked base image for all future workspaces.
 	if isBakeMode() {
 		emitDiagnostic("agent bake: starting rootfs pre-bake")
-		ensureGuestBasePackages()
-		ensureGuestCLITools()
-		emitDiagnostic("agent bake: all tools installed — powering off VM")
-		// Give the serial console a moment to flush.
-		time.Sleep(500 * time.Millisecond)
+		bakeErr := ensureGuestBasePackages()
+		if bakeErr != nil {
+			emitDiagnostic("agent bake: FAILED — base packages could not be installed: %v", bakeErr)
+			// Stay alive briefly so the host can read the failure from the serial log,
+			// then power off so the host detects the VM exit and can retry.
+			time.Sleep(5 * time.Second)
+		} else {
+			// Keep bake fast/reliable: CLI tools are installed asynchronously on
+			// normal boots and do not need to block base-rootfs baking.
+			emitDiagnostic("agent bake: all tools installed — powering off VM")
+			// Give the serial console a moment to flush.
+			time.Sleep(500 * time.Millisecond)
+		}
 		_ = unix.Reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
 		os.Exit(0) // unreachable, but satisfies the compiler
 	}
 
 	startSSHAgentProxy()
 
-	// Install the OS developer toolchain synchronously before accepting PTY
-	// connections.  The workspace stays in "starting" state on the host side
-	// until we open the vsock listener, so the user never lands in a shell
-	// without make/node/docker available.
-	//
-	// On subsequent boots the stamp file makes this a no-op (<1 s).
+	// Install the minimal base toolchain synchronously before accepting PTY
+	// connections so networking and Docker runtime prerequisites are ready.
+	// Heavier developer tooling installs asynchronously in the background.
 	ensureGuestBasePackages()
-	// CLI tools (opencode/codex/claude) can install in the background — they
-	// are not required before a user can open a terminal.
-	go ensureGuestCLITools()
+	profile := guestVMProfile()
+	if profile == "default" {
+		go func() {
+			ensureGuestOptionalDevPackages()
+			// CLI tools (opencode/codex/claude) are optional; install after optional
+			// dev packages so npm is present.
+			ensureGuestCLITools()
+		}()
+	} else {
+		emitDiagnostic("agent optional packages: skipped (profile=%s)", profile)
+	}
 	// Docker daemon also starts in the background.
 	// In libkrun container mode the agent is not PID 1 but NEXUS_CONTAINER_MODE
 	// tells us to start Docker anyway.
@@ -600,7 +636,7 @@ func main() {
 	defer listener.Close()
 
 	emitDiagnostic("agent listener ready transport=%s", transport)
-	log.Printf("Firecracker agent listening (%s)", transport)
+	log.Printf("nexus guest agent listening (%s)", transport)
 
 	for {
 		conn, err := listener.Accept()
@@ -746,7 +782,7 @@ const hostConfigMount = "/run/nexus-host"
 // applyHostConfigDrive mounts the host config ext4 image at /run/nexus-host
 // and copies known config files into place.
 // Device path is resolved from NEXUS_CONFIG_DEV (libkrun) or derived from mode
-// (Firecracker virtiofs → /dev/vdd, Firecracker legacy → /dev/vdc).
+// (virtiofs layout → /dev/vdd, legacy block layout → /dev/vdc).
 func applyHostConfigDrive() error {
 	hostConfigDevice := configDevPath()
 	if _, err := os.Stat(hostConfigDevice); err != nil {
@@ -899,32 +935,33 @@ func runStreamed(ctx context.Context, env []string, prefix, name string, args ..
 //
 // A versioned stamp file in the rootfs prevents
 // re-running on every workspace start — packages only install once per rootfs.
-func ensureGuestBasePackages() {
-	const stampFile = "/var/lib/nexus-tools-installed-v4"
+func ensureGuestBasePackages() error {
+	const stampFile = "/var/lib/nexus-tools-base-v5"
 	if _, err := os.Stat(stampFile); err == nil {
 		emitDiagnostic("agent base packages: already installed (stamp found)")
-		return
+		return nil
+	}
+	// Backward-compat: older baked images used a monolithic v4 stamp.
+	// Treat it as base-ready and promote to the v5 base stamp.
+	if _, err := os.Stat("/var/lib/nexus-tools-installed-v4"); err == nil {
+		_ = os.MkdirAll("/var/lib", 0o755)
+		_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
+		emitDiagnostic("agent base packages: legacy v4 stamp detected, promoted to v5")
+		return nil
 	}
 
 	if _, err := exec.LookPath("apt-get"); err != nil {
 		emitDiagnostic("agent base packages: apt-get not found, skipping")
-		return
+		return fmt.Errorf("apt-get not found")
 	}
 
-	emitDiagnostic("agent base packages: installing (make, nodejs, npm, docker.io, build-essential, git, busybox-static)...")
+	emitDiagnostic("agent base packages: installing minimal package set (busybox-static, git, make, curl, wget)...")
 
 	pkgs := []string{
 		"make",
-		"build-essential",
-		"nodejs",
-		"npm",
-		"docker.io",
-		"containerd",
 		"git",
 		"curl",
 		"wget",
-		"python3",
-		"python3-pip",
 		// busybox-static provides udhcpc (DHCP client) used by the agent's
 		// setupNetwork to acquire an IP from passt at VM boot time.
 		"busybox-static",
@@ -956,79 +993,102 @@ func ensureGuestBasePackages() {
 	}
 
 	emitDiagnostic("agent base packages: running apt-get update...")
-	if err := runStreamed(ctx, env, "apt-get update", "apt-get", "update"); err != nil {
+	if err := runAptGetWithRetry(ctx, env, "apt-get update", "update"); err != nil {
 		emitDiagnostic("agent base packages: apt-get update FAILED: %v", err)
-		return
+		return fmt.Errorf("apt-get update: %w", err)
 	}
+	emitDiagnostic("agent base packages: apt-get update OK")
 
-	emitDiagnostic("agent base packages: running apt-get install...")
+	emitDiagnostic("agent base packages: installing package set (%d packages)...", len(pkgs))
 	installArgs := append([]string{"install", "-y", "--no-install-recommends"}, pkgs...)
-	if err := runStreamed(ctx, env, "apt-get install", "apt-get", installArgs...); err != nil {
-		emitDiagnostic("agent base packages: apt-get install FAILED: %v", err)
-		return
+	if err := runAptGetWithRetry(ctx, env, "apt-get install base-package-set", installArgs...); err != nil {
+		emitDiagnostic("agent base packages: install package set FAILED: %v", err)
+		return fmt.Errorf("apt-get install package set: %w", err)
 	}
-
-	// Install docker compose plugin (v2) from the GitHub release.
-	// Ubuntu's default repos only ship docker.io which has no compose plugin;
-	// Docker's official CLI plugin binary must be installed separately.
-	installDockerComposePlugin(ctx, env)
+	emitDiagnostic("agent base packages: install package set OK")
 
 	// Write stamp so subsequent boots skip this step.
 	_ = os.MkdirAll("/var/lib", 0o755)
 	_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
 	emitDiagnostic("agent base packages: installed successfully")
+	return nil
 }
 
-// installDockerComposePlugin installs the Docker Compose v2 CLI plugin binary
-// directly from the GitHub release.  Ubuntu's default repos ship docker.io
-// which does not include the compose plugin; this is the canonical way to add
-// `docker compose` support alongside the ubuntu-packaged docker.io.
-func installDockerComposePlugin(ctx context.Context, env []string) {
-	const pluginPath = "/usr/local/lib/docker/cli-plugins/docker-compose"
-
-	if _, err := os.Stat(pluginPath); err == nil {
-		emitDiagnostic("agent docker-compose-plugin: already installed")
+// ensureGuestOptionalDevPackages installs non-critical developer tooling.
+// It never blocks daemon readiness and can complete after the VM is usable.
+func ensureGuestOptionalDevPackages() {
+	const stampFile = "/var/lib/nexus-tools-optional-v5"
+	if _, err := os.Stat(stampFile); err == nil {
+		emitDiagnostic("agent optional packages: already installed (stamp found)")
+		return
+	}
+	if _, err := exec.LookPath("apt-get"); err != nil {
+		emitDiagnostic("agent optional packages: apt-get not found, skipping")
 		return
 	}
 
-	// Find the curl binary that was just installed.
-	curlPath, err := exec.LookPath("curl")
-	if err != nil {
-		emitDiagnostic("agent docker-compose-plugin: curl not found, skipping: %v", err)
-		return
+	pkgs := []string{
+		"docker.io",
+		"containerd",
+		"build-essential",
+		"nodejs",
+		"npm",
+		"docker-compose-v2",
+		"python3",
+		"python3-pip",
 	}
+	emitDiagnostic("agent optional packages: installing package set (%d packages)...", len(pkgs))
 
-	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o755); err != nil {
-		emitDiagnostic("agent docker-compose-plugin: mkdir failed: %v", err)
-		return
-	}
-
-	// Pin to a known-good version that is compatible with docker.io on Ubuntu 24.04.
-	const composeVersion = "v2.24.6"
-	url := fmt.Sprintf(
-		"https://github.com/docker/compose/releases/download/%s/docker-compose-linux-x86_64",
-		composeVersion,
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	env := append(os.Environ(),
+		"DEBIAN_FRONTEND=noninteractive",
+		"TAR_OPTIONS=--no-same-owner",
 	)
-	emitDiagnostic("agent docker-compose-plugin: downloading %s...", composeVersion)
+	installArgs := append([]string{"install", "-y", "--no-install-recommends"}, pkgs...)
+	if err := runAptGetWithRetry(ctx, env, "apt-get install optional-package-set", installArgs...); err != nil {
+		emitDiagnostic("agent optional packages: install FAILED: %v", err)
+		return
+	}
+	_ = os.MkdirAll("/var/lib", 0o755)
+	_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
+	emitDiagnostic("agent optional packages: installed successfully")
+}
 
-	tmpPath := pluginPath + ".tmp"
-	if err := runStreamed(ctx, env, "curl docker-compose", curlPath, "-fSL", "--retry", "3", "--progress-bar", "-o", tmpPath, url); err != nil {
-		_ = os.Remove(tmpPath)
-		emitDiagnostic("agent docker-compose-plugin: download FAILED: %v", err)
-		return
-	}
+func runAptGetWithRetry(ctx context.Context, env []string, label string, args ...string) error {
+	const maxAttempts = 4
 
-	if err := os.Chmod(tmpPath, 0o755); err != nil {
-		_ = os.Remove(tmpPath)
-		emitDiagnostic("agent docker-compose-plugin: chmod failed: %v", err)
-		return
+	aptArgs := []string{
+		"-o", "Acquire::Retries=5",
+		"-o", "Acquire::http::Timeout=20",
+		"-o", "Acquire::https::Timeout=20",
 	}
-	if err := os.Rename(tmpPath, pluginPath); err != nil {
-		_ = os.Remove(tmpPath)
-		emitDiagnostic("agent docker-compose-plugin: rename failed: %v", err)
-		return
+	if len(args) > 0 && args[0] == "update" {
+		// apt-get update can otherwise return zero even when some index fetches
+		// fail. Force non-zero so retry logic handles transient DNS outages.
+		aptArgs = append(aptArgs, "-o", "APT::Update::Error-Mode=any")
 	}
-	emitDiagnostic("agent docker-compose-plugin: installed %s at %s", composeVersion, pluginPath)
+	aptArgs = append(aptArgs, args...)
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			emitDiagnostic("agent base packages: retrying %s (%d/%d)", label, attempt, maxAttempts)
+		}
+		if err := runStreamed(ctx, env, label, "apt-get", aptArgs...); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+
+		if ctx.Err() != nil {
+			break
+		}
+		if attempt < maxAttempts {
+			time.Sleep(time.Duration(attempt*2) * time.Second)
+		}
+	}
+	return lastErr
 }
 
 func ensureGuestCLITools() {
@@ -1100,7 +1160,7 @@ func ensureAgentProcessPath() {
 // isVirtiofsWorkspaceMode reports whether the workspace is virtiofs+overlayfs.
 // In libkrun container mode the kernel cmdline is not under our control, so
 // the host sets NEXUS_WORKSPACE_MODE=virtiofs via krun_set_exec. Legacy
-// Firecracker VMs set nexus.workspace=virtiofs on the kernel cmdline.
+// virtiofs guests set nexus.workspace=virtiofs on the kernel cmdline.
 func isVirtiofsWorkspaceMode() bool {
 	if os.Getenv("NEXUS_WORKSPACE_MODE") == "virtiofs" {
 		return true
@@ -1118,7 +1178,7 @@ func isVirtiofsWorkspaceMode() bool {
 }
 
 // isPrimaryAgent reports whether this agent instance should behave like PID 1
-// (mounting kernel filesystems, starting sshd, starting Docker). In Firecracker
+// (mounting kernel filesystems, starting sshd, starting Docker). In virtiofs
 // the agent IS PID 1. In libkrun container mode the agent is launched by
 // krun_set_exec and is NOT PID 1, but the host sets NEXUS_CONTAINER_MODE=1 to
 // tell it to still perform these duties.
@@ -1127,7 +1187,7 @@ func isPrimaryAgent() bool {
 }
 
 // overlayDevPath returns the block device for the workspace overlay upper layer.
-// Default /dev/vdb (Firecracker virtiofs mode); overridden to /dev/vda in
+// Default /dev/vdb (virtiofs mode); overridden to /dev/vda in
 // libkrun container mode via NEXUS_OVERLAY_DEV.
 func overlayDevPath() string {
 	if v := os.Getenv("NEXUS_OVERLAY_DEV"); v != "" {
@@ -1137,7 +1197,7 @@ func overlayDevPath() string {
 }
 
 // dockerDevPath returns the block device for docker-data.
-// Default /dev/vdc (Firecracker virtiofs mode); overridden in libkrun via NEXUS_DOCKER_DEV.
+// Default /dev/vdc (virtiofs mode); overridden in libkrun via NEXUS_DOCKER_DEV.
 func dockerDevPath() string {
 	if v := os.Getenv("NEXUS_DOCKER_DEV"); v != "" {
 		return v
@@ -1146,7 +1206,7 @@ func dockerDevPath() string {
 }
 
 // configDevPath returns the block device for the host config drive.
-// Default /dev/vdd (Firecracker virtiofs mode); overridden in libkrun via NEXUS_CONFIG_DEV.
+// Default /dev/vdd (virtiofs mode); overridden in libkrun via NEXUS_CONFIG_DEV.
 func configDevPath() string {
 	if v := os.Getenv("NEXUS_CONFIG_DEV"); v != "" {
 		return v
@@ -1163,7 +1223,7 @@ func configDevPath() string {
 //	NEXUS_DOCKER_DEV  (/dev/vdc) docker-data.ext4 → /var/lib/docker
 //	NEXUS_CONFIG_DEV  (/dev/vdd) hostconfig.ext4  → /run/nexus-host  (read-only)
 //
-// Firecracker virtiofs mode falls back to /dev/vdb, /dev/vdc, /dev/vdd.
+// virtiofs mode falls back to /dev/vdb, /dev/vdc, /dev/vdd.
 func setupVirtiofsWorkspace() error {
 	overlayDev := overlayDevPath()
 	dockerDev := dockerDevPath()
@@ -1442,7 +1502,7 @@ func ensureDockerDaemon() error {
 		return fmt.Errorf("mkdir docker exec root: %w", err)
 	}
 
-	// Firecracker's 5.10 kernel does not support nftables.  Ubuntu 24.04's
+	// Older 5.10 CI kernels do not support nftables.  Ubuntu 24.04's
 	// default `iptables` binary is nftables-backed and will fail with
 	// "Failed to initialize nft: Protocol not supported".  Switch to
 	// iptables-legacy (which ships alongside iptables in the iptables package)
@@ -1525,7 +1585,7 @@ func setupNetwork() error {
 }
 
 // maybeStartSSHDInGuest launches OpenSSH sshd when the rootfs provides it.
-// The rootfs is built by firecracker-setup.sh which installs openssh-server,
+// The rootfs is built by nexus daemon bootstrap which installs openssh-server,
 // so sshd should always be present. Host keys are generated on first boot.
 // This enables VS Code / Cursor Remote-SSH to attach directly to the micro-VM.
 func maybeStartSSHDInGuest() {
@@ -1642,18 +1702,50 @@ func realSetupNetwork() error {
 // default route. Some DHCP clients can exit 0 after configuring only IPv6,
 // which leaves host->guest TCP forwarding broken for passt/libkrun SSH.
 func hasUsableIPv4OnEth0() bool {
-	addrOut, addrErr := exec.Command("sh", "-lc", "ip -4 addr show dev eth0 scope global | grep -q 'inet '").CombinedOutput()
-	routeOut, routeErr := exec.Command("sh", "-lc", "ip route show default | grep -q '^default '").CombinedOutput()
-	if addrErr == nil && routeErr == nil {
+	addrOut, addrErr := exec.Command("ip", "-4", "addr", "show", "dev", "eth0", "scope", "global").CombinedOutput()
+	routeOut, routeErr := exec.Command("ip", "route", "show", "default").CombinedOutput()
+	if addrErr == nil && routeErr == nil && networkLooksUsable(string(addrOut), string(routeOut)) {
 		return true
 	}
 	emitDiagnostic(
-		"network verify: missing IPv4 or default route after DHCP (addrErr=%v routeErr=%v addr=%q route=%q)",
+		"network verify: unusable IPv4/default route after DHCP (addrErr=%v routeErr=%v addr=%q route=%q)",
 		addrErr,
 		routeErr,
 		strings.TrimSpace(string(addrOut)),
 		strings.TrimSpace(string(routeOut)),
 	)
+	return false
+}
+
+func networkLooksUsable(addrOutput, routeOutput string) bool {
+	hasUsableAddr := false
+	for _, line := range strings.Split(addrOutput, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "inet ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		ipStr, _, _ := strings.Cut(fields[1], "/")
+		ip := net.ParseIP(strings.TrimSpace(ipStr))
+		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			continue
+		}
+		hasUsableAddr = true
+		break
+	}
+	if !hasUsableAddr {
+		return false
+	}
+
+	for _, line := range strings.Split(routeOutput, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "default via ") && strings.Contains(line, " dev eth0") {
+			return true
+		}
+	}
 	return false
 }
 
@@ -1746,22 +1838,40 @@ var setupDNSPath = "/etc/resolv.conf"
 // glibc's resolver to use TCP for all DNS queries so they transit TSI.
 func setupDNS() {
 	tsiMode := isTSINetworkMode()
-	var content string
+	kernelDNS := readNexusDNSServers()
+	useKernelDNS := len(kernelDNS) > 0
+
+	dnsServers := kernelDNS
+	if len(dnsServers) == 0 {
+		dnsServers = []string{"8.8.8.8", "1.1.1.1"}
+	}
+
+	var b strings.Builder
+	for _, server := range dnsServers {
+		b.WriteString("nameserver ")
+		b.WriteString(server)
+		b.WriteString("\n")
+	}
 	if tsiMode {
 		// TSI: force DNS over TCP (use-vc) so queries go through TSI, not UDP.
-		content = "nameserver 8.8.8.8\nnameserver 1.1.1.1\noptions use-vc\n"
-	} else {
-		content = "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"
+		b.WriteString("options use-vc\n")
 	}
+	content := b.String()
 
 	// Prefer host-provided resolver config when present and valid (real file,
 	// not a broken symlink). Always ensure use-vc is set in TSI mode.
 	if fi, statErr := os.Lstat(setupDNSPath); statErr == nil && fi.Mode()&os.ModeSymlink == 0 {
 		if data, err := os.ReadFile(setupDNSPath); err == nil && dnsConfigLooksUsable(string(data)) {
-			if !tsiMode {
+			if !tsiMode && !useKernelDNS {
 				return
 			}
 			// In TSI mode: patch existing config to add use-vc if not present.
+			// When kernel DNS is provided (bake mode), force writing the provided
+			// nameservers to avoid relying on stale host image defaults.
+			if useKernelDNS {
+				_ = os.WriteFile(setupDNSPath, []byte(content), 0o644)
+				return
+			}
 			existing := string(data)
 			if !strings.Contains(existing, "use-vc") {
 				existing = strings.TrimRight(existing, "\n") + "\noptions use-vc\n"
@@ -1779,6 +1889,45 @@ func setupDNS() {
 	// unlinking first ensures we create a real file at the path.
 	_ = os.Remove(setupDNSPath)
 	_ = os.WriteFile(setupDNSPath, []byte(content), 0o644)
+}
+
+func readNexusDNSServers() []string {
+	cmdline, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return nil
+	}
+	return parseNexusDNSServersFromCmdline(string(cmdline))
+}
+
+func parseNexusDNSServersFromCmdline(cmdline string) []string {
+	for _, field := range strings.Fields(cmdline) {
+		if !strings.HasPrefix(field, "nexus.dns=") {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(field, "nexus.dns="))
+		if raw == "" {
+			return nil
+		}
+		seen := map[string]struct{}{}
+		servers := make([]string, 0, 2)
+		for _, part := range strings.Split(raw, ",") {
+			ip := net.ParseIP(strings.TrimSpace(part))
+			if ip == nil || ip.IsLoopback() {
+				continue
+			}
+			key := ip.String()
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			servers = append(servers, key)
+			if len(servers) >= 3 {
+				break
+			}
+		}
+		return servers
+	}
+	return nil
 }
 
 func isTSINetworkMode() bool {

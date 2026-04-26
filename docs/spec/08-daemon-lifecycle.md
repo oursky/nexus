@@ -20,7 +20,7 @@
 ## Startup sequence — `DAEMON-040`–`DAEMON-052`
 
 **`DAEMON-040`** — On start (when not the background re-exec'd child), the daemon runs the host
-prerequisites setup (Firecracker binary, kernel, rootfs, networking) via `StartSetupFn`. This is
+prerequisites setup (libkrun libraries, kernel, rootfs, networking) via `StartSetupFn`. This is
 skipped in test/sandbox mode (no `StartSetupFn`).
 
 **`DAEMON-041`** — The daemon opens (or creates) the SQLite database. Failure to open the DB is
@@ -45,12 +45,12 @@ is the readiness signal for background-mode startup).
 
 **`DAEMON-045`** — `node.info` MUST succeed on the first call after the socket appears.
 
-**`DAEMON-046`** — Guest agent injection (Firecracker mode): the daemon writes the embedded
-`nexus-firecracker-agent` binary into the rootfs via `debugfs` at startup. This happens in the
+**`DAEMON-046`** — Guest agent injection (libkrun mode): the daemon writes the embedded
+`nexus-guest-agent` binary into the rootfs via `debugfs` at startup. This happens in the
 parent process before re-exec, so the background child sees a consistent rootfs. Injection is
 skipped when the binary SHA-256 hash matches the cached value in `<data-dir>/rootfs-agent.sha256`.
 
-**`DAEMON-047`** — If Firecracker is enabled but `--rootfs` or `--kernel` is not provided (on
+**`DAEMON-047`** — If libkrun is enabled but `--rootfs` or `--kernel` is not provided (on
 Linux release builds), the daemon exits with code 1 and an error directing the user to run
 `nexus setup`.
 
@@ -96,7 +96,7 @@ permissions on the socket file. The daemon MUST create the socket with restricti
 (port-forward proxies).
 
 **`DAEMON-062`** — During graceful shutdown, the daemon MUST close all active PTY sessions
-(kill local processes; send `shell.close` to Firecracker guests).
+(kill local processes; send `shell.close` to libkrun VM guests).
 
 **`DAEMON-063`** — During graceful shutdown, the daemon MUST close the SQLite database.
 

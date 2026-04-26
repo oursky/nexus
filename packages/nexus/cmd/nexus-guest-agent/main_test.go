@@ -300,6 +300,25 @@ func TestSetupDNSDoesNotOverwriteExisting(t *testing.T) {
 	}
 }
 
+func TestParseNexusDNSServersFromCmdline(t *testing.T) {
+	cmdline := "console=hvc0 root=/dev/vda rw nexus.dns=10.0.0.2,10.0.0.3"
+	servers := parseNexusDNSServersFromCmdline(cmdline)
+	if len(servers) != 2 {
+		t.Fatalf("expected 2 dns servers, got %d (%v)", len(servers), servers)
+	}
+	if servers[0] != "10.0.0.2" || servers[1] != "10.0.0.3" {
+		t.Fatalf("unexpected dns servers: %v", servers)
+	}
+}
+
+func TestParseNexusDNSServersFromCmdlineFiltersInvalidAndLoopback(t *testing.T) {
+	cmdline := "nexus.dns=127.0.0.1,not-an-ip,10.1.2.3,10.1.2.3"
+	servers := parseNexusDNSServersFromCmdline(cmdline)
+	if len(servers) != 1 || servers[0] != "10.1.2.3" {
+		t.Fatalf("expected only valid non-loopback dns server, got %v", servers)
+	}
+}
+
 func TestStaticGuestIPForMAC(t *testing.T) {
 	ip, err := staticGuestIPForMAC("aa:fc:00:00:03:e8", "172.26.0.1")
 	if err != nil {
@@ -322,6 +341,30 @@ func TestStaticGuestIPForMAC(t *testing.T) {
 func TestStaticGuestIPForMACInvalid(t *testing.T) {
 	if _, err := staticGuestIPForMAC("invalid-mac", "172.26.0.1"); err == nil {
 		t.Fatal("expected parse error for invalid mac")
+	}
+}
+
+func TestNetworkLooksUsableTrue(t *testing.T) {
+	addr := "2: eth0: <BROADCAST,UP> mtu 1500\n    inet 172.26.3.232/16 brd 172.26.255.255 scope global eth0\n"
+	route := "default via 172.26.0.1 dev eth0\n"
+	if !networkLooksUsable(addr, route) {
+		t.Fatal("expected usable network")
+	}
+}
+
+func TestNetworkLooksUsableRejectsLinkLocal(t *testing.T) {
+	addr := "2: eth0: <BROADCAST,UP> mtu 1500\n    inet 169.254.185.79/16 brd 169.254.255.255 scope global eth0\n"
+	route := "default dev eth0 scope link src 169.254.185.79 metric 1001002\n"
+	if networkLooksUsable(addr, route) {
+		t.Fatal("expected link-local fallback route to be rejected")
+	}
+}
+
+func TestNetworkLooksUsableRejectsMissingGateway(t *testing.T) {
+	addr := "2: eth0: <BROADCAST,UP> mtu 1500\n    inet 172.26.3.232/16 brd 172.26.255.255 scope global eth0\n"
+	route := "default dev eth0 scope link src 172.26.3.232\n"
+	if networkLooksUsable(addr, route) {
+		t.Fatal("expected default route without gateway to be rejected")
 	}
 }
 
