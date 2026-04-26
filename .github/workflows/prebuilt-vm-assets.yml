@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build-prebuilt-vm-assets:
@@ -52,6 +53,21 @@ jobs:
             prebuilt-libkrun-vm-linux-amd64.tar.gz
             prebuilt-libkrun-vm-linux-amd64.tar.gz.sha256
           retention-days: 14
+
+      - name: Set up ORAS
+        uses: oras-project/setup-oras@v1
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish prebuilt VM package to GHCR
+        env:
+          GHCR_REF: ghcr.io/${{ github.repository }}/nexus-prebuilt-vm:linux-amd64
+        run: scripts/ci/publish-prebuilt-vm-ghcr.sh
 
       - name: Publish release assets
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' }}
