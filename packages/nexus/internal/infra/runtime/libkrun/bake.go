@@ -16,7 +16,7 @@ import (
 
 // bakeStampVersion is bumped whenever the set of tools baked into the
 // base rootfs changes, forcing a re-bake on next daemon start.
-const bakeStampVersion = "v4"
+const bakeStampVersion = "v5"
 
 // BakeRootfsIfNeeded checks whether the base rootfs already has developer
 // tools pre-installed (stamp present). If not, it boots a temporary VM in
@@ -396,7 +396,7 @@ verify:
 // write-back didn't flush before the process was force-killed.
 func writeStampIntoRootfs(rootfsPath string) error {
 	// The agent checks for this stamp to skip package installation on subsequent boots.
-	const stampInsideRootfs = "/var/lib/nexus-tools-installed-v4"
+	const stampInsideRootfs = "/var/lib/nexus-tools-base-v5"
 
 	// Write a temporary host-side file with the stamp content, then inject it
 	// into the ext4 image using debugfs. debugfs operates on the raw image

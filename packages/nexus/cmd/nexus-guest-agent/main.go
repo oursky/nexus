@@ -553,7 +553,8 @@ func main() {
 
 	bootstrapGuestEnvironment(pid)
 
-	// Bake mode: install all tools synchronously, then power off.
+	// Bake mode: install only the minimal daemon-readiness base layer
+	// synchronously, then power off.
 	// The host waits for the VM process to exit and uses the resulting
 	// rootfs.ext4 as the pre-baked base image for all future workspaces.
 	if isBakeMode() {
@@ -577,16 +578,16 @@ func main() {
 
 	startSSHAgentProxy()
 
-	// Install the OS developer toolchain synchronously before accepting PTY
-	// connections.  The workspace stays in "starting" state on the host side
-	// until we open the vsock listener, so the user never lands in a shell
-	// without make/node/docker available.
-	//
-	// On subsequent boots the stamp file makes this a no-op (<1 s).
+	// Install the minimal base toolchain synchronously before accepting PTY
+	// connections so networking and Docker runtime prerequisites are ready.
+	// Heavier developer tooling installs asynchronously in the background.
 	ensureGuestBasePackages()
-	// CLI tools (opencode/codex/claude) can install in the background — they
-	// are not required before a user can open a terminal.
-	go ensureGuestCLITools()
+	go func() {
+		ensureGuestOptionalDevPackages()
+		// CLI tools (opencode/codex/claude) are optional; install after optional
+		// dev packages so npm is present.
+		ensureGuestCLITools()
+	}()
 	// Docker daemon also starts in the background.
 	// In libkrun container mode the agent is not PID 1 but NEXUS_CONTAINER_MODE
 	// tells us to start Docker anyway.
@@ -908,7 +909,7 @@ func runStreamed(ctx context.Context, env []string, prefix, name string, args ..
 // A versioned stamp file in the rootfs prevents
 // re-running on every workspace start — packages only install once per rootfs.
 func ensureGuestBasePackages() error {
-	const stampFile = "/var/lib/nexus-tools-installed-v4"
+	const stampFile = "/var/lib/nexus-tools-base-v5"
 	if _, err := os.Stat(stampFile); err == nil {
 		emitDiagnostic("agent base packages: already installed (stamp found)")
 		return nil
@@ -919,21 +920,15 @@ func ensureGuestBasePackages() error {
 		return fmt.Errorf("apt-get not found")
 	}
 
-	emitDiagnostic("agent base packages: installing (make, nodejs, npm, docker.io, docker-compose-v2, build-essential, git, busybox-static)...")
+	emitDiagnostic("agent base packages: installing minimal package set (docker.io, containerd, busybox-static, git, make, curl, wget)...")
 
 	pkgs := []string{
 		"make",
-		"build-essential",
-		"nodejs",
-		"npm",
 		"docker.io",
-		"docker-compose-v2",
 		"containerd",
 		"git",
 		"curl",
 		"wget",
-		"python3",
-		"python3-pip",
 		// busybox-static provides udhcpc (DHCP client) used by the agent's
 		// setupNetwork to acquire an IP from passt at VM boot time.
 		"busybox-static",
@@ -984,6 +979,45 @@ func ensureGuestBasePackages() error {
 	_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
 	emitDiagnostic("agent base packages: installed successfully")
 	return nil
+}
+
+// ensureGuestOptionalDevPackages installs non-critical developer tooling.
+// It never blocks daemon readiness and can complete after the VM is usable.
+func ensureGuestOptionalDevPackages() {
+	const stampFile = "/var/lib/nexus-tools-optional-v5"
+	if _, err := os.Stat(stampFile); err == nil {
+		emitDiagnostic("agent optional packages: already installed (stamp found)")
+		return
+	}
+	if _, err := exec.LookPath("apt-get"); err != nil {
+		emitDiagnostic("agent optional packages: apt-get not found, skipping")
+		return
+	}
+
+	pkgs := []string{
+		"build-essential",
+		"nodejs",
+		"npm",
+		"docker-compose-v2",
+		"python3",
+		"python3-pip",
+	}
+	emitDiagnostic("agent optional packages: installing package set (%d packages)...", len(pkgs))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	env := append(os.Environ(),
+		"DEBIAN_FRONTEND=noninteractive",
+		"TAR_OPTIONS=--no-same-owner",
+	)
+	installArgs := append([]string{"install", "-y", "--no-install-recommends"}, pkgs...)
+	if err := runAptGetWithRetry(ctx, env, "apt-get install optional-package-set", installArgs...); err != nil {
+		emitDiagnostic("agent optional packages: install FAILED: %v", err)
+		return
+	}
+	_ = os.MkdirAll("/var/lib", 0o755)
+	_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
+	emitDiagnostic("agent optional packages: installed successfully")
 }
 
 func runAptGetWithRetry(ctx context.Context, env []string, label string, args ...string) error {
