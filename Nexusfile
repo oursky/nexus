@@ -1,0 +1,7 @@
+{
+  "$schema": "./schemas/nexusfile.schema.json",
+  "vm": {
+    "profile": "dev"
+  }
+}
+

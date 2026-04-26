@@ -107,6 +107,7 @@ type SpawnSpec struct {
 	MemoryMiB       int
 	VCPUs           int
 	HostConfigDrive string
+	VMProfile       string
 }
 
 // Spawn creates and starts a new libkrun VM using block-backed root/workspace
@@ -369,6 +370,9 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	}
 	if dns := strings.Join(hostDNSServers(), ","); dns != "" {
 		kernelCmdline += " nexus.dns=" + dns
+	}
+	if profile := strings.TrimSpace(spec.VMProfile); profile != "" {
+		kernelCmdline += " nexus.profile=" + profile
 	}
 
 	vmSpec := VMSpec{

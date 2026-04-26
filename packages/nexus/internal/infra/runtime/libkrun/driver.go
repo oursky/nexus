@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/oursky/nexus/packages/nexus/internal/infra/config"
 )
 
 // Driver implements the libkrun runtime driver.
@@ -231,6 +233,7 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 		VCPUs:           1,
 		SnapshotID:      snapshotID,
 		HostConfigDrive: configDrivePath,
+		VMProfile:       resolveWorkspaceVMProfile(root),
 	}
 
 	d.mu.Lock()
@@ -241,6 +244,21 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 		return err
 	}
 	return nil
+}
+
+func resolveWorkspaceVMProfile(projectRoot string) string {
+	const fallback = "dev"
+	cfg, ok, err := config.LoadNexusfile(projectRoot)
+	if err != nil || !ok {
+		return fallback
+	}
+	profile := strings.ToLower(strings.TrimSpace(cfg.VM.Profile))
+	switch profile {
+	case "minimal", "dev":
+		return profile
+	default:
+		return fallback
+	}
 }
 
 // WorkspaceReady probes the guest agent to verify tools are installed.

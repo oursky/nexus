@@ -547,6 +547,25 @@ func isBakeMode() bool {
 	return false
 }
 
+func guestVMProfile() string {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return "dev"
+	}
+	for _, field := range strings.Fields(string(data)) {
+		if strings.HasPrefix(field, "nexus.profile=") {
+			v := strings.TrimSpace(strings.TrimPrefix(field, "nexus.profile="))
+			switch v {
+			case "minimal", "dev":
+				return v
+			default:
+				return "dev"
+			}
+		}
+	}
+	return "dev"
+}
+
 func main() {
 	pid := os.Getpid()
 	emitDiagnostic("agent boot pid=%d", pid)
@@ -582,12 +601,17 @@ func main() {
 	// connections so networking and Docker runtime prerequisites are ready.
 	// Heavier developer tooling installs asynchronously in the background.
 	ensureGuestBasePackages()
-	go func() {
-		ensureGuestOptionalDevPackages()
-		// CLI tools (opencode/codex/claude) are optional; install after optional
-		// dev packages so npm is present.
-		ensureGuestCLITools()
-	}()
+	profile := guestVMProfile()
+	if profile == "dev" {
+		go func() {
+			ensureGuestOptionalDevPackages()
+			// CLI tools (opencode/codex/claude) are optional; install after optional
+			// dev packages so npm is present.
+			ensureGuestCLITools()
+		}()
+	} else {
+		emitDiagnostic("agent optional packages: skipped (profile=%s)", profile)
+	}
 	// Docker daemon also starts in the background.
 	// In libkrun container mode the agent is not PID 1 but NEXUS_CONTAINER_MODE
 	// tells us to start Docker anyway.
