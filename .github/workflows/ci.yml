@@ -167,6 +167,25 @@ jobs:
             sudo cat /root/.local/state/nexus/rootfs-agent.sha256 > "$HOME/.local/state/nexus/rootfs-agent.sha256"
           fi
 
+      - name: Verify pre-baked VM assets (fail fast, no cold bake in PR CI)
+        run: |
+          set -euo pipefail
+          missing=0
+          for f in /var/lib/nexus/vmlinux.bin /var/lib/nexus/rootfs.ext4; do
+            if [[ ! -f "$f" ]]; then
+              echo "missing prebuilt asset: $f"
+              missing=1
+            fi
+          done
+          if [[ ! -f /root/.local/state/nexus/rootfs-baked-v5 && ! -f /root/.local/state/nexus/rootfs-baked-v4 ]]; then
+            echo "missing baked stamp (rootfs-baked-v5/v4)"
+            missing=1
+          fi
+          if [[ "$missing" -ne 0 ]]; then
+            echo "Prebuilt VM assets are required for PR CI. Refusing cold bake path."
+            exit 1
+          fi
+
       # Build the guest-agent binary so the //go:embed directive in
       # embed_agent_linux_amd64.go is satisfied before compiling nexus.
       - name: Build embedded guest-agent binary
@@ -217,15 +236,14 @@ jobs:
         run: |
           SOCK=/tmp/nexus-provision.sock
           DB=/tmp/nexus-provision.db
-          sudo /tmp/nexus-bin daemon start \
+          sudo NEXUS_LIBKRUN_SKIP_BAKE=1 /tmp/nexus-bin daemon start \
             --db "$DB" --socket "$SOCK" \
             --workdir-root /tmp/nexus-provision-work &
           DPID=$!
-          # Wait up to 1500 s for the socket to appear. First-run provisioning
-          # includes rootfs bake and can exceed 15 minutes on slower runners.
+          # CI is prebuilt-only; daemon should be ready quickly.
           # The daemon starts accepting connections only after provisioning.
-          timeout 1500 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
-            || { echo "daemon setup timed out after 1500s"; kill $DPID; exit 1; }
+          timeout 180 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
+            || { echo "daemon setup timed out after 180s"; kill $DPID; exit 1; }
           # Gracefully stop the provisioning daemon.
           sudo /tmp/nexus-bin daemon stop --socket "$SOCK" 2>/dev/null \
             || kill $DPID 2>/dev/null || true
@@ -289,6 +307,7 @@ jobs:
         run: task ci
         env:
           CI: true
+          NEXUS_LIBKRUN_SKIP_BAKE: "1"
           NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
           NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
           # Use a small workspace image so mkfs.ext4 finishes in seconds on CI.
