@@ -342,8 +342,25 @@ func extractLibkrunEmbeds(libDir, binDir string) error {
 
 // writeFileAtomic writes data to path atomically (write to .tmp, then rename).
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	tmpFile, err := os.CreateTemp(dir, base+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := tmpFile.Name()
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := tmpFile.Chmod(mode); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -837,18 +854,20 @@ func copyFileRootless(src, dst string) error {
 	}
 	defer in.Close()
 
-	tmp := dst + ".tmp"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	dir := filepath.Dir(dst)
+	base := filepath.Base(dst)
+	out, err := os.CreateTemp(dir, base+".tmp-*")
 	if err != nil {
 		return err
 	}
+	tmp := out.Name()
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		os.Remove(tmp)
+		_ = out.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := out.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, dst)
@@ -1144,11 +1163,7 @@ func persistRootlessState(driver string) error {
 // ── Utility helpers ───────────────────────────────────────────────────────────
 
 func atomicWriteFile(dest string, data []byte, mode os.FileMode) error {
-	tmp := dest + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
-		return err
-	}
-	return os.Rename(tmp, dest)
+	return writeFileAtomic(dest, data, mode)
 }
 
 func atomicWriteExec(dest string, data []byte) error {
