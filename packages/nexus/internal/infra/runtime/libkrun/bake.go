@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,6 +18,34 @@ import (
 // bakeStampVersion is bumped whenever the set of tools baked into the
 // base rootfs changes, forcing a re-bake on next daemon start.
 const bakeStampVersion = "v5"
+
+func bakeTimeout() time.Duration {
+	const defaultTimeout = 180 * time.Second
+	raw := strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_BAKE_TIMEOUT"))
+	if raw == "" {
+		return defaultTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		log.Printf("[libkrun] rootfs bake: invalid NEXUS_LIBKRUN_BAKE_TIMEOUT=%q; using %s", raw, defaultTimeout)
+		return defaultTimeout
+	}
+	return d
+}
+
+func bakeMaxAttempts() int {
+	const defaultAttempts = 1
+	raw := strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS"))
+	if raw == "" {
+		return defaultAttempts
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		log.Printf("[libkrun] rootfs bake: invalid NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS=%q; using %d", raw, defaultAttempts)
+		return defaultAttempts
+	}
+	return n
+}
 
 // BakeRootfsIfNeeded checks whether the base rootfs already has developer
 // tools pre-installed (stamp present). If not, it boots a temporary VM in
@@ -54,26 +83,28 @@ func BakeRootfsIfNeeded(ctx context.Context, cfg ManagerConfig, stampDir string)
 		return fmt.Errorf("base rootfs not found at %s: %w", cfg.RootFSBasePath, err)
 	}
 
-	log.Printf("[libkrun] rootfs bake: pre-installing developer tools into base rootfs (first run, ~5-10 min)...")
+	timeout := bakeTimeout()
+	maxAttempts := bakeMaxAttempts()
+	log.Printf("[libkrun] rootfs bake: pre-installing tools with timeout=%s max_attempts=%d", timeout, maxAttempts)
 
 	var bakedRootfsPath string
 	var bakeErr error
-	for attempt := 1; attempt <= 3; attempt++ {
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
-			log.Printf("[libkrun] rootfs bake: retrying bake (attempt %d/3)...", attempt)
+			log.Printf("[libkrun] rootfs bake: retrying bake (attempt %d/%d)...", attempt, maxAttempts)
 		}
 		bakedRootfsPath, bakeErr = runBakeVM(ctx, cfg)
 		if bakeErr == nil {
 			break
 		}
 		log.Printf("[libkrun] rootfs bake: attempt %d failed: %v", attempt, bakeErr)
-		if attempt < 3 {
+		if attempt < maxAttempts {
 			// Wait before retrying — network/DNS issues may be transient.
-			time.Sleep(time.Duration(attempt) * 10 * time.Second)
+			time.Sleep(time.Duration(attempt) * 3 * time.Second)
 		}
 	}
 	if bakeErr != nil {
-		return fmt.Errorf("bake VM failed after 3 attempts: %w", bakeErr)
+		return fmt.Errorf("bake VM failed after %d attempt(s): %w", maxAttempts, bakeErr)
 	}
 	// Always remove the temp baked rootfs when we're done with it.
 	defer os.Remove(bakedRootfsPath)
@@ -245,7 +276,7 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 	// the hvc0 serial log for the completion marker, then kill the process.
 	go func() { _ = childCmd.Wait() }()
 
-	const bakeTimeout = 20 * time.Minute
+	bakeTimeout := bakeTimeout()
 	hvc0Path := serialLog + ".hvc0"
 	start := time.Now()
 

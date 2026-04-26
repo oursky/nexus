@@ -78,23 +78,23 @@ func xdgVMAsset(name string) string {
 
 func startCommand() *cobra.Command {
 	var (
-		dbPath      string
-		socketPath  string
-		kernelPath  string
-		rootfsPath  string
-		workDirRoot string
-		nodeName    string
-		network     bool
-		bind        string
-		port        int
-		tlsMode     string
-		token       string
-		tlsCert     string
-		tlsKey      string
-		foreground  bool   // --foreground: stay blocking instead of self-daemonizing
-		sandboxMode bool   // internal: use process sandbox backend
-		jsonOutput  bool   // --json: emit structured phase events (rootless bootstrap)
-		driver      string // --driver: runtime driver override (libkrun, sandbox)
+		dbPath       string
+		socketPath   string
+		kernelPath   string
+		rootfsPath   string
+		workDirRoot  string
+		nodeName     string
+		network      bool
+		bind         string
+		port         int
+		tlsMode      string
+		token        string
+		tlsCert      string
+		tlsKey       string
+		foreground   bool   // --foreground: stay blocking instead of self-daemonizing
+		sandboxMode  bool   // internal: use process sandbox backend
+		jsonOutput   bool   // --json: emit structured phase events (rootless bootstrap)
+		driver       string // --driver: runtime driver override (libkrun, sandbox)
 		readyTimeout time.Duration
 	)
 
@@ -186,7 +186,7 @@ func startCommand() *cobra.Command {
 			if !sandboxMode {
 				if rootfsPath == "" || kernelPath == "" {
 					return fmt.Errorf(
-						"daemon start: libkrun requires --rootfs and --kernel.\n"+
+						"daemon start: libkrun requires --rootfs and --kernel.\n" +
 							"  Run `nexus daemon start` (auto-provisions assets) or supply the flags.",
 					)
 				}
@@ -224,10 +224,12 @@ func startCommand() *cobra.Command {
 
 				// Pre-bake developer tools into the base rootfs so workspaces start
 				// instantly instead of spending 5-10 min on apt-get/npm install.
-				// CI/provisioning lanes can opt out to avoid long synchronous daemon
-				// startup by setting NEXUS_LIBKRUN_SKIP_BAKE=1.
+				// CI/provisioning lanes always skip bake to avoid long synchronous daemon
+				// startup. Local/dev environments can still force bake explicitly.
 				skipLibkrunBake := strings.EqualFold(strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_SKIP_BAKE")), "1") ||
-					strings.EqualFold(strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_SKIP_BAKE")), "true")
+					strings.EqualFold(strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_SKIP_BAKE")), "true") ||
+					strings.EqualFold(strings.TrimSpace(os.Getenv("CI")), "1") ||
+					strings.EqualFold(strings.TrimSpace(os.Getenv("CI")), "true")
 				if isLibkrun && LibkrunBakeFn != nil && !skipLibkrunBake {
 					LibkrunBakeFn(cfg.RootFSPath, cfg.KernelPath)
 				}
