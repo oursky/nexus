@@ -550,20 +550,23 @@ func isBakeMode() bool {
 func guestVMProfile() string {
 	data, err := os.ReadFile("/proc/cmdline")
 	if err != nil {
-		return "dev"
+		return "default"
 	}
 	for _, field := range strings.Fields(string(data)) {
 		if strings.HasPrefix(field, "nexus.profile=") {
 			v := strings.TrimSpace(strings.TrimPrefix(field, "nexus.profile="))
 			switch v {
-			case "minimal", "dev":
+			case "minimal", "default":
 				return v
+			case "dev":
+				// Backward-compat for older configs/cmdlines.
+				return "default"
 			default:
-				return "dev"
+				return "default"
 			}
 		}
 	}
-	return "dev"
+	return "default"
 }
 
 func main() {
@@ -602,7 +605,7 @@ func main() {
 	// Heavier developer tooling installs asynchronously in the background.
 	ensureGuestBasePackages()
 	profile := guestVMProfile()
-	if profile == "dev" {
+	if profile == "default" {
 		go func() {
 			ensureGuestOptionalDevPackages()
 			// CLI tools (opencode/codex/claude) are optional; install after optional

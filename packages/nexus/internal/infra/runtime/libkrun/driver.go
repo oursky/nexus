@@ -247,15 +247,20 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 }
 
 func resolveWorkspaceVMProfile(projectRoot string) string {
-	const fallback = "dev"
+	const fallback = "default"
 	cfg, ok, err := config.LoadNexusfile(projectRoot)
 	if err != nil || !ok {
 		return fallback
 	}
 	profile := strings.ToLower(strings.TrimSpace(cfg.VM.Profile))
 	switch profile {
-	case "minimal", "dev":
+	case "", "default":
+		return fallback
+	case "minimal":
 		return profile
+	case "dev":
+		// Backward-compat for older Nexusfile values.
+		return fallback
 	default:
 		return fallback
 	}

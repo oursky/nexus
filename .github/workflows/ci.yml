@@ -291,12 +291,12 @@ jobs:
             exit 1
           fi
 
-      - name: Prewarm dev-profile baked rootfs (best effort, bounded)
+      - name: Prewarm default-profile baked rootfs (best effort, bounded)
         continue-on-error: true
         run: |
           set -euo pipefail
-          if ! grep -Eq '^\s*profile\s*=\s*"dev"\s*$' Nexusfile; then
-            echo "Nexusfile profile is not dev; skipping bake prewarm."
+          if grep -Eq '^\s*profile\s*=\s*"minimal"\s*$' Nexusfile; then
+            echo "Nexusfile profile is minimal; skipping bake prewarm."
             exit 0
           fi
           if sudo test -f /root/.local/state/nexus/rootfs-baked-v5; then
@@ -309,7 +309,7 @@ jobs:
             --db "$DB" --socket "$SOCK" --workdir-root /tmp/nexus-prewarm-work &
           DPID=$!
           timeout 300 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
-            || { echo "dev-profile prewarm timed out (non-fatal)"; kill $DPID 2>/dev/null || true; exit 0; }
+            || { echo "default-profile prewarm timed out (non-fatal)"; kill $DPID 2>/dev/null || true; exit 0; }
           sudo /tmp/nexus-bin daemon stop --socket "$SOCK" 2>/dev/null \
             || kill $DPID 2>/dev/null || true
           wait $DPID 2>/dev/null || true

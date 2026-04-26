@@ -19,7 +19,7 @@ type NexusfileConfig struct {
 
 type NexusfileVMSection struct {
 	// Profile controls in-guest tool installation behavior.
-	// Supported values: "minimal", "dev".
+	// Supported values: "minimal", "default" (or omitted).
 	Profile string `json:"profile,omitempty" toml:"profile"`
 	// Image is reserved for future prebuilt image/channel resolution.
 	Image string `json:"image,omitempty" toml:"image"`

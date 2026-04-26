@@ -16,9 +16,9 @@
           "type": "string",
           "enum": [
             "minimal",
-            "dev"
+            "default"
           ],
-          "description": "minimal keeps boot fast; dev installs additional developer tooling."
+          "description": "minimal keeps boot fast; default installs additional developer tooling. If omitted, default is used."
         },
         "image": {
           "type": "string",
@@ -28,4 +28,3 @@
     }
   }
 }
-
