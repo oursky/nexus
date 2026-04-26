@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+RUNNER_USER="${USER:-$(id -un)}"
 
 SOCK=/tmp/nexus-provision.sock
 DB=/tmp/nexus-provision.db
@@ -14,7 +15,7 @@ timeout 180 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
 sudo /tmp/nexus-bin daemon stop --socket "$SOCK" 2>/dev/null \
   || kill $DPID 2>/dev/null || true
 wait $DPID 2>/dev/null || true
-sudo chown -R "$USER":"$USER" "$HOME/.local" 2>/dev/null || true
+sudo chown -R "$RUNNER_USER":"$RUNNER_USER" "$HOME/.local" 2>/dev/null || true
 
 ROOT_VM=/root/.local/share/nexus/vm
 if sudo test -d "$ROOT_VM"; then

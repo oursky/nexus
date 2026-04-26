@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+RUNNER_USER="${USER:-$(id -un)}"
 
 OUT="prebuilt-libkrun-vm-linux-amd64.tar.gz"
 mkdir -p /tmp/prebuilt-vm
@@ -13,6 +14,6 @@ elif sudo test -f /root/.local/state/nexus/rootfs-baked-v4; then
   sudo cp /root/.local/state/nexus/rootfs-baked-v4 /tmp/prebuilt-vm/rootfs-baked-v5
 fi
 
-sudo chown -R "$USER":"$USER" /tmp/prebuilt-vm
+sudo chown -R "$RUNNER_USER":"$RUNNER_USER" /tmp/prebuilt-vm
 tar -C /tmp/prebuilt-vm -czf "$OUT" .
 sha256sum "$OUT" > "$OUT.sha256"
