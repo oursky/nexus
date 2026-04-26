@@ -218,11 +218,11 @@ jobs:
             --db "$DB" --socket "$SOCK" \
             --workdir-root /tmp/nexus-provision-work &
           DPID=$!
-          # Wait up to 900 s for the socket to appear. First-run provisioning
-          # includes rootfs bake and can legitimately take several minutes.
+          # Wait up to 1500 s for the socket to appear. First-run provisioning
+          # includes rootfs bake and can exceed 15 minutes on slower runners.
           # The daemon starts accepting connections only after provisioning.
-          timeout 900 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
-            || { echo "daemon setup timed out after 900s"; kill $DPID; exit 1; }
+          timeout 1500 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
+            || { echo "daemon setup timed out after 1500s"; kill $DPID; exit 1; }
           # Gracefully stop the provisioning daemon.
           sudo /tmp/nexus-bin daemon stop --socket "$SOCK" 2>/dev/null \
             || kill $DPID 2>/dev/null || true
