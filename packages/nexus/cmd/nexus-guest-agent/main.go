@@ -938,6 +938,14 @@ func ensureGuestBasePackages() error {
 		emitDiagnostic("agent base packages: already installed (stamp found)")
 		return nil
 	}
+	// Backward-compat: older baked images used a monolithic v4 stamp.
+	// Treat it as base-ready and promote to the v5 base stamp.
+	if _, err := os.Stat("/var/lib/nexus-tools-installed-v4"); err == nil {
+		_ = os.MkdirAll("/var/lib", 0o755)
+		_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
+		emitDiagnostic("agent base packages: legacy v4 stamp detected, promoted to v5")
+		return nil
+	}
 
 	if _, err := exec.LookPath("apt-get"); err != nil {
 		emitDiagnostic("agent base packages: apt-get not found, skipping")

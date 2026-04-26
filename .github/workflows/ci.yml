@@ -157,6 +157,9 @@ jobs:
           fi
           if [[ -f "$CACHE_DIR/rootfs-baked-v5" ]]; then
             sudo cp "$CACHE_DIR/rootfs-baked-v5" /root/.local/state/nexus/rootfs-baked-v5
+          elif [[ -f "$CACHE_DIR/rootfs-baked-v4" ]]; then
+            # Backward-compat: migrate cache stamp name without forcing rebake.
+            sudo cp "$CACHE_DIR/rootfs-baked-v4" /root/.local/state/nexus/rootfs-baked-v5
           fi
           # Keep runner user state aligned with root state for e2e daemon startup.
           mkdir -p "$HOME/.local/state/nexus"
@@ -277,6 +280,9 @@ jobs:
           fi
           if sudo test -f /root/.local/state/nexus/rootfs-baked-v5; then
             sudo cp /root/.local/state/nexus/rootfs-baked-v5 "$CACHE_DIR/rootfs-baked-v5"
+          elif sudo test -f /root/.local/state/nexus/rootfs-baked-v4; then
+            # Keep legacy key populated for restore-key fallback compatibility.
+            sudo cp /root/.local/state/nexus/rootfs-baked-v4 "$CACHE_DIR/rootfs-baked-v4"
           fi
 
       - name: Run CI pipeline
