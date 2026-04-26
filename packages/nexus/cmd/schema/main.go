@@ -325,6 +325,16 @@ func buildSchema() Schema {
 					"removed": boolean(false),
 				}),
 			},
+			{
+				Name:    "project.reconcile",
+				Request: emptyObj(),
+				Response: obj(map[string]PropSchema{
+					"updatedWorkspaces": integer(false),
+					"removedProjects":   integer(false),
+					"createdProjects":   integer(false),
+					"canonicalProjects": arrayOfType("string", false),
+				}),
+			},
 			// ── fs ───────────────────────────────────────────────────────────────
 			{
 				Name: "fs.readFile",
@@ -521,7 +531,7 @@ func buildSchema() Schema {
 				"source":      str(true),
 				"workspaceId": str(false),
 			}),
-		"Project": obj(map[string]PropSchema{
+			"Project": obj(map[string]PropSchema{
 				"id":        str(false),
 				"name":      str(false),
 				"repoUrl":   str(false),

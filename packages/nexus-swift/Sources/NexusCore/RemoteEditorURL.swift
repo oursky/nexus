@@ -24,11 +24,11 @@ public struct RemoteSSHFolderOpenSpec: Sendable {
     }
 }
 
-/// Writes `~/.nexus/ssh` snippets so Remote-SSH can reach libkrun VM guests via `ProxyJump` through the engine host.
-/// `~/.ssh/config` must already contain `Include ~/.nexus/ssh/*.ssh.config` (added by `installIncludeIfNeeded`).
+/// Writes `~/.config/nexus/ssh` snippets so Remote-SSH can reach libkrun VM guests via `ProxyJump` through the engine host.
+/// `~/.ssh/config` must already contain `Include ~/.config/nexus/ssh/*.ssh.config` (added by `installIncludeIfNeeded`).
 public enum NexusSSHConfigSnippet {
     private static let marker = "# nexus-vm-remote-editor (managed by Nexus — do not remove)"
-    private static let includeLine = "Include ~/.nexus/ssh/*.ssh.config"
+    private static let includeLine = "Include ~/.config/nexus/ssh/*.ssh.config"
 
     private static func realUserHome() -> String {
         if let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir {
@@ -41,14 +41,14 @@ public enum NexusSSHConfigSnippet {
     }
 
     private static func nexusSSHDir() -> String {
-        (realUserHome() as NSString).appendingPathComponent(".nexus/ssh")
+        (realUserHome() as NSString).appendingPathComponent(".config/nexus/ssh")
     }
 
     private static func sshConfigPath() -> String {
         (realUserHome() as NSString).appendingPathComponent(".ssh/config")
     }
 
-    /// Ensures `~/.ssh/config` contains `Include ~/.nexus/ssh/*.ssh.config`.
+    /// Ensures `~/.ssh/config` contains `Include ~/.config/nexus/ssh/*.ssh.config`.
     /// If the line is already present (e.g. added by the Lima setup) this is a no-op.
     public static func installIncludeIfNeeded() throws {
         let sshDir = (realUserHome() as NSString).appendingPathComponent(".ssh")
@@ -92,7 +92,7 @@ public enum NexusSSHConfigSnippet {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cfgPath)
     }
 
-    /// Overwrites `~/.nexus/ssh/<hostAlias>.ssh.config` with a ProxyJump stanza for the guest bridge IP.
+    /// Overwrites `~/.config/nexus/ssh/<hostAlias>.ssh.config` with a ProxyJump stanza for the guest bridge IP.
     /// Sets `VSCODE_AGENT_FOLDER` and `CURSOR_AGENT_FOLDER` to `/workspace/.cursor-server` so
     /// VS Code / Cursor install their server on the large workspace disk, not the small rootfs.
     public static func writeVMJumpHost(hostAlias: String, guestIP: String, proxyJump: String, user: String = "root", identityFile: String?) throws {

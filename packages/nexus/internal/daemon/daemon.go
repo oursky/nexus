@@ -168,7 +168,7 @@ func New(cfg Config) (*Daemon, error) {
 	rpcfs.New("/").Register(reg)
 	daemonLogPath := filepath.Join(filepath.Dir(cfg.SocketPath), "daemon.log")
 	rpcdaemon.New(newNodeInfo(cfg), rpcdaemon.WithLogPath(daemonLogPath)).Register(reg)
-	rpcproject.New(projStore).Register(reg)
+	rpcproject.New(projStore, rpcproject.WithWorkspaceRepo(wsStore)).Register(reg)
 	rpcauth.New(wsStore, broker).Register(reg)
 
 	lst := transport.NewListener(cfg.SocketPath, reg)

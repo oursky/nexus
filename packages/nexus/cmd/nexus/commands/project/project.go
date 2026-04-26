@@ -15,6 +15,7 @@ func Command() *cobra.Command {
 		createCommand(),
 		getCommand(),
 		removeCommand(),
+		reconcileCommand(),
 	)
 	return cmd
 }

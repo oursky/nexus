@@ -107,6 +107,10 @@ func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*works
 	if err := spec.Policy.Validate(); err != nil {
 		return nil, err
 	}
+	projectID, err := s.resolveProjectIDForCreate(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now().UTC()
 	id := fmt.Sprintf("ws-%d", now.UnixNano())
@@ -119,7 +123,7 @@ func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*works
 
 	ws := &workspace.Workspace{
 		ID:            id,
-		ProjectID:     spec.ProjectID,
+		ProjectID:     projectID,
 		Repo:          spec.Repo,
 		RepoID:        deriveRepoID(spec.Repo),
 		Ref:           ref,
@@ -159,6 +163,59 @@ func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*works
 	}
 
 	return ws, nil
+}
+
+func (s *Service) resolveProjectIDForCreate(ctx context.Context, spec workspace.CreateSpec) (string, error) {
+	repoKey := project.NormalizeRepoURL(spec.Repo)
+	if repoKey == "" {
+		return "", fmt.Errorf("repo is required")
+	}
+	requested := strings.TrimSpace(spec.ProjectID)
+	if requested != "" {
+		p, err := s.projectRepo.Get(ctx, requested)
+		if err != nil {
+			return "", fmt.Errorf("projectId %q not found", requested)
+		}
+		if project.NormalizeRepoURL(p.RepoURL) != repoKey {
+			return "", fmt.Errorf("projectId %q repo mismatch", requested)
+		}
+		return p.ID, nil
+	}
+
+	// Backward-compatible create: if no project id is provided, bind to existing
+	// project by repo; otherwise create a canonical project record.
+	allProjects, err := s.projectRepo.List(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list projects: %w", err)
+	}
+	var canonical *project.Project
+	for _, p := range allProjects {
+		if p == nil {
+			continue
+		}
+		if project.NormalizeRepoURL(p.RepoURL) != repoKey {
+			continue
+		}
+		if canonical == nil || p.CreatedAt.Before(canonical.CreatedAt) || (p.CreatedAt.Equal(canonical.CreatedAt) && p.ID < canonical.ID) {
+			canonical = p
+		}
+	}
+	if canonical != nil {
+		return canonical.ID, nil
+	}
+
+	now := time.Now().UTC()
+	newProject := &project.Project{
+		ID:        project.DeriveIDFromRepo(spec.Repo),
+		Name:      project.InferNameFromRepo(spec.Repo),
+		RepoURL:   spec.Repo,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.projectRepo.Create(ctx, newProject); err != nil {
+		return "", fmt.Errorf("create inferred project: %w", err)
+	}
+	return newProject.ID, nil
 }
 
 // Start transitions a workspace to StateStarting immediately and boots the VM

@@ -315,10 +315,37 @@ public final class AppState: ObservableObject {
         // Wire workspace lifecycle + provisioning providers for headless RPC.
         server.daemonClientProvider = { [weak self] in
             guard let self else { return nil }
+            guard case .connected = self.connectionState else { return nil }
+            guard !(self.client is NullDaemonClient) else { return nil }
             return self.client
         }
         server.daemonProfileProvider = { [weak self] in
             self?.activeDaemonProfile
+        }
+        server.connectionSnapshotProvider = { [weak self] in
+            guard let self else { return ["available": false] }
+            let stateText: String
+            switch self.connectionState {
+            case .starting: stateText = "starting"
+            case .disconnected: stateText = "disconnected"
+            case .connecting: stateText = "connecting"
+            case .connected: stateText = "connected"
+            case .provisioning(let step): stateText = "provisioning:\(step)"
+            }
+            let daemonText: String
+            switch self.daemonStatus {
+            case .unknown: daemonText = "unknown"
+            case .running: daemonText = "running"
+            case .outdated: daemonText = "outdated"
+            case .offline: daemonText = "offline"
+            }
+            return [
+                "available": true,
+                "connectionState": stateText,
+                "daemonStatus": daemonText,
+                "clientType": String(describing: type(of: self.client)),
+                "hasProfile": self.activeDaemonProfile != nil,
+            ]
         }
         rpcServer = server
         server.start()
@@ -888,6 +915,65 @@ public final class AppState: ObservableObject {
             selectedWorkspaceID = nil
         }
         await perform { try await self.client.removeProject(id: id) }
+    }
+
+    /// Removes multiple daemon project records by id.
+    public func removeProjects(ids: [String]) async {
+        let targetIDs = Set(ids.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        guard !targetIDs.isEmpty else {
+            self.error = "No project IDs to delete."
+            return
+        }
+
+        let wsIds = Set(
+            repos
+                .flatMap(\.workspaces)
+                .filter { targetIDs.contains(($0.projectId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) }
+                .map(\.id)
+        )
+        if let sel = selectedWorkspaceID, wsIds.contains(sel) {
+            selectedWorkspaceID = nil
+        }
+
+        await perform {
+            for id in targetIDs {
+                try await self.client.removeProject(id: id)
+            }
+        }
+    }
+
+    /// Removes daemon project(s) by display name, useful when sidebar repo groups are
+    /// not directly mapped to a local `projectID` (e.g. stale/unlinked project rows).
+    public func removeProjects(named name: String, allMatches: Bool = true) async {
+        let target = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else {
+            self.error = "Project name is empty."
+            return
+        }
+
+        let matchingRepoWorkspaceIDs: Set<String> = Set(
+            repos
+                .filter { $0.name.localizedCaseInsensitiveCompare(target) == .orderedSame }
+                .flatMap { $0.workspaces.map(\.id) }
+        )
+        if let sel = selectedWorkspaceID, matchingRepoWorkspaceIDs.contains(sel) {
+            selectedWorkspaceID = nil
+        }
+
+        await perform {
+            let projects = try await self.client.listProjects()
+            let matches = projects.filter {
+                $0.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .localizedCaseInsensitiveCompare(target) == .orderedSame
+            }
+            guard !matches.isEmpty else {
+                throw RPCError(message: "No daemon project named '\(target)'")
+            }
+            let targets = allMatches ? matches : [matches[0]]
+            for project in targets {
+                try await self.client.removeProject(id: project.id)
+            }
+        }
     }
 
     public func addPort(_ port: Int, workspace: Workspace) async {
