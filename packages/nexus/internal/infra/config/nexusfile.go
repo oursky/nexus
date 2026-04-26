@@ -6,21 +6,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	toml "github.com/pelletier/go-toml/v2"
 )
 
 // NexusfileConfig is a lightweight project config loaded from Nexusfile.
 // It is intentionally small and user-facing.
 type NexusfileConfig struct {
-	Schema string             `json:"$schema,omitempty"`
-	VM     NexusfileVMSection `json:"vm,omitempty"`
+	Schema string             `json:"$schema,omitempty" toml:"$schema"`
+	VM     NexusfileVMSection `json:"vm,omitempty" toml:"vm"`
 }
 
 type NexusfileVMSection struct {
 	// Profile controls in-guest tool installation behavior.
 	// Supported values: "minimal", "dev".
-	Profile string `json:"profile,omitempty"`
+	Profile string `json:"profile,omitempty" toml:"profile"`
 	// Image is reserved for future prebuilt image/channel resolution.
-	Image string `json:"image,omitempty"`
+	Image string `json:"image,omitempty" toml:"image"`
 }
 
 // LoadNexusfile loads <projectRoot>/Nexusfile. Missing file is not an error.
@@ -35,10 +37,13 @@ func LoadNexusfile(projectRoot string) (NexusfileConfig, bool, error) {
 	}
 
 	var cfg NexusfileConfig
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&cfg); err != nil {
-		return NexusfileConfig{}, false, err
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		// Backward-compat: accept legacy JSON Nexusfile.
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if jerr := dec.Decode(&cfg); jerr != nil {
+			return NexusfileConfig{}, false, err
+		}
 	}
 	cfg.VM.Profile = strings.ToLower(strings.TrimSpace(cfg.VM.Profile))
 	return cfg, true, nil

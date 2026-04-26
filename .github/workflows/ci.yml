@@ -134,9 +134,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.LIBKRUN_BAKED_CACHE_DIR }}
-          key: libkrun-baked-v1-${{ runner.os }}-${{ hashFiles('packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/cmd/nexus-guest-agent/main.go', 'packages/nexus/cmd/nexus/nexus-libkrun-vm') }}
+          key: libkrun-baked-v2-${{ runner.os }}-${{ hashFiles('Nexusfile', 'schemas/nexusfile.schema.json', 'packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/cmd/nexus-guest-agent/main.go', 'packages/nexus/cmd/nexus/nexus-libkrun-vm', 'packages/nexus/cmd/nexus/rootless_bootstrap_linux.go') }}
           restore-keys: |
-            libkrun-baked-v1-${{ runner.os }}-
+            libkrun-baked-v2-${{ runner.os }}-
 
       - name: Hydrate cached VM assets to host paths
         run: |
@@ -290,6 +290,29 @@ jobs:
             echo "Provisioning did not yield required VM assets."
             exit 1
           fi
+
+      - name: Prewarm dev-profile baked rootfs (best effort, bounded)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if ! grep -Eq '^\s*profile\s*=\s*"dev"\s*$' Nexusfile; then
+            echo "Nexusfile profile is not dev; skipping bake prewarm."
+            exit 0
+          fi
+          if sudo test -f /root/.local/state/nexus/rootfs-baked-v5; then
+            echo "Baked stamp already present; skipping prewarm."
+            exit 0
+          fi
+          SOCK=/tmp/nexus-prewarm.sock
+          DB=/tmp/nexus-prewarm.db
+          sudo CI=false NEXUS_LIBKRUN_BAKE_TIMEOUT=240s NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS=1 /tmp/nexus-bin daemon start \
+            --db "$DB" --socket "$SOCK" --workdir-root /tmp/nexus-prewarm-work &
+          DPID=$!
+          timeout 300 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
+            || { echo "dev-profile prewarm timed out (non-fatal)"; kill $DPID 2>/dev/null || true; exit 0; }
+          sudo /tmp/nexus-bin daemon stop --socket "$SOCK" 2>/dev/null \
+            || kill $DPID 2>/dev/null || true
+          wait $DPID 2>/dev/null || true
 
       - name: Refresh baked VM cache contents
         if: always()
