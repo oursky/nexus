@@ -1,7 +1,7 @@
 import Foundation
 
 /// Mirrors `~/.local/share/nexus/workspaces.json` written by the Nexus CLI so the app can
-/// resolve Mac-side git paths for fork, mirror, and git log — the same source of truth as `nexus workspace fork`.
+/// resolve Mac-side git paths for fork and git log — the same source of truth as `nexus workspace fork`.
 public struct LocalWorkspaceRecord: Codable, Equatable, Sendable {
     public var workspaceID: String
     public var workspaceName: String

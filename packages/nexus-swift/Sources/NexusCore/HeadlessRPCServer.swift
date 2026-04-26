@@ -22,6 +22,11 @@ import OSLog
 ///   POST /workspace/delete      { workspaceID }
 ///   GET  /workspace/info?workspaceID=...
 ///
+/// Project lifecycle (maps to daemon client):
+///   GET  /project/list
+///   POST /project/delete        { projectID }
+///   POST /project/delete-by-name { name, all? }  // default all=false
+///
 /// Editor / SSH:
 ///   POST /workspace/ssh-check   { workspaceID }  → { ok, detail }
 ///   POST /workspace/open-editor { workspaceID, app? }  → { ok, detail }
@@ -54,6 +59,8 @@ public final class HeadlessRPCServer {
 
     /// Returns the active daemon profile for provisioning calls.
     public var daemonProfileProvider: (() -> DaemonProfile?)?
+    /// Returns connection diagnostics for the hosting app instance.
+    public var connectionSnapshotProvider: (() -> [String: Any])?
 
     public init(
         port: UInt16 = HeadlessRPCServer.defaultPort,
@@ -211,6 +218,14 @@ public final class HeadlessRPCServer {
         case ("GET", "/workspace/info"):
             return await handleWorkspaceInfo(query: query)
 
+        // ── Project lifecycle ─────────────────────────────────────────────────
+        case ("GET", "/project/list"):
+            return await handleProjectList()
+        case ("POST", "/project/delete"):
+            return await handleProjectDelete(body: bodyString)
+        case ("POST", "/project/delete-by-name"):
+            return await handleProjectDeleteByName(body: bodyString)
+
         // ── Editor / SSH ──────────────────────────────────────────────────────
         case ("POST", "/workspace/ssh-check"):
             return await handleSSHCheck(body: bodyString)
@@ -239,8 +254,20 @@ public final class HeadlessRPCServer {
     // MARK: - Handlers
 
     private func handleStatus() -> (Int, String) {
-        let body = #"{"ok":true,"version":"1"}"#
-        return (200, body)
+        var payload: [String: Any] = [
+            "ok": true,
+            "version": "1",
+            "pid": ProcessInfo.processInfo.processIdentifier,
+            "bundlePath": Bundle.main.bundlePath,
+        ]
+        if let snapshot = connectionSnapshotProvider?() {
+            payload["connection"] = snapshot
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (200, str)
     }
 
     private func handleListTabs() async -> (Int, String) {
@@ -529,6 +556,97 @@ public final class HeadlessRPCServer {
                 "workspaceID": workspaceID,
                 "workspacePath": info.workspacePath,
                 "ports": info.ports.map { ["local": $0.id, "remote": $0.remotePort] },
+            ]
+            guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                  let str = String(data: data, encoding: .utf8) else {
+                return (500, jsonError("serialization failed"))
+            }
+            return (200, str)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    // MARK: - Project lifecycle handlers
+
+    private func handleProjectList() async -> (Int, String) {
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        do {
+            let projects = try await client.listProjects()
+            let list: [[String: Any]] = projects.map { project in
+                var item: [String: Any] = [
+                    "id": project.id,
+                    "name": project.name,
+                    "primaryRepo": project.primaryRepo,
+                ]
+                if let rootPath = project.rootPath { item["rootPath"] = rootPath }
+                return item
+            }
+            guard let data = try? JSONSerialization.data(withJSONObject: ["projects": list]),
+                  let str = String(data: data, encoding: .utf8) else {
+                return (500, jsonError("serialization failed"))
+            }
+            return (200, str)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    private func handleProjectDelete(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let projectID = dict["projectID"] as? String else {
+            return (400, jsonError("missing projectID"))
+        }
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        do {
+            try await client.removeProject(id: projectID)
+            return (200, #"{"ok":true}"#)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    private func handleProjectDeleteByName(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let targetNameRaw = dict["name"] as? String else {
+            return (400, jsonError("missing name"))
+        }
+        let targetName = targetNameRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !targetName.isEmpty else {
+            return (400, jsonError("name must not be empty"))
+        }
+
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+
+        // Default to single-delete safety; set "all": true to remove all matches.
+        let deleteAll = (dict["all"] as? Bool) ?? false
+
+        do {
+            let projects = try await client.listProjects()
+            let matches = projects.filter {
+                $0.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .localizedCaseInsensitiveCompare(targetName) == .orderedSame
+            }
+            guard !matches.isEmpty else {
+                return (404, jsonError("project not found by name: \(targetName)"))
+            }
+
+            let targets = deleteAll ? matches : [matches[0]]
+            for project in targets {
+                try await client.removeProject(id: project.id)
+            }
+
+            let payload: [String: Any] = [
+                "ok": true,
+                "deletedCount": targets.count,
+                "deletedProjectIDs": targets.map(\.id),
+                "matchedCount": matches.count,
             ]
             guard let data = try? JSONSerialization.data(withJSONObject: payload),
                   let str = String(data: data, encoding: .utf8) else {

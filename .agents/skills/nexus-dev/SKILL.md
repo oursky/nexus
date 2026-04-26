@@ -141,7 +141,7 @@ nexus workspace list
 nexus workspace fork myws --name myws-feature --ref feature-branch
 ```
 
-Fork worktrees live at `<gitRoot>/.worktrees/<name>` and are excluded from the base workspace mutagen session; `.worktrees/` is auto-added to `.git/info/exclude`.
+Fork worktrees live at `<gitRoot>/.worktrees/<name>`; `.worktrees/` is auto-added to `.git/info/exclude`.
 
 ### Fresh start (implode)
 
@@ -628,6 +628,5 @@ ssh newman@linuxbox "ls -lh /data/nexus/firecracker-vms/"
 
 `**nexus daemon connect` exit 127** — deploy binary to `$HOME/.local/bin/nexus` on the remote host.
 
-`**workspace create` / lstat errors** — rebuild Mac CLI so paths go through mirroring, not raw Mac paths.
 
 **Port mismatch** — `nexus daemon status --json` per repo/worktree when multiple daemons run.

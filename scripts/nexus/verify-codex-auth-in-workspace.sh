@@ -35,8 +35,6 @@ REPO=$(mktemp -d)
   git config user.email "verify@nexus.test"
   git config user.name "Nexus Verify"
   echo test >README.md
-  mkdir -p .nexus
-  echo '{"version":1}' >.nexus/workspace.json
   git add .
   git commit -q -m init
 )

@@ -10,8 +10,7 @@ import (
 )
 
 // NodeConfig describes the capabilities and identity of a Nexus node (host machine).
-// It is stored at an XDG-level config path (e.g. ~/.config/nexus/node.json on Linux,
-// It is stored at $XDG_CONFIG_HOME/nexus/node.json (default ~/.config/nexus/node.json) and is separate from workspace
+// It is stored at $XDG_CONFIG_HOME/nexus/node.json (default ~/.nexus/node.json) and is separate from workspace
 // config which only declares what a workspace requires.
 type NodeConfig struct {
 	Schema        string            `json:"$schema,omitempty"`

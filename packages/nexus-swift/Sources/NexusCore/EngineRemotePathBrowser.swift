@@ -138,7 +138,7 @@ public enum EngineRemotePathBrowser {
 
         var args: [String] = []
         let cfg = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".nexus/ssh/nexus.ssh.config", isDirectory: false).path
+            .appendingPathComponent(".config/nexus/ssh/nexus.ssh.config", isDirectory: false).path
         if FileManager.default.fileExists(atPath: cfg) {
             args += ["-F", cfg]
         }

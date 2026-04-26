@@ -15,7 +15,7 @@ public protocol DaemonClient: Sendable {
 
     // ── Lifecycle ────────────────────────────────────────────────────
     func createWorkspace(spec: WorkspaceCreateSpec) async throws -> Workspace
-    /// Daemon `workspace.create` with a mirrored Linux `repo` path and optional `projectId`.
+    /// Daemon `workspace.create` with a Linux `repo` path and optional `projectId`.
     func createWorkspaceDaemon(spec: WorkspaceDaemonCreateSpec) async throws -> Workspace
     func forkWorkspace(parentID: String, childName: String, childRef: String) async throws -> Workspace
     func startWorkspace(id: String) async throws

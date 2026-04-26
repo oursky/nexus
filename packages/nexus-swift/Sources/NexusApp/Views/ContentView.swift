@@ -86,7 +86,7 @@ private struct EmptyStateView: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            // Show operational errors whenever set (e.g. Create Base / mirror / RPC failures).
+            // Show operational errors whenever set (e.g. Create Base / RPC failures).
             // Do not gate on connection state — that hid failures while connected and looked like "no effect".
             if let msg = error {
                 Image(systemName: "exclamationmark.triangle")

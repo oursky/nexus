@@ -97,22 +97,29 @@ private struct RepoSection: View {
     let repo: Repo
     @State private var expanded = true
     @State private var confirmDeleteProject = false
+    @State private var hoverMenu = false
+    @State private var deleteByNameFallback = false
 
-    private var isRegisteredProject: Bool {
-        resolvedProjectID != nil
-    }
-
-    private var resolvedProjectID: String? {
+    private var relatedProjectIDs: [String] {
+        var ids: Set<String> = []
         if appState.projects.contains(where: { $0.id == repo.id }) {
-            return repo.id
+            ids.insert(repo.id)
         }
         for ws in repo.workspaces {
             let pid = (ws.projectId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if !pid.isEmpty, appState.projects.contains(where: { $0.id == pid }) {
-                return pid
+                ids.insert(pid)
             }
         }
-        return nil
+        return Array(ids).sorted()
+    }
+
+    private var hasRelatedProjects: Bool {
+        !relatedProjectIDs.isEmpty
+    }
+
+    private var resolvedProjectID: String? {
+        relatedProjectIDs.first
     }
     
     private var hasRootWorkspace: Bool {
@@ -154,6 +161,12 @@ private struct RepoSection: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("project_header_\(repo.id)")
+                .contextMenu {
+                    Button("Remove…", role: .destructive) {
+                        deleteByNameFallback = !hasRelatedProjects
+                        confirmDeleteProject = true
+                    }
+                }
 
                 Button {
                     appState.createIntent = .newSandbox(projectID: resolvedProjectID ?? repo.id)
@@ -167,28 +180,48 @@ private struct RepoSection: View {
                 .buttonStyle(.plain)
                 .help("Create sandbox in \(repo.name)")
                 .accessibilityIdentifier("project_add_sandbox_\(repo.id)")
+
+                Menu {
+                    Button("Remove…", role: .destructive) {
+                        deleteByNameFallback = !hasRelatedProjects
+                        confirmDeleteProject = true
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(hoverMenu ? Theme.labelSecondary : Theme.labelTertiary)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .menuIndicator(.hidden)
+                .buttonStyle(.plain)
+                .onHover { hoverMenu = $0 }
+                .help("Project actions")
+                .accessibilityIdentifier("project_actions_\(repo.id)")
                 .padding(.trailing, 10)
             }
             .padding(.top, 4)
-            .contextMenu {
-                if isRegisteredProject {
-                    Button("Delete Project…", role: .destructive) {
-                        confirmDeleteProject = true
-                    }
-                }
-            }
             .confirmationDialog(
-                "Delete “\(repo.name)”?",
+                "Remove “\(repo.name)”?",
                 isPresented: $confirmDeleteProject,
                 titleVisibility: .visible
             ) {
-                Button("Delete", role: .destructive) {
-                    guard let projectID = resolvedProjectID else { return }
-                    Task { await appState.removeProject(id: projectID) }
+                Button("Remove", role: .destructive) {
+                    if !deleteByNameFallback, !relatedProjectIDs.isEmpty {
+                        Task { await appState.removeProjects(ids: relatedProjectIDs) }
+                    } else {
+                        Task { await appState.removeProjects(named: repo.name, allMatches: true) }
+                    }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This removes the project from Nexus on the daemon. Workspace VMs are not deleted automatically.")
+                if deleteByNameFallback || !hasRelatedProjects {
+                    Text("This removes daemon project records that match the name “\(repo.name)”. Workspace VMs are not deleted automatically.")
+                } else if relatedProjectIDs.count > 1 {
+                    Text("This removes \(relatedProjectIDs.count) related daemon projects linked to this section. Workspace VMs are not deleted automatically.")
+                } else {
+                    Text("This removes the project from Nexus on the daemon. Workspace VMs are not deleted automatically.")
+                }
             }
 
             if expanded {
@@ -217,13 +250,15 @@ private struct RepoSection: View {
                         .accessibilityIdentifier("workspace_row_\(ws.id)")
                         .accessibilityLabel(ws.name)
                         .accessibilityAddTraits(.isButton)
+                        .contextMenu { WorkspaceContextMenu(workspace: ws) }
                     }
                 }
                 .padding(.top, 2)
                 .padding(.bottom, 6)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(.opacity)
             }
         }
+        .animation(.easeInOut(duration: 0.16), value: expanded)
     }
 }
 
@@ -308,7 +343,6 @@ private struct WorkspaceRow: View {
         )
         .contentShape(Rectangle())
         .onHover { hover = $0 }
-        .contextMenu { WorkspaceContextMenu(workspace: workspace) }
     }
 }
 

@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -271,6 +272,102 @@ func TestService_Create_Success(t *testing.T) {
 	// Verify driver was called
 	if len(driver.creates) != 1 || driver.creates[0] != ws.ID {
 		t.Errorf("driver creates: %v", driver.creates)
+	}
+}
+
+func TestService_Create_AutoCreatesProjectWhenMissingProjectID(t *testing.T) {
+	svc, _, projRepo, _ := newTestService()
+	ctx := context.Background()
+
+	ws, err := svc.Create(ctx, workspace.CreateSpec{
+		Repo:          "/home/dev/repo-a",
+		Ref:           "main",
+		WorkspaceName: "repo-a",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if ws.ProjectID == "" {
+		t.Fatal("expected projectID to be auto-assigned")
+	}
+	p, err := projRepo.Get(ctx, ws.ProjectID)
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if p.RepoURL != "/home/dev/repo-a" {
+		t.Fatalf("project repoURL = %q, want %q", p.RepoURL, "/home/dev/repo-a")
+	}
+}
+
+func TestService_Create_ReusesExistingProjectByRepoWhenProjectIDMissing(t *testing.T) {
+	svc, _, projRepo, _ := newTestService()
+	ctx := context.Background()
+	now := time.Now().UTC().Add(-time.Hour)
+	existing := &project.Project{
+		ID:        "proj-existing",
+		Name:      "repo-a",
+		RepoURL:   "/home/dev/repo-a",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := projRepo.Create(ctx, existing); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+
+	ws, err := svc.Create(ctx, workspace.CreateSpec{
+		Repo:          "/home/dev/repo-a",
+		Ref:           "main",
+		WorkspaceName: "repo-a-2",
+		AgentProfile:  "default",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if ws.ProjectID != "proj-existing" {
+		t.Fatalf("projectID = %q, want %q", ws.ProjectID, "proj-existing")
+	}
+}
+
+func TestService_Create_RejectsUnknownProjectID(t *testing.T) {
+	svc, _, _, _ := newTestService()
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, workspace.CreateSpec{
+		Repo:          "/home/dev/repo-a",
+		Ref:           "main",
+		WorkspaceName: "repo-a",
+		AgentProfile:  "default",
+		ProjectID:     "proj-missing",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not found error, got: %v", err)
+	}
+}
+
+func TestService_Create_RejectsProjectRepoMismatch(t *testing.T) {
+	svc, _, projRepo, _ := newTestService()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := projRepo.Create(ctx, &project.Project{
+		ID:        "proj-a",
+		Name:      "repo-a",
+		RepoURL:   "/home/dev/repo-a",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+
+	_, err := svc.Create(ctx, workspace.CreateSpec{
+		Repo:          "/home/dev/repo-b",
+		Ref:           "main",
+		WorkspaceName: "repo-b",
+		AgentProfile:  "default",
+		ProjectID:     "proj-a",
+	})
+	if err == nil || !strings.Contains(err.Error(), "repo mismatch") {
+		t.Fatalf("expected repo mismatch error, got: %v", err)
 	}
 }
 

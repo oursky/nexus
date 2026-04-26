@@ -23,15 +23,46 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 NEXUS_PKG="$REPO_ROOT/packages/nexus"
 RESOURCES_DIR="$REPO_ROOT/packages/nexus-swift/Resources"
+EMBED_DIR="$NEXUS_PKG/cmd/nexus"
 ARCH="${1:-both}"
+STAGED_AGENT_FILES=()
 
 mkdir -p "$RESOURCES_DIR"
+mkdir -p "$NEXUS_PKG/tmp"
+
+cleanup_staged_agents() {
+    if [[ "${#STAGED_AGENT_FILES[@]}" -gt 0 ]]; then
+        rm -f "${STAGED_AGENT_FILES[@]}"
+    fi
+}
+trap cleanup_staged_agents EXIT
+
+stage_embedded_agent() {
+    local arch="$1"
+    local built="$NEXUS_PKG/tmp/nexus-guest-agent-linux-${arch}"
+    local staged="$EMBED_DIR/agent-linux-${arch}"
+
+    echo "==> Preparing embedded guest agent for linux/${arch}…"
+    (
+        cd "$NEXUS_PKG"
+        CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build \
+            -trimpath \
+            -ldflags="-s -w" \
+            -o "$built" \
+            ./cmd/nexus-guest-agent
+    )
+    cp "$built" "$staged"
+    chmod +x "$staged"
+    STAGED_AGENT_FILES+=("$staged")
+}
 
 build_for_arch() {
     local arch="$1"
     local goos="linux"
     local goarch="$arch"
     local out="$RESOURCES_DIR/nexus-linux-${arch}"
+
+    stage_embedded_agent "$arch"
 
     echo "==> Building nexus for ${goos}/${goarch}…"
     (
