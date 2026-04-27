@@ -18,9 +18,9 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/infra/store"
 )
 
-// libkrunShareBinDir returns the directory where the nexus-libkrun-vm helper
+// LibkrunShareBinDir returns the directory where the nexus-libkrun-vm helper
 // binary is extracted during bootstrap.
-func libkrunShareBinDir() string {
+func LibkrunShareBinDir() string {
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
 		return filepath.Join(xdg, "nexus", "bin")
 	}
@@ -101,7 +101,7 @@ func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 	// Prefer the extracted standalone nexus-libkrun-vm binary (set during bootstrap
 	// when the binary was built with embedded artifacts). Fall back to the nexus
 	// binary itself (smolvm / dev builds that register "libkrun-vm" as a subcommand).
-	shareDir := libkrunShareBinDir()
+	shareDir := LibkrunShareBinDir()
 	libkrunVMBin := filepath.Join(shareDir, "nexus-libkrun-vm")
 	if _, err := os.Stat(libkrunVMBin); err != nil {
 		libkrunVMBin = "" // not present; manager falls back to NexusBin subcommand

@@ -74,53 +74,101 @@ func setKernel(ctx uint32, spec libkrun.VMSpec, logf func(string, ...interface{}
 	// time (krun_start_enter), so passing the wrong format produces a cryptic
 	// ElfLoadKernel(Elf(InvalidElfMagicNumber)) error instead of a clean
 	// early failure.
-	format := uint32(1) // default: ELF
-	if magic, err := kernelMagic(kernelPath); err == nil {
-		switch magic {
-		case "elf":
-			format = 1 // KRUN_KERNEL_FORMAT_ELF
-		case "gz":
-			format = 4 // KRUN_KERNEL_FORMAT_IMAGE_GZ
-		default:
-			logf("set_kernel: unknown kernel magic %q, trying ELF first", magic)
-			format = 1
-		}
+	//
+	// libkrun format constants (from libkrun.h):
+	//   0 = RAW, 1 = ELF, 2 = PE_GZ, 3 = BZ2, 4 = GZ, 5 = ZSTD
+	format, detected := detectKernelFormat(kernelPath)
+	name := kernelFormatName(format)
+	if detected {
+		logf("set_kernel: detected format=%s from magic", name)
+	} else {
+		logf("set_kernel: unknown magic, defaulting to format=%s", name)
 	}
 
-	logf("set_kernel: path=%s format=%d cmdline=%q", kernelPath, format, spec.KernelCmdline)
+	logf("set_kernel: path=%s format=%s cmdline=%q", kernelPath, name, spec.KernelCmdline)
 	if err := krunSetKernel(ctx, kernelPath, "", spec.KernelCmdline, format); err != nil {
-		// If the detected format failed, try the other one as fallback.
-		fallback := uint32(4)
-		if format == 4 {
-			fallback = 1
+		// If the detected format failed, try other formats as fallback.
+		fallbacks := fallbackFormats(format)
+		for _, fb := range fallbacks {
+			fbName := kernelFormatName(fb)
+			logf("set_kernel format=%s failed (%v), trying format=%s", name, err, fbName)
+			if err2 := krunSetKernel(ctx, kernelPath, "", spec.KernelCmdline, fb); err2 == nil {
+				return nil
+			}
 		}
-		logf("set_kernel format=%d failed (%v), trying format=%d", format, err, fallback)
-		if err2 := krunSetKernel(ctx, kernelPath, "", spec.KernelCmdline, fallback); err2 != nil {
-			return fmt.Errorf("set kernel (tried format=%d err=%v format=%d err=%v)", format, err, fallback, err2)
-		}
+		return fmt.Errorf("set kernel: tried format=%s and fallbacks, all failed (first err: %w)", name, err)
 	}
 	return nil
 }
 
-// kernelMagic reads the first bytes of a kernel image and returns a hint
-// about its format: "elf", "gz", or "unknown".
-func kernelMagic(path string) (string, error) {
+// kernelFormatName returns a human-readable name for a libkrun kernel format constant.
+func kernelFormatName(format uint32) string {
+	switch format {
+	case 0:
+		return "raw"
+	case 1:
+		return "elf"
+	case 2:
+		return "pe_gz"
+	case 3:
+		return "bz2"
+	case 4:
+		return "gz"
+	case 5:
+		return "zstd"
+	default:
+		return fmt.Sprintf("%d", format)
+	}
+}
+
+// fallbackFormats returns a list of formats to try when the detected format fails.
+func fallbackFormats(detected uint32) []uint32 {
+	// Order: raw, elf, gz, zstd, bz2, pe_gz
+	candidates := []uint32{0, 1, 4, 5, 3, 2}
+	var out []uint32
+	for _, c := range candidates {
+		if c != detected {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// detectKernelFormat reads the first bytes of a kernel image and returns the
+// best-guess libkrun format constant plus a bool indicating whether the magic
+// was recognized. When unrecognized, it defaults to RAW (0) since many kernel
+// binaries (especially ARM64 Image/vmlinux.bin) are raw flat binaries.
+func detectKernelFormat(path string) (uint32, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return 0, false
 	}
 	defer f.Close()
-	buf := make([]byte, 4)
-	if _, err := f.Read(buf); err != nil {
-		return "", err
+	buf := make([]byte, 16)
+	n, err := f.Read(buf)
+	if err != nil || n < 2 {
+		return 0, false
 	}
-	if buf[0] == 0x7f && buf[1] == 'E' && buf[2] == 'L' && buf[3] == 'F' {
-		return "elf", nil
+	switch {
+	// ELF: 0x7f ELF
+	case n >= 4 && buf[0] == 0x7f && buf[1] == 'E' && buf[2] == 'L' && buf[3] == 'F':
+		return 1, true // KRUN_KERNEL_FORMAT_ELF
+	// GZIP: 0x1f 0x8b
+	case buf[0] == 0x1f && buf[1] == 0x8b:
+		return 4, true // KRUN_KERNEL_FORMAT_IMAGE_GZ
+	// ZSTD: 0x28 0xb5 0x2f 0xfd
+	case n >= 4 && buf[0] == 0x28 && buf[1] == 0xb5 && buf[2] == 0x2f && buf[3] == 0xfd:
+		return 5, true // KRUN_KERNEL_FORMAT_IMAGE_ZSTD
+	// BZ2: "BZh"
+	case n >= 3 && buf[0] == 'B' && buf[1] == 'Z' && buf[2] == 'h':
+		return 3, true // KRUN_KERNEL_FORMAT_IMAGE_BZ2
+	// XZ: 0xfd 0x37 0x7a 0x58 0x5a 0x00
+	case n >= 6 && buf[0] == 0xfd && buf[1] == 0x37 && buf[2] == 0x7a && buf[3] == 0x58 && buf[4] == 0x5a && buf[5] == 0x00:
+		// libkrun doesn't have a dedicated XZ format; try raw and hope.
+		return 0, true
+	default:
+		return 0, false // default to RAW (unknown magic)
 	}
-	if buf[0] == 0x1f && buf[1] == 0x8b {
-		return "gz", nil
-	}
-	return "unknown", nil
 }
 
 // launchHybridMode boots a VM with a block rootfs and virtiofs workspace share.

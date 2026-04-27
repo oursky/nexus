@@ -116,6 +116,16 @@ tasks:
     cmds:
       - scripts/remote/deploy-libkrun.sh
 
+  dev:libkrun:rebuild-vm:
+    desc: "Rebuild nexus-libkrun-vm on remote Linux host when local source is newer (macOS contributors)"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+    cmds:
+      - scripts/local/rebuild-libkrun-vm.sh
+
   dev:swift:
     desc: "dev:cli + stage macOS nexus binary + regenerate Swift SDK + build and open NexusApp"
     preconditions:

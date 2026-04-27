@@ -12,6 +12,13 @@ fi
 
 SOCK=/tmp/nexus-prewarm.sock
 DB=/tmp/nexus-prewarm.db
+
+# Purge any stale extracted nexus-libkrun-vm so the daemon extracts the fresh
+# embedded binary from /tmp/nexus-bin on this run.
+sudo rm -f /root/.local/share/nexus/bin/nexus-libkrun-vm \
+  /root/.local/share/nexus/lib/libkrun-embed.so \
+  /root/.local/share/nexus/lib/libkrunfw-embed.so
+
 sudo CI=false NEXUS_LIBKRUN_BAKE_TIMEOUT=600s NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS=1 /tmp/nexus-bin daemon start \
   --db "$DB" --socket "$SOCK" --workdir-root /data/nexus/libkrun-vms-prewarm --network=false &
 DPID=$!

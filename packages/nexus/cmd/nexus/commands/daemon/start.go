@@ -41,7 +41,7 @@ var EmbeddedAgentFn func() []byte
 
 // LibkrunBakeFn, if non-nil, is called after agent injection to pre-bake
 // developer tools into the base rootfs. Set on Linux by libkrun_bake_linux.go.
-var LibkrunBakeFn func(rootfsPath, kernelPath string, emit func(status, message string))
+var LibkrunBakeFn func(libkrunVMBin, rootfsPath, kernelPath string, emit func(status, message string))
 
 // DefaultVMKernelPath is the canonical kernel location after rootless daemon setup.
 var DefaultVMKernelPath = defaultVMKernelPath()
@@ -273,7 +273,16 @@ func startCommand() *cobra.Command {
 					strings.EqualFold(strings.TrimSpace(os.Getenv("CI")), "1") ||
 					strings.EqualFold(strings.TrimSpace(os.Getenv("CI")), "true")
 				if isLibkrun && LibkrunBakeFn != nil && !skipLibkrunBake {
-					LibkrunBakeFn(cfg.RootFSPath, cfg.KernelPath, func(status, message string) {
+					// Use the same path resolution as the daemon's bootstrap so we don't
+					// pick up a stale binary from a different XDG_DATA_HOME fallback path.
+					var vmBinDir string
+					if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+						vmBinDir = filepath.Join(xdg, "nexus", "bin")
+					} else {
+						home, _ := os.UserHomeDir()
+						vmBinDir = filepath.Join(home, ".local", "share", "nexus", "bin")
+					}
+					LibkrunBakeFn(filepath.Join(vmBinDir, "nexus-libkrun-vm"), cfg.RootFSPath, cfg.KernelPath, func(status, message string) {
 						emitPhase("rootfs-bake", status, message)
 					})
 				} else if isLibkrun && skipLibkrunBake {

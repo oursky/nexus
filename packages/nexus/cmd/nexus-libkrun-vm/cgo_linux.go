@@ -9,6 +9,7 @@ package main
 // tooling required on the build machine.
 #cgo CFLAGS: -I/usr/local/include
 #cgo LDFLAGS: -lkrun -Wl,-rpath,$$ORIGIN/../lib
+#define _GNU_SOURCE
 #include <libkrun.h>
 #include <stdlib.h>
 #include <stdint.h>

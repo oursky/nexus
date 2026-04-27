@@ -3,9 +3,11 @@
 package libkrun
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -272,22 +274,34 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 	libDir := filepath.Join(filepath.Dir(cfg.LibkrunVMBin), "..", "lib")
 	env := append(os.Environ(), "LD_LIBRARY_PATH="+libDir+":"+os.Getenv("LD_LIBRARY_PATH"))
 
+	// Pre-flight diagnostics: verify the binary exists and can execute.
+	if fi, err := os.Stat(cfg.LibkrunVMBin); err != nil {
+		log.Printf("[libkrun] bake VM: binary not found at %s: %v", cfg.LibkrunVMBin, err)
+	} else {
+		log.Printf("[libkrun] bake VM: binary=%s size=%d mod=%v", cfg.LibkrunVMBin, fi.Size(), fi.ModTime().Format(time.RFC3339))
+	}
+	preflight := exec.CommandContext(ctx, cfg.LibkrunVMBin, "--help")
+	preflight.Env = env
+	preflight.Dir = workDir
+	if out, err := preflight.CombinedOutput(); err != nil {
+		log.Printf("[libkrun] bake VM: preflight --help failed: %v output:\n%s", err, string(out))
+	} else {
+		log.Printf("[libkrun] bake VM: preflight --help ok (%d bytes)", len(out))
+	}
+	log.Printf("[libkrun] bake VM: config=%s", specPath)
+
 	childCmd := exec.CommandContext(ctx, cfg.LibkrunVMBin, "--config="+specPath)
 	childCmd.Env = env
 	childCmd.Dir = workDir
 	childCmd.ExtraFiles = []*os.File{vmSideFD}
 
-	// Redirect bake VM stdout/stderr to the log file rather than the operator's
-	// terminal — libkrun emits thousands of interrupt lines even at lower log
-	// levels. Progress is visible in serialLog+".hvc0" (agent serial output).
-	vmLogFile, logErr := os.OpenFile(serialLog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if logErr != nil {
-		vmLogFile = nil
+	// Capture stderr synchronously via a pipe so we don't lose output when the
+	// child exits quickly (fast-exit races with file-buffer flushes).
+	stderrPipe, err := childCmd.StderrPipe()
+	if err != nil {
+		return "", fmt.Errorf("stderr pipe: %w", err)
 	}
-	if vmLogFile != nil {
-		childCmd.Stdout = vmLogFile
-		childCmd.Stderr = vmLogFile
-	}
+	childCmd.Stdout = os.Stdout // libkrun debug spam goes to parent stdout
 
 	log.Printf("[libkrun] bake VM: starting — guest bootstrap in progress")
 
@@ -296,16 +310,20 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 			_ = passtProc.Kill()
 		}
 		_ = vmSideFD.Close()
-		if vmLogFile != nil {
-			_ = vmLogFile.Close()
-		}
+		_ = stderrPipe.Close()
 		return "", fmt.Errorf("start bake VM: %w", err)
 	}
 	_ = vmSideFD.Close()
 	_ = hostSideFD.Close()
-	if vmLogFile != nil {
-		_ = vmLogFile.Close()
-	}
+
+	// Drain stderr in background so the pipe doesn't block the child.
+	var stderrBuf bytes.Buffer
+	stderrDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&stderrBuf, stderrPipe)
+		_ = stderrPipe.Close()
+		close(stderrDone)
+	}()
 
 	// Reap the child in a goroutine. We don't block on it — libkrun's VMM
 	// cleanup can hang for minutes after the guest poweroff. Instead we poll
@@ -332,18 +350,32 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 	for {
 		select {
 		case <-childDone:
+			// Wait for stderr drain to finish before reading the buffer.
+			<-stderrDone
 			// Child exited before we saw the completion marker — either it
 			// crashed during startup or the bake failed and rebooted, but we
-			// missed the marker. Dump both the launcher stderr (bake.log) and
-			// the hvc0 serial log so we can diagnose.
-			launcherLog, _ := os.ReadFile(serialLog)
-			if len(launcherLog) > 0 {
-				lines := strings.Split(string(launcherLog), "\n")
-				if len(lines) > 50 {
-					lines = lines[len(lines)-50:]
+			// missed the marker. Dump both the launcher stderr and the hvc0
+			// serial log so we can diagnose.
+			stderrStr := stderrBuf.String()
+			if len(stderrStr) > 0 {
+				lines := strings.Split(stderrStr, "\n")
+				// Log the first 20 lines (error message / signal info) and last 50
+				// lines (stack trace) so we don't miss the root cause in truncation.
+				headLines := lines
+				if len(headLines) > 20 {
+					headLines = headLines[:20]
 				}
+				tailLines := lines
+				if len(tailLines) > 50 {
+					tailLines = tailLines[len(tailLines)-50:]
+				}
+				log.Printf("[libkrun] bake VM: child exited early (%v elapsed) — launcher stderr head:\n%s",
+					time.Since(start).Round(time.Second), strings.Join(headLines, "\n"))
 				log.Printf("[libkrun] bake VM: child exited early (%v elapsed) — launcher stderr tail:\n%s",
-					time.Since(start).Round(time.Second), strings.Join(lines, "\n"))
+					time.Since(start).Round(time.Second), strings.Join(tailLines, "\n"))
+			} else {
+				log.Printf("[libkrun] bake VM: child exited early (%v elapsed) — launcher stderr is empty",
+					time.Since(start).Round(time.Second))
 			}
 			hvc0Data, _ := os.ReadFile(hvc0Path)
 			if len(hvc0Data) > 0 {

@@ -5,6 +5,13 @@ RUNNER_USER="${USER:-$(id -un)}"
 SOCK=/tmp/nexus-provision.sock
 DB=/tmp/nexus-provision.db
 
+# Purge any stale extracted nexus-libkrun-vm so the daemon extracts the fresh
+# embedded binary from /tmp/nexus-bin on this run. Prevents ABI mismatches
+# when the committed binary changes but the extracted copy persists.
+sudo rm -f /root/.local/share/nexus/bin/nexus-libkrun-vm \
+  /root/.local/share/nexus/lib/libkrun-embed.so \
+  /root/.local/share/nexus/lib/libkrunfw-embed.so
+
 sudo NEXUS_LIBKRUN_SKIP_BAKE=1 NEXUS_LIBKRUN_BAKE_TIMEOUT=120s NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS=1 /tmp/nexus-bin daemon start \
   --db "$DB" --socket "$SOCK" --workdir-root /data/nexus/libkrun-vms-provision --network=false &
 DPID=$!

@@ -23,7 +23,7 @@ func init() {
 // Runs in the parent process (before self-daemonization) so the operator
 // sees progress. Non-fatal: logs and continues on failure — the agent will
 // still install tools on first VM boot.
-func ensureLibkrunRootfsBaked(rootfsPath, kernelPath string, emit func(status, message string)) {
+func ensureLibkrunRootfsBaked(libkrunVMBin, rootfsPath, kernelPath string, emit func(status, message string)) {
 	report := func(status, message string) {
 		if emit != nil {
 			emit(status, message)
@@ -33,16 +33,18 @@ func ensureLibkrunRootfsBaked(rootfsPath, kernelPath string, emit func(status, m
 	stampDir := defaultDataDir()
 	report("start", "checking cached rootfs bake")
 
-	home, _ := os.UserHomeDir()
-	vmBin := filepath.Join(home, ".local", "share", "nexus", "bin", "nexus-libkrun-vm")
-	if _, err := os.Stat(vmBin); err != nil {
-		log.Printf("daemon: rootfs bake: nexus-libkrun-vm not found at %s — skipping bake", vmBin)
+	if libkrunVMBin == "" {
+		home, _ := os.UserHomeDir()
+		libkrunVMBin = filepath.Join(home, ".local", "share", "nexus", "bin", "nexus-libkrun-vm")
+	}
+	if _, err := os.Stat(libkrunVMBin); err != nil {
+		log.Printf("daemon: rootfs bake: nexus-libkrun-vm not found at %s — skipping bake", libkrunVMBin)
 		report("ok", "skipped (nexus-libkrun-vm missing)")
 		return
 	}
 
 	cfg := lkruntime.ManagerConfig{
-		LibkrunVMBin:    vmBin,
+		LibkrunVMBin:    libkrunVMBin,
 		KernelPath:      kernelPath,
 		RootFSBasePath:  rootfsPath,
 		NetworkBackend:  "tsi",
