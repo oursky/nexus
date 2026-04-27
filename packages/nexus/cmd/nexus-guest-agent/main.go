@@ -962,6 +962,9 @@ func applyHostConfigDrive() error {
 // /dev/kmsg rate-limits burst writes, so we bypass emitDiagnostic here and
 // write the header/trailer via emitDiagnostic only (two lines total).
 func runStreamed(ctx context.Context, env []string, prefix, name string, args ...string) error {
+	emitDiagnostic("agent run: starting %s", prefix)
+	start := time.Now()
+
 	cmd := exec.CommandContext(ctx, name, args...)
 	if env != nil {
 		cmd.Env = env
@@ -979,16 +982,20 @@ func runStreamed(ctx context.Context, env []string, prefix, name string, args ..
 		if console != nil {
 			_ = console.Close()
 		}
+		emitDiagnostic("agent run: %s failed to start (%v)", prefix, time.Since(start).Round(time.Second))
 		return fmt.Errorf("start %s: %w", name, err)
 	}
 
 	err := cmd.Wait()
+	elapsed := time.Since(start).Round(time.Second)
 	if console != nil {
 		_ = console.Close()
 	}
 	if err != nil {
+		emitDiagnostic("agent run: %s exited with error after %v", prefix, elapsed)
 		return fmt.Errorf("%s exited: %w", name, err)
 	}
+	emitDiagnostic("agent run: %s completed in %v", prefix, elapsed)
 	return nil
 }
 
@@ -999,6 +1006,7 @@ func runStreamed(ctx context.Context, env []string, prefix, name string, args ..
 // A versioned stamp file in the rootfs prevents
 // re-running on every workspace start — packages only install once per rootfs.
 func ensureGuestBasePackages() error {
+	start := time.Now()
 	const stampFile = "/var/lib/nexus-tools-base-v7"
 	if _, err := os.Stat(stampFile); err == nil {
 		emitDiagnostic("agent base packages: already installed (stamp found)")
@@ -1110,7 +1118,7 @@ func ensureGuestBasePackages() error {
 	_ = os.Remove("/var/lib/nexus-tools-base-v6")
 	_ = os.Remove("/var/lib/nexus-tools-base-v5")
 	_ = os.Remove("/var/lib/nexus-tools-optional-v5")
-	emitDiagnostic("agent base packages: installed successfully")
+	emitDiagnostic("agent base packages: installed successfully (total %v)", time.Since(start).Round(time.Second))
 	return nil
 }
 
@@ -1151,6 +1159,7 @@ func runAptGetWithRetry(ctx context.Context, env []string, label string, args ..
 }
 
 func ensureGuestCLITools() error {
+	start := time.Now()
 	type cliSpec struct {
 		binary string
 		pkg    string
@@ -1214,6 +1223,7 @@ func ensureGuestCLITools() error {
 			emitDiagnostic("agent cli tools: %s installed OK", tool.binary)
 		}
 	}
+	emitDiagnostic("agent cli tools: installed successfully (total %v)", time.Since(start).Round(time.Second))
 	return nil
 }
 
