@@ -135,28 +135,7 @@ const (
 	passtVersion = "20250501.0"
 )
 
-// vmKernelURL returns the URL for the Linux kernel image (vmlinux ELF).
-// We use the Firecracker vmlinux ELF because it is a known-good format for
-// libkrun on x86_64 (ELF, not the PE bzImage that Ubuntu ships).  The Ubuntu
-// vmlinuz is a bzImage that libkrun's x86_64 loader does not handle when
-// misdetected as RAW, so we avoid it as a primary source.
-func vmKernelURL() string {
-	switch runtime.GOARCH {
-	case "arm64":
-		return "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/vmlinux-5.10.239"
-	default:
-		return "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/x86_64/vmlinux-5.10.239"
-	}
-}
 
-func vmKernelFallbackURL() string {
-	switch runtime.GOARCH {
-	case "arm64":
-		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-arm64-vmlinuz-generic"
-	default:
-		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-amd64-vmlinuz-generic"
-	}
-}
 
 func vmSquashfsURL() string {
 	switch runtime.GOARCH {
@@ -216,16 +195,15 @@ func LibkrunVMBinPath() string {
 
 // ── libkrun library + VM binary installation ──────────────────────────────────
 
-// installLibkrunLibsRootless ensures libkrun.so, libkrunfw.so, and the
-// nexus-libkrun-vm helper binary are present in ~/.local/share/nexus/{lib,bin}/.
-//
-// Source priority:
-//  1. Already installed (idempotent — checks for the sentinel libkrun.so.1).
-//  2. Embedded bytes (build was done with -tags libkrun and the artifacts were
-//     bundled into the binary at compile time) — preferred, fully offline.
-//  3. Copy from ~/.smolvm/lib/ if smolvm is installed — fallback for dev builds
-//     that don't have the embed artifacts (e.g. `go run` or unpackaged builds).
+// installLibkrunLibsRootless extracts the embedded libkrun shared libraries and
+// nexus-libkrun-vm binary into ~/.local/share/nexus/{lib,bin}/.
+// Non-libkrun builds skip this step (embedded stubs are empty).
 func installLibkrunLibsRootless(w io.Writer, emitJSON bool) error {
+	// Non-libkrun builds don't need libkrun.
+	if len(embeddedLibkrunVM) == 0 {
+		return nil
+	}
+
 	libDir := rootlessLibkrunLibDir()
 	binDir := rootlessLibkrunBinDir()
 
@@ -236,85 +214,16 @@ func installLibkrunLibsRootless(w io.Writer, emitJSON bool) error {
 		return fmt.Errorf("create libkrun bin dir %s: %w", binDir, err)
 	}
 
-	// ── Path 1: extract from embedded bytes ───────────────────────────────────
-	if len(embeddedLibkrunVM) > 0 && len(embeddedLibkrun) > 0 && len(embeddedLibkrunfw) > 0 {
-		vmBin := filepath.Join(binDir, "nexus-libkrun-vm")
-		libkrunSo := filepath.Join(libDir, "libkrun.so")
-		libkrunfwSo := filepath.Join(libDir, "libkrunfw.so.5.3.0")
-		if needsInstall(vmBin, embeddedLibkrunVM) || needsInstall(libkrunSo, embeddedLibkrun) || needsInstall(libkrunfwSo, embeddedLibkrunfw) {
-			fmt.Fprintf(w, "  extracting embedded libkrun libraries and VM binary...\n")
-			if err := extractLibkrunEmbeds(libDir, binDir); err != nil {
-				return fmt.Errorf("extract libkrun embeds: %w", err)
-			}
-			fmt.Fprintf(w, "  libkrun installed from embedded build artifacts\n")
+	vmBin := filepath.Join(binDir, "nexus-libkrun-vm")
+	libkrunSo := filepath.Join(libDir, "libkrun.so")
+	libkrunfwSo := filepath.Join(libDir, "libkrunfw.so.5.3.0")
+	if needsInstall(vmBin, embeddedLibkrunVM) || needsInstall(libkrunSo, embeddedLibkrun) || needsInstall(libkrunfwSo, embeddedLibkrunfw) {
+		fmt.Fprintf(w, "  extracting embedded libkrun libraries and VM binary...\n")
+		if err := extractLibkrunEmbeds(libDir, binDir); err != nil {
+			return fmt.Errorf("extract libkrun embeds: %w", err)
 		}
-		return nil
+		fmt.Fprintf(w, "  libkrun installed from embedded build artifacts\n")
 	}
-
-	// Idempotent fallback path: already installed if the main library and VM helper exist.
-	if _, err := os.Stat(filepath.Join(libDir, "libkrun.so.1")); err == nil {
-		if _, err2 := os.Stat(LibkrunVMBinPath()); err2 == nil {
-			return nil
-		}
-	}
-
-	// ── Path 2: copy from smolvm installation (dev fallback) ────────────────
-	srcDir := smolvmSourceDir()
-	if _, err := os.Stat(filepath.Join(srcDir, "libkrun.so.1")); err != nil {
-		return fmt.Errorf(
-			"prerequisite_error.libkrun_missing: libkrun shared library not found.\n\n" +
-				"This binary was not built with embedded libkrun artifacts.\n" +
-				"Remediation:\n" +
-				"  Re-deploy using the deploy script (downloads libkrun automatically):\n" +
-				"    REMOTE_HOST=user@host scripts/remote/deploy-libkrun.sh\n\n" +
-				"  Or install smolvm for local dev (pre-built libkrun.so included):\n" +
-				"    SMOLVM_VER=v0.5.19\n" +
-				"    curl -fsSL https://github.com/smol-machines/smolvm/releases/download/${SMOLVM_VER}/smolvm-${SMOLVM_VER#v}-linux-x86_64.tar.gz \\\n" +
-				"      | tar -xz --strip-components=2 -C ~/.smolvm/lib smolvm-${SMOLVM_VER#v}-linux-x86_64/lib\n",
-		)
-	}
-
-	fmt.Fprintf(w, "  installing libkrun libraries from %s (smolvm fallback)...\n", srcDir)
-	entries, err := os.ReadDir(srcDir)
-	if err != nil {
-		return fmt.Errorf("read smolvm lib dir: %w", err)
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasPrefix(name, "libkrun") {
-			continue
-		}
-		src := filepath.Join(srcDir, name)
-		dst := filepath.Join(libDir, name)
-		fi, err := os.Lstat(src)
-		if err != nil {
-			continue
-		}
-		if fi.Mode()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(src)
-			if err != nil {
-				continue
-			}
-			_ = os.Remove(dst)
-			if err := os.Symlink(target, dst); err != nil {
-				return fmt.Errorf("symlink %s: %w", name, err)
-			}
-		} else {
-			if err := copyFileRootless(src, dst); err != nil {
-				return fmt.Errorf("copy %s: %w", name, err)
-			}
-		}
-	}
-
-	// The smolvm fallback has no nexus-libkrun-vm binary — it expects the
-	// main nexus binary to be used with the `libkrun-vm` subcommand.
-	// That only works for unpackaged dev builds; the manager handles this
-	// via NexusBin fallback in that case.
-
-	if _, err := os.Stat(filepath.Join(libDir, "libkrun.so.1")); err != nil {
-		return fmt.Errorf("libkrun.so.1 not found after installation attempt")
-	}
-	fmt.Fprintf(w, "  libkrun libraries installed at %s\n", libDir)
 	return nil
 }
 
@@ -606,125 +515,52 @@ func needsInstall(dest string, newContent []byte) bool {
 
 // ── passt installation ────────────────────────────────────────────────────────
 
+// installPasstRootless extracts the embedded passt binary into ~/.local/bin/passt.
+// Non-libkrun builds skip this step (embedded stub is empty).
 func installPasstRootless(w io.Writer, emitJSON bool) error {
+	// Non-libkrun builds don't need passt.
+	if len(embeddedPasst) == 0 {
+		return nil
+	}
+
 	dest := rootlessPasstPath()
-
-	// Priority 1: embedded passt (release builds ship with it).
-	if len(embeddedPasst) > 0 {
-		if needsInstall(dest, embeddedPasst) {
-			fmt.Fprintf(w, "  extracting embedded passt (%d bytes)...\n", len(embeddedPasst))
-			if err := atomicWriteExec(dest, embeddedPasst); err != nil {
-				return fmt.Errorf("extract embedded passt: %w", err)
-			}
-			fmt.Fprintf(w, "  passt installed at %s (embedded)\n", dest)
+	if needsInstall(dest, embeddedPasst) {
+		fmt.Fprintf(w, "  extracting embedded passt (%d bytes)...\n", len(embeddedPasst))
+		if err := atomicWriteExec(dest, embeddedPasst); err != nil {
+			return fmt.Errorf("extract embedded passt: %w", err)
 		}
-		return nil
+		fmt.Fprintf(w, "  passt installed at %s (embedded)\n", dest)
 	}
-
-	// Priority 2: already installed (idempotent; version upgrade is manual).
-	if _, err := os.Stat(dest); err == nil {
-		return nil
-	}
-
-	// Priority 3: copy from system passt.
-	if p, err := exec.LookPath("passt"); err == nil {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return fmt.Errorf("read system passt: %w", err)
-		}
-		if err := atomicWriteExec(dest, data); err != nil {
-			return fmt.Errorf("install passt from system: %w", err)
-		}
-		fmt.Fprintf(w, "  passt installed from system at %s\n", dest)
-		return nil
-	}
-
-	// Priority 4: download static passt binary (x86_64 only).
-	url := passtDownloadURL()
-	if url == "" {
-		return fmt.Errorf(
-			"bootstrap_error.asset_install: no embedded passt and no system passt found.\n\n" +
-				"Install passt via your package manager:\n" +
-				"  sudo apt install passt       # Ubuntu/Debian\n" +
-				"  sudo dnf install passt       # Fedora/RHEL",
-		)
-	}
-	fmt.Fprintf(w, "  downloading passt...\n")
-	data, err := httpDownload(url)
-	if err != nil {
-		return fmt.Errorf(
-			"bootstrap_error.asset_install: download passt from %s: %w\n\n"+
-				"Alternative: install passt via your package manager:\n"+
-				"  sudo apt install passt       # Ubuntu/Debian\n"+
-				"  sudo dnf install passt       # Fedora/RHEL",
-			url, err,
-		)
-	}
-	if err := atomicWriteExec(dest, data); err != nil {
-		return fmt.Errorf("install passt: %w", err)
-	}
-	fmt.Fprintf(w, "  passt installed at %s\n", dest)
 	return nil
 }
 
 // ── VM kernel installation ────────────────────────────────────────────────────
 
+// installVMKernelRootless extracts the embedded vmlinux ELF kernel into
+// ~/.local/share/nexus/vm/vmlinux.bin.
+// Non-libkrun builds skip this step (embedded stub is empty).
 func installVMKernelRootless(w io.Writer, emitJSON bool) error {
+	// Non-libkrun builds don't need a VM kernel.
+	if len(embeddedKernel) == 0 {
+		return nil
+	}
+
 	dest := rootlessKernelPath()
 	if _, err := os.Stat(dest); err == nil {
 		return nil // already present
 	}
 
-	// Priority 1: embedded kernel (release builds ship with a compiled ELF).
-	if len(embeddedKernel) > 0 {
-		// Sanity check: must be a real ELF, not the placeholder text file.
-		if len(embeddedKernel) > 4 && embeddedKernel[0] == 0x7f && embeddedKernel[1] == 'E' && embeddedKernel[2] == 'L' && embeddedKernel[3] == 'F' {
-			fmt.Fprintf(w, "  extracting embedded kernel (%d bytes)...\n", len(embeddedKernel))
-			err := atomicWriteFile(dest, embeddedKernel, 0o644)
-			if err == nil {
-				fmt.Fprintf(w, "  kernel installed at %s (embedded)\n", dest)
-				return nil
-			}
-			fmt.Fprintf(w, "  warning: embedded kernel extract failed: %v\n", err)
+	// Sanity check: must be a real ELF, not the placeholder text file.
+	if len(embeddedKernel) > 4 && embeddedKernel[0] == 0x7f && embeddedKernel[1] == 'E' && embeddedKernel[2] == 'L' && embeddedKernel[3] == 'F' {
+		fmt.Fprintf(w, "  extracting embedded kernel (%d bytes)...\n", len(embeddedKernel))
+		if err := atomicWriteFile(dest, embeddedKernel, 0o644); err != nil {
+			return fmt.Errorf("extract embedded kernel: %w", err)
 		}
+		fmt.Fprintf(w, "  kernel installed at %s (embedded)\n", dest)
+		return nil
 	}
 
-	// Priority 2: temp cache, then legacy /var/lib/nexus, then download.
-	legacyKernel := "/var/lib/nexus/vmlinux.bin"
-	for _, src := range []string{
-		filepath.Join(os.TempDir(), "nexus-vmlinux.bin"),
-		legacyKernel,
-	} {
-		if fi, err := os.Stat(src); err == nil && fi.Size() > 1024*1024 {
-			fmt.Fprintf(w, "  using kernel from %s\n", src)
-			if err := copyFileRootless(src, dest); err == nil {
-				fmt.Fprintf(w, "  kernel installed at %s\n", dest)
-				return nil
-			}
-		}
-	}
-
-	// Priority 3: download fallback (for dev builds without embedded kernel).
-	fmt.Fprintf(w, "  downloading VM kernel...\n")
-	urls := []string{vmKernelURL(), vmKernelFallbackURL()}
-	var data []byte
-	var lastErr error
-	for i, url := range urls {
-		fmt.Fprintf(w, "  kernel source %d/%d: %s\n", i+1, len(urls), url)
-		data, lastErr = httpDownloadWithRetry(url, 3, 75*time.Second)
-		if lastErr == nil {
-			break
-		}
-		fmt.Fprintf(w, "  kernel download failed from source %d/%d: %v\n", i+1, len(urls), lastErr)
-	}
-	if lastErr != nil {
-		return fmt.Errorf("download kernel failed: %w", lastErr)
-	}
-	if err := atomicWriteFile(dest, data, 0o644); err != nil {
-		return fmt.Errorf("install kernel: %w", err)
-	}
-	fmt.Fprintf(w, "  kernel installed at %s (%d bytes)\n", dest, len(data))
-	return nil
+	return fmt.Errorf("embedded kernel is not a valid ELF — rebuild with embedded assets (run scripts/ci/build-nexus-libkrun.sh)")
 }
 
 // ── VM rootfs installation ────────────────────────────────────────────────────
@@ -1145,22 +981,29 @@ func buildRootlessRootfs(w io.Writer, dest string) error {
 
 // ── Runtime verification ──────────────────────────────────────────────────────
 
+// verifyRootlessRuntime confirms all runtime assets are present.
+// For libkrun driver this means libkrun libs, passt, kernel and rootfs.
+// For sandbox driver only the rootfs is checked (when applicable).
 func verifyRootlessRuntime(driver string) error {
-	// libkrun shared library.
-	libDir := rootlessLibkrunLibDir()
-	if _, err := os.Stat(filepath.Join(libDir, "libkrun.so.1")); err != nil {
-		return fmt.Errorf("libkrun.so.1 not found at %s", libDir)
-	}
+	isLibkrun := driver == "libkrun" || driver == ""
 
-	// Verify passt.
-	passt := rootlessPasstPath()
-	if _, err := os.Stat(passt); err != nil {
-		return fmt.Errorf("passt not found at %s", passt)
-	}
+	if isLibkrun {
+		// libkrun shared library.
+		libDir := rootlessLibkrunLibDir()
+		if _, err := os.Stat(filepath.Join(libDir, "libkrun.so.1")); err != nil {
+			return fmt.Errorf("libkrun.so.1 not found at %s", libDir)
+		}
 
-	// Verify kernel.
-	if _, err := os.Stat(rootlessKernelPath()); err != nil {
-		return fmt.Errorf("kernel not found at %s", rootlessKernelPath())
+		// Verify passt.
+		passt := rootlessPasstPath()
+		if _, err := os.Stat(passt); err != nil {
+			return fmt.Errorf("passt not found at %s", passt)
+		}
+
+		// Verify kernel.
+		if _, err := os.Stat(rootlessKernelPath()); err != nil {
+			return fmt.Errorf("kernel not found at %s", rootlessKernelPath())
+		}
 	}
 
 	// Verify rootfs.
