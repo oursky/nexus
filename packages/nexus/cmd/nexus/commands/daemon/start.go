@@ -298,10 +298,10 @@ func startCommand() *cobra.Command {
 				// Seed rootfs-dir from rootfs.ext4 AFTER bake so the runtime virtiofs
 				// directory always reflects the latest baked image.
 				if err := ensureRootfsDirSeeded(cfg.RootFSPath, DefaultVMRootfsDirPath); err != nil {
-					return fmt.Errorf("daemon start: rootfs-dir seed: %w", err)
+					log.Printf("daemon start: rootfs-dir seed warning (non-fatal): %v", err)
 				}
 				if err := ensureGuestAgentRootfsDir(DefaultVMRootfsDirPath); err != nil {
-					return fmt.Errorf("daemon start: rootfs-dir guest agent refresh: %w", err)
+					log.Printf("daemon start: rootfs-dir guest agent refresh warning (non-fatal): %v", err)
 				}
 			}
 
@@ -548,11 +548,12 @@ func ensureGuestAgent(rootfsPath string) error {
 func ensureGuestAgentRootfsDir(rootfsDir string) error {
 	rootfsDir = strings.TrimSpace(rootfsDir)
 	if rootfsDir == "" {
-		return fmt.Errorf("rootfs-dir path is required")
+		return nil
 	}
 	fi, err := os.Stat(rootfsDir)
 	if err != nil {
-		return fmt.Errorf("rootfs-dir not found at %q: %w", rootfsDir, err)
+		// Hybrid mode doesn't need rootfs-dir; skip gracefully.
+		return nil
 	}
 	if !fi.IsDir() {
 		return fmt.Errorf("rootfs-dir %q is not a directory", rootfsDir)
@@ -663,10 +664,21 @@ func ensureRootfsDirSeeded(rootfsExt4, rootfsDir string) error {
 	_ = os.RemoveAll(backupDir)
 	if _, err := os.Stat(rootfsDir); err == nil {
 		if err := os.Rename(rootfsDir, backupDir); err != nil {
-			return fmt.Errorf("backup existing rootfs-dir: %w", err)
+			// Another concurrent daemon may have already removed rootfs-dir.
+			if _, statErr := os.Stat(rootfsDir); statErr != nil {
+				// rootfs-dir no longer exists; continue to final rename.
+			} else {
+				return fmt.Errorf("backup existing rootfs-dir: %w", err)
+			}
 		}
 	}
 	if err := os.Rename(tmpDir, rootfsDir); err != nil {
+		// Race: another concurrent daemon may have seeded rootfs-dir.
+		if fi, statErr := os.Stat(rootfsDir); statErr == nil && fi.IsDir() {
+			_ = os.RemoveAll(tmpDir)
+			_ = os.RemoveAll(backupDir)
+			return nil
+		}
 		if _, statErr := os.Stat(backupDir); statErr == nil {
 			_ = os.Rename(backupDir, rootfsDir)
 		}
