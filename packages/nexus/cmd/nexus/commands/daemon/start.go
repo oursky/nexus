@@ -297,11 +297,13 @@ func startCommand() *cobra.Command {
 
 				// Seed rootfs-dir from rootfs.ext4 AFTER bake so the runtime virtiofs
 				// directory always reflects the latest baked image.
+				// Uses a per-user flock so concurrent daemon starts don't race on the
+				// same rootfs-dir (common in parallel e2e tests).
 				if err := ensureRootfsDirSeeded(cfg.RootFSPath, DefaultVMRootfsDirPath); err != nil {
-					log.Printf("daemon start: rootfs-dir seed warning (non-fatal): %v", err)
+					return fmt.Errorf("daemon start: rootfs-dir seed: %w", err)
 				}
 				if err := ensureGuestAgentRootfsDir(DefaultVMRootfsDirPath); err != nil {
-					log.Printf("daemon start: rootfs-dir guest agent refresh warning (non-fatal): %v", err)
+					return fmt.Errorf("daemon start: rootfs-dir guest agent refresh: %w", err)
 				}
 			}
 
@@ -649,6 +651,27 @@ func ensureRootfsDirSeeded(rootfsExt4, rootfsDir string) error {
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("create rootfs-dir parent: %w", err)
 	}
+
+	// Acquire a per-user flock so parallel daemon starts (e2e tests) don't race.
+	lockPath := filepath.Join(parent, "rootfs-dir.seed.lock")
+	unlock, err := acquireFileLock(lockPath)
+	if err != nil {
+		return fmt.Errorf("acquire rootfs-dir seed lock: %w", err)
+	}
+	defer unlock()
+
+	// Re-check after acquiring the lock: another daemon may have finished.
+	allPresent = true
+	for _, p := range required {
+		if _, err := os.Stat(p); err != nil {
+			allPresent = false
+			break
+		}
+	}
+	if allPresent {
+		return nil
+	}
+
 	tmpDir, err := os.MkdirTemp(parent, "rootfs-dir-seed-*")
 	if err != nil {
 		return fmt.Errorf("create rootfs-dir temp: %w", err)
@@ -664,21 +687,10 @@ func ensureRootfsDirSeeded(rootfsExt4, rootfsDir string) error {
 	_ = os.RemoveAll(backupDir)
 	if _, err := os.Stat(rootfsDir); err == nil {
 		if err := os.Rename(rootfsDir, backupDir); err != nil {
-			// Another concurrent daemon may have already removed rootfs-dir.
-			if _, statErr := os.Stat(rootfsDir); statErr != nil {
-				// rootfs-dir no longer exists; continue to final rename.
-			} else {
-				return fmt.Errorf("backup existing rootfs-dir: %w", err)
-			}
+			return fmt.Errorf("backup existing rootfs-dir: %w", err)
 		}
 	}
 	if err := os.Rename(tmpDir, rootfsDir); err != nil {
-		// Race: another concurrent daemon may have seeded rootfs-dir.
-		if fi, statErr := os.Stat(rootfsDir); statErr == nil && fi.IsDir() {
-			_ = os.RemoveAll(tmpDir)
-			_ = os.RemoveAll(backupDir)
-			return nil
-		}
 		if _, statErr := os.Stat(backupDir); statErr == nil {
 			_ = os.Rename(backupDir, rootfsDir)
 		}
@@ -686,6 +698,23 @@ func ensureRootfsDirSeeded(rootfsExt4, rootfsDir string) error {
 	}
 	_ = os.RemoveAll(backupDir)
 	return nil
+}
+
+// acquireFileLock acquires an exclusive flock on lockPath and returns an
+// unlock function. The lock is released when unlock is called.
+func acquireFileLock(lockPath string) (func(), error) {
+	f, err := os.Create(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("create lock file: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("flock: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 func requiredRootfsDirToolchainPaths(rootfsDir string) []string {
