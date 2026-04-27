@@ -659,7 +659,8 @@ func installVMKernelRootless(w io.Writer, emitJSON bool) error {
 		// Sanity check: must be a real ELF, not the placeholder text file.
 		if len(embeddedKernel) > 4 && embeddedKernel[0] == 0x7f && embeddedKernel[1] == 'E' && embeddedKernel[2] == 'L' && embeddedKernel[3] == 'F' {
 			fmt.Fprintf(w, "  extracting embedded kernel (%d bytes)...\n", len(embeddedKernel))
-			if err := atomicWriteFile(dest, embeddedKernel, 0o644); err == nil {
+			err := atomicWriteFile(dest, embeddedKernel, 0o644)
+			if err == nil {
 				fmt.Fprintf(w, "  kernel installed at %s (embedded)\n", dest)
 				return nil
 			}
