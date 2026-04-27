@@ -295,15 +295,16 @@ func startCommand() *cobra.Command {
 					emitPhase("rootfs-bake", "ok", "skipped ("+reason+")")
 				}
 
-				// Seed rootfs-dir from rootfs.ext4 AFTER bake so the runtime virtiofs
-				// directory always reflects the latest baked image.
-				// Uses a per-user flock so concurrent daemon starts don't race on the
-				// same rootfs-dir (common in parallel e2e tests).
-				if err := ensureRootfsDirSeeded(cfg.RootFSPath, DefaultVMRootfsDirPath); err != nil {
-					return fmt.Errorf("daemon start: rootfs-dir seed: %w", err)
-				}
-				if err := ensureGuestAgentRootfsDir(DefaultVMRootfsDirPath); err != nil {
-					return fmt.Errorf("daemon start: rootfs-dir guest agent refresh: %w", err)
+				// rootfs-dir seeding is only required for legacy virtiofs mode.
+				// Hybrid mode (block rootfs + virtiofs workspace share) does not use
+				// rootfs-dir; skip the slow debugfs rdump step.
+				if !isLibkrun {
+					if err := ensureRootfsDirSeeded(cfg.RootFSPath, DefaultVMRootfsDirPath); err != nil {
+						return fmt.Errorf("daemon start: rootfs-dir seed: %w", err)
+					}
+					if err := ensureGuestAgentRootfsDir(DefaultVMRootfsDirPath); err != nil {
+						return fmt.Errorf("daemon start: rootfs-dir guest agent refresh: %w", err)
+					}
 				}
 			}
 
