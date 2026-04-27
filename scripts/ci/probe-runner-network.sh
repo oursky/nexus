@@ -28,8 +28,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Wait for socket (max 60s)
-if ! timeout 60 bash -c 'until [ -S "$0" ]; do sleep 1; done' "$SOCK"; then
+# Wait for socket (max 180s — daemon may need time to extract assets and build rootfs)
+if ! timeout 180 bash -c 'until [ -S "$0" ]; do sleep 1; done' "$SOCK"; then
   echo "[probe] daemon start timed out"
   exit 1
 fi
