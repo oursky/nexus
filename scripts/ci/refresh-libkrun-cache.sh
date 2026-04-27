@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CACHE_DIR="${LIBKRUN_BAKED_CACHE_DIR:?LIBKRUN_BAKED_CACHE_DIR is required}"
+CACHE_DIR="${LIBKRUN_BAKED_CACHE_DIR:-}"
+if [[ -z "$CACHE_DIR" ]]; then
+  echo "LIBKRUN_BAKED_CACHE_DIR not set; nothing to refresh."
+  exit 0
+fi
 mkdir -p "$CACHE_DIR"
 
 if sudo test -f /root/.local/share/nexus/vm/vmlinux.bin; then

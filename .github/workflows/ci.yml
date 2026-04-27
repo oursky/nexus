@@ -52,7 +52,7 @@ jobs:
           go-version: '1.24.x'
 
       - name: Install Task
-        run: go install github.com/go-task/task/v3/cmd/task@latest
+        run: go install github.com/go-task/task/v3/cmd/task@v3.42.0
 
       - name: Build embedded guest-agent binary
         working-directory: packages/nexus
@@ -86,7 +86,7 @@ jobs:
           go-version: '1.24.x'
 
       - name: Install Task
-        run: go install github.com/go-task/task/v3/cmd/task@latest
+        run: go install github.com/go-task/task/v3/cmd/task@v3.42.0
 
       # Make /dev/kvm accessible to the runner user without needing group
       # membership. On self-hosted runners KVM is typically pre-configured;
