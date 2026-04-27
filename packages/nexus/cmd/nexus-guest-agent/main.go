@@ -1961,10 +1961,10 @@ func networkLooksUsable(addrOutput, routeOutput string) bool {
 // readNexusGateway returns the guest's default gateway IP. It checks, in order:
 //  1. The host config drive (.nexus-gateway) — set for normal workspace VMs.
 //  2. The kernel cmdline nexus.gw= parameter — set for bake VMs.
-//  3. A compiled-in default (172.26.0.1) which passt's static-IP fallback uses.
+//  3. A compiled-in default (192.168.0.1) which matches the host's passt fallback.
 func readNexusGateway() string {
 	const configDriveMount = "/run/nexus-host"
-	const defaultGW = "172.26.0.1"
+	const defaultGW = "192.168.0.1"
 
 	// 1. Host config drive (workspace VMs).
 	if data, err := os.ReadFile(filepath.Join(configDriveMount, ".nexus-gateway")); err == nil {

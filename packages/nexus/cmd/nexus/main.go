@@ -20,6 +20,7 @@ import (
 	daemoncmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon"
 	projectcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/project"
 	spotlightcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/spotlight"
+	vmcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/vm"
 	workspacecmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/workspace"
 )
 
@@ -49,6 +50,7 @@ func main() {
 		workspacecmd.Command(),
 		spotlightcmd.Command(),
 		projectcmd.Command(),
+		vmcmd.Command(),
 		execCommand(),
 	)
 	for _, cmd := range extraCommands {
