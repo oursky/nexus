@@ -654,7 +654,20 @@ func installVMKernelRootless(w io.Writer, emitJSON bool) error {
 		return nil // already present
 	}
 
-	// Priority: temp cache, then legacy /var/lib/nexus, then download.
+	// Priority 1: embedded kernel (release builds ship with a compiled ELF).
+	if len(embeddedKernel) > 0 {
+		// Sanity check: must be a real ELF, not the placeholder text file.
+		if len(embeddedKernel) > 4 && embeddedKernel[0] == 0x7f && embeddedKernel[1] == 'E' && embeddedKernel[2] == 'L' && embeddedKernel[3] == 'F' {
+			fmt.Fprintf(w, "  extracting embedded kernel (%d bytes)...\n", len(embeddedKernel))
+			if err := atomicWriteFile(dest, embeddedKernel, 0o644); err == nil {
+				fmt.Fprintf(w, "  kernel installed at %s (embedded)\n", dest)
+				return nil
+			}
+			fmt.Fprintf(w, "  warning: embedded kernel extract failed: %v\n", err)
+		}
+	}
+
+	// Priority 2: temp cache, then legacy /var/lib/nexus, then download.
 	legacyKernel := "/var/lib/nexus/vmlinux.bin"
 	for _, src := range []string{
 		filepath.Join(os.TempDir(), "nexus-vmlinux.bin"),
@@ -669,6 +682,7 @@ func installVMKernelRootless(w io.Writer, emitJSON bool) error {
 		}
 	}
 
+	// Priority 3: download fallback (for dev builds without embedded kernel).
 	fmt.Fprintf(w, "  downloading VM kernel...\n")
 	urls := []string{vmKernelURL(), vmKernelFallbackURL()}
 	var data []byte

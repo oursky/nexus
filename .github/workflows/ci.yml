@@ -122,8 +122,18 @@ jobs:
       - name: Verify pre-baked VM assets (cache hint)
         run: scripts/ci/verify-vm-assets.sh hint
 
+      # Cache the compiled kernel ELF so we don't rebuild from source on every run.
+      # Kernel builds are slow (~10-15 min) and the config rarely changes.
+      - name: Restore compiled kernel ELF
+        id: kernel-elf-cache
+        uses: actions/cache@v4
+        with:
+          path: packages/nexus/cmd/nexus/assets/vmlinux
+          key: nexus-kernel-elf-v1-${{ runner.os }}-${{ hashFiles('scripts/nexus/build-kernel.sh') }}
+
       # Build the guest-agent binary so the //go:embed directive in
       # embed_agent_linux_amd64.go is satisfied before compiling nexus.
+      # This step also builds the kernel ELF (if cache miss) and embeds it.
       - name: Build embedded guest-agent binary
         run: scripts/ci/build-nexus-libkrun.sh
 

@@ -50,6 +50,13 @@ if [[ -d "$NEXUS_DIR/cmd/nexus-libkrun-vm" ]]; then
         -o "$EMBED_DIR/nexus-libkrun-vm" \
         ./cmd/nexus-libkrun-vm
     echo "  → rebuilt nexus-libkrun-vm from source ($(du -sh "$EMBED_DIR/nexus-libkrun-vm" | cut -f1))"
+
+    # Build the kernel ELF from source and embed it in the nexus binary.
+    # This replaces the slow/unreliable runtime download from Firecracker S3.
+    echo "Building kernel from source for embed..."
+    KERNEL_ASSET="$EMBED_DIR/assets/vmlinux"
+    bash "$REPO_ROOT/scripts/nexus/build-kernel.sh" "$KERNEL_ASSET"
+    echo "  → kernel built ($(du -sh "$KERNEL_ASSET" | cut -f1))"
   else
     echo "Building nexus with prebuilt nexus-libkrun-vm embed..."
   fi
@@ -59,7 +66,7 @@ fi
 
 # shellcheck disable=SC2086
 CGO_ENABLED=0 go build $BUILD_TAGS -o /tmp/nexus-bin ./cmd/nexus/
-rm -f "$EMBED_DIR/libkrun-embed.so" "$EMBED_DIR/libkrunfw-embed.so"
+rm -f "$EMBED_DIR/libkrun-embed.so" "$EMBED_DIR/libkrunfw-embed.so" "$EMBED_DIR/assets/vmlinux"
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   echo "NEXUS_E2E_BINARY=/tmp/nexus-bin" >> "$GITHUB_ENV"
