@@ -3,7 +3,7 @@ set -euo pipefail
 
 for attempt in 1 2 3; do
   if sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq \
-    && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y squashfs-tools e2fsprogs rsync xfsprogs build-essential libncurses-dev bison flex libssl-dev bc libelf-dev passt; then
+    && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y squashfs-tools e2fsprogs rsync xfsprogs build-essential libncurses-dev bison flex libssl-dev bc libelf-dev; then
     exit 0
   fi
   if [ "$attempt" -eq 3 ]; then
