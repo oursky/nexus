@@ -137,9 +137,6 @@ jobs:
       - name: Verify VM assets after provisioning
         run: scripts/ci/verify-vm-assets.sh required
 
-      - name: Seed rootfs-dir for test runner
-        run: scripts/ci/seed-rootfs-dir-for-runner.sh
-
       - name: Prewarm default-profile baked rootfs (best effort, bounded)
         continue-on-error: true
         run: scripts/ci/prewarm-default-profile.sh
