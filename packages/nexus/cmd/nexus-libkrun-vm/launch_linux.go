@@ -68,15 +68,59 @@ func setKernel(ctx uint32, spec libkrun.VMSpec, logf func(string, ...interface{}
 	if kernelPath == "" {
 		return fmt.Errorf("kernel path is required")
 	}
-	logf("set_kernel: path=%s cmdline=%q", kernelPath, spec.KernelCmdline)
-	if err := krunSetKernel(ctx, kernelPath, "", spec.KernelCmdline, 1 /* KRUN_KERNEL_FORMAT_ELF */); err != nil {
-		// Try gzip-compressed image as fallback (bzImage).
-		logf("set_kernel ELF failed (%v), trying IMAGE_GZ", err)
-		if err2 := krunSetKernel(ctx, kernelPath, "", spec.KernelCmdline, 4 /* KRUN_KERNEL_FORMAT_IMAGE_GZ */); err2 != nil {
-			return fmt.Errorf("set kernel (tried elf=%v gz=%v)", err, err2)
+
+	// Detect kernel image format from file magic so we pass the correct
+	// krun_set_kernel format code. libkrun validates the format at VM start
+	// time (krun_start_enter), so passing the wrong format produces a cryptic
+	// ElfLoadKernel(Elf(InvalidElfMagicNumber)) error instead of a clean
+	// early failure.
+	format := uint32(1) // default: ELF
+	if magic, err := kernelMagic(kernelPath); err == nil {
+		switch magic {
+		case "elf":
+			format = 1 // KRUN_KERNEL_FORMAT_ELF
+		case "gz":
+			format = 4 // KRUN_KERNEL_FORMAT_IMAGE_GZ
+		default:
+			logf("set_kernel: unknown kernel magic %q, trying ELF first", magic)
+			format = 1
+		}
+	}
+
+	logf("set_kernel: path=%s format=%d cmdline=%q", kernelPath, format, spec.KernelCmdline)
+	if err := krunSetKernel(ctx, kernelPath, "", spec.KernelCmdline, format); err != nil {
+		// If the detected format failed, try the other one as fallback.
+		fallback := uint32(4)
+		if format == 4 {
+			fallback = 1
+		}
+		logf("set_kernel format=%d failed (%v), trying format=%d", format, err, fallback)
+		if err2 := krunSetKernel(ctx, kernelPath, "", spec.KernelCmdline, fallback); err2 != nil {
+			return fmt.Errorf("set kernel (tried format=%d err=%v format=%d err=%v)", format, err, fallback, err2)
 		}
 	}
 	return nil
+}
+
+// kernelMagic reads the first bytes of a kernel image and returns a hint
+// about its format: "elf", "gz", or "unknown".
+func kernelMagic(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	buf := make([]byte, 4)
+	if _, err := f.Read(buf); err != nil {
+		return "", err
+	}
+	if buf[0] == 0x7f && buf[1] == 'E' && buf[2] == 'L' && buf[3] == 'F' {
+		return "elf", nil
+	}
+	if buf[0] == 0x1f && buf[1] == 0x8b {
+		return "gz", nil
+	}
+	return "unknown", nil
 }
 
 // launchHybridMode boots a VM with a block rootfs and virtiofs workspace share.
