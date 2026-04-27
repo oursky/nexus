@@ -55,6 +55,7 @@ func TestCLI_ProjectCreateListGetRemove(t *testing.T) {
 	}
 }
 
+// Spec: VM-001, VM-002, VM-004, VM-005, VM-PROOF-001, VM-PROOF-005
 func TestCLI_WorkspaceShellAndExec(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)

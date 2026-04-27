@@ -23,6 +23,7 @@ func openIntegrationDB(t *testing.T) *store.DB {
 	return db
 }
 
+// Spec: INV-007, INV-008, INV-009, INV-011
 // TestIntegration_CreateAndGetLifecycle tests the full Create→Start→Stop→Remove
 // lifecycle using real SQLite persistence.
 func TestIntegration_CreateAndGetLifecycle(t *testing.T) {

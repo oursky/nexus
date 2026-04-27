@@ -37,6 +37,7 @@ func createWorkspaceLocalRepo(t *testing.T, h *harness.CLIHarness, repoPath, nam
 	return id
 }
 
+// Spec: VM-002, VM-003, VM-PROOF-005
 // TestPTY_ExecPWD verifies that workspace exec runs in the workspace's repo directory.
 func TestPTY_ExecPWD(t *testing.T) {
 	t.Parallel()
@@ -56,6 +57,7 @@ func TestPTY_ExecPWD(t *testing.T) {
 	}
 }
 
+// Spec: VM-001, VM-PROOF-001
 // TestPTY_ExecEcho verifies stdout is streamed back from workspace exec.
 func TestPTY_ExecEcho(t *testing.T) {
 	t.Parallel()
@@ -134,6 +136,7 @@ func TestPTY_ExecExitCode(t *testing.T) {
 	}
 }
 
+// Spec: VM-001, VM-PROOF-001
 // TestPTY_ShellNonInteractiveScript verifies workspace shell with stdin pipe runs a script.
 func TestPTY_ShellNonInteractiveScript(t *testing.T) {
 	t.Parallel()
@@ -158,7 +161,9 @@ func TestPTY_ListSession(t *testing.T) {
 	h := harness.New(t)
 	repoPath := harness.MakeLocalGitRepo(t, "pty-list")
 	var wsRes struct {
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{

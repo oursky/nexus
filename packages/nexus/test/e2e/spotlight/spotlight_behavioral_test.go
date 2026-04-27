@@ -52,7 +52,9 @@ func startEchoServer(t *testing.T) (port int, stop func()) {
 func createSpotlightWorkspace(t *testing.T, h *harness.Harness, repoPath, name string) string {
 	t.Helper()
 	var res struct {
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{"repo": repoPath, "ref": "main", "workspaceName": name},
@@ -69,6 +71,7 @@ func createSpotlightWorkspace(t *testing.T, h *harness.Harness, repoPath, name s
 	return wsID
 }
 
+// Spec: VM-005, VM-PROOF-002
 // TestSpotlight_TCPProxyTraffic verifies that spotlight actually proxies TCP traffic.
 func TestSpotlight_TCPProxyTraffic(t *testing.T) {
 	t.Parallel()
@@ -151,11 +154,13 @@ func TestSpotlight_ListAndStop(t *testing.T) {
 	localPort := harness.FreePort(t)
 
 	var addRes struct {
-		Forward struct{ ID string `json:"id"` } `json:"forward"`
+		Forward struct {
+			ID string `json:"id"`
+		} `json:"forward"`
 	}
 	if err := h.Call("spotlight.start", map[string]any{
 		"workspaceId": wsID,
-		"spec": map[string]any{"localPort": localPort, "remotePort": remotePort},
+		"spec":        map[string]any{"localPort": localPort, "remotePort": remotePort},
 	}, &addRes); err != nil {
 		t.Fatalf("spotlight.start: %v", err)
 	}
@@ -163,7 +168,9 @@ func TestSpotlight_ListAndStop(t *testing.T) {
 
 	// Verify it appears in spotlight.list.
 	var listRes struct {
-		Forwards []struct{ ID string `json:"id"` } `json:"forwards"`
+		Forwards []struct {
+			ID string `json:"id"`
+		} `json:"forwards"`
 	}
 	h.MustCall("spotlight.list", map[string]any{"workspaceId": wsID}, &listRes)
 	found := false
@@ -178,7 +185,9 @@ func TestSpotlight_ListAndStop(t *testing.T) {
 	}
 
 	// Stop all forwards for the workspace.
-	var stopRes struct{ Closed bool `json:"closed"` }
+	var stopRes struct {
+		Closed bool `json:"closed"`
+	}
 	h.MustCall("spotlight.stop", map[string]any{"workspaceId": wsID}, &stopRes)
 	if !stopRes.Closed {
 		t.Fatal("spotlight.stop: expected closed=true")
@@ -206,11 +215,13 @@ func TestSpotlight_PortConflict(t *testing.T) {
 	localPort := harness.FreePort(t)
 
 	var addRes struct {
-		Forward struct{ ID string `json:"id"` } `json:"forward"`
+		Forward struct {
+			ID string `json:"id"`
+		} `json:"forward"`
 	}
 	if err := h.Call("spotlight.start", map[string]any{
 		"workspaceId": wsID,
-		"spec": map[string]any{"localPort": localPort, "remotePort": remotePort},
+		"spec":        map[string]any{"localPort": localPort, "remotePort": remotePort},
 	}, &addRes); err != nil {
 		t.Fatalf("spotlight.start first: %v", err)
 	}
@@ -221,7 +232,7 @@ func TestSpotlight_PortConflict(t *testing.T) {
 	// Second bind on same local port should fail.
 	err := h.Call("spotlight.start", map[string]any{
 		"workspaceId": wsID,
-		"spec": map[string]any{"localPort": localPort, "remotePort": remotePort + 1},
+		"spec":        map[string]any{"localPort": localPort, "remotePort": remotePort + 1},
 	}, nil)
 	if err == nil {
 		t.Error("spotlight.start: expected error on port conflict, got nil")
@@ -242,11 +253,13 @@ func TestSpotlight_WorkspacePortsAlias(t *testing.T) {
 
 	// Add via workspace.ports.add.
 	var addRes struct {
-		Forward struct{ ID string `json:"id"` } `json:"forward"`
+		Forward struct {
+			ID string `json:"id"`
+		} `json:"forward"`
 	}
 	if err := h.Call("workspace.ports.add", map[string]any{
 		"workspaceId": wsID,
-		"spec": map[string]any{"localPort": localPort, "remotePort": remotePort},
+		"spec":        map[string]any{"localPort": localPort, "remotePort": remotePort},
 	}, &addRes); err != nil {
 		t.Fatalf("workspace.ports.add: %v", err)
 	}
@@ -257,7 +270,9 @@ func TestSpotlight_WorkspacePortsAlias(t *testing.T) {
 
 	// List via workspace.ports.list.
 	var listRes struct {
-		Forwards []struct{ ID string `json:"id"` } `json:"forwards"`
+		Forwards []struct {
+			ID string `json:"id"`
+		} `json:"forwards"`
 	}
 	h.MustCall("workspace.ports.list", map[string]any{"workspaceId": wsID}, &listRes)
 	found := false
@@ -272,7 +287,9 @@ func TestSpotlight_WorkspacePortsAlias(t *testing.T) {
 	}
 
 	// Remove via workspace.ports.remove.
-	var removeRes struct{ Closed bool `json:"closed"` }
+	var removeRes struct {
+		Closed bool `json:"closed"`
+	}
 	h.MustCall("workspace.ports.remove", map[string]any{
 		"workspaceId": wsID,
 		"forwardId":   fwdID,

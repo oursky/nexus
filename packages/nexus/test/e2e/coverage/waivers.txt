@@ -1,0 +1,3 @@
+# Format: SPEC_ID | reason
+VM-PROOF-003 | Requires deterministic daemon restart harness coverage for VM workspaces; tracked in child PRD 06 TD follow-up.
+VM-PROOF-006 | Requires stable workspace tool bootstrap in CI profile to assert codex/opencode binary availability.
