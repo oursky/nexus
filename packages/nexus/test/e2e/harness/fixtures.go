@@ -62,7 +62,12 @@ func TempSocket(t *testing.T) string {
 
 func TempWorkdir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "nexus-e2e-workdir-*")
+	base := ""
+	if _, err := os.Stat("/data/nexus"); err == nil {
+		base = "/data/nexus/libkrun-vms-e2e"
+		_ = os.MkdirAll(base, 0o755)
+	}
+	dir, err := os.MkdirTemp(base, "nexus-e2e-workdir-*")
 	if err != nil {
 		t.Fatalf("TempWorkdir: mkdir: %v", err)
 	}

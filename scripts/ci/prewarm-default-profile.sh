@@ -13,7 +13,7 @@ fi
 SOCK=/tmp/nexus-prewarm.sock
 DB=/tmp/nexus-prewarm.db
 sudo CI=false NEXUS_LIBKRUN_BAKE_TIMEOUT=240s NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS=1 /tmp/nexus-bin daemon start \
-  --db "$DB" --socket "$SOCK" --workdir-root /tmp/nexus-prewarm-work &
+  --db "$DB" --socket "$SOCK" --workdir-root /data/nexus/libkrun-vms-prewarm &
 DPID=$!
 
 timeout 300 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
