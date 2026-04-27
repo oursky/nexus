@@ -456,6 +456,12 @@ func installPrebuiltVMBundleRootless(w io.Writer, emitJSON bool) error {
 			rootfsData, err = io.ReadAll(tr)
 		case "rootfs-agent.sha256":
 			agentHashData, err = io.ReadAll(tr)
+		case "rootfs-baked-v7":
+			bakedStampData, err = io.ReadAll(tr)
+		case "rootfs-baked-v6":
+			bakedStampData, err = io.ReadAll(tr)
+		case "rootfs-baked-v5":
+			bakedStampData, err = io.ReadAll(tr)
 		case "rootfs-baked-v4":
 			bakedStampData, err = io.ReadAll(tr)
 		default:
@@ -481,7 +487,7 @@ func installPrebuiltVMBundleRootless(w io.Writer, emitJSON bool) error {
 		_ = atomicWriteFile(filepath.Join(xdgStateNexus(), "rootfs-agent.sha256"), bytes.TrimSpace(agentHashData), 0o644)
 	}
 	if len(bakedStampData) > 0 {
-		_ = atomicWriteFile(filepath.Join(xdgStateNexus(), "rootfs-baked-v4"), bytes.TrimSpace(bakedStampData), 0o644)
+		_ = atomicWriteFile(filepath.Join(xdgStateNexus(), "rootfs-baked-v7"), bytes.TrimSpace(bakedStampData), 0o644)
 	}
 
 	fmt.Fprintf(w, "  installed prebuilt VM assets (kernel + rootfs)\n")
