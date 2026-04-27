@@ -9,8 +9,8 @@ import (
 
 func TestBakeTimeout_Default(t *testing.T) {
 	t.Setenv("NEXUS_LIBKRUN_BAKE_TIMEOUT", "")
-	if got := bakeTimeout(); got != 180*time.Second {
-		t.Fatalf("expected default 180s, got %s", got)
+	if got := bakeTimeout(); got != 12*time.Minute {
+		t.Fatalf("expected default 12m0s, got %s", got)
 	}
 }
 
@@ -23,8 +23,8 @@ func TestBakeTimeout_Override(t *testing.T) {
 
 func TestBakeTimeout_InvalidFallsBack(t *testing.T) {
 	t.Setenv("NEXUS_LIBKRUN_BAKE_TIMEOUT", "nope")
-	if got := bakeTimeout(); got != 180*time.Second {
-		t.Fatalf("expected default 180s for invalid input, got %s", got)
+	if got := bakeTimeout(); got != 12*time.Minute {
+		t.Fatalf("expected default 12m0s for invalid input, got %s", got)
 	}
 }
 

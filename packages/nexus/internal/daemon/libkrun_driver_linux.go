@@ -68,8 +68,14 @@ func validateReflinkSupport(dir string) error {
 		return fmt.Errorf("write test file: %w", err)
 	}
 	out, err := exec.Command("cp", "--reflink=always", src, dst).CombinedOutput()
+	outStr := strings.TrimSpace(string(out))
 	if err != nil {
-		return fmt.Errorf("reflink clone not supported on %s: %w: %s", dir, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("reflink clone not supported on %s: %w: %s", dir, err, outStr)
+	}
+	// GNU coreutils ≥9 returns exit 0 even when reflink fails (falls back to
+	// regular copy). Detect the failure by inspecting stderr.
+	if strings.Contains(outStr, "failed to clone") {
+		return fmt.Errorf("reflink clone not supported on %s: %s", dir, outStr)
 	}
 	return nil
 }

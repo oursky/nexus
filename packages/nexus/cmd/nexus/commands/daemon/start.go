@@ -441,6 +441,11 @@ func launchDaemonBackground(out io.Writer, socketPath string, jsonOut bool, read
 
 	emitPhase("start", fmt.Sprintf("background process pid=%d", child.Process.Pid))
 
+	// Wait in background so ProcessState is populated if the child exits early.
+	go func() {
+		_ = child.Wait()
+	}()
+
 	// Poll for socket readiness.
 	if readyTimeout <= 0 {
 		readyTimeout = 30 * time.Second

@@ -235,23 +235,22 @@ func copyFileWithContext(ctx context.Context, src, dst string) error {
 			}
 		}
 
-		// Try reflink first (O(1) CoW); if unsupported fall back to sparse copy.
+		// Require reflink (O(1) CoW on XFS/btrfs). cp --reflink=always returns 0
+		// even when reflink fails (falls back to regular copy on coreutils ≥9), so
+		// we inspect stderr to detect the failure.
 		cmd := exec.CommandContext(ctx, "cp", "--reflink=always", "--sparse=auto", src, dst)
 		out, err := cmd.CombinedOutput()
-		if err == nil {
-			log.Printf("[libkrun] copyFile reflink clone enabled: %s → %s", src, dst)
-			return nil
+		outStr := strings.TrimSpace(string(out))
+		if err != nil {
+			lastErr = fmt.Errorf("cp %s → %s: %w: %s", src, dst, err, outStr)
+			continue
 		}
-		lastErr = fmt.Errorf("cp %s → %s: %w: %s", src, dst, err, strings.TrimSpace(string(out)))
-		log.Printf("[libkrun] copyFile reflink unavailable, using sparse copy fallback: %s → %s", src, dst)
-
-		// Reflink failed (non-XFS/btrfs host); use sparse copy instead.
-		cmd = exec.CommandContext(ctx, "cp", "--sparse=always", src, dst)
-		out, err = cmd.CombinedOutput()
-		if err == nil {
-			return nil
+		if strings.Contains(outStr, "failed to clone") {
+			lastErr = fmt.Errorf("reflink clone failed for %s → %s: %s", src, dst, outStr)
+			continue
 		}
-		lastErr = fmt.Errorf("cp %s → %s: %w: %s", src, dst, err, strings.TrimSpace(string(out)))
+		log.Printf("[libkrun] copyFile reflink clone enabled: %s → %s", src, dst)
+		return nil
 	}
 	return fmt.Errorf("copyFile failed after 3 attempts: %w", lastErr)
 }
