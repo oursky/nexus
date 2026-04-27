@@ -66,14 +66,6 @@ tasks:
       - ./scripts/ci/provision-libkrun-host.sh
       - ./scripts/ci/prewarm-default-profile.sh
 
-  ci:libkrun:prebuilt:
-    desc: "Build and package prebuilt libkrun VM assets"
-    cmds:
-      - ./scripts/ci/install-host-prereqs.sh
-      - ./scripts/ci/build-nexus-libkrun.sh
-      - ./scripts/ci/build-prebuilt-vm-assets.sh
-      - ./scripts/ci/package-prebuilt-vm-assets.sh
-
   clean:
     desc: "Remove build artifacts"
     cmds:
