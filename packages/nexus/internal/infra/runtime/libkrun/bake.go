@@ -310,7 +310,11 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 	// Reap the child in a goroutine. We don't block on it — libkrun's VMM
 	// cleanup can hang for minutes after the guest poweroff. Instead we poll
 	// the hvc0 serial log for the completion marker, then kill the process.
-	go func() { _ = childCmd.Wait() }()
+	childDone := make(chan struct{})
+	go func() {
+		_ = childCmd.Wait()
+		close(childDone)
+	}()
 
 	bakeTimeout := bakeTimeout()
 	hvc0Path := serialLog + ".hvc0"
@@ -327,10 +331,34 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 
 	for {
 		select {
+		case <-childDone:
+			// Child exited before we saw the completion marker — either it
+			// crashed during startup or the bake failed and rebooted, but we
+			// missed the marker. Dump the hvc0 log so we can diagnose.
+			hvc0Data, _ := os.ReadFile(hvc0Path)
+			hvc0 := string(hvc0Data)
+			if len(hvc0) > 0 {
+				lines := strings.Split(hvc0, "\n")
+				if len(lines) > 100 {
+					lines = lines[len(lines)-100:]
+				}
+				log.Printf("[libkrun] bake VM: child exited early (%v elapsed) — serial log tail:\n%s",
+					time.Since(start).Round(time.Second), strings.Join(lines, "\n"))
+			} else {
+				log.Printf("[libkrun] bake VM: child exited early (%v elapsed) — hvc0 log is empty",
+					time.Since(start).Round(time.Second))
+			}
+			if childCmd.ProcessState != nil {
+				return "", fmt.Errorf("bake VM exited early with code %d (%v elapsed) — see serial log above",
+					childCmd.ProcessState.ExitCode(), time.Since(start).Round(time.Second))
+			}
+			return "", fmt.Errorf("bake VM exited early (%v elapsed) — see serial log above",
+				time.Since(start).Round(time.Second))
+
 		case <-ticker.C:
 			elapsed := time.Since(start)
 
-			// Emit a progress line every 30 s.
+			// Emit a progress line every 90 s.
 			if time.Since(lastHeartbeat) >= heartbeatEvery {
 				log.Printf("[libkrun] bake VM: still running (%v elapsed) — check %s",
 					elapsed.Round(time.Second), hvc0Path)
@@ -353,15 +381,10 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 				defer exitWait.Stop()
 				exitPoll := time.NewTicker(500 * time.Millisecond)
 				defer exitPoll.Stop()
-				done2 := make(chan struct{})
-				go func() {
-					_ = childCmd.Wait()
-					close(done2)
-				}()
 			flushWait:
 				for {
 					select {
-					case <-done2:
+					case <-childDone:
 						log.Printf("[libkrun] bake VM: process exited cleanly — rootfs flushed")
 						break flushWait
 					case <-exitWait.C:
@@ -383,7 +406,20 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 				if passtProc != nil {
 					_ = passtProc.Kill()
 				}
-				return "", fmt.Errorf("bake VM timed out after %v — check %s", bakeTimeout, hvc0Path)
+				// Dump the hvc0 log so we can see what the guest agent was doing
+				// when the timeout hit (including per-step timing diagnostics).
+				if hvc0Data, _ := os.ReadFile(hvc0Path); len(hvc0Data) > 0 {
+					lines := strings.Split(string(hvc0Data), "\n")
+					if len(lines) > 100 {
+						lines = lines[len(lines)-100:]
+					}
+					log.Printf("[libkrun] bake VM: timed out after %v — serial log tail:\n%s",
+						bakeTimeout, strings.Join(lines, "\n"))
+				} else {
+					log.Printf("[libkrun] bake VM: timed out after %v — hvc0 log is empty",
+						bakeTimeout)
+				}
+				return "", fmt.Errorf("bake VM timed out after %v", bakeTimeout)
 			}
 
 		case <-ctx.Done():

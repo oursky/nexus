@@ -441,6 +441,15 @@ func launchDaemonBackground(out io.Writer, socketPath string, jsonOut bool, read
 			return nil
 		}
 		if child.ProcessState != nil {
+			// Dump the daemon log so we can see why it exited.
+			if logData, err := os.ReadFile(logPath); err == nil && len(logData) > 0 {
+				lines := strings.Split(string(logData), "\n")
+				if len(lines) > 50 {
+					lines = lines[len(lines)-50:]
+				}
+				emitPhase("error", fmt.Sprintf("daemon exited (exit %d) — log tail:\n%s",
+					child.ProcessState.ExitCode(), strings.Join(lines, "\n")))
+			}
 			return fmt.Errorf("daemon exited unexpectedly (exit %d) — check log: %s",
 				child.ProcessState.ExitCode(), logPath)
 		}
