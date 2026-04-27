@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build a vmlinux ELF kernel for embedding into the nexus binary.
+# Build or download a vmlinux ELF kernel for embedding into the nexus binary.
 #
 # Uses libkrunfw's kernel config as a base (tuned for microVMs) and adds
 # the networking options Docker needs (bridge, netfilter, iptables/nat).
 # The output is a plain vmlinux ELF that libkrun loads with format=ELF.
+#
+# Quick-start (no toolchain required):
+#   NEXUS_KERNEL_URL=https://example.com/vmlinux-6.6.59-linux-x86_64 \
+#     build-kernel.sh <output-path>
+#
+# Build from source (requires: build-essential, libncurses-dev, bison, flex,
+# libssl-dev, bc, libelf-dev):
+#   FORCE_KERNEL_REBUILD=1 build-kernel.sh <output-path>
 #
 # Usage:
 #   build-kernel.sh <output-path>
@@ -24,14 +32,16 @@ LIBKRUNFW_CONFIG_URL="https://raw.githubusercontent.com/smol-machines/libkrunfw/
 
 BUILD_DIR="${BUILD_DIR:-/tmp/nexus-kernel-build}"
 JOBS="$(nproc 2>/dev/null || echo 4)"
+ARCH="$(uname -m)"
 
 echo "=== Nexus kernel build ==="
 echo "Kernel version: ${KERNEL_VERSION}"
 echo "Output: ${OUTPUT_PATH}"
 echo "Build dir: ${BUILD_DIR}"
 echo "Parallel jobs: ${JOBS}"
+echo "Arch: ${ARCH}"
 
-# If a valid ELF already exists at the output path, skip the build.
+# If a valid ELF already exists at the output path, skip everything.
 if [[ -f "${OUTPUT_PATH}" ]]; then
   MAGIC=$(xxd -l 4 -p "${OUTPUT_PATH}" 2>/dev/null || true)
   if [[ "$MAGIC" == "7f454c46" ]]; then
@@ -40,16 +50,66 @@ if [[ -f "${OUTPUT_PATH}" ]]; then
   fi
 fi
 
+# ── Fast path: download prebuilt kernel ─────────────────────────────────────
+# If NEXUS_KERNEL_URL is set (or we can construct one), try downloading first.
+# This avoids the slow source build and does not require host toolchains.
+PREBUILT_URL="${NEXUS_KERNEL_URL:-}"
+
+if [[ -z "$PREBUILT_URL" && -z "${FORCE_KERNEL_REBUILD:-}" ]]; then
+  # Try to infer a GitHub release asset URL if this is a checkout of a known repo.
+  # The release tag convention is: kernel-<version> (e.g. kernel-6.6.59)
+  # The asset name convention is: vmlinux-<version>-linux-<arch>
+  if [[ -d "$ROOT_DIR/.git" ]]; then
+    REMOTE_URL="$(git -C "$ROOT_DIR" remote get-url origin 2>/dev/null || true)"
+    if [[ "$REMOTE_URL" == *"github.com"* ]]; then
+      # Extract owner/repo from git remote URL
+      # Handles both https://github.com/owner/repo.git and git@github.com:owner/repo.git
+      REPO_PATH="$(echo "$REMOTE_URL" | sed -E 's/.*github\.com[:\/]([^\/]+)\/([^\/]+)(\.git)?$/\1\/\2/')"
+      if [[ "$REPO_PATH" != *"*" && -n "$REPO_PATH" ]]; then
+        PREBUILT_URL="https://github.com/${REPO_PATH}/releases/download/kernel-${KERNEL_VERSION}/vmlinux-${KERNEL_VERSION}-linux-${ARCH}"
+        echo "Inferred prebuilt kernel URL: ${PREBUILT_URL}"
+      fi
+    fi
+  fi
+fi
+
+if [[ -n "$PREBUILT_URL" && -z "${FORCE_KERNEL_REBUILD:-}" ]]; then
+  echo "Attempting to download prebuilt kernel..."
+  mkdir -p "$(dirname "${OUTPUT_PATH}")"
+  if curl -fsSL --retry 3 --connect-timeout 15 --max-time 120 \
+      -o "${OUTPUT_PATH}" "$PREBUILT_URL" 2>/dev/null; then
+    MAGIC=$(xxd -l 4 -p "${OUTPUT_PATH}" 2>/dev/null || true)
+    if [[ "$MAGIC" == "7f454c46" ]]; then
+      echo "Downloaded valid prebuilt kernel."
+      echo "Size: $(du -h "${OUTPUT_PATH}" | cut -f1)"
+      file "${OUTPUT_PATH}"
+      exit 0
+    else
+      echo "Downloaded file is not a valid ELF, removing..."
+      rm -f "${OUTPUT_PATH}"
+    fi
+  else
+    echo "Prebuilt kernel download failed."
+  fi
+  echo "Falling back to source build..."
+fi
+
+# ── Slow path: build from source ────────────────────────────────────────────
+# This requires host build tools and is slow (~10-15 min).
+
+echo "Building kernel from source..."
+
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 
-# ── Step 1: Download kernel source ──────────────────────────────────────────
+# Step 1: Download kernel source
 if [[ ! -f "${KERNEL_TARBALL}" ]]; then
     echo "Downloading kernel source..."
-    curl -fsSL "${KERNEL_URL}" -o "${KERNEL_TARBALL}"
+    curl -fsSL --retry 3 --connect-timeout 30 --max-time 300 \
+      "${KERNEL_URL}" -o "${KERNEL_TARBALL}"
 fi
 
-# ── Step 2: Extract ─────────────────────────────────────────────────────────
+# Step 2: Extract
 if [[ ! -d "linux-${KERNEL_VERSION}" ]]; then
     echo "Extracting kernel source..."
     tar -xf "${KERNEL_TARBALL}"
@@ -57,14 +117,13 @@ fi
 
 cd "linux-${KERNEL_VERSION}"
 
-# ── Step 3: Fetch libkrunfw config ──────────────────────────────────────────
+# Step 3: Fetch libkrunfw config
 echo "Fetching libkrunfw base config..."
-curl -fsSL "${LIBKRUNFW_CONFIG_URL}" -o .config
+curl -fsSL --retry 3 "${LIBKRUNFW_CONFIG_URL}" -o .config
 
-# ── Step 4: Add Docker networking options ───────────────────────────────────
+# Step 4: Add Docker networking options
 echo "Enabling Docker networking options..."
 
-# Bridge support
 cat >> .config <<'DOCKER_NET'
 CONFIG_BRIDGE=y
 CONFIG_BRIDGE_NETFILTER=y
@@ -106,11 +165,11 @@ DOCKER_NET
 # Normalize the config (resolve dependencies, new options, etc.)
 make olddefconfig "-j${JOBS}"
 
-# ── Step 5: Build vmlinux ELF ───────────────────────────────────────────────
+# Step 5: Build vmlinux ELF
 echo "Building vmlinux..."
 make vmlinux "-j${JOBS}"
 
-# ── Step 6: Install ─────────────────────────────────────────────────────────
+# Step 6: Install
 mkdir -p "$(dirname "${OUTPUT_PATH}")"
 cp vmlinux "${OUTPUT_PATH}"
 
