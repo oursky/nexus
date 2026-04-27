@@ -8,32 +8,51 @@ package libkrun
 // VMSpec holds the full configuration for a libkrun microVM child process.
 // It is serialized as JSON and written to a temp file that the child reads.
 //
-// Hybrid mode (block root + block workspace):
+// libkrun workspace mode is virtiofs-only:
 //
-//	krun_set_kernel(NULL, cmdline)      embedded libkrunfw kernel
-//	/dev/vda  rootfs.ext4              writable VM root filesystem
-//	/dev/vdb  workspace.ext4           writable workspace filesystem
-//	/dev/vdc  docker-data.ext4         sparse, Docker overlay2 data-root
-//	/dev/vdd  hostconfig.ext4          read-only, SSH keys + API tokens
-//
-// Each workspace gets its own reflink/sparse-cloned rootfs image so "root"
-// behaves like a real VM root filesystem while forks stay space-efficient.
+//	krun_set_root(rootfs-dir)          root filesystem
+//	/dev/vda  workspace.ext4           writable overlay upper for /workspace
+//	/dev/vdb  docker-data.ext4         sparse, Docker overlay2 data-root
+//	/dev/vdc  hostconfig.ext4          read-only, SSH keys + API tokens (optional)
 type VMSpec struct {
 	WorkspaceID string `json:"workspace_id"`
+	// WorkspaceMode selects guest assembly path. libkrun currently supports
+	// only "virtiofs".
+	WorkspaceMode string `json:"workspace_mode,omitempty"`
 
-	// KernelPath points to the VM kernel image used by krun_set_kernel.
+	// KernelPath points to the VM kernel image used by krun_set_kernel in
+	// legacy launch paths.
 	KernelPath string `json:"kernel_path"`
 	// KernelCmdline provides the kernel boot arguments.
 	KernelCmdline string `json:"kernel_cmdline,omitempty"`
 
-	// RootFSImage is the per-workspace writable rootfs ext4 attached as /dev/vda.
+	// RootFSImage is the path to a block disk image used as the VM's root
+	// filesystem. When set alongside RootFSDir="", the launcher uses
+	// krun_set_root_disk_remount to pivot from a dummy virtiofs init root to
+	// this block device. Supports raw (default) and qcow2 (via
+	// RootFSImageFormat). Used by hybrid mode to give the guest true root
+	// ownership while keeping virtiofs for workspace volume mounts.
 	RootFSImage string `json:"rootfs_image"`
+	// RootFSImageFormat is the disk image format: 0=raw, 1=qcow2, 2=vmdk.
+	// Defaults to 0 (raw) when empty.
+	RootFSImageFormat int `json:"rootfs_image_format,omitempty"`
+	// RootFSDir is the host directory shared as "/" via krun_set_root in
+	// virtiofs workspace mode. When empty and RootFSImage is set, hybrid
+	// mode (block rootfs + virtiofs workspace) is used.
+	RootFSDir string `json:"rootfs_dir,omitempty"`
 
 	// AgentPath is the absolute path inside the rootfs to the guest agent.
 	AgentPath string `json:"agent_path"`
 
+	// BakedRootfs tells the guest agent that the rootfs was pre-baked so it
+	// can skip the heavy apt-get/npm install path.
+	BakedRootfs bool `json:"baked_rootfs,omitempty"`
+
 	// WorkspaceImage is the per-workspace ext4 image mounted at /workspace.
 	WorkspaceImage string `json:"workspace_image"`
+	// WorkspaceHostPath is the daemon-host project path used for virtiofs share
+	// in experimental workspace mode.
+	WorkspaceHostPath string `json:"workspace_host_path,omitempty"`
 
 	// DockerDataImage is a sparse ext4 image for Docker's data-root
 	// (/var/lib/docker). Attached as /dev/vdc. Docker overlay2 requires a

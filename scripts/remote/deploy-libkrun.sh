@@ -79,11 +79,12 @@ tar -xzf "tmp/${SMOLVM_TARBALL}" \
     "smolvm-${SMOLVM_VERSION#v}-linux-x86_64/lib"
 echo "  extracted: $(ls tmp/smolvm-libs)"
 
-# Validate that this libkrun build has virtio-net support.
-if ! nm -D tmp/smolvm-libs/libkrun.so.1 | awk '{print $3}' | awk '/^krun_add_net_unixstream$/{found=1} END{exit !found}'; then
-  echo "ERROR: smolvm ${SMOLVM_VERSION} libkrun.so.1 does not export krun_add_net_unixstream." >&2
-  echo "Hint: use SMOLVM_VERSION=v0.5.19 (known good for virtio-net)." >&2
-  exit 1
+# Validate virtio-net capability. Missing symbol is allowed (launcher falls
+# back to TSI), but we surface it so operators understand networking mode.
+if nm -D tmp/smolvm-libs/libkrun.so.1 | awk '{print $3}' | awk '/^krun_add_net_unixstream$/{found=1} END{exit !found}'; then
+  echo "  detected: krun_add_net_unixstream (virtio-net available)"
+else
+  echo "  warning: smolvm ${SMOLVM_VERSION} libkrun.so.1 lacks krun_add_net_unixstream; launcher will use TSI networking backend" >&2
 fi
 
 echo ""

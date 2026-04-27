@@ -8,10 +8,12 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	domainruntime "github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/config"
 	lkruntime "github.com/oursky/nexus/packages/nexus/internal/infra/runtime/libkrun"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/store"
 )
@@ -36,6 +38,42 @@ func libkrunShareLibDir() string {
 	return filepath.Join(home, ".local", "share", "nexus", "lib")
 }
 
+// libkrunShareVMDir returns the directory containing VM assets installed by
+// rootless bootstrap (kernel, rootfs.ext4, rootfs-dir).
+func libkrunShareVMDir() string {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "nexus", "vm")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "nexus", "vm")
+}
+
+// validateReflinkSupport checks that the workdir filesystem supports reflink
+// clones (XFS with reflink=1 or btrfs). This is required for hybrid mode where
+// each workspace gets an O(1) CoW clone of the base rootfs.ext4.
+func validateReflinkSupport(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create workdir %s: %w", dir, err)
+	}
+	src := filepath.Join(dir, ".nexus-reflink-test-src")
+	dst := filepath.Join(dir, ".nexus-reflink-test-dst")
+	_ = os.Remove(src)
+	_ = os.Remove(dst)
+	defer func() {
+		_ = os.Remove(src)
+		_ = os.Remove(dst)
+	}()
+
+	if err := os.WriteFile(src, []byte("reflink-test"), 0o644); err != nil {
+		return fmt.Errorf("write test file: %w", err)
+	}
+	out, err := exec.Command("cp", "--reflink=always", src, dst).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("reflink clone not supported on %s: %w: %s", dir, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 	nexusBin, _ := os.Executable()
 
@@ -50,6 +88,9 @@ func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 			workDirRoot = filepath.Join(defaultDataDir(), "libkrun-vms")
 		}
 	}
+	if err := validateReflinkSupport(workDirRoot); err != nil {
+		return libkrunDriverBundle{}, fmt.Errorf("libkrun requires XFS/btrfs with reflink support for the workdir: %w", err)
+	}
 
 	// Prefer the extracted standalone nexus-libkrun-vm binary (set during bootstrap
 	// when the binary was built with embedded artifacts). Fall back to the nexus
@@ -60,26 +101,10 @@ func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 		libkrunVMBin = "" // not present; manager falls back to NexusBin subcommand
 	}
 
-	// libkrun hybrid mode requires a block-backed rootfs image.
+	// libkrun workspace runtime is virtiofs-only and requires rootfs-dir.
+	// rootfs.ext4 is retained for bake/bootstrap flows.
 	rootFSPath := strings.TrimSpace(cfg.RootFSPath)
 	kernelPath := strings.TrimSpace(cfg.KernelPath)
-	if rootFSPath == "" {
-		return libkrunDriverBundle{}, fmt.Errorf("libkrun requires rootfs path (RootFSPath)")
-	}
-	if kernelPath == "" {
-		return libkrunDriverBundle{}, fmt.Errorf("libkrun requires kernel path (KernelPath)")
-	}
-	if _, err := os.Stat(rootFSPath); err != nil {
-		return libkrunDriverBundle{}, fmt.Errorf(
-			"libkrun requires rootfs image at %q\n"+
-				"  The image is created during 'nexus daemon start' (first run).\n"+
-				"  Run: nexus daemon implode && nexus daemon start",
-			rootFSPath,
-		)
-	}
-	if _, err := os.Stat(kernelPath); err != nil {
-		return libkrunDriverBundle{}, fmt.Errorf("libkrun requires kernel image at %q: %w", kernelPath, err)
-	}
 
 	netBackend := strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_NET_BACKEND"))
 	if netBackend == "" {
@@ -91,7 +116,17 @@ func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 		return libkrunDriverBundle{}, fmt.Errorf("invalid NEXUS_LIBKRUN_NET_BACKEND=%q (expected auto|tsi|virtio-net)", netBackend)
 	}
 
-	log.Printf("daemon: libkrun workdir=%s vmBin=%s kernel=%s rootfs=%s net_backend=%s", workDirRoot, libkrunVMBin, kernelPath, rootFSPath, netBackend)
+	rootFSDirPath := filepath.Join(libkrunShareVMDir(), "rootfs-dir")
+	if rootFSDirPath != "" {
+		if fi, err := os.Stat(rootFSDirPath); err != nil || !fi.IsDir() {
+			if err != nil {
+				log.Printf("daemon: warning: libkrun rootfs-dir unavailable at %q: %v", rootFSDirPath, err)
+			} else {
+				log.Printf("daemon: warning: libkrun rootfs-dir is not a directory: %q", rootFSDirPath)
+			}
+		}
+	}
+	log.Printf("daemon: libkrun workdir=%s vmBin=%s kernel=%s rootfs=%s rootfs_dir=%s net_backend=%s", workDirRoot, libkrunVMBin, kernelPath, rootFSPath, rootFSDirPath, netBackend)
 
 	lkCfg := lkruntime.ManagerConfig{
 		LibkrunVMBin:    libkrunVMBin,
@@ -99,6 +134,7 @@ func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 		LibkrunLibDir:   libkrunShareLibDir(),
 		KernelPath:      kernelPath,
 		RootFSBasePath:  rootFSPath,
+		RootFSDirPath:   rootFSDirPath,
 		BasesDir:        cfg.BasesDir,
 		NetworkBackend:  netBackend,
 		WorkDirRoot:     workDirRoot,
@@ -186,7 +222,12 @@ func prewarmLibkrunBaseImages(wsStore *store.WorkspaceStore, basesDir string) {
 		seen[root] = struct{}{}
 		go func(projectRoot string) {
 			log.Printf("daemon: prewarm base image for %s", projectRoot)
-			_, err := lkruntime.EnsureBaseImage(context.Background(), projectRoot, basesDir)
+			manifestHash := config.ComputeManifestHash(
+				config.BaseNexusfilePath(),
+				filepath.Join(projectRoot, "Nexusfile"),
+				lkruntime.BakeStampVersion,
+			)
+			_, err := lkruntime.EnsureBaseImage(context.Background(), projectRoot, basesDir, manifestHash)
 			if err != nil {
 				log.Printf("daemon: prewarm base image for %s: %v", projectRoot, err)
 			} else {

@@ -256,24 +256,28 @@ public actor RemoteProvisioner {
         proc.standardError = errPipe
 
         try proc.run()
-        proc.waitUntilExit()
-
-        let rawOut = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let rawErr = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-
-        // Parse JSON phase events; skip non-JSON lines (e.g. "daemon-launch: start: ...").
-        var errorPhase: String?
-        for line in rawOut.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            guard let event = parsePhaseEvent(trimmed) else { continue }
-            logger.info("provision: phase \(event.phase, privacy: .public) \(event.status, privacy: .public) \(event.message, privacy: .public)")
-            let msg = event.message.isEmpty ? event.phase : "\(event.phase): \(event.message)"
-            await progress?(.bootstrapPhase(phase: event.phase, message: msg))
-            if event.status == "error" {
-                errorPhase = event.message
+        let stdoutTask = Task { [logger] () -> String in
+            let raw = await Self.readProcessLines(from: outPipe.fileHandleForReading) { line in
+                guard let event = Self.parsePhaseEvent(line) else { return }
+                logger.info("provision: phase \(event.phase, privacy: .public) \(event.status, privacy: .public) \(event.message, privacy: .public)")
+                let msg = event.message.isEmpty ? event.phase : "\(event.phase): \(event.message)"
+                await progress?(.bootstrapPhase(phase: event.phase, message: msg))
             }
+            return raw
         }
+        let stderrTask = Task {
+            await Self.readProcessLines(from: errPipe.fileHandleForReading) { _ in }
+        }
+
+        proc.waitUntilExit()
+        let rawOut = await stdoutTask.value
+        let rawErr = await stderrTask.value
+
+        let errorPhase = rawOut
+            .components(separatedBy: "\n")
+            .compactMap { Self.parsePhaseEvent($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .first(where: { $0.status == "error" })
+            .map { $0.message.isEmpty ? $0.phase : $0.message }
 
         if let errMsg = errorPhase {
             throw ProvisionError.daemonStartFailed(message: errMsg)
@@ -302,12 +306,39 @@ public actor RemoteProvisioner {
         }
     }
 
-    private func parsePhaseEvent(_ line: String) -> PhaseEvent? {
+    private nonisolated static func parsePhaseEvent(_ line: String) -> PhaseEvent? {
         guard let data = line.data(using: .utf8),
               let event = try? JSONDecoder().decode(PhaseEvent.self, from: data) else {
             return nil
         }
         return event
+    }
+
+    private nonisolated static func readProcessLines(
+        from handle: FileHandle,
+        onLine: @Sendable (String) async -> Void
+    ) async -> String {
+        var raw = ""
+        var pending = ""
+        while true {
+            let data = handle.availableData
+            if data.isEmpty { break }
+            let chunk = String(decoding: data, as: UTF8.self)
+            raw += chunk
+            pending += chunk
+            while let newline = pending.firstIndex(of: "\n") {
+                let line = String(pending[..<newline]).trimmingCharacters(in: .whitespacesAndNewlines)
+                pending = String(pending[pending.index(after: newline)...])
+                if !line.isEmpty {
+                    await onLine(line)
+                }
+            }
+        }
+        let trailing = pending.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trailing.isEmpty {
+            await onLine(trailing)
+        }
+        return raw
     }
 
     /// Poll the daemon's healthz endpoint via SSH until it responds 200 or we time out.

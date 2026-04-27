@@ -120,18 +120,29 @@ func TestEnsureBaseImageCacheAndLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	manifestHash := "test-manifest"
+
 	// First call should build.
-	path1, err := EnsureBaseImage(context.Background(), repoRoot, basesDir)
+	path1, err := EnsureBaseImage(context.Background(), repoRoot, basesDir, manifestHash)
 	if err != nil {
 		t.Fatalf("EnsureBaseImage first call failed: %v", err)
 	}
 
 	// Second call should hit cache.
-	path2, err := EnsureBaseImage(context.Background(), repoRoot, basesDir)
+	path2, err := EnsureBaseImage(context.Background(), repoRoot, basesDir, manifestHash)
 	if err != nil {
 		t.Fatalf("EnsureBaseImage second call failed: %v", err)
 	}
 	if path1 != path2 {
 		t.Fatalf("cache miss: %s != %s", path1, path2)
+	}
+
+	// Different manifest hash should miss cache and build a new image.
+	path3, err := EnsureBaseImage(context.Background(), repoRoot, basesDir, "different-manifest")
+	if err != nil {
+		t.Fatalf("EnsureBaseImage different manifest call failed: %v", err)
+	}
+	if path1 == path3 {
+		t.Fatalf("expected different cache key for different manifest: %s == %s", path1, path3)
 	}
 }

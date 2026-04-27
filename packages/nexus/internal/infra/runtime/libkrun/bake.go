@@ -15,12 +15,8 @@ import (
 	"time"
 )
 
-// bakeStampVersion is bumped whenever the set of tools baked into the
-// base rootfs changes, forcing a re-bake on next daemon start.
-const bakeStampVersion = "v5"
-
 func bakeTimeout() time.Duration {
-	const defaultTimeout = 180 * time.Second
+	const defaultTimeout = 12 * time.Minute
 	raw := strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_BAKE_TIMEOUT"))
 	if raw == "" {
 		return defaultTimeout
@@ -57,20 +53,21 @@ func bakeMaxAttempts() int {
 // (e.g. ~/.local/state/nexus). Non-fatal: logs a warning and returns nil
 // on failure so daemon start is never blocked.
 func BakeRootfsIfNeeded(ctx context.Context, cfg ManagerConfig, stampDir string) error {
-	stampPath := filepath.Join(stampDir, "rootfs-baked-"+bakeStampVersion)
+	stampPath := filepath.Join(stampDir, "rootfs-baked-"+BakeStampVersion)
 	if _, err := os.Stat(stampPath); err == nil {
 		log.Printf("[libkrun] rootfs bake: already baked (stamp %s)", stampPath)
 		return nil
 	}
-	// Backward-compat: accept v4 stamp to avoid forced rebakes when upgrading
-	// bake metadata naming. Promote it to v5 eagerly.
-	legacyStamp := filepath.Join(stampDir, "rootfs-baked-v4")
-	if _, err := os.Stat(legacyStamp); err == nil {
-		if err := os.MkdirAll(stampDir, 0o755); err == nil {
-			_ = os.WriteFile(stampPath, []byte("baked\n"), 0o644)
+	// Backward-compat: older host caches used v6/v5/v4 bake-stamp names.
+	for _, legacy := range []string{"v6", "v5", "v4"} {
+		legacyStamp := filepath.Join(stampDir, "rootfs-baked-"+legacy)
+		if _, err := os.Stat(legacyStamp); err == nil {
+			if err := os.MkdirAll(stampDir, 0o755); err == nil {
+				_ = os.WriteFile(stampPath, []byte("baked\n"), 0o644)
+			}
+			log.Printf("[libkrun] rootfs bake: promoted legacy stamp %s -> %s; skipping rebake", legacyStamp, stampPath)
+			return nil
 		}
-		log.Printf("[libkrun] rootfs bake: promoted legacy stamp %s -> %s; skipping rebake", legacyStamp, stampPath)
-		return nil
 	}
 
 	if cfg.LibkrunVMBin == "" {
@@ -81,6 +78,15 @@ func BakeRootfsIfNeeded(ctx context.Context, cfg ManagerConfig, stampDir string)
 	}
 	if _, err := os.Stat(cfg.RootFSBasePath); err != nil {
 		return fmt.Errorf("base rootfs not found at %s: %w", cfg.RootFSBasePath, err)
+	}
+	// If the host-side stamp is missing but the rootfs itself still has the
+	// in-image tools stamp, restore the host stamp and skip the expensive bake.
+	if rootfsHasBakeStamp(cfg.RootFSBasePath) {
+		if err := os.MkdirAll(stampDir, 0o755); err == nil {
+			_ = os.WriteFile(stampPath, []byte("baked\n"), 0o644)
+		}
+		log.Printf("[libkrun] rootfs bake: in-image stamp detected in %s; restored host stamp %s and skipped rebake", cfg.RootFSBasePath, stampPath)
+		return nil
 	}
 
 	timeout := bakeTimeout()
@@ -128,10 +134,40 @@ func BakeRootfsIfNeeded(ctx context.Context, cfg ManagerConfig, stampDir string)
 	return nil
 }
 
+func rootfsHasBakeStamp(rootfsPath string) bool {
+	const stampInsideRootfs = "/var/lib/nexus-tools-base-v7"
+	if strings.TrimSpace(rootfsPath) == "" {
+		return false
+	}
+	if _, err := exec.LookPath("debugfs"); err != nil {
+		return false
+	}
+	out, err := exec.Command("debugfs", "-R", "stat "+stampInsideRootfs, rootfsPath).CombinedOutput()
+	joined := strings.ToLower(string(out))
+	// debugfs exits 0 even when the file is not found; treat "not found" as
+	// missing regardless of exit code.
+	if strings.Contains(joined, "file not found") || strings.Contains(joined, "not found by ext2_lookup") {
+		return false
+	}
+	if err == nil {
+		return true
+	}
+	// debugfs can emit warnings to stderr while still producing usable output.
+	// Treat explicit inode matches as success.
+	return strings.Contains(joined, "inode:")
+}
+
 // DeleteBakeStamp removes the host-side bake stamp so the next daemon start
 // triggers a fresh bake. Called when the base rootfs is rebuilt from scratch.
 func DeleteBakeStamp(stampDir string) {
-	_ = os.Remove(filepath.Join(stampDir, "rootfs-baked-"+bakeStampVersion))
+	_ = os.Remove(filepath.Join(stampDir, "rootfs-baked-"+BakeStampVersion))
+}
+
+// IsRootfsBaked reports whether the host-side bake stamp exists.
+func IsRootfsBaked(stampDir string) bool {
+	stampPath := filepath.Join(stampDir, "rootfs-baked-"+BakeStampVersion)
+	_, err := os.Stat(stampPath)
+	return err == nil
 }
 
 // runBakeVM boots a temporary libkrun VM with nexus.bake=1 in the kernel
@@ -286,7 +322,7 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	const heartbeatEvery = 30 * time.Second
+	const heartbeatEvery = 90 * time.Second
 	lastHeartbeat := start
 
 	for {
@@ -311,9 +347,9 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 				// Do NOT kill immediately. libkrun flushes its virtio-blk
 				// write buffers asynchronously after the guest poweroff; killing
 				// too early loses any in-flight writes (e.g. npm symlinks).
-				// Wait up to 30 s for the process to exit on its own, then
+				// Wait up to 90 s for the process to exit on its own, then
 				// give up and force-kill.
-				exitWait := time.NewTimer(30 * time.Second)
+				exitWait := time.NewTimer(90 * time.Second)
 				defer exitWait.Stop()
 				exitPoll := time.NewTicker(500 * time.Millisecond)
 				defer exitPoll.Stop()
@@ -329,7 +365,7 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 						log.Printf("[libkrun] bake VM: process exited cleanly — rootfs flushed")
 						break flushWait
 					case <-exitWait.C:
-						log.Printf("[libkrun] bake VM: process did not exit in 30 s — force-killing")
+						log.Printf("[libkrun] bake VM: process did not exit in 90 s — force-killing")
 						_ = childCmd.Process.Kill()
 						if passtProc != nil {
 							_ = passtProc.Kill()
@@ -406,13 +442,21 @@ verify:
 		return "", fmt.Errorf("bake VM: %s", failureReason)
 	}
 
-	// The agent confirmed all tools are installed. Write the v4 stamp
-	// directly into the rootfs using debugfs so it survives even if the
+	// The agent confirmed all tools are installed. Write the in-image toolchain
+	// stamp directly into the rootfs using debugfs so it survives even if the
 	// libkrun write-back flushed incompletely before force-kill.
 	if err := writeStampIntoRootfs(rootfsPath); err != nil {
 		log.Printf("[libkrun] bake VM: warning: could not write stamp via debugfs: %v", err)
 		// Non-fatal: the workspace VMs will install tools in-VM on first boot,
 		// but subsequent boots will be fast once the stamp is in place.
+	}
+
+	// npm install -g creates bin symlinks inside the VM, but libkrun's
+	// virtio-blk write-back sometimes loses small metadata writes (symlinks)
+	// when the VMM process is force-killed before it flushes.  Repair any
+	// missing symlinks directly in the ext4 image using debugfs.
+	if err := ensureNPMBinSymlinksInRootfs(rootfsPath); err != nil {
+		log.Printf("[libkrun] bake VM: warning: could not repair npm symlinks via debugfs: %v", err)
 	}
 
 	// Move the baked rootfs OUT of workDir before defer removes the workDir.
@@ -431,13 +475,13 @@ verify:
 	return bakedTmpPath, nil
 }
 
-// writeStampIntoRootfs writes the v4 bake stamp file directly into the ext4
+// writeStampIntoRootfs writes the in-image toolchain stamp directly into the ext4
 // rootfs image using debugfs. This is called after the bake VM completes so
 // that the stamp is reliably persisted even when libkrun's virtio-blk
 // write-back didn't flush before the process was force-killed.
 func writeStampIntoRootfs(rootfsPath string) error {
 	// The agent checks for this stamp to skip package installation on subsequent boots.
-	const stampInsideRootfs = "/var/lib/nexus-tools-base-v5"
+	const stampInsideRootfs = "/var/lib/nexus-tools-base-v7"
 
 	// Write a temporary host-side file with the stamp content, then inject it
 	// into the ext4 image using debugfs. debugfs operates on the raw image
@@ -468,6 +512,41 @@ func writeStampIntoRootfs(rootfsPath string) error {
 		return fmt.Errorf("debugfs write stamp: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	log.Printf("[libkrun] bake VM: wrote bake stamp %s into rootfs via debugfs", stampInsideRootfs)
+	return nil
+}
+
+// ensureNPMBinSymlinksInRootfs creates the global bin symlinks for npm
+// CLI packages directly inside the ext4 image using debugfs.  This repairs
+// symlinks that libkrun's virtio-blk write-back may have lost when the VMM
+// process was force-killed before flushing metadata.
+func ensureNPMBinSymlinksInRootfs(rootfsPath string) error {
+	symlinks := []struct {
+		link   string
+		target string
+	}{
+		{"/usr/local/bin/opencode", "/usr/local/lib/node_modules/opencode-ai/bin/opencode"},
+		{"/usr/local/bin/codex", "/usr/local/lib/node_modules/@openai/codex/bin/codex.js"},
+		{"/usr/local/bin/claude", "/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"},
+	}
+
+	for _, sl := range symlinks {
+		// Check if the symlink already exists.
+		out, _ := exec.Command("debugfs", "-R", "stat "+sl.link, rootfsPath).CombinedOutput()
+		if strings.Contains(string(out), "Type: symlink") {
+			continue
+		}
+		// Ensure parent directory exists.
+		_ = exec.Command("debugfs", "-w", "-R", "mkdir /usr/local", rootfsPath).Run()
+		_ = exec.Command("debugfs", "-w", "-R", "mkdir /usr/local/bin", rootfsPath).Run()
+		out, err := exec.Command("debugfs", "-w", "-R",
+			fmt.Sprintf("symlink %s %s", sl.link, sl.target),
+			rootfsPath,
+		).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("debugfs symlink %s -> %s: %w: %s", sl.link, sl.target, err, strings.TrimSpace(string(out)))
+		}
+		log.Printf("[libkrun] bake VM: created npm symlink %s -> %s via debugfs", sl.link, sl.target)
+	}
 	return nil
 }
 

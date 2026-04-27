@@ -105,6 +105,7 @@ func handleExec(req execRequest) execResponse {
 	env = ensurePathInEnv(env)
 	env = ensureRootIdentityEnv(env)
 	env = ensureSSHAuthSockEnv(env)
+	env = ensureDockerHostEnv(env)
 
 	commandPath := req.Command
 	if resolved, err := lookPathInEnv(req.Command, env); err == nil {
@@ -178,6 +179,7 @@ func handleExecStreaming(req execRequest, encoder *json.Encoder) execResponse {
 	env = ensurePathInEnv(env)
 	env = ensureRootIdentityEnv(env)
 	env = ensureSSHAuthSockEnv(env)
+	env = ensureDockerHostEnv(env)
 
 	commandPath := req.Command
 	if resolved, err := lookPathInEnv(req.Command, env); err == nil {
@@ -262,6 +264,17 @@ func ensurePathInEnv(env []string) []string {
 
 func ensureSSHAuthSockEnv(env []string) []string {
 	return ensureEnvVar(env, "SSH_AUTH_SOCK", "/tmp/ssh-agent.sock")
+}
+
+func ensureDockerHostEnv(env []string) []string {
+	if !isVirtiofsWorkspaceMode() {
+		return env
+	}
+	const dockerSocket = "/var/lib/docker/docker.sock"
+	if _, err := os.Stat(dockerSocket); err != nil {
+		return env
+	}
+	return ensureEnvVar(env, "DOCKER_HOST", "unix://"+dockerSocket)
 }
 
 func ensureRootIdentityEnv(env []string) []string {
@@ -385,6 +398,7 @@ func handleShellOpen(req execRequest, encoder *json.Encoder) {
 	env = ensurePathInEnv(env)
 	env = ensureRootIdentityEnv(env)
 	env = ensureSSHAuthSockEnv(env)
+	env = ensureDockerHostEnv(env)
 
 	workDir := workspaceMountPoint
 	if strings.TrimSpace(req.WorkDir) != "" {
@@ -534,13 +548,41 @@ func handleShellClose(req execRequest, encoder *json.Encoder) {
 // isBakeMode reports whether the agent is running in rootfs-bake mode.
 // In bake mode the agent installs all tools synchronously then powers off
 // the VM so the host can use the resulting rootfs as the pre-baked base.
+//
+// In libkrun container mode the custom kernel cmdline is not passed through
+// to /proc/cmdline; the host signals bake mode via the NEXUS_BAKE env var.
 func isBakeMode() bool {
+	if os.Getenv("NEXUS_BAKE") == "1" {
+		return true
+	}
 	data, err := os.ReadFile("/proc/cmdline")
 	if err != nil {
 		return false
 	}
 	for _, field := range strings.Fields(string(data)) {
 		if field == "nexus.bake=1" {
+			return true
+		}
+	}
+	return false
+}
+
+// isBakedMode reports whether the host claims the rootfs was pre-baked.
+// When true the agent skips the heavy apt-get/npm install path and trusts
+// that tools are already present in the shared rootfs.
+//
+// In libkrun container mode the custom kernel cmdline is not passed through
+// to /proc/cmdline; the host signals baked mode via the NEXUS_BAKED env var.
+func isBakedMode() bool {
+	if os.Getenv("NEXUS_BAKED") == "1" {
+		return true
+	}
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return false
+	}
+	for _, field := range strings.Fields(string(data)) {
+		if field == "nexus.baked=1" {
 			return true
 		}
 	}
@@ -573,6 +615,13 @@ func main() {
 	pid := os.Getpid()
 	emitDiagnostic("agent boot pid=%d", pid)
 
+	// Debug: log the kernel cmdline so we can verify nexus.baked=1 is present.
+	if cmdline, err := os.ReadFile("/proc/cmdline"); err == nil {
+		emitDiagnostic("agent kernel cmdline: %s", strings.TrimSpace(string(cmdline)))
+	} else {
+		emitDiagnostic("agent kernel cmdline: read failed: %v", err)
+	}
+
 	bootstrapGuestEnvironment(pid)
 
 	// Bake mode: install only the minimal daemon-readiness base layer
@@ -588,9 +637,14 @@ func main() {
 			// then power off so the host detects the VM exit and can retry.
 			time.Sleep(5 * time.Second)
 		} else {
-			// Keep bake fast/reliable: CLI tools are installed asynchronously on
-			// normal boots and do not need to block base-rootfs baking.
-			emitDiagnostic("agent bake: all tools installed — powering off VM")
+			emitDiagnostic("agent bake: all tools installed — syncing filesystems before power off")
+			// Force dirty buffers to disk so the host sees all writes (npm
+			// symlinks, stamps, etc.) even if libkrun's virtio-blk flush is lazy.
+			_ = exec.Command("sync").Run()
+			_ = exec.Command("sync").Run()
+			_ = exec.Command("sync").Run()
+			time.Sleep(2 * time.Second)
+			emitDiagnostic("agent bake: powering off VM")
 			// Give the serial console a moment to flush.
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -600,20 +654,29 @@ func main() {
 
 	startSSHAgentProxy()
 
-	// Install the minimal base toolchain synchronously before accepting PTY
-	// connections so networking and Docker runtime prerequisites are ready.
-	// Heavier developer tooling installs asynchronously in the background.
-	ensureGuestBasePackages()
-	profile := guestVMProfile()
-	if profile == "default" {
-		go func() {
-			ensureGuestOptionalDevPackages()
-			// CLI tools (opencode/codex/claude) are optional; install after optional
-			// dev packages so npm is present.
-			ensureGuestCLITools()
-		}()
+	// Toolchain setup: in baked mode the host has already pre-installed all
+	// tools into the rootfs, so we only do a lightweight verification.  In
+	// legacy mode (or when the baked flag is missing) we run the full
+	// apt-get + npm install path.
+	if isBakedMode() {
+		emitDiagnostic("agent base packages: baked mode — verifying tools in PATH")
+		if toolchainPresentInPATH(os.Environ()) {
+			emitDiagnostic("agent base packages: baked mode — all tools present")
+		} else {
+			emitDiagnostic("agent base packages: baked mode but tools missing — falling back to full install")
+			if err := ensureGuestBasePackages(); err != nil {
+				emitDiagnostic("agent base packages: FAILED — refusing to accept connections: %v", err)
+				log.Fatalf("agent base packages: %v", err)
+			}
+		}
 	} else {
-		emitDiagnostic("agent optional packages: skipped (profile=%s)", profile)
+		// Legacy path: install the full base toolchain synchronously before
+		// accepting PTY connections so workspace start only proceeds once core
+		// tools are ready.
+		if err := ensureGuestBasePackages(); err != nil {
+			emitDiagnostic("agent base packages: FAILED — refusing to accept connections: %v", err)
+			log.Fatalf("agent base packages: %v", err)
+		}
 	}
 	// Docker daemon also starts in the background.
 	// In libkrun container mode the agent is not PID 1 but NEXUS_CONTAINER_MODE
@@ -936,18 +999,40 @@ func runStreamed(ctx context.Context, env []string, prefix, name string, args ..
 // A versioned stamp file in the rootfs prevents
 // re-running on every workspace start — packages only install once per rootfs.
 func ensureGuestBasePackages() error {
-	const stampFile = "/var/lib/nexus-tools-base-v5"
+	const stampFile = "/var/lib/nexus-tools-base-v7"
 	if _, err := os.Stat(stampFile); err == nil {
 		emitDiagnostic("agent base packages: already installed (stamp found)")
 		return nil
 	}
-	// Backward-compat: older baked images used a monolithic v4 stamp.
-	// Treat it as base-ready and promote to the v5 base stamp.
+
+	// Backward-compat: older images may have v6, v5 or monolithic v4 stamps.
+	// Promote only if the full required toolchain is actually present.
+	if _, err := os.Stat("/var/lib/nexus-tools-base-v6"); err == nil {
+		if toolchainPresentInPATH(os.Environ()) {
+			_ = os.MkdirAll("/var/lib", 0o755)
+			_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
+			emitDiagnostic("agent base packages: promoted legacy v6 stamp to v7")
+			return nil
+		}
+		emitDiagnostic("agent base packages: legacy v6 stamp found but toolchain incomplete; reinstalling")
+	}
+	if _, err := os.Stat("/var/lib/nexus-tools-base-v5"); err == nil {
+		if toolchainPresentInPATH(os.Environ()) {
+			_ = os.MkdirAll("/var/lib", 0o755)
+			_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
+			emitDiagnostic("agent base packages: promoted legacy v5 stamp to v7")
+			return nil
+		}
+		emitDiagnostic("agent base packages: legacy v5 stamp found but toolchain incomplete; reinstalling")
+	}
 	if _, err := os.Stat("/var/lib/nexus-tools-installed-v4"); err == nil {
-		_ = os.MkdirAll("/var/lib", 0o755)
-		_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
-		emitDiagnostic("agent base packages: legacy v4 stamp detected, promoted to v5")
-		return nil
+		if toolchainPresentInPATH(os.Environ()) {
+			_ = os.MkdirAll("/var/lib", 0o755)
+			_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
+			emitDiagnostic("agent base packages: promoted legacy v4 stamp to v7")
+			return nil
+		}
+		emitDiagnostic("agent base packages: legacy v4 stamp found but toolchain incomplete; reinstalling")
 	}
 
 	if _, err := exec.LookPath("apt-get"); err != nil {
@@ -955,13 +1040,21 @@ func ensureGuestBasePackages() error {
 		return fmt.Errorf("apt-get not found")
 	}
 
-	emitDiagnostic("agent base packages: installing minimal package set (busybox-static, git, make, curl, wget)...")
+	emitDiagnostic("agent base packages: installing full package set (docker/node/npm/tooling prereqs)...")
 
 	pkgs := []string{
 		"make",
 		"git",
 		"curl",
 		"wget",
+		"docker.io",
+		"containerd",
+		"build-essential",
+		"nodejs",
+		"npm",
+		"docker-compose-v2",
+		"python3",
+		"python3-pip",
 		// busybox-static provides udhcpc (DHCP client) used by the agent's
 		// setupNetwork to acquire an IP from passt at VM boot time.
 		"busybox-static",
@@ -972,10 +1065,6 @@ func ensureGuestBasePackages() error {
 
 	env := append(os.Environ(),
 		"DEBIAN_FRONTEND=noninteractive",
-		// virtiofs rootfs: chown(uid=0) fails because the host kernel rejects
-		// it from a non-root process.  --no-same-owner tells tar (used by
-		// dpkg-deb) to skip ownership restoration during package extraction.
-		"TAR_OPTIONS=--no-same-owner",
 	)
 
 	// Some minimal rootfs images omit /var/log/apt/ and /var/log/dpkg.log,
@@ -1007,52 +1096,22 @@ func ensureGuestBasePackages() error {
 	}
 	emitDiagnostic("agent base packages: install package set OK")
 
+	if err := ensureGuestCLITools(); err != nil {
+		return fmt.Errorf("install cli tools: %w", err)
+	}
+	if !toolchainPresentInPATH(os.Environ()) {
+		return fmt.Errorf("toolchain verification failed: required binaries are still missing")
+	}
+
 	// Write stamp so subsequent boots skip this step.
 	_ = os.MkdirAll("/var/lib", 0o755)
 	_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
+	// Legacy stamp cleanup (best-effort).
+	_ = os.Remove("/var/lib/nexus-tools-base-v6")
+	_ = os.Remove("/var/lib/nexus-tools-base-v5")
+	_ = os.Remove("/var/lib/nexus-tools-optional-v5")
 	emitDiagnostic("agent base packages: installed successfully")
 	return nil
-}
-
-// ensureGuestOptionalDevPackages installs non-critical developer tooling.
-// It never blocks daemon readiness and can complete after the VM is usable.
-func ensureGuestOptionalDevPackages() {
-	const stampFile = "/var/lib/nexus-tools-optional-v5"
-	if _, err := os.Stat(stampFile); err == nil {
-		emitDiagnostic("agent optional packages: already installed (stamp found)")
-		return
-	}
-	if _, err := exec.LookPath("apt-get"); err != nil {
-		emitDiagnostic("agent optional packages: apt-get not found, skipping")
-		return
-	}
-
-	pkgs := []string{
-		"docker.io",
-		"containerd",
-		"build-essential",
-		"nodejs",
-		"npm",
-		"docker-compose-v2",
-		"python3",
-		"python3-pip",
-	}
-	emitDiagnostic("agent optional packages: installing package set (%d packages)...", len(pkgs))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	defer cancel()
-	env := append(os.Environ(),
-		"DEBIAN_FRONTEND=noninteractive",
-		"TAR_OPTIONS=--no-same-owner",
-	)
-	installArgs := append([]string{"install", "-y", "--no-install-recommends"}, pkgs...)
-	if err := runAptGetWithRetry(ctx, env, "apt-get install optional-package-set", installArgs...); err != nil {
-		emitDiagnostic("agent optional packages: install FAILED: %v", err)
-		return
-	}
-	_ = os.MkdirAll("/var/lib", 0o755)
-	_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
-	emitDiagnostic("agent optional packages: installed successfully")
 }
 
 func runAptGetWithRetry(ctx context.Context, env []string, label string, args ...string) error {
@@ -1091,7 +1150,7 @@ func runAptGetWithRetry(ctx context.Context, env []string, label string, args ..
 	return lastErr
 }
 
-func ensureGuestCLITools() {
+func ensureGuestCLITools() error {
 	type cliSpec struct {
 		binary string
 		pkg    string
@@ -1105,8 +1164,7 @@ func ensureGuestCLITools() {
 
 	npmPath, err := lookPathInEnv("npm", os.Environ())
 	if err != nil || strings.TrimSpace(npmPath) == "" {
-		emitDiagnostic("agent cli tools: npm not found, skipping install")
-		return
+		return fmt.Errorf("npm not found: %w", err)
 	}
 
 	env := ensurePathInEnv(os.Environ())
@@ -1121,7 +1179,7 @@ func ensureGuestCLITools() {
 	}
 	if len(missing) == 0 {
 		emitDiagnostic("agent cli tools: all tools present")
-		return
+		return nil
 	}
 
 	var packages []string
@@ -1130,25 +1188,65 @@ func ensureGuestCLITools() {
 		emitDiagnostic("agent cli tools: will install %s (%s)", tool.binary, tool.pkg)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	// Nuke the entire global node_modules tree and recreate it.  Previous
+	// partial installs leave behind temp directories (.package-*) that cause
+	// npm's atomic rename to fail with ENOTEMPTY.  rm -rf is the only reliable
+	// fix inside the VM.
+	npmGlobalDir := "/usr/local/lib/node_modules"
+	_ = os.RemoveAll(npmGlobalDir)
+	_ = os.MkdirAll(npmGlobalDir, 0o755)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
 	args := append([]string{"install", "-g", "--force"}, packages...)
 	emitDiagnostic("agent cli tools: running npm install -g %s...", strings.Join(packages, " "))
-	if err := runStreamed(ctx, env, "npm install", npmPath, args...); err != nil {
-		emitDiagnostic("agent cli tools: npm install FAILED: %v", err)
-		return
+	if err := runNPMWithRetry(ctx, env, npmPath, args...); err != nil {
+		return fmt.Errorf("npm install global tools: %w", err)
 	}
 
 	// Verify each binary is now resolvable.
 	envAfter := ensurePathInEnv(os.Environ())
 	for _, tool := range missing {
 		if _, err := lookPathInEnv(tool.binary, envAfter); err != nil {
-			emitDiagnostic("agent cli tools: WARNING %s not found after install: %v", tool.binary, err)
+			return fmt.Errorf("%s not found after install: %w", tool.binary, err)
 		} else {
 			emitDiagnostic("agent cli tools: %s installed OK", tool.binary)
 		}
 	}
+	return nil
+}
+
+func runNPMWithRetry(ctx context.Context, env []string, npmPath string, args ...string) error {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			emitDiagnostic("agent cli tools: retrying npm install (%d/%d)", attempt, maxAttempts)
+		}
+		if err := runStreamed(ctx, env, "npm install", npmPath, args...); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		if attempt < maxAttempts {
+			time.Sleep(time.Duration(attempt*3) * time.Second)
+		}
+	}
+	return lastErr
+}
+
+func toolchainPresentInPATH(env []string) bool {
+	required := []string{"docker", "dockerd", "node", "npm", "opencode", "codex", "claude"}
+	for _, bin := range required {
+		if _, err := lookPathInEnv(bin, env); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func ensureAgentProcessPath() {
@@ -1443,9 +1541,14 @@ func mountKernelFilesystems() {
 	_ = kernelMkdirAll("/proc", 0o755)
 	_ = kernelMkdirAll("/sys", 0o755)
 	_ = kernelMkdirAll("/dev", 0o755)
+	_ = kernelMkdirAll("/run", 0o755)
 	_ = kernelMountFunc("proc", "/proc", "proc", 0, "")
 	_ = kernelMountFunc("sysfs", "/sys", "sysfs", 0, "")
 	_ = kernelMountFunc("devtmpfs", "/dev", "devtmpfs", 0, "")
+	// In virtiofs root mode, /run inherits host uid/gid/mode semantics that
+	// break daemons expecting a root-owned runtime dir (sshd, containerd shim).
+	// Use a tmpfs runtime dir to restore standard Linux behavior.
+	_ = kernelMountFunc("tmpfs", "/run", "tmpfs", 0, "mode=755,nosuid,nodev")
 	// Mount tmpfs at /tmp with sticky bit so all users (including apt's _apt
 	// sandbox user) can create temp files.  Without this, apt-key fails trying
 	// to write to /tmp which is only 0755 in the base squashfs.
@@ -1489,31 +1592,53 @@ func ensureDockerDaemon() error {
 	// In legacy mode: data lives inside /workspace (native ext4 block device).
 	dataRoot := "/workspace/.nexus-docker"
 	execRoot := "/workspace/.nexus-docker-exec"
+	socketPath := "/var/run/docker.sock"
 	if isVirtiofsWorkspaceMode() {
 		dataRoot = "/var/lib/docker"
-		execRoot = "/var/lib/docker-exec"
+		execRoot = "/var/lib/docker/exec"
+		// /run lives on virtiofs root and dockerd cannot chown a socket there.
+		// Keep the real socket on docker-data ext4 and expose /var/run/docker.sock
+		// as a symlink for default CLI behavior.
+		socketPath = "/var/lib/docker/docker.sock"
 	}
+	dockerHost := "unix://" + socketPath
 
 	_ = os.Remove("/var/run/docker.pid")
+	_ = os.Remove("/var/run/docker.sock")
+	_ = os.Remove(socketPath)
 	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
 		return fmt.Errorf("mkdir docker data root: %w", err)
 	}
 	if err := os.MkdirAll(execRoot, 0o755); err != nil {
 		return fmt.Errorf("mkdir docker exec root: %w", err)
 	}
+	if isVirtiofsWorkspaceMode() {
+		// In hybrid mode /run is a writable tmpfs (block rootfs), so containerd
+		// can use /run/containerd directly. Remove any stale symlink left from a
+		// previous virtiofs-only boot to avoid "mkdir /run/containerd: file exists".
+		if info, err := os.Lstat("/run/containerd"); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			_ = os.Remove("/run/containerd")
+		}
+		if err := ensureRunPathRedirect("/run/containerd", filepath.Join(execRoot, "run-containerd")); err != nil {
+			emitDiagnostic("agent docker daemon: /run/containerd redirect failed (non-fatal): %v", err)
+		}
+	}
 
-	// Older 5.10 CI kernels do not support nftables.  Ubuntu 24.04's
-	// default `iptables` binary is nftables-backed and will fail with
-	// "Failed to initialize nft: Protocol not supported".  Switch to
-	// iptables-legacy (which ships alongside iptables in the iptables package)
-	// so Docker can create its DOCKER NAT chain.
+	// Probe NAT table support before enabling Docker's iptables integration.
+	// Some libkrun guest kernels do not expose the required netfilter modules;
+	// in that case dockerd must run without bridge/NAT management.
 	iptablesFlag := "--iptables=false"
 	if legacyPath, err := exec.LookPath("iptables-legacy"); err == nil {
-		_ = exec.Command("update-alternatives", "--set", "iptables", legacyPath).Run()
-		if legacy6Path, err := exec.LookPath("ip6tables-legacy"); err == nil {
-			_ = exec.Command("update-alternatives", "--set", "ip6tables", legacy6Path).Run()
+		probe := exec.Command(legacyPath, "-w", "-t", "nat", "-L", "-n")
+		if err := probe.Run(); err == nil {
+			_ = exec.Command("update-alternatives", "--set", "iptables", legacyPath).Run()
+			if legacy6Path, err := exec.LookPath("ip6tables-legacy"); err == nil {
+				_ = exec.Command("update-alternatives", "--set", "ip6tables", legacy6Path).Run()
+			}
+			iptablesFlag = "--iptables=true"
+		} else {
+			emitDiagnostic("agent docker daemon: iptables nat unavailable; disabling Docker iptables integration")
 		}
-		iptablesFlag = "--iptables=true"
 	}
 
 	logFile, err := os.OpenFile("/tmp/nexus-agent-dockerd.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
@@ -1522,14 +1647,19 @@ func ensureDockerDaemon() error {
 	}
 	defer logFile.Close()
 
-	cmd := exec.Command(
-		"dockerd",
-		"--host=unix:///var/run/docker.sock",
-		"--data-root="+dataRoot,
-		"--exec-root="+execRoot,
+	args := []string{
+		"--host=" + dockerHost,
+		"--data-root=" + dataRoot,
+		"--exec-root=" + execRoot,
 		"--storage-driver=overlay2",
 		iptablesFlag,
-	)
+	}
+	if iptablesFlag == "--iptables=false" {
+		// Keep bridge disabled (no iptables NAT management) but allow IP
+		// forwarding — we pre-enable it in the kernel during network setup.
+		args = append(args, "--bridge=none")
+	}
+	cmd := exec.Command("dockerd", args...)
 	cmd.Env = ensurePathInEnv(os.Environ())
 	disableRaw := strings.TrimSpace(os.Getenv("NEXUS_DOCKER_DISABLE_IPTABLES_RAW"))
 	if disableRaw == "" || disableRaw == "1" {
@@ -1544,13 +1674,49 @@ func ensureDockerDaemon() error {
 
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := exec.Command("docker", "info").Run(); err == nil {
+		check := exec.Command("docker", "info")
+		check.Env = append(ensurePathInEnv(os.Environ()), "DOCKER_HOST="+dockerHost)
+		if err := check.Run(); err == nil {
+			if isVirtiofsWorkspaceMode() {
+				_ = os.MkdirAll("/var/run", 0o755)
+				_ = os.Remove("/var/run/docker.sock")
+				_ = os.Symlink(socketPath, "/var/run/docker.sock")
+			}
 			emitDiagnostic("agent docker daemon ready")
 			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	return errors.New("dockerd did not become ready within 15s (see /tmp/nexus-agent-dockerd.log)")
+}
+
+func ensureRunPathRedirect(runPath, targetDir string) error {
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir target %s: %w", targetDir, err)
+	}
+
+	info, err := os.Lstat(runPath)
+	switch {
+	case err == nil:
+		if info.Mode()&os.ModeSymlink != 0 {
+			dest, readErr := os.Readlink(runPath)
+			if readErr == nil && dest == targetDir {
+				return nil
+			}
+		}
+		if rmErr := os.RemoveAll(runPath); rmErr != nil {
+			return fmt.Errorf("remove existing %s: %w", runPath, rmErr)
+		}
+	case errors.Is(err, os.ErrNotExist):
+		// no-op
+	default:
+		return fmt.Errorf("stat %s: %w", runPath, err)
+	}
+
+	if err := os.Symlink(targetDir, runPath); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("symlink %s -> %s: %w", runPath, targetDir, err)
+	}
+	return nil
 }
 
 func mountCgroupFilesystems() {
@@ -1617,6 +1783,16 @@ func maybeStartSSHDInGuest() {
 	}
 	_ = os.MkdirAll(sshdRunDir, 0o755)
 
+	// Ensure /var/empty exists for sshd privilege separation.
+	_ = os.MkdirAll("/var/empty", 0o755)
+
+	// libkrun's guest kernel seccomp sandbox is incompatible with sshd's default
+	// "sandbox" privilege-separation mode (pre-auth child crashes with
+	// "exited with irqs disabled").  Use the legacy no-separation mode — the
+	// micro-VM is single-user and isolated anyway.
+	_ = exec.Command("bash", "-c", "echo 'UsePrivilegeSeparation no' >> /etc/ssh/sshd_config").Run()
+	_ = exec.Command("bash", "-c", "echo 'PermitRootLogin prohibit-password' >> /etc/ssh/sshd_config").Run()
+
 	// Run sshd in foreground+stderr mode so its output appears in the hvc0
 	// serial log. sshd's -D keeps it in the foreground, -e logs to stderr.
 	// We open /dev/console directly so the output appears in the guest serial
@@ -1646,8 +1822,20 @@ func maybeStartSSHDInGuest() {
 }
 
 func realSetupNetwork() error {
+	// Enable IPv4 forwarding so Docker containers can reach external networks
+	// even when Docker's iptables integration is disabled.
+	_ = exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run()
+
 	if out, err := exec.Command("ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
 		return fmt.Errorf("ip link set lo up: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	if !interfaceExists("eth0") {
+		if isTSINetworkMode() {
+			emitDiagnostic("network: eth0 not present in TSI/no-NIC mode; skipping DHCP/static interface setup")
+			return nil
+		}
+		return fmt.Errorf("network interface eth0 not found")
 	}
 
 	// Bring the interface up first so DHCP can configure it.
@@ -1696,6 +1884,17 @@ func realSetupNetwork() error {
 		return fmt.Errorf("static network fallback failed: %w", err)
 	}
 	return nil
+}
+
+func interfaceExists(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join("/sys/class/net", name)); err == nil {
+		return true
+	}
+	return false
 }
 
 // hasUsableIPv4OnEth0 reports whether eth0 has a global IPv4 address and a

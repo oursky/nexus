@@ -49,16 +49,78 @@ public enum WorkspaceAction: String, Sendable {
 // MARK: - In-flight operation state (transient UI state, set by AppState)
 
 public enum WorkspaceOpState: Sendable, Equatable {
-    case starting
+    case starting(detail: String?)
     case stopping
     case removing
 
     public var label: String {
         switch self {
-        case .starting: return "Starting…"
+        case .starting(let detail):
+            let text = detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return text.isEmpty ? "Starting…" : text
         case .stopping: return "Stopping…"
         case .removing: return "Removing…"
         }
+    }
+}
+
+// MARK: - Workspace create profiling
+
+public struct WorkspaceCreatePhaseTiming: Sendable, Equatable, Identifiable {
+    public let id: String
+    public let label: String
+    public let durationSeconds: Double
+
+    public init(id: String, label: String, durationSeconds: Double) {
+        self.id = id
+        self.label = label
+        self.durationSeconds = durationSeconds
+    }
+
+    public var durationLabel: String {
+        if durationSeconds >= 60 {
+            return String(format: "%.1fm", durationSeconds / 60.0)
+        }
+        return String(format: "%.1fs", durationSeconds)
+    }
+}
+
+public struct WorkspaceCreateProgress: Sendable, Equatable {
+    public let workspaceID: String
+    public let workspaceName: String
+    public let elapsedSeconds: Double
+    public let currentPhaseLabel: String
+    public let phaseTimings: [WorkspaceCreatePhaseTiming]
+    public let notes: [String]
+    public let isComplete: Bool
+
+    public init(
+        workspaceID: String,
+        workspaceName: String,
+        elapsedSeconds: Double,
+        currentPhaseLabel: String,
+        phaseTimings: [WorkspaceCreatePhaseTiming],
+        notes: [String],
+        isComplete: Bool
+    ) {
+        self.workspaceID = workspaceID
+        self.workspaceName = workspaceName
+        self.elapsedSeconds = elapsedSeconds
+        self.currentPhaseLabel = currentPhaseLabel
+        self.phaseTimings = phaseTimings
+        self.notes = notes
+        self.isComplete = isComplete
+    }
+
+    public var elapsedLabel: String {
+        if elapsedSeconds >= 60 {
+            return String(format: "%.1fm", elapsedSeconds / 60.0)
+        }
+        return String(format: "%.1fs", elapsedSeconds)
+    }
+
+    public var sidebarLabel: String {
+        "\(currentPhaseLabel) (\(elapsedLabel))"
     }
 }
 

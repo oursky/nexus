@@ -68,11 +68,21 @@ task dev:remote
 
 ### macOS app resources
 
-The Xcode project copies `Resources/nexus-daemon` into the bundle. If missing, stage:
+The Xcode project copies `Resources/nexus` and Linux helper binaries (`Resources/nexus-linux-amd64`, `Resources/nexus-linux-arm64`) into the app bundle.
+
+Stage the macOS CLI binary with:
 
 ```bash
-go build -C packages/nexus -o packages/nexus-swift/Resources/nexus-daemon ./cmd/nexus
+go build -C packages/nexus -o packages/nexus-swift/Resources/nexus ./cmd/nexus
 ```
+
+For Linux staging, prefer:
+
+```bash
+scripts/swift/stage-linux-nexus.sh amd64   # or arm64 / both
+```
+
+This script builds/stages the embedded guest-agent artifact first, avoiding `pattern agent-linux-amd64: no matching files found`.
 
 Then build via `task dev:swift` or `scripts/swift/build.sh` + `scripts/swift/open.sh`.
 
@@ -226,6 +236,46 @@ curl -sf -X POST http://127.0.0.1:7778/terminal/write \
 sleep 2
 curl -sf "http://127.0.0.1:7778/terminal/read?tabID=$TAB" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['output'])"
+```
+
+### Startup diagnostics learned in practice
+
+- Use `GET /workspace/list` as the source of truth for workspace lifecycle state (`created|starting|running|...`).
+- Do **not** use `GET /workspace/info` for state polling; it may only return connection metadata (`workspacePath`, `ports`) and no `state`.
+- During heavy startup (first run after bake/stamp changes), `/workspace/list` can intermittently return empty/non-JSON responses. Poll with retries.
+- `POST /terminal/open` can return `{"error":"tab creation failed"}` briefly right after state flips to `running`; add a short settle (`sleep 2-3`) and retry.
+- Prefer:
+  1) wait for `running` from `/workspace/list`
+  2) sleep 2-3 seconds
+  3) retry `/terminal/open` up to ~8 times with 1-2s backoff
+
+### Robust polling snippets
+
+```bash
+# Poll workspace state from /workspace/list (not /workspace/info)
+WS_ID="ws-..."
+for i in $(seq 1 120); do
+  STATE=$(curl -s http://127.0.0.1:7778/workspace/list \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); w=[x for x in d.get('workspaces',[]) if x.get('id')=='$WS_ID']; print(w[0].get('state','missing') if w else 'missing')")
+  echo "[$i] $STATE"
+  [ "$STATE" = "running" ] && break
+  sleep 2
+done
+
+sleep 3  # terminal service handshake settle
+
+for i in $(seq 1 8); do
+  TAB_JSON=$(curl -s -X POST http://127.0.0.1:7778/terminal/open \
+    -H "Content-Type: application/json" \
+    -d "{\"workspaceID\":\"$WS_ID\",\"name\":\"verify\"}")
+  TAB=$(echo "$TAB_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tabID',''))" 2>/dev/null || true)
+  if [ -n "$TAB" ]; then
+    echo "opened tab: $TAB"
+    break
+  fi
+  echo "terminal/open retry $i: $TAB_JSON"
+  sleep 2
+done
 ```
 
 ### Shell helper for tests

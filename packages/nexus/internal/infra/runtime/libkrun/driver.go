@@ -226,6 +226,9 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 		configDrivePath = ""
 	}
 
+	manifestHash := resolveManifestHash(root)
+	bakedRootfs := IsRootfsBaked(defaultStampDir())
+
 	spec := SpawnSpec{
 		WorkspaceID:     workspaceID,
 		ProjectRoot:     root,
@@ -233,7 +236,9 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 		VCPUs:           1,
 		SnapshotID:      snapshotID,
 		HostConfigDrive: configDrivePath,
-		VMProfile:       resolveWorkspaceVMProfile(root),
+		VMProfile:       resolveGuestVMProfile(root),
+		ManifestHash:    manifestHash,
+		BakedRootfs:     bakedRootfs,
 	}
 
 	d.mu.Lock()
@@ -246,24 +251,45 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 	return nil
 }
 
-func resolveWorkspaceVMProfile(projectRoot string) string {
+func resolveGuestVMProfile(projectRoot string) string {
 	const fallback = "default"
 	cfg, ok, err := config.LoadNexusfile(projectRoot)
 	if err != nil || !ok {
 		return fallback
 	}
-	profile := strings.ToLower(strings.TrimSpace(cfg.VM.Profile))
-	switch profile {
+	return normalizeGuestVMProfile(cfg.VM.Profile)
+}
+
+func normalizeGuestVMProfile(raw string) string {
+	const fallback = "default"
+	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", "default":
 		return fallback
 	case "minimal":
-		return profile
+		return "minimal"
 	case "dev":
 		// Backward-compat for older Nexusfile values.
 		return fallback
 	default:
 		return fallback
 	}
+}
+
+func resolveManifestHash(projectRoot string) string {
+	basePath := config.BaseNexusfilePath()
+	projectPath := filepath.Join(projectRoot, "Nexusfile")
+	return config.ComputeManifestHash(basePath, projectPath, BakeStampVersion)
+}
+
+func defaultStampDir() string {
+	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+		return filepath.Join(xdg, "nexus")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "/var/lib/nexus"
+	}
+	return filepath.Join(home, ".local", "state", "nexus")
 }
 
 // WorkspaceReady probes the guest agent to verify tools are installed.
@@ -279,23 +305,36 @@ func (d *Driver) WorkspaceReady(ctx context.Context, workspaceID string) (bool, 
 		return true, nil
 	}
 
-	// Keep readiness bounded and robust: once agent connection is reachable,
-	// allow workspace to transition to running so PTY/exec/shell are unblocked.
+	// Keep readiness bounded and robust: require a full agent protocol
+	// round-trip (not just a socket dial) so PTY create does not race guest
+	// listener startup and fail with connection reset.
 	start := time.Now()
 	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	log.Printf("[libkrun] readiness: agent dial start workspace=%s timeout=8s", workspaceID)
+	log.Printf("[libkrun] readiness: agent probe start workspace=%s timeout=8s", workspaceID)
 	conn, err := d.AgentConn(probeCtx, workspaceID)
 	if err != nil {
 		log.Printf("[libkrun] readiness: agent dial not-ready workspace=%s duration=%s err=%v", workspaceID, time.Since(start).Round(time.Millisecond), err)
 		return false, nil
 	}
-	_ = conn.Close()
+	defer conn.Close()
+	result, err := agentExec(probeCtx, conn, AgentExecRequest{
+		ID:      fmt.Sprintf("ready-%d", time.Now().UnixNano()),
+		Command: "/bin/true",
+	})
+	if err != nil {
+		log.Printf("[libkrun] readiness: agent exec not-ready workspace=%s duration=%s err=%v", workspaceID, time.Since(start).Round(time.Millisecond), err)
+		return false, nil
+	}
+	if result.ExitCode != 0 {
+		log.Printf("[libkrun] readiness: agent exec not-ready workspace=%s duration=%s exit=%d stderr=%q", workspaceID, time.Since(start).Round(time.Millisecond), result.ExitCode, strings.TrimSpace(result.Stderr))
+		return false, nil
+	}
 
 	d.mu.Lock()
 	d.readyTools[workspaceID] = true
 	d.mu.Unlock()
-	log.Printf("[libkrun] readiness: agent reachable workspace=%s duration=%s", workspaceID, time.Since(start).Round(time.Millisecond))
+	log.Printf("[libkrun] readiness: agent probe ready workspace=%s duration=%s", workspaceID, time.Since(start).Round(time.Millisecond))
 	return true, nil
 }
 

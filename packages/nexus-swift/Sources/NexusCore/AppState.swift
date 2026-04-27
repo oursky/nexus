@@ -48,6 +48,8 @@ public final class AppState: ObservableObject {
     /// Per-workspace in-flight operation state (start / stop / remove).
     /// Views observe this to show spinners and disable action buttons.
     @Published public var workspaceOps: [String: WorkspaceOpState] = [:]
+    /// Live profile for the most recently created/forked workspace.
+    @Published public var workspaceCreateProgress: WorkspaceCreateProgress?
 
     // MARK: - Client
     public private(set) var client: any DaemonClient
@@ -66,6 +68,7 @@ public final class AppState: ObservableObject {
     private var cachedProfile: DaemonProfile?
     private var tunnelManager: SSHTunnelManager?
     private var daemonLogStream: DaemonLogStream?
+    private var workspaceCreateMonitorTasks: [String: Task<Void, Never>] = [:]
 
     /// Headless HTTP RPC server for terminal automation (active when NEXUS_HEADLESS_RPC=1).
     public private(set) var rpcServer: HeadlessRPCServer?
@@ -614,8 +617,8 @@ public final class AppState: ObservableObject {
                     msg = String(format: "Uploading Nexus (%.0f%%)…", pct * 100)
                 case .startingDaemon:
                     msg = "Starting daemon…"
-                case .bootstrapPhase(_, let message):
-                    msg = message.isEmpty ? "Bootstrapping…" : message
+                case .bootstrapPhase(let phase, let message):
+                    msg = Self.provisioningStatusMessage(phase: phase, message: message)
                 case .waitingForDaemon(let attempt):
                     msg = attempt <= 1 ? "Waiting for daemon…" : "Waiting for daemon (attempt \(attempt))…"
                 case .ready:
@@ -732,7 +735,8 @@ public final class AppState: ObservableObject {
                     case .checkingHost:                msg = "Checking remote host…"
                     case .uploadingBinary(let pct):   msg = String(format: "Uploading Nexus (%.0f%%)…", pct * 100)
                     case .startingDaemon:             msg = "Starting daemon…"
-                    case .bootstrapPhase(_, let m):   msg = m.isEmpty ? "Bootstrapping…" : m
+                    case .bootstrapPhase(let phase, let m):
+                        msg = Self.provisioningStatusMessage(phase: phase, message: m)
                     case .waitingForDaemon(let n):    msg = n <= 1 ? "Waiting for daemon…" : "Waiting (\(n))…"
                     case .ready:                      msg = "Daemon ready"
                     }
@@ -766,6 +770,7 @@ public final class AppState: ObservableObject {
 
     public func createSandbox(request: SandboxCreateRequest) async {
         do {
+            workspaceCreateProgress = nil
             if projects.isEmpty { await load() }
             guard let project = projects.first(where: { $0.id == request.projectId }) else {
                 self.error = "Project not found."
@@ -793,6 +798,8 @@ public final class AppState: ObservableObject {
                     childRef: request.targetBranch
                 )
             }
+            workspaceOps[ws.id] = .starting(detail: "Preparing VM…")
+            startWorkspaceCreateMonitor(workspaceID: ws.id, workspaceName: ws.workspaceName)
             await load()
             selectedWorkspaceID = ws.id
         } catch {
@@ -882,7 +889,7 @@ public final class AppState: ObservableObject {
     }
 
     public func start(_ workspace: Workspace) async {
-        await perform(workspaceID: workspace.id, opState: .starting) {
+        await perform(workspaceID: workspace.id, opState: .starting(detail: nil)) {
             try await self.client.startWorkspace(id: workspace.id)
             // Daemon returns immediately with state=starting; poll until running or rolled-back.
             let deadline = Date().addingTimeInterval(15 * 60) // 15 min ceiling
@@ -1021,6 +1028,181 @@ public final class AppState: ObservableObject {
         }
     }
 
+    private func startWorkspaceCreateMonitor(workspaceID: String, workspaceName: String) {
+        workspaceCreateMonitorTasks[workspaceID]?.cancel()
+        let daemonClient = client
+        let startedAt = Date()
+
+        workspaceCreateMonitorTasks[workspaceID] = Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            defer {
+                Task { @MainActor [weak self] in
+                    self?.workspaceCreateMonitorTasks.removeValue(forKey: workspaceID)
+                }
+            }
+
+            var lastProgress: WorkspaceCreateProgress?
+            for _ in 0..<180 {
+                if Task.isCancelled { return }
+
+                do {
+                    let tail = try await daemonClient.daemonLogTail(lines: 500)
+                    let progress = Self.parseWorkspaceCreateProgress(
+                        workspaceID: workspaceID,
+                        workspaceName: workspaceName,
+                        lines: tail.lines,
+                        startedAt: startedAt
+                    )
+                    let workspaces = try await daemonClient.listWorkspaces()
+                    let wsState = workspaces.first(where: { $0.id == workspaceID })?.state
+                    let done = progress.isComplete || wsState == .running || wsState == .restored
+                    let normalized = WorkspaceCreateProgress(
+                        workspaceID: progress.workspaceID,
+                        workspaceName: progress.workspaceName,
+                        elapsedSeconds: progress.elapsedSeconds,
+                        currentPhaseLabel: done ? "Ready" : progress.currentPhaseLabel,
+                        phaseTimings: progress.phaseTimings,
+                        notes: progress.notes,
+                        isComplete: done
+                    )
+
+                    if normalized != lastProgress {
+                        await MainActor.run { [weak self] in
+                            guard let self else { return }
+                            self.workspaceCreateProgress = normalized
+                            if normalized.isComplete {
+                                self.workspaceOps.removeValue(forKey: workspaceID)
+                            } else {
+                                self.workspaceOps[workspaceID] = .starting(detail: normalized.sidebarLabel)
+                            }
+                        }
+                        lastProgress = normalized
+                    }
+                    if done { return }
+                } catch {
+                    // Keep polling; transient daemon/tunnel errors are expected during startup.
+                }
+
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
+
+    private nonisolated static func parseWorkspaceCreateProgress(
+        workspaceID: String,
+        workspaceName: String,
+        lines: [String],
+        startedAt: Date
+    ) -> WorkspaceCreateProgress {
+        var currentPhase = "Queued"
+        var timings: [String: Double] = [:]
+        var notes: [String] = []
+        var sawReflink = false
+        var sawReflinkFallback = false
+        var sawMkfsBaseImage = false
+        var sawVolumeMount = false
+        var sawComplete = false
+
+        for line in lines where line.contains(workspaceID) {
+            if let p = value(after: "phase=", in: line) {
+                currentPhase = phaseLabel(from: p)
+            }
+            if let p = value(after: "phase_done=", in: line) {
+                currentPhase = phaseLabel(from: p)
+            }
+            if line.contains("reflink clone enabled") {
+                sawReflink = true
+            }
+            if line.contains("reflink unavailable, using sparse copy fallback") {
+                sawReflinkFallback = true
+            }
+            if line.contains("base image strategy=mkfs.ext4 -d") ||
+                line.contains("workspace mount strategy=block ext4 image clone") {
+                sawMkfsBaseImage = true
+            }
+            if line.contains("workspace mount strategy=host-volume") {
+                sawVolumeMount = true
+            }
+            if let p = value(after: "phase_done=", in: line), let d = durationSeconds(in: line) {
+                timings[p] = d
+            }
+            if line.contains("runStartAsync: workspace \(workspaceID) is ready") || line.contains("runStartAsync: done workspace=\(workspaceID)") {
+                sawComplete = true
+            }
+        }
+
+        if sawReflink {
+            notes.append("CoW clone: enabled")
+        } else if sawReflinkFallback {
+            notes.append("CoW clone: unavailable on current FS (sparse copy fallback)")
+        }
+        if sawMkfsBaseImage {
+            notes.append("Base image: mkfs.ext4 copy (no host volume mount)")
+        } else if sawVolumeMount {
+            notes.append("Workspace mount: host volume")
+        }
+
+        let phaseOrder = [
+            "ensure_base_image", "create_docker_data", "clone_rootfs",
+            "clone_workspace", "start_passt", "start_vm",
+        ]
+        let phaseTimings = phaseOrder.compactMap { key -> WorkspaceCreatePhaseTiming? in
+            guard let seconds = timings[key] else { return nil }
+            return WorkspaceCreatePhaseTiming(id: key, label: phaseLabel(from: key), durationSeconds: seconds)
+        }.sorted { $0.durationSeconds > $1.durationSeconds }
+
+        let elapsed = Date().timeIntervalSince(startedAt)
+        return WorkspaceCreateProgress(
+            workspaceID: workspaceID,
+            workspaceName: workspaceName,
+            elapsedSeconds: max(0, elapsed),
+            currentPhaseLabel: currentPhase,
+            phaseTimings: phaseTimings,
+            notes: notes,
+            isComplete: sawComplete
+        )
+    }
+
+    private nonisolated static func value(after key: String, in line: String) -> String? {
+        guard let range = line.range(of: key) else { return nil }
+        let tail = line[range.upperBound...]
+        let token = tail.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first
+        guard let token else { return nil }
+        return String(token).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private nonisolated static func durationSeconds(in line: String) -> Double? {
+        guard let open = line.lastIndex(of: "("),
+              let close = line.lastIndex(of: ")"),
+              open < close else { return nil }
+        let raw = line[line.index(after: open)..<close]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if raw.hasSuffix("ms"), let value = Double(raw.dropLast(2)) {
+            return value / 1000.0
+        }
+        if raw.hasSuffix("s"), let value = Double(raw.dropLast(1)) {
+            return value
+        }
+        return nil
+    }
+
+    private nonisolated static func phaseLabel(from phase: String) -> String {
+        switch phase {
+        case "ensure_base_image": return "Building Base Image"
+        case "create_docker_data": return "Creating Docker Data Image"
+        case "clone_rootfs": return "Cloning RootFS"
+        case "clone_workspace": return "Cloning Workspace Image"
+        case "start_passt": return "Starting Network"
+        case "start_vm": return "Booting VM"
+        case "inject_agent": return "Injecting Agent"
+        case "restore_rootfs": return "Restoring RootFS Snapshot"
+        case "restore_workspace": return "Restoring Workspace Snapshot"
+        case "restore_docker_data": return "Restoring Docker Snapshot"
+        default: return phase.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
     // MARK: - Computed helpers
 
     public var selectedWorkspace: Workspace? {
@@ -1034,6 +1216,34 @@ public final class AppState: ObservableObject {
     private func projectRootSandbox(projectID: String) -> Workspace? {
         guard let repo = repos.first(where: { $0.id == projectID }) else { return nil }
         return repo.workspaces.first(where: { ($0.parentWorkspaceId ?? "").isEmpty })
+    }
+
+    private nonisolated static func provisioningStatusMessage(phase: String, message: String) -> String {
+        let normalizedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPhase = phase.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        if normalizedPhase == "rootfs-bake" {
+            if normalizedMessage.contains("pre-baking rootfs toolchain") {
+                return "Baking base image (installing toolchain)…"
+            }
+            if normalizedMessage.contains("checking cached rootfs bake") {
+                return "Checking cached base image…"
+            }
+            if normalizedMessage.contains("base rootfs bake ready") {
+                return "Base image ready"
+            }
+            if normalizedMessage.contains("bake failed") {
+                return "Base image bake failed (fallback to first-boot install)"
+            }
+            if normalizedMessage.contains("skipped") {
+                return "Base image bake skipped"
+            }
+        }
+
+        if normalizedMessage.isEmpty {
+            return "Bootstrapping…"
+        }
+        return normalizedMessage
     }
 }
 

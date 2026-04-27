@@ -41,13 +41,17 @@ var EmbeddedAgentFn func() []byte
 
 // LibkrunBakeFn, if non-nil, is called after agent injection to pre-bake
 // developer tools into the base rootfs. Set on Linux by libkrun_bake_linux.go.
-var LibkrunBakeFn func(rootfsPath, kernelPath string)
+var LibkrunBakeFn func(rootfsPath, kernelPath string, emit func(status, message string))
 
 // DefaultVMKernelPath is the canonical kernel location after rootless daemon setup.
 var DefaultVMKernelPath = defaultVMKernelPath()
 
 // DefaultVMRootfsPath is the canonical rootfs location after rootless daemon setup.
 var DefaultVMRootfsPath = defaultVMRootfsPath()
+
+// DefaultVMRootfsDirPath is the canonical directory-form rootfs location used
+// by libkrun set_root+set_exec launch mode.
+var DefaultVMRootfsDirPath = defaultVMRootfsDirPath()
 
 // defaultVMKernelPath returns the user-scoped kernel path under XDG_DATA_HOME.
 func defaultVMKernelPath() string {
@@ -57,6 +61,12 @@ func defaultVMKernelPath() string {
 // defaultVMRootfsPath returns the user-scoped rootfs path under XDG_DATA_HOME.
 func defaultVMRootfsPath() string {
 	return xdgVMAsset("rootfs.ext4")
+}
+
+// defaultVMRootfsDirPath returns the user-scoped rootfs directory path under
+// XDG_DATA_HOME.
+func defaultVMRootfsDirPath() string {
+	return xdgVMAsset("rootfs-dir")
 }
 
 // xdgVMAsset returns the path to a VM asset under ~/.local/share/nexus/vm/
@@ -104,6 +114,17 @@ func startCommand() *cobra.Command {
 		Use:   "start",
 		Short: "Start the Nexus daemon (auto-provisions prerequisites; listens on 127.0.0.1:7777 by default)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			emitPhase := func(phase, status, message string) {
+				if strings.TrimSpace(phase) == "" {
+					phase = "daemon-start"
+				}
+				if jsonOutput {
+					fmt.Fprintf(cmd.OutOrStdout(), `{"phase":%q,"status":%q,"message":%q}`+"\n", phase, status, message)
+					return
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "%s: %s: %s\n", phase, status, message)
+			}
+
 			isForegroundChild := os.Getenv(daemonForegroundEnv) == "1"
 
 			// Auto-provision host prerequisites (libkrun libraries, kernel, rootfs).
@@ -168,6 +189,37 @@ func startCommand() *cobra.Command {
 			}
 
 			isLibkrun := driver == "libkrun"
+			basesDir := filepath.Join(defaultData, "bases")
+
+			// Prefer colocating libkrun source images and workspace clones on /data/nexus
+			// so cp --reflink can be used (same-device CoW clone).
+			if isLibkrun {
+				if storageRoot, ok := preferredLibkrunStorageRoot(); ok {
+					basesDir = filepath.Join(storageRoot, "bases")
+					if rootfsPath != "" {
+						promotedRootfs, err := promoteVMAssetToDir(rootfsPath, filepath.Join(storageRoot, "vm"))
+						if err != nil {
+							return fmt.Errorf("daemon start: promote rootfs to %s: %w", storageRoot, err)
+						}
+						rootfsPath = promotedRootfs
+					}
+					if kernelPath != "" {
+						promotedKernel, err := promoteVMAssetToDir(kernelPath, filepath.Join(storageRoot, "vm"))
+						if err == nil {
+							kernelPath = promotedKernel
+						} else {
+							log.Printf("daemon: kernel promote skipped (non-fatal): %v", err)
+						}
+					}
+					if strings.TrimSpace(workDirRoot) == "" {
+						workDirRoot = filepath.Join(storageRoot, "libkrun-vms")
+					}
+					log.Printf(
+						"daemon: libkrun storage root=%s rootfs=%s bases=%s workdir=%s",
+						storageRoot, rootfsPath, basesDir, workDirRoot,
+					)
+				}
+			}
 
 			// For libkrun, ensure the shared libraries directory is on LD_LIBRARY_PATH
 			// so both the agent-injection step and the background daemon child can
@@ -209,7 +261,7 @@ func startCommand() *cobra.Command {
 				KernelPath:      kernelPath,
 				RootFSPath:      rootfsPath,
 				WorkDirRoot:     workDirRoot,
-				BasesDir:        filepath.Join(defaultData, "bases"),
+				BasesDir:        basesDir,
 				NodeName:        nodeName,
 				Network:         netCfg,
 				Driver:          effectiveDriver,
@@ -231,7 +283,25 @@ func startCommand() *cobra.Command {
 					strings.EqualFold(strings.TrimSpace(os.Getenv("CI")), "1") ||
 					strings.EqualFold(strings.TrimSpace(os.Getenv("CI")), "true")
 				if isLibkrun && LibkrunBakeFn != nil && !skipLibkrunBake {
-					LibkrunBakeFn(cfg.RootFSPath, cfg.KernelPath)
+					LibkrunBakeFn(cfg.RootFSPath, cfg.KernelPath, func(status, message string) {
+						emitPhase("rootfs-bake", status, message)
+					})
+				} else if isLibkrun && skipLibkrunBake {
+					reason := "NEXUS_LIBKRUN_SKIP_BAKE set"
+					if strings.EqualFold(strings.TrimSpace(os.Getenv("CI")), "1") ||
+						strings.EqualFold(strings.TrimSpace(os.Getenv("CI")), "true") {
+						reason = "CI environment"
+					}
+					emitPhase("rootfs-bake", "ok", "skipped ("+reason+")")
+				}
+
+				// Seed rootfs-dir from rootfs.ext4 AFTER bake so the runtime virtiofs
+				// directory always reflects the latest baked image.
+				if err := ensureRootfsDirSeeded(cfg.RootFSPath, DefaultVMRootfsDirPath); err != nil {
+					return fmt.Errorf("daemon start: rootfs-dir seed: %w", err)
+				}
+				if err := ensureGuestAgentRootfsDir(DefaultVMRootfsDirPath); err != nil {
+					return fmt.Errorf("daemon start: rootfs-dir guest agent refresh: %w", err)
 				}
 			}
 
@@ -279,6 +349,57 @@ func startCommand() *cobra.Command {
 	cmd.Flags().DurationVar(&readyTimeout, "ready-timeout", 30*time.Second, "Max time to wait for daemon socket readiness in self-daemonizing mode")
 
 	return cmd
+}
+
+func preferredLibkrunStorageRoot() (string, bool) {
+	const root = "/data/nexus"
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	return root, true
+}
+
+func promoteVMAssetToDir(srcPath, destDir string) (string, error) {
+	src := strings.TrimSpace(srcPath)
+	if src == "" {
+		return "", fmt.Errorf("source path is empty")
+	}
+	if strings.TrimSpace(destDir) == "" {
+		return src, nil
+	}
+	base := filepath.Base(src)
+	dest := filepath.Join(destDir, base)
+	if filepath.Clean(src) == filepath.Clean(dest) {
+		return dest, nil
+	}
+
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return "", fmt.Errorf("stat source %s: %w", src, err)
+	}
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", destDir, err)
+	}
+
+	if dstInfo, err := os.Stat(dest); err == nil {
+		// Reuse existing promoted asset if it matches source freshness and size.
+		if dstInfo.Size() == srcInfo.Size() && !srcInfo.ModTime().After(dstInfo.ModTime()) {
+			return dest, nil
+		}
+	}
+
+	tmp := dest + ".tmp"
+	_ = os.Remove(tmp)
+	out, cpErr := exec.Command("cp", "--reflink=auto", "--sparse=auto", src, tmp).CombinedOutput()
+	if cpErr != nil {
+		return "", fmt.Errorf("cp %s -> %s: %w: %s", src, tmp, cpErr, strings.TrimSpace(string(out)))
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		_ = os.Remove(tmp)
+		return "", fmt.Errorf("rename %s -> %s: %w", tmp, dest, err)
+	}
+	return dest, nil
 }
 
 // launchDaemonBackground re-execs the current binary with NEXUS_DAEMON_FOREGROUND=1,
@@ -415,6 +536,151 @@ func ensureGuestAgent(rootfsPath string) error {
 		_ = os.WriteFile(hashFile, []byte(agentHash+"\n"), 0o644)
 	}
 	return nil
+}
+
+// ensureGuestAgentRootfsDir writes the guest-agent binary into the rootfs
+// directory at /usr/local/bin/nexus-guest-agent for set_root+set_exec mode.
+func ensureGuestAgentRootfsDir(rootfsDir string) error {
+	rootfsDir = strings.TrimSpace(rootfsDir)
+	if rootfsDir == "" {
+		return fmt.Errorf("rootfs-dir path is required")
+	}
+	fi, err := os.Stat(rootfsDir)
+	if err != nil {
+		return fmt.Errorf("rootfs-dir not found at %q: %w", rootfsDir, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("rootfs-dir %q is not a directory", rootfsDir)
+	}
+
+	agentPath, err := resolveGuestAgentBinary()
+	if err != nil {
+		return err
+	}
+	src, err := os.ReadFile(agentPath)
+	if err != nil {
+		return fmt.Errorf("read guest agent source: %w", err)
+	}
+
+	dst := filepath.Join(rootfsDir, "usr", "local", "bin", "nexus-guest-agent")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("mkdir guest agent dir in rootfs-dir: %w", err)
+	}
+
+	needsWrite := true
+	if existing, err := os.ReadFile(dst); err == nil {
+		if sha256.Sum256(existing) == sha256.Sum256(src) {
+			needsWrite = false
+		}
+	}
+
+	if needsWrite {
+		tmp := dst + ".tmp"
+		if err := os.WriteFile(tmp, src, 0o755); err != nil {
+			return fmt.Errorf("write guest agent into rootfs-dir: %w", err)
+		}
+		if err := os.Rename(tmp, dst); err != nil {
+			return fmt.Errorf("install guest agent into rootfs-dir: %w", err)
+		}
+	}
+	_ = os.MkdirAll(filepath.Join(rootfsDir, "var", "lib"), 0o755)
+	// Virtiofs-root launches cannot reliably run apt/dpkg ownership changes on
+	// rootfs paths. Only write toolchain stamps when required binaries already
+	// exist in rootfs-dir (from a successful bake/seed), so we never mask
+	// genuinely missing toolchains.
+	required := requiredRootfsDirToolchainPaths(rootfsDir)
+	allPresent := true
+	for _, p := range required {
+		if _, err := os.Stat(p); err != nil {
+			allPresent = false
+			break
+		}
+	}
+	baseStamp := filepath.Join(rootfsDir, "var", "lib", "nexus-tools-base-v7")
+	legacyBaseStampV6 := filepath.Join(rootfsDir, "var", "lib", "nexus-tools-base-v6")
+	legacyBaseStampV5 := filepath.Join(rootfsDir, "var", "lib", "nexus-tools-base-v5")
+	legacyOptionalStamp := filepath.Join(rootfsDir, "var", "lib", "nexus-tools-optional-v5")
+	if allPresent {
+		_ = os.WriteFile(baseStamp, []byte("ok\n"), 0o644)
+		_ = os.Remove(legacyBaseStampV6)
+		_ = os.Remove(legacyBaseStampV5)
+		_ = os.Remove(legacyOptionalStamp)
+	} else {
+		_ = os.Remove(baseStamp)
+		_ = os.Remove(legacyBaseStampV6)
+		_ = os.Remove(legacyBaseStampV5)
+		_ = os.Remove(legacyOptionalStamp)
+	}
+	return nil
+}
+
+func ensureRootfsDirSeeded(rootfsExt4, rootfsDir string) error {
+	rootfsExt4 = strings.TrimSpace(rootfsExt4)
+	rootfsDir = strings.TrimSpace(rootfsDir)
+	if rootfsExt4 == "" || rootfsDir == "" {
+		return nil
+	}
+	if _, err := os.Stat(rootfsExt4); err != nil {
+		return nil
+	}
+	if _, err := exec.LookPath("debugfs"); err != nil {
+		return nil
+	}
+
+	required := requiredRootfsDirToolchainPaths(rootfsDir)
+	allPresent := true
+	for _, p := range required {
+		if _, err := os.Stat(p); err != nil {
+			allPresent = false
+			break
+		}
+	}
+	if allPresent {
+		return nil
+	}
+
+	parent := filepath.Dir(rootfsDir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("create rootfs-dir parent: %w", err)
+	}
+	tmpDir, err := os.MkdirTemp(parent, "rootfs-dir-seed-*")
+	if err != nil {
+		return fmt.Errorf("create rootfs-dir temp: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cmd := exec.Command("debugfs", "-R", fmt.Sprintf("rdump / %s", tmpDir), rootfsExt4)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("seed rootfs-dir from ext4: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	backupDir := rootfsDir + ".bak"
+	_ = os.RemoveAll(backupDir)
+	if _, err := os.Stat(rootfsDir); err == nil {
+		if err := os.Rename(rootfsDir, backupDir); err != nil {
+			return fmt.Errorf("backup existing rootfs-dir: %w", err)
+		}
+	}
+	if err := os.Rename(tmpDir, rootfsDir); err != nil {
+		if _, statErr := os.Stat(backupDir); statErr == nil {
+			_ = os.Rename(backupDir, rootfsDir)
+		}
+		return fmt.Errorf("activate seeded rootfs-dir: %w", err)
+	}
+	_ = os.RemoveAll(backupDir)
+	return nil
+}
+
+func requiredRootfsDirToolchainPaths(rootfsDir string) []string {
+	return []string{
+		filepath.Join(rootfsDir, "usr", "bin", "docker"),
+		filepath.Join(rootfsDir, "usr", "bin", "dockerd"),
+		filepath.Join(rootfsDir, "usr", "bin", "node"),
+		filepath.Join(rootfsDir, "usr", "bin", "npm"),
+		filepath.Join(rootfsDir, "usr", "local", "bin", "opencode"),
+		filepath.Join(rootfsDir, "usr", "local", "bin", "codex"),
+		filepath.Join(rootfsDir, "usr", "local", "bin", "claude"),
+	}
 }
 
 // sha256HexFile returns the hex-encoded SHA-256 digest of the file at path.

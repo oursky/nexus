@@ -271,6 +271,39 @@ struct NewWorkspaceSheet: View {
                     }
                 }
 
+                if isCreating, let progress = appState.workspaceCreateProgress {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Create progress")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(Theme.labelSecondary)
+                        Text(progress.currentPhaseLabel + " · " + progress.elapsedLabel)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Theme.label)
+                            .lineLimit(2)
+                        ForEach(progress.phaseTimings.prefix(3)) { phase in
+                            Text("\(phase.label): \(phase.durationLabel)")
+                                .font(.system(size: 11))
+                                .foregroundColor(Theme.labelTertiary)
+                                .lineLimit(1)
+                        }
+                        ForEach(progress.notes.prefix(2), id: \.self) { note in
+                            Text(note)
+                                .font(.system(size: 10))
+                                .foregroundColor(Theme.labelTertiary)
+                                .lineLimit(2)
+                        }
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7)
+                            .fill(Theme.bgContent)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7)
+                                    .stroke(Theme.separator, lineWidth: 1)
+                            )
+                    )
+                }
+
                 if let err = localError ?? appState.error {
                     HStack(spacing: 6) {
                         Image(systemName: "exclamationmark.triangle.fill")

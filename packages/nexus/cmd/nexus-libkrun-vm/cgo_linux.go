@@ -29,6 +29,31 @@ typedef int32_t (*krun_add_net_unixstream_fn)(
   uint32_t,
   uint32_t
 );
+typedef int32_t (*krun_add_disk2_fn)(
+  uint32_t,
+  const char*,
+  const char*,
+  uint32_t,
+  bool
+);
+typedef int32_t (*krun_add_virtiofs_fn)(
+  uint32_t,
+  const char*,
+  const char*
+);
+typedef int32_t (*krun_add_virtiofs2_fn)(
+  uint32_t,
+  const char*,
+  const char*,
+  uint64_t
+);
+typedef int32_t (*krun_add_virtiofs3_fn)(
+  uint32_t,
+  const char*,
+  const char*,
+  uint64_t,
+  bool
+);
 
 static int go_krun_has_symbol(const char *sym_name) {
   return dlsym(RTLD_DEFAULT, sym_name) != NULL;
@@ -42,6 +67,44 @@ static int32_t go_krun_add_net_unixstream(uint32_t ctx, int fd, uint8_t *mac) {
     return -38;
   }
   return fn(ctx, NULL, fd, mac, (uint32_t)COMPAT_FEATURES, 0);
+}
+
+static int32_t go_krun_add_virtiofs_compat(uint32_t ctx, const char *tag, const char *path, uint64_t shm_size, bool read_only) {
+  krun_add_virtiofs3_fn fn3 =
+      (krun_add_virtiofs3_fn)dlsym(RTLD_DEFAULT, "krun_add_virtiofs3");
+  if (fn3 != NULL) {
+    return fn3(ctx, tag, path, shm_size, read_only);
+  }
+  krun_add_virtiofs_fn fn1 =
+      (krun_add_virtiofs_fn)dlsym(RTLD_DEFAULT, "krun_add_virtiofs");
+  if (fn1 != NULL) {
+    return fn1(ctx, tag, path);
+  }
+  krun_add_virtiofs2_fn fn2 =
+      (krun_add_virtiofs2_fn)dlsym(RTLD_DEFAULT, "krun_add_virtiofs2");
+  if (fn2 != NULL) {
+    // For older fn2-only builds, libkrun expects a non-zero shm window.
+    uint64_t win = shm_size;
+    if (win == 0) {
+      win = 512ULL * 1024ULL * 1024ULL;
+    }
+    return fn2(ctx, tag, path, win);
+  }
+  // -ENOSYS
+  return -38;
+}
+
+static int32_t go_krun_add_disk_compat(uint32_t ctx, const char *block_id, const char *path, uint32_t format, bool read_only) {
+  krun_add_disk2_fn fn2 =
+      (krun_add_disk2_fn)dlsym(RTLD_DEFAULT, "krun_add_disk2");
+  if (fn2 != NULL) {
+    return fn2(ctx, block_id, path, format, read_only);
+  }
+  if (format == 0) {
+    return krun_add_disk(ctx, block_id, path, read_only);
+  }
+  // -ENOSYS (requested format not supported by legacy krun_add_disk)
+  return -38;
 }
 */
 import "C"
@@ -91,6 +154,16 @@ func krunSetKernel(ctx uint32, kernelPath, initramfs, cmdline string, format uin
 	return nil
 }
 
+func krunSetWorkdir(ctx uint32, workdir string) error {
+	wd := C.CString(workdir)
+	defer C.free(unsafe.Pointer(wd))
+	ret := C.krun_set_workdir(C.uint32_t(ctx), wd)
+	if ret != 0 {
+		return fmt.Errorf("krun_set_workdir: %w", syscall.Errno(-ret))
+	}
+	return nil
+}
+
 // krunSetEmbeddedKernelCmdline applies a kernel cmdline without specifying an
 // external kernel file. Passing a NULL kernel_path to krun_set_kernel tells
 // libkrun to use the kernel embedded in libkrunfw.so (which includes virtiofs,
@@ -110,13 +183,57 @@ func krunSetEmbeddedKernelCmdline(ctx uint32, cmdline string) error {
 }
 
 func krunAddDisk(ctx uint32, blockID, path string, readOnly bool) error {
+	return krunAddDiskWithFormat(ctx, blockID, path, 0, readOnly)
+}
+
+// krunAddDiskWithFormat adds a block device with the specified image format.
+// format: 0=raw, 1=qcow2, 2=vmdk
+func krunAddDiskWithFormat(ctx uint32, blockID, path string, format uint32, readOnly bool) error {
 	bid := C.CString(blockID)
 	defer C.free(unsafe.Pointer(bid))
 	p := C.CString(path)
 	defer C.free(unsafe.Pointer(p))
-	ret := C.krun_add_disk(C.uint32_t(ctx), bid, p, C.go_bool(C.int(boolToInt(readOnly))))
+	ret := C.go_krun_add_disk_compat(C.uint32_t(ctx), bid, p, C.uint32_t(format), C.go_bool(C.int(boolToInt(readOnly))))
 	if ret != 0 {
 		return fmt.Errorf("krun_add_disk %s: %w", blockID, syscall.Errno(-ret))
+	}
+	return nil
+}
+
+func krunSetRootDiskRemount(ctx uint32, device, fstype, options string) error {
+	dev := C.CString(device)
+	defer C.free(unsafe.Pointer(dev))
+	var ft *C.char
+	if fstype != "" {
+		ft = C.CString(fstype)
+		defer C.free(unsafe.Pointer(ft))
+	}
+	var opts *C.char
+	if options != "" {
+		opts = C.CString(options)
+		defer C.free(unsafe.Pointer(opts))
+	}
+	ret := C.krun_set_root_disk_remount(C.uint32_t(ctx), dev, ft, opts)
+	if ret != 0 {
+		return fmt.Errorf("krun_set_root_disk_remount %s: %w", device, syscall.Errno(-ret))
+	}
+	return nil
+}
+
+func krunAddVirtioFS3(ctx uint32, tag, path string, daxWindowBytes uint64, readOnly bool) error {
+	t := C.CString(tag)
+	defer C.free(unsafe.Pointer(t))
+	p := C.CString(path)
+	defer C.free(unsafe.Pointer(p))
+	ret := C.go_krun_add_virtiofs_compat(
+		C.uint32_t(ctx),
+		t,
+		p,
+		C.uint64_t(daxWindowBytes),
+		C.go_bool(C.int(boolToInt(readOnly))),
+	)
+	if ret != 0 {
+		return fmt.Errorf("krun_add_virtiofs3 tag=%s path=%s: %w", tag, path, syscall.Errno(-ret))
 	}
 	return nil
 }
@@ -177,6 +294,22 @@ func krunDisableImplicitConsole(ctx uint32) error {
 	ret := C.krun_disable_implicit_console(C.uint32_t(ctx))
 	if ret != 0 {
 		return fmt.Errorf("krun_disable_implicit_console: %w", syscall.Errno(-ret))
+	}
+	return nil
+}
+
+func krunDisableImplicitVSock(ctx uint32) error {
+	ret := C.krun_disable_implicit_vsock(C.uint32_t(ctx))
+	if ret != 0 {
+		return fmt.Errorf("krun_disable_implicit_vsock: %w", syscall.Errno(-ret))
+	}
+	return nil
+}
+
+func krunAddVSock(ctx uint32, features uint32) error {
+	ret := C.krun_add_vsock(C.uint32_t(ctx), C.uint32_t(features))
+	if ret != 0 {
+		return fmt.Errorf("krun_add_vsock: %w", syscall.Errno(-ret))
 	}
 	return nil
 }

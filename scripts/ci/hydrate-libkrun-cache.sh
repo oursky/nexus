@@ -18,10 +18,12 @@ done
 if [[ -f "$CACHE_DIR/rootfs-agent.sha256" ]]; then
   sudo cp "$CACHE_DIR/rootfs-agent.sha256" /root/.local/state/nexus/rootfs-agent.sha256
 fi
-if [[ -f "$CACHE_DIR/rootfs-baked-v5" ]]; then
-  sudo cp "$CACHE_DIR/rootfs-baked-v5" /root/.local/state/nexus/rootfs-baked-v5
+if [[ -f "$CACHE_DIR/rootfs-baked-v6" ]]; then
+  sudo cp "$CACHE_DIR/rootfs-baked-v6" /root/.local/state/nexus/rootfs-baked-v6
+elif [[ -f "$CACHE_DIR/rootfs-baked-v5" ]]; then
+  sudo cp "$CACHE_DIR/rootfs-baked-v5" /root/.local/state/nexus/rootfs-baked-v6
 elif [[ -f "$CACHE_DIR/rootfs-baked-v4" ]]; then
-  sudo cp "$CACHE_DIR/rootfs-baked-v4" /root/.local/state/nexus/rootfs-baked-v5
+  sudo cp "$CACHE_DIR/rootfs-baked-v4" /root/.local/state/nexus/rootfs-baked-v6
 fi
 
 mkdir -p "$HOME/.local/state/nexus"

@@ -25,6 +25,32 @@
           "description": "Reserved for future prebuilt image/channel selection."
         }
       }
+    },
+    "manifest": {
+      "type": "object",
+      "description": "Base layer manifest for cache invalidation and toolchain configuration. Changing this section forces a rebuild of the cached base image.",
+      "additionalProperties": true
+    },
+    "dev": {
+      "type": "object",
+      "description": "Development environment configuration. Inspired by smolvm's Smolfile [dev] table.",
+      "additionalProperties": false,
+      "properties": {
+        "init": {
+          "type": "array",
+          "description": "Commands to run once when the workspace base layer is built.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "volumes": {
+          "type": "array",
+          "description": "Host-to-guest volume mappings.",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   }
 }

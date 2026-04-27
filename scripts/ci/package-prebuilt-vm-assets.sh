@@ -8,10 +8,12 @@ mkdir -p /tmp/prebuilt-vm
 sudo cp /root/.local/share/nexus/vm/vmlinux.bin /tmp/prebuilt-vm/vmlinux.bin
 sudo cp /root/.local/share/nexus/vm/rootfs.ext4 /tmp/prebuilt-vm/rootfs.ext4
 sudo cp /root/.local/state/nexus/rootfs-agent.sha256 /tmp/prebuilt-vm/rootfs-agent.sha256 || true
-if sudo test -f /root/.local/state/nexus/rootfs-baked-v5; then
-  sudo cp /root/.local/state/nexus/rootfs-baked-v5 /tmp/prebuilt-vm/rootfs-baked-v5
+if sudo test -f /root/.local/state/nexus/rootfs-baked-v6; then
+  sudo cp /root/.local/state/nexus/rootfs-baked-v6 /tmp/prebuilt-vm/rootfs-baked-v6
+elif sudo test -f /root/.local/state/nexus/rootfs-baked-v5; then
+  sudo cp /root/.local/state/nexus/rootfs-baked-v5 /tmp/prebuilt-vm/rootfs-baked-v6
 elif sudo test -f /root/.local/state/nexus/rootfs-baked-v4; then
-  sudo cp /root/.local/state/nexus/rootfs-baked-v4 /tmp/prebuilt-vm/rootfs-baked-v5
+  sudo cp /root/.local/state/nexus/rootfs-baked-v4 /tmp/prebuilt-vm/rootfs-baked-v6
 fi
 
 sudo chown -R "$RUNNER_USER":"$RUNNER_USER" /tmp/prebuilt-vm

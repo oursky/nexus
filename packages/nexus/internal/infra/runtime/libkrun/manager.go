@@ -40,9 +40,11 @@ type ManagerConfig struct {
 	LibkrunLibDir string
 
 	// RootFSBasePath is the canonical rootfs.ext4 created during bootstrap.
-	// Each workspace clones it (reflink/sparse copy) into its own workdir so
-	// the guest root is a real writable block filesystem.
+	// It is kept for rootfs bake/bootstrap flows.
 	RootFSBasePath string
+	// RootFSDirPath is the directory-form rootfs used by libkrun set_root+set_exec
+	// launch mode (smolvm-style). Required for the virtiofs-only libkrun path.
+	RootFSDirPath string
 	// KernelPath is the kernel image passed to krun_set_kernel.
 	KernelPath string
 	// BasesDir stores cached per-repo base workspace images.
@@ -54,8 +56,7 @@ type ManagerConfig struct {
 	WorkDirRoot string
 
 	// EmbeddedAgentFn returns the embedded nexus-guest-agent binary bytes.
-	// When set, the agent binary is written into each workspace's rootfs.ext4
-	// on spawn so the in-VM agent stays in sync with the nexus binary.
+	// It is used by rootfs bake/bootstrap flows.
 	EmbeddedAgentFn func() []byte
 }
 
@@ -63,7 +64,6 @@ type ManagerConfig struct {
 type Instance struct {
 	WorkspaceID     string
 	WorkDir         string
-	RootFSImage     string
 	WorkspaceImage  string // ext4 mounted at /workspace
 	DockerDataImage string // sparse ext4 for /var/lib/docker
 	SerialLog       string
@@ -108,17 +108,19 @@ type SpawnSpec struct {
 	VCPUs           int
 	HostConfigDrive string
 	VMProfile       string
+	ManifestHash    string // derived from base+project Nexusfile contents
+	BakedRootfs     bool   // true when the host rootfs bake stamp is present
 }
 
-// Spawn creates and starts a new libkrun VM using block-backed root/workspace
-// images plus a separate Docker data image.
+// Spawn creates and starts a new libkrun VM.
 //
 // Disk layout inside the guest (assembled by the agent):
 //
-//	/dev/vda  rootfs.ext4             (workspace clone, rw)   → /
-//	/dev/vdb  workspace.ext4          (workspace clone, rw)   → /workspace
+//	/dev/vda  rootfs.ext4             (reflink clone, rw)     → /  (block rootfs)
+//	/dev/vdb  workspace.ext4          (workspace clone, rw)   → overlay upper for /workspace
 //	/dev/vdc  docker-data.ext4        (sparse, Docker data)   → /var/lib/docker
-//	/dev/vdd  hostconfig.ext4         (read-only)             → /run/nexus-host
+//	/dev/vdd  hostconfig.ext4         (read-only, optional)   → /run/nexus-host
+//	virtiofs "nexus-workspace"        project dir (ro lower layer)
 //
 // spawnTimeout is the maximum time allowed for the entire Spawn operation.
 const spawnTimeout = 5 * time.Minute
@@ -245,48 +247,14 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	cleanupWorkspaceRuntimeArtifacts(workDir, spec.WorkspaceID)
 
 	serialLog := filepath.Join(workDir, "libkrun.log")
-	rootfsPath := filepath.Join(workDir, "rootfs.ext4")
 	workspacePath := filepath.Join(workDir, "workspace.ext4")
 	dockerDataPath := filepath.Join(workDir, "docker-data.ext4")
-
-	// Rootfs: restore from snapshot for forks, otherwise clone from base rootfs.
-	// clone uses reflink when available (XFS/btrfs) and sparse-copy fallback.
-	if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
-		log.Printf("[libkrun] workspace %s: phase=restore_rootfs snapshot=%s", spec.WorkspaceID, snapID)
-		phaseCtx, cancel := phaseTimeout(ctx, 2*time.Minute)
-		if err := copyFileWithContext(phaseCtx, m.snapshotRootfsPath(snapID), rootfsPath); err != nil {
-			cancel()
-			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("restore rootfs from snapshot: %w", err)
-		}
-		cancel()
-		log.Printf("[libkrun] workspace %s: restored rootfs from snapshot %s", spec.WorkspaceID, snapID)
-	} else if _, err := os.Stat(rootfsPath); err != nil {
-		log.Printf("[libkrun] workspace %s: phase=clone_rootfs", spec.WorkspaceID)
-		phaseCtx, cancel := phaseTimeout(ctx, 2*time.Minute)
-		if err := copyFileWithContext(phaseCtx, m.cfg.RootFSBasePath, rootfsPath); err != nil {
-			cancel()
-			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("clone rootfs image: %w", err)
-		}
-		cancel()
-		log.Printf("[libkrun] workspace %s: cloned rootfs", spec.WorkspaceID)
-	}
-
-	// Inject current embedded agent into the rootfs so the in-VM agent always
-	// matches this nexus binary, regardless of when rootfs.ext4 was created.
-	if m.cfg.EmbeddedAgentFn != nil {
-		if agentData := m.cfg.EmbeddedAgentFn(); len(agentData) > 0 {
-			log.Printf("[libkrun] workspace %s: phase=inject_agent", spec.WorkspaceID)
-			if err := injectFileIntoExt4(rootfsPath, agentData, "/usr/local/bin/nexus-guest-agent", 0o755); err != nil {
-				log.Printf("[libkrun] workspace %s: agent inject failed (non-fatal): %v", spec.WorkspaceID, err)
-			}
-		}
-	}
+	rootfsPath := filepath.Join(workDir, "rootfs.ext4")
 
 	// Workspace image: restore from snapshot or clone repo base image.
 	if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
 		log.Printf("[libkrun] workspace %s: phase=restore_workspace snapshot=%s", spec.WorkspaceID, snapID)
+		phaseStart := time.Now()
 		phaseCtx, cancel := phaseTimeout(ctx, 2*time.Minute)
 		if err := copyFileWithContext(phaseCtx, m.snapshotWorkspacePath(snapID), workspacePath); err != nil {
 			cancel()
@@ -294,17 +262,22 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 			return nil, fmt.Errorf("restore workspace from snapshot: %w", err)
 		}
 		cancel()
+		log.Printf("[libkrun] workspace %s: phase_done=restore_workspace (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
 		log.Printf("[libkrun] workspace %s: restored workspace from snapshot %s", spec.WorkspaceID, snapID)
 	} else if _, err := os.Stat(workspacePath); err != nil {
+		log.Printf("[libkrun] workspace %s: workspace mount strategy=virtiofs lower + ext4 overlay upper", spec.WorkspaceID)
 		log.Printf("[libkrun] workspace %s: phase=ensure_base_image", spec.WorkspaceID)
+		basePhaseStart := time.Now()
 		phaseCtx, cancel := phaseTimeout(ctx, 3*time.Minute)
-		basePath, err := EnsureBaseImage(phaseCtx, spec.ProjectRoot, m.cfg.BasesDir)
+		basePath, err := EnsureBaseImage(phaseCtx, spec.ProjectRoot, m.cfg.BasesDir, spec.ManifestHash)
 		cancel()
 		if err != nil {
 			os.RemoveAll(workDir)
 			return nil, fmt.Errorf("ensure base workspace image: %w", err)
 		}
+		log.Printf("[libkrun] workspace %s: phase_done=ensure_base_image (%s)", spec.WorkspaceID, time.Since(basePhaseStart).Round(time.Millisecond))
 		log.Printf("[libkrun] workspace %s: phase=clone_workspace", spec.WorkspaceID)
+		clonePhaseStart := time.Now()
 		phaseCtx, cancel = phaseTimeout(ctx, 2*time.Minute)
 		if err := copyFileWithContext(phaseCtx, basePath, workspacePath); err != nil {
 			cancel()
@@ -312,12 +285,14 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 			return nil, fmt.Errorf("clone workspace image: %w", err)
 		}
 		cancel()
+		log.Printf("[libkrun] workspace %s: phase_done=clone_workspace (%s)", spec.WorkspaceID, time.Since(clonePhaseStart).Round(time.Millisecond))
 		log.Printf("[libkrun] workspace %s: cloned workspace image", spec.WorkspaceID)
 	}
 
 	// Docker data image: restore from snapshot for forks, otherwise create fresh.
 	if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
 		log.Printf("[libkrun] workspace %s: phase=restore_docker_data snapshot=%s", spec.WorkspaceID, snapID)
+		phaseStart := time.Now()
 		phaseCtx, cancel := phaseTimeout(ctx, 2*time.Minute)
 		if err := copyFileWithContext(phaseCtx, m.snapshotDockerPath(snapID), dockerDataPath); err != nil {
 			cancel()
@@ -325,9 +300,11 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 			return nil, fmt.Errorf("restore docker-data from snapshot: %w", err)
 		}
 		cancel()
+		log.Printf("[libkrun] workspace %s: phase_done=restore_docker_data (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
 		log.Printf("[libkrun] workspace %s: restored docker-data from snapshot %s", spec.WorkspaceID, snapID)
 	} else if _, err := os.Stat(dockerDataPath); err != nil {
 		log.Printf("[libkrun] workspace %s: phase=create_docker_data", spec.WorkspaceID)
+		phaseStart := time.Now()
 		phaseCtx, cancel := phaseTimeout(ctx, 1*time.Minute)
 		if err := createDockerDataImageWithContext(phaseCtx, dockerDataPath); err != nil {
 			cancel()
@@ -335,7 +312,26 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 			return nil, fmt.Errorf("create docker-data image: %w", err)
 		}
 		cancel()
+		log.Printf("[libkrun] workspace %s: phase_done=create_docker_data (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
 		log.Printf("[libkrun] workspace %s: created docker-data image", spec.WorkspaceID)
+	}
+
+	// Rootfs image: reflink clone from the baked base rootfs so each workspace
+	// gets its own writable block rootfs with true guest root ownership.
+	// XFS reflink is required for O(1) CoW clones; validation happens at driver
+	// init time.
+	if _, err := os.Stat(rootfsPath); err != nil {
+		log.Printf("[libkrun] workspace %s: phase=clone_rootfs", spec.WorkspaceID)
+		phaseStart := time.Now()
+		phaseCtx, cancel := phaseTimeout(ctx, 2*time.Minute)
+		if err := copyFileWithContext(phaseCtx, m.cfg.RootFSBasePath, rootfsPath); err != nil {
+			cancel()
+			os.RemoveAll(workDir)
+			return nil, fmt.Errorf("clone rootfs image: %w", err)
+		}
+		cancel()
+		log.Printf("[libkrun] workspace %s: phase_done=clone_rootfs (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
+		log.Printf("[libkrun] workspace %s: cloned rootfs image", spec.WorkspaceID)
 	}
 
 	// Pick a free host TCP port for SSH forwarding (TSI maps it to guest port 22).
@@ -364,7 +360,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		},
 	}
 
-	kernelCmdline := "console=hvc0 root=/dev/vda rw init=/usr/local/bin/nexus-guest-agent"
+	kernelCmdline := "console=hvc0"
 	if gw := strings.TrimSpace(hostDefaultGatewayIP()); gw != "" {
 		kernelCmdline += " nexus.gw=" + gw
 	}
@@ -374,32 +370,46 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	if profile := strings.TrimSpace(spec.VMProfile); profile != "" {
 		kernelCmdline += " nexus.profile=" + profile
 	}
+	if spec.BakedRootfs {
+		kernelCmdline += " nexus.baked=1"
+	}
 
 	vmSpec := VMSpec{
-		WorkspaceID:     spec.WorkspaceID,
-		KernelPath:      m.cfg.KernelPath,
-		KernelCmdline:   kernelCmdline,
-		RootFSImage:     rootfsPath,
-		AgentPath:       "/usr/local/bin/nexus-guest-agent",
-		WorkspaceImage:  workspacePath,
-		DockerDataImage: dockerDataPath,
-		HostConfigDrive: spec.HostConfigDrive,
-		MemoryMiB:       spec.MemoryMiB,
-		VCPUs:           spec.VCPUs,
-		SerialLog:       serialLog,
-		SSHHostPort:     sshPort,
-		NetworkBackend:  strings.TrimSpace(m.cfg.NetworkBackend),
-		PortMap:         []string{fmt.Sprintf("%d:22", sshPort)},
-		VsockPorts:      vsockPorts,
+		WorkspaceID:       spec.WorkspaceID,
+		WorkspaceMode:     "hybrid",
+		KernelPath:        m.cfg.KernelPath,
+		KernelCmdline:     kernelCmdline,
+		RootFSImage:       rootfsPath,
+		AgentPath:         "/usr/local/bin/nexus-guest-agent",
+		BakedRootfs:       spec.BakedRootfs,
+		WorkspaceImage:    workspacePath,
+		WorkspaceHostPath: strings.TrimSpace(spec.ProjectRoot),
+		DockerDataImage:   dockerDataPath,
+		HostConfigDrive:   spec.HostConfigDrive,
+		MemoryMiB:         spec.MemoryMiB,
+		VCPUs:             spec.VCPUs,
+		SerialLog:         serialLog,
+		SSHHostPort:       sshPort,
+		NetworkBackend:    strings.TrimSpace(m.cfg.NetworkBackend),
+		PortMap:           []string{fmt.Sprintf("%d:22", sshPort)},
+		VsockPorts:        vsockPorts,
 	}
 	if vmSpec.NetworkBackend == "" {
 		vmSpec.NetworkBackend = "auto"
+	}
+	if vmSpec.NetworkBackend == "auto" {
+		// Prefer virtio-net when available (libkrun exports krun_add_net_unixstream);
+		// fall back to TSI otherwise. virtio-net avoids TSI-specific issues with
+		// seccomp/sandbox in applications like sshd.
+		vmSpec.NetworkBackend = "virtio-net"
+		log.Printf("[libkrun] workspace %s: network backend auto->virtio-net", spec.WorkspaceID)
 	}
 
 	var vmSideFD, hostSideFD *os.File
 	var passtProc *os.Process
 	if vmSpec.NetworkBackend == "auto" || vmSpec.NetworkBackend == "virtio-net" {
 		log.Printf("[libkrun] workspace %s: phase=start_passt", spec.WorkspaceID)
+		phaseStart := time.Now()
 		var pairErr error
 		vmSideFD, hostSideFD, pairErr = createPasstSocketPair()
 		if pairErr != nil {
@@ -419,6 +429,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		}
 		vmSpec.PasstFDIndex = 0
 		log.Printf("[libkrun] workspace %s: passt started", spec.WorkspaceID)
+		log.Printf("[libkrun] workspace %s: phase_done=start_passt (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
 	}
 
 	// Write VMSpec to a temp config file.
@@ -465,6 +476,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	childCmd.Stderr = vmLogFile
 
 	log.Printf("[libkrun] workspace %s: phase=start_vm", spec.WorkspaceID)
+	startVMPhase := time.Now()
 	if err := childCmd.Start(); err != nil {
 		if passtProc != nil {
 			_ = passtProc.Kill()
@@ -479,6 +491,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		return nil, fmt.Errorf("spawn libkrun-vm child: %w", err)
 	}
 	log.Printf("[libkrun] workspace %s: vm started (pid=%d)", spec.WorkspaceID, childCmd.Process.Pid)
+	log.Printf("[libkrun] workspace %s: phase_done=start_vm (%s)", spec.WorkspaceID, time.Since(startVMPhase).Round(time.Millisecond))
 	if vmSideFD != nil {
 		_ = vmSideFD.Close()
 	}
@@ -496,7 +509,6 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	inst := &Instance{
 		WorkspaceID:     spec.WorkspaceID,
 		WorkDir:         workDir,
-		RootFSImage:     rootfsPath,
 		WorkspaceImage:  workspacePath,
 		DockerDataImage: dockerDataPath,
 		SerialLog:       serialLog,
@@ -653,10 +665,6 @@ func (m *Manager) CleanupWorkspaceByID(ctx context.Context, workspaceID string) 
 }
 
 // snapshot image paths for fork/restore lineage.
-func (m *Manager) snapshotRootfsPath(snapshotID string) string {
-	return filepath.Join(m.cfg.WorkDirRoot, ".snapshots", snapshotID+".rootfs.ext4")
-}
-
 func (m *Manager) snapshotWorkspacePath(snapshotID string) string {
 	return filepath.Join(m.cfg.WorkDirRoot, ".snapshots", snapshotID+".workspace.ext4")
 }
@@ -665,8 +673,8 @@ func (m *Manager) snapshotDockerPath(snapshotID string) string {
 	return filepath.Join(m.cfg.WorkDirRoot, ".snapshots", snapshotID+".docker.ext4")
 }
 
-// ForkWorkspaceImage snapshots the parent's rootfs, workspace, and docker images
-// for the child lineage snapshot.
+// ForkWorkspaceImage snapshots the parent's workspace and docker images for
+// the child lineage snapshot.
 // The caller (Driver.CheckpointFork) is responsible for stopping the parent VM
 // before calling this and restarting it afterward.
 // fallbackProjectRoot is the parent workspace's project root; it is used to
@@ -680,28 +688,25 @@ func (m *Manager) ForkWorkspaceImage(_ context.Context, parentWorkspaceID, child
 	// be cleaned up after the snapshot copy finishes.
 	var tmpDockerPath string
 
-	var rootSrcPath, workspaceSrcPath, dockerSrcPath string
+	var workspaceSrcPath, dockerSrcPath string
 	if exists {
-		rootSrcPath = parent.RootFSImage
 		workspaceSrcPath = parent.WorkspaceImage
 		dockerSrcPath = parent.DockerDataImage
 	} else {
 		// Parent not currently running; find images from its workdir.
 		parentDir := filepath.Join(m.cfg.WorkDirRoot, parentWorkspaceID)
-		rootSrcPath = filepath.Join(parentDir, "rootfs.ext4")
 		workspaceSrcPath = filepath.Join(parentDir, "workspace.ext4")
 		dockerSrcPath = filepath.Join(parentDir, "docker-data.ext4")
 
 		// When the workspace was registered but never booted the workdir
 		// images don't exist yet. Fall back to base images so that a fork of
 		// a freshly-created (unstarted) workspace still works.
-		if _, err := os.Stat(rootSrcPath); err != nil {
+		if _, err := os.Stat(workspaceSrcPath); err != nil {
 			if fallbackProjectRoot == "" {
-				return fmt.Errorf("parent rootfs image not found at %s and no fallback project root: %w", rootSrcPath, err)
+				return fmt.Errorf("parent workspace image not found at %s and no fallback project root: %w", workspaceSrcPath, err)
 			}
-			rootSrcPath = m.cfg.RootFSBasePath
 
-			basePath, baseErr := EnsureBaseImage(context.Background(), fallbackProjectRoot, m.cfg.BasesDir)
+			basePath, baseErr := EnsureBaseImage(context.Background(), fallbackProjectRoot, m.cfg.BasesDir, "")
 			if baseErr != nil {
 				return fmt.Errorf("ensure base workspace image for fork fallback: %w", baseErr)
 			}
@@ -724,7 +729,6 @@ func (m *Manager) ForkWorkspaceImage(_ context.Context, parentWorkspaceID, child
 		label string
 		path  string
 	}{
-		{label: "rootfs", path: rootSrcPath},
 		{label: "workspace", path: workspaceSrcPath},
 		{label: "docker", path: dockerSrcPath},
 	} {
@@ -743,7 +747,6 @@ func (m *Manager) ForkWorkspaceImage(_ context.Context, parentWorkspaceID, child
 		src   string
 		dst   string
 	}{
-		{label: "rootfs", src: rootSrcPath, dst: m.snapshotRootfsPath(childSnapshotID)},
 		{label: "workspace", src: workspaceSrcPath, dst: m.snapshotWorkspacePath(childSnapshotID)},
 		{label: "docker", src: dockerSrcPath, dst: m.snapshotDockerPath(childSnapshotID)},
 	}

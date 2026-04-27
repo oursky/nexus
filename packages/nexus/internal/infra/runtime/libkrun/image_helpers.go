@@ -21,16 +21,18 @@ const workspaceOverlaySizeBytes = 16 * 1024 * 1024 * 1024 // 16 GiB sparse
 // baseImageLocks prevents concurrent builds of the same repo base image.
 var baseImageLocks sync.Map // key string -> *sync.Mutex
 
-func repoBaseKey(repoRoot string) string {
-	h := sha256.Sum256([]byte(filepath.Clean(repoRoot)))
+func repoBaseKey(repoRoot, manifestHash string) string {
+	h := sha256.Sum256([]byte(filepath.Clean(repoRoot) + "\x00" + manifestHash + "\x00" + BakeStampVersion))
 	return fmt.Sprintf("%x", h[:8])
 }
 
 // EnsureBaseImage returns or builds a cached read-only base ext4 for the repo.
 // It uses a per-repo mutex to prevent concurrent builds of the same base image.
 // The context is used to bound the mkfs.ext4 operation.
-func EnsureBaseImage(ctx context.Context, repoRoot, basesDir string) (string, error) {
-	key := repoBaseKey(repoRoot)
+// manifestHash should be derived from the base/project Nexusfile contents so
+// that any manifest change invalidates the cache.
+func EnsureBaseImage(ctx context.Context, repoRoot, basesDir, manifestHash string) (string, error) {
+	key := repoBaseKey(repoRoot, manifestHash)
 	dir := filepath.Join(basesDir, key)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("base image dir: %w", err)
@@ -237,9 +239,11 @@ func copyFileWithContext(ctx context.Context, src, dst string) error {
 		cmd := exec.CommandContext(ctx, "cp", "--reflink=always", "--sparse=auto", src, dst)
 		out, err := cmd.CombinedOutput()
 		if err == nil {
+			log.Printf("[libkrun] copyFile reflink clone enabled: %s → %s", src, dst)
 			return nil
 		}
 		lastErr = fmt.Errorf("cp %s → %s: %w: %s", src, dst, err, strings.TrimSpace(string(out)))
+		log.Printf("[libkrun] copyFile reflink unavailable, using sparse copy fallback: %s → %s", src, dst)
 
 		// Reflink failed (non-XFS/btrfs host); use sparse copy instead.
 		cmd = exec.CommandContext(ctx, "cp", "--sparse=always", src, dst)
@@ -293,6 +297,7 @@ func createDockerDataImageWithContext(ctx context.Context, imagePath string) err
 func buildBaseImageWithContext(ctx context.Context, repoRoot, imagePath string) error {
 	start := time.Now()
 	log.Printf("[libkrun] buildBaseImage start: %s → %s", repoRoot, imagePath)
+	log.Printf("[libkrun] base image strategy=mkfs.ext4 -d repo-snapshot (no host volume mount): %s", repoRoot)
 	defer func() {
 		log.Printf("[libkrun] buildBaseImage done: %s → %s (%s)", repoRoot, imagePath, time.Since(start).Round(time.Millisecond))
 	}()
