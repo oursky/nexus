@@ -184,12 +184,14 @@ func vmRootfsIsSquashfs(path string) bool {
 }
 
 func passtDownloadURL() string {
-	// passt static binary from upstream builds
+	// passt static binary from upstream builds.
+	// NOTE: passt.top only provides x86_64 builds. aarch64 must be installed
+	// via the system package manager (e.g. apt install passt).
 	switch runtime.GOARCH {
 	case "arm64":
-		return "https://passt.top/builds/latest/aarch64/passt.avx2"
+		return ""
 	default:
-		return "https://passt.top/builds/latest/x86_64/passt.avx2"
+		return "https://passt.top/builds/latest/x86_64/passt"
 	}
 }
 
@@ -607,14 +609,25 @@ func needsInstall(dest string, newContent []byte) bool {
 func installPasstRootless(w io.Writer, emitJSON bool) error {
 	dest := rootlessPasstPath()
 
-	// Already installed (check by existence; version upgrade is manual)
+	// Priority 1: embedded passt (release builds ship with it).
+	if len(embeddedPasst) > 0 {
+		if needsInstall(dest, embeddedPasst) {
+			fmt.Fprintf(w, "  extracting embedded passt (%d bytes)...\n", len(embeddedPasst))
+			if err := atomicWriteExec(dest, embeddedPasst); err != nil {
+				return fmt.Errorf("extract embedded passt: %w", err)
+			}
+			fmt.Fprintf(w, "  passt installed at %s (embedded)\n", dest)
+		}
+		return nil
+	}
+
+	// Priority 2: already installed (idempotent; version upgrade is manual).
 	if _, err := os.Stat(dest); err == nil {
 		return nil
 	}
 
-	// Try system passt first
+	// Priority 3: copy from system passt.
 	if p, err := exec.LookPath("passt"); err == nil {
-		// Symlink or copy to user bin
 		data, err := os.ReadFile(p)
 		if err != nil {
 			return fmt.Errorf("read system passt: %w", err)
@@ -626,9 +639,17 @@ func installPasstRootless(w io.Writer, emitJSON bool) error {
 		return nil
 	}
 
-	// Download static passt binary
-	fmt.Fprintf(w, "  downloading passt...\n")
+	// Priority 4: download static passt binary (x86_64 only).
 	url := passtDownloadURL()
+	if url == "" {
+		return fmt.Errorf(
+			"bootstrap_error.asset_install: no embedded passt and no system passt found.\n\n" +
+				"Install passt via your package manager:\n" +
+				"  sudo apt install passt       # Ubuntu/Debian\n" +
+				"  sudo dnf install passt       # Fedora/RHEL",
+		)
+	}
+	fmt.Fprintf(w, "  downloading passt...\n")
 	data, err := httpDownload(url)
 	if err != nil {
 		return fmt.Errorf(

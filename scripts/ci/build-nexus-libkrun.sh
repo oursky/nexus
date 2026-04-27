@@ -30,6 +30,28 @@ if [[ -d "$NEXUS_DIR/cmd/nexus-libkrun-vm" ]]; then
   cp "$LIBKRUNFW_REAL" "$EMBED_DIR/libkrunfw-embed.so"
   BUILD_TAGS="-tags libkrun"
 
+  # Stage passt binary for embedding so the release binary is fully self-contained.
+  PASST_EMBED="$EMBED_DIR/passt-embed"
+  if [[ -x "$(command -v passt)" ]]; then
+    cp "$(command -v passt)" "$PASST_EMBED"
+    echo "  → staged system passt for embed ($(du -sh "$PASST_EMBED" | cut -f1))"
+  else
+    # aarch64 has no upstream static build from passt.top; x86_64 does.
+    case "$(go env GOARCH)" in
+      amd64|x86_64)
+        echo "  downloading passt for embed..."
+        curl -fsSL --retry 3 -o "$PASST_EMBED" "https://passt.top/builds/latest/x86_64/passt"
+        chmod +x "$PASST_EMBED"
+        echo "  → downloaded passt for embed ($(du -sh "$PASST_EMBED" | cut -f1))"
+        ;;
+      *)
+        echo "ERROR: passt not found system-wide and no upstream static build for $(go env GOARCH)." >&2
+        echo "Install passt first: sudo apt install passt" >&2
+        exit 1
+        ;;
+    esac
+  fi
+
   # On Linux CI runners, rebuild nexus-libkrun-vm from source so we don't
   # embed a stale committed binary. On macOS dev machines, CGO can't target
   # Linux libkrun.so, so we rely on the committed binary.
@@ -66,7 +88,7 @@ fi
 
 # shellcheck disable=SC2086
 CGO_ENABLED=0 go build $BUILD_TAGS -o /tmp/nexus-bin ./cmd/nexus/
-rm -f "$EMBED_DIR/libkrun-embed.so" "$EMBED_DIR/libkrunfw-embed.so"
+rm -f "$EMBED_DIR/libkrun-embed.so" "$EMBED_DIR/libkrunfw-embed.so" "$EMBED_DIR/passt-embed"
 # Preserve the compiled kernel in CI so the actions/cache post-step can save it.
 # Local builds clean it up to avoid a dirty working tree.
 if [[ -z "${CI:-}" ]]; then
