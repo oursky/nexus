@@ -107,8 +107,6 @@ func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 		libkrunVMBin = "" // not present; manager falls back to NexusBin subcommand
 	}
 
-	// libkrun workspace runtime is virtiofs-only and requires rootfs-dir.
-	// rootfs.ext4 is retained for bake/bootstrap flows.
 	rootFSPath := strings.TrimSpace(cfg.RootFSPath)
 	kernelPath := strings.TrimSpace(cfg.KernelPath)
 
@@ -122,17 +120,7 @@ func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 		return libkrunDriverBundle{}, fmt.Errorf("invalid NEXUS_LIBKRUN_NET_BACKEND=%q (expected auto|tsi|virtio-net)", netBackend)
 	}
 
-	rootFSDirPath := filepath.Join(libkrunShareVMDir(), "rootfs-dir")
-	if rootFSDirPath != "" {
-		if fi, err := os.Stat(rootFSDirPath); err != nil || !fi.IsDir() {
-			if err != nil {
-				log.Printf("daemon: warning: libkrun rootfs-dir unavailable at %q: %v", rootFSDirPath, err)
-			} else {
-				log.Printf("daemon: warning: libkrun rootfs-dir is not a directory: %q", rootFSDirPath)
-			}
-		}
-	}
-	log.Printf("daemon: libkrun workdir=%s vmBin=%s kernel=%s rootfs=%s rootfs_dir=%s net_backend=%s", workDirRoot, libkrunVMBin, kernelPath, rootFSPath, rootFSDirPath, netBackend)
+	log.Printf("daemon: libkrun workdir=%s vmBin=%s kernel=%s rootfs=%s net_backend=%s", workDirRoot, libkrunVMBin, kernelPath, rootFSPath, netBackend)
 
 	lkCfg := lkruntime.ManagerConfig{
 		LibkrunVMBin:    libkrunVMBin,
@@ -140,7 +128,6 @@ func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 		LibkrunLibDir:   libkrunShareLibDir(),
 		KernelPath:      kernelPath,
 		RootFSBasePath:  rootFSPath,
-		RootFSDirPath:   rootFSDirPath,
 		BasesDir:        cfg.BasesDir,
 		NetworkBackend:  netBackend,
 		WorkDirRoot:     workDirRoot,

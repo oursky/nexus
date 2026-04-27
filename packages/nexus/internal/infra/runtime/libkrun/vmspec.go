@@ -8,38 +8,32 @@ package libkrun
 // VMSpec holds the full configuration for a libkrun microVM child process.
 // It is serialized as JSON and written to a temp file that the child reads.
 //
-// libkrun workspace mode is virtiofs-only:
+// Guest disk layout (hybrid mode):
 //
-//	krun_set_root(rootfs-dir)          root filesystem
-//	/dev/vda  workspace.ext4           writable overlay upper for /workspace
-//	/dev/vdb  docker-data.ext4         sparse, Docker overlay2 data-root
-//	/dev/vdc  hostconfig.ext4          read-only, SSH keys + API tokens (optional)
+//	/dev/vda  rootfs.{raw,qcow2}     → /  (via krun_set_root_disk_remount)
+//	/dev/vdb  workspace.ext4         → overlay upper for /workspace
+//	/dev/vdc  docker-data.ext4       → /var/lib/docker
+//	/dev/vdd  hostconfig.ext4        → /run/nexus-host (optional, ro)
+//	virtiofs "nexus-workspace"        → project dir (ro lower layer)
 type VMSpec struct {
 	WorkspaceID string `json:"workspace_id"`
-	// WorkspaceMode selects guest assembly path. libkrun currently supports
-	// only "virtiofs".
+	// WorkspaceMode selects guest assembly path. Current production path is
+	// hybrid (block rootfs + virtiofs workspace).
 	WorkspaceMode string `json:"workspace_mode,omitempty"`
 
-	// KernelPath points to the VM kernel image used by krun_set_kernel in
-	// legacy launch paths.
+	// KernelPath points to the VM kernel image used by krun_set_kernel.
 	KernelPath string `json:"kernel_path"`
 	// KernelCmdline provides the kernel boot arguments.
 	KernelCmdline string `json:"kernel_cmdline,omitempty"`
 
 	// RootFSImage is the path to a block disk image used as the VM's root
-	// filesystem. When set alongside RootFSDir="", the launcher uses
-	// krun_set_root_disk_remount to pivot from a dummy virtiofs init root to
-	// this block device. Supports raw (default) and qcow2 (via
-	// RootFSImageFormat). Used by hybrid mode to give the guest true root
-	// ownership while keeping virtiofs for workspace volume mounts.
+	// filesystem. The launcher uses krun_set_root_disk_remount to pivot from
+	// a dummy virtiofs init root to this block device. Supports raw (default)
+	// and qcow2 (via RootFSImageFormat).
 	RootFSImage string `json:"rootfs_image"`
 	// RootFSImageFormat is the disk image format: 0=raw, 1=qcow2, 2=vmdk.
 	// Defaults to 0 (raw) when empty.
 	RootFSImageFormat int `json:"rootfs_image_format,omitempty"`
-	// RootFSDir is the host directory shared as "/" via krun_set_root in
-	// virtiofs workspace mode. When empty and RootFSImage is set, hybrid
-	// mode (block rootfs + virtiofs workspace) is used.
-	RootFSDir string `json:"rootfs_dir,omitempty"`
 
 	// AgentPath is the absolute path inside the rootfs to the guest agent.
 	AgentPath string `json:"agent_path"`

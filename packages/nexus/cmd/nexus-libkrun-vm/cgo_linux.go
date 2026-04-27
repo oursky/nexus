@@ -332,21 +332,6 @@ func krunSetConsoleOutput(ctx uint32, path string) error {
 	return nil
 }
 
-// krunSetRoot sets the host directory to use as the VM's root filesystem.
-// The directory is shared via virtiofs (tag "/dev/root"). Calling krun_set_root
-// without krun_set_kernel triggers libkrun to use the kernel embedded in
-// libkrunfw.so — which includes virtiofs, overlayfs, and other drivers that
-// the minimal stock CI kernel (vmlinux.bin) lacks.
-func krunSetRoot(ctx uint32, rootPath string) error {
-	p := C.CString(rootPath)
-	defer C.free(unsafe.Pointer(p))
-	ret := C.krun_set_root(C.uint32_t(ctx), p)
-	if ret != 0 {
-		return fmt.Errorf("krun_set_root: %w", syscall.Errno(-ret))
-	}
-	return nil
-}
-
 // krunSetExec sets the binary to run inside the VM as the primary process.
 // When called without krun_set_kernel, libkrun automatically uses the kernel
 // embedded in libkrunfw.so. envp may be nil to inherit the host environment.

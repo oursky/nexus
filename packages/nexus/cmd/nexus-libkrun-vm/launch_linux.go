@@ -51,13 +51,13 @@ func launchVM(spec libkrun.VMSpec) error {
 		return err
 	}
 
-	rootfsDir := strings.TrimSpace(spec.RootFSDir)
 	rootfsImage := strings.TrimSpace(spec.RootFSImage)
+	workspaceHostPath := strings.TrimSpace(spec.WorkspaceHostPath)
 
-	if rootfsDir != "" && rootfsImage == "" {
-		return launchVirtioFSMode(ctx, spec, logf)
+	if rootfsImage == "" {
+		return fmt.Errorf("launchVM requires rootfs_image")
 	}
-	if rootfsImage != "" && rootfsDir == "" {
+	if workspaceHostPath != "" {
 		return launchHybridMode(ctx, spec, logf)
 	}
 	return launchBlockMode(ctx, spec, logf)
@@ -77,94 +77,6 @@ func setKernel(ctx uint32, spec libkrun.VMSpec, logf func(string, ...interface{}
 		}
 	}
 	return nil
-}
-
-func launchVirtioFSMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...interface{})) error {
-	rootfsDir := strings.TrimSpace(spec.RootFSDir)
-	if rootfsDir == "" {
-		return fmt.Errorf("virtiofs mode requires rootfs_dir")
-	}
-	fi, err := os.Stat(rootfsDir)
-	if err != nil {
-		return fmt.Errorf("virtiofs rootfs_dir stat: %w", err)
-	}
-	if !fi.IsDir() {
-		return fmt.Errorf("virtiofs rootfs_dir is not a directory: %s", rootfsDir)
-	}
-	logf("set_root: %s", rootfsDir)
-	if err := krunSetRoot(ctx, rootfsDir); err != nil {
-		return fmt.Errorf("set rootfs dir: %w", err)
-	}
-
-	logf("add_disk: workspace=%s", spec.WorkspaceImage)
-	if err := krunAddDisk(ctx, "workspace", spec.WorkspaceImage, false); err != nil {
-		return fmt.Errorf("add workspace disk: %w", err)
-	}
-	logf("add_disk: docker_data=%s", spec.DockerDataImage)
-	if err := krunAddDisk(ctx, "docker_data", spec.DockerDataImage, false); err != nil {
-		return fmt.Errorf("add docker-data disk: %w", err)
-	}
-	if spec.HostConfigDrive != "" {
-		logf("add_disk: hostconfig=%s", spec.HostConfigDrive)
-		if err := krunAddDisk(ctx, "hostconfig", spec.HostConfigDrive, true); err != nil {
-			logf("warning: host config drive: %v", err)
-		}
-	}
-
-	hostPath := strings.TrimSpace(spec.WorkspaceHostPath)
-	if hostPath == "" {
-		return fmt.Errorf("virtiofs mode requires workspace_host_path")
-	}
-	if fi, err := os.Stat(hostPath); err != nil || !fi.IsDir() {
-		if err != nil {
-			return fmt.Errorf("virtiofs workspace_host_path stat: %w", err)
-		}
-		return fmt.Errorf("virtiofs workspace_host_path is not a directory: %s", hostPath)
-	}
-	logf("add_virtiofs: tag=nexus-workspace path=%s ro=true", hostPath)
-	if err := krunAddVirtioFS3(ctx, "nexus-workspace", hostPath, 0, true); err != nil {
-		return fmt.Errorf("add virtiofs workspace share: %w", err)
-	}
-
-	if err := configureNetworking(ctx, spec, logf); err != nil {
-		return err
-	}
-	if err := addVsockAndConsole(ctx, spec, logf); err != nil {
-		return err
-	}
-
-	agentPath := strings.TrimSpace(spec.AgentPath)
-	if agentPath == "" {
-		agentPath = "/usr/local/bin/nexus-guest-agent"
-	}
-	env := []string{
-		"NEXUS_CONTAINER_MODE=1",
-		"NEXUS_WORKSPACE_MODE=virtiofs",
-		"NEXUS_OVERLAY_DEV=/dev/vda",
-		"NEXUS_DOCKER_DEV=/dev/vdb",
-		"HOME=/root",
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"TERM=xterm-256color",
-	}
-	if spec.BakedRootfs {
-		env = append(env, "NEXUS_BAKED=1")
-	}
-	if strings.Contains(spec.KernelCmdline, "nexus.bake=1") {
-		env = append(env, "NEXUS_BAKE=1")
-	}
-	if spec.HostConfigDrive != "" {
-		env = append(env, "NEXUS_CONFIG_DEV=/dev/vdc")
-	}
-	if err := krunSetWorkdir(ctx, "/"); err != nil {
-		return fmt.Errorf("set workdir: %w", err)
-	}
-	logf("set_exec: path=%s env=%d vars", agentPath, len(env))
-	if err := krunSetExec(ctx, agentPath, env); err != nil {
-		return fmt.Errorf("set exec: %w", err)
-	}
-
-	logf("calling krun_start_enter (process will become the VMM)")
-	return krunStartEnter(ctx)
 }
 
 // launchHybridMode boots a VM with a block rootfs and virtiofs workspace share.

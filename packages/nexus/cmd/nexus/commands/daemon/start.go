@@ -49,10 +49,6 @@ var DefaultVMKernelPath = defaultVMKernelPath()
 // DefaultVMRootfsPath is the canonical rootfs location after rootless daemon setup.
 var DefaultVMRootfsPath = defaultVMRootfsPath()
 
-// DefaultVMRootfsDirPath is the canonical directory-form rootfs location used
-// by libkrun set_root+set_exec launch mode.
-var DefaultVMRootfsDirPath = defaultVMRootfsDirPath()
-
 // defaultVMKernelPath returns the user-scoped kernel path under XDG_DATA_HOME.
 func defaultVMKernelPath() string {
 	return xdgVMAsset("vmlinux.bin")
@@ -61,12 +57,6 @@ func defaultVMKernelPath() string {
 // defaultVMRootfsPath returns the user-scoped rootfs path under XDG_DATA_HOME.
 func defaultVMRootfsPath() string {
 	return xdgVMAsset("rootfs.ext4")
-}
-
-// defaultVMRootfsDirPath returns the user-scoped rootfs directory path under
-// XDG_DATA_HOME.
-func defaultVMRootfsDirPath() string {
-	return xdgVMAsset("rootfs-dir")
 }
 
 // xdgVMAsset returns the path to a VM asset under ~/.local/share/nexus/vm/
@@ -295,17 +285,7 @@ func startCommand() *cobra.Command {
 					emitPhase("rootfs-bake", "ok", "skipped ("+reason+")")
 				}
 
-				// rootfs-dir seeding is only required for legacy virtiofs mode.
-				// Hybrid mode (block rootfs + virtiofs workspace share) does not use
-				// rootfs-dir; skip the slow debugfs rdump step.
-				if !isLibkrun {
-					if err := ensureRootfsDirSeeded(cfg.RootFSPath, DefaultVMRootfsDirPath); err != nil {
-						return fmt.Errorf("daemon start: rootfs-dir seed: %w", err)
-					}
-					if err := ensureGuestAgentRootfsDir(DefaultVMRootfsDirPath); err != nil {
-						return fmt.Errorf("daemon start: rootfs-dir guest agent refresh: %w", err)
-					}
-				}
+
 			}
 
 			// Self-daemonize: re-exec in background, wait for socket, return.
@@ -544,190 +524,6 @@ func ensureGuestAgent(rootfsPath string) error {
 		_ = os.WriteFile(hashFile, []byte(agentHash+"\n"), 0o644)
 	}
 	return nil
-}
-
-// ensureGuestAgentRootfsDir writes the guest-agent binary into the rootfs
-// directory at /usr/local/bin/nexus-guest-agent for set_root+set_exec mode.
-func ensureGuestAgentRootfsDir(rootfsDir string) error {
-	rootfsDir = strings.TrimSpace(rootfsDir)
-	if rootfsDir == "" {
-		return nil
-	}
-	fi, err := os.Stat(rootfsDir)
-	if err != nil {
-		// Hybrid mode doesn't need rootfs-dir; skip gracefully.
-		return nil
-	}
-	if !fi.IsDir() {
-		return fmt.Errorf("rootfs-dir %q is not a directory", rootfsDir)
-	}
-
-	agentPath, err := resolveGuestAgentBinary()
-	if err != nil {
-		return err
-	}
-	src, err := os.ReadFile(agentPath)
-	if err != nil {
-		return fmt.Errorf("read guest agent source: %w", err)
-	}
-
-	dst := filepath.Join(rootfsDir, "usr", "local", "bin", "nexus-guest-agent")
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("mkdir guest agent dir in rootfs-dir: %w", err)
-	}
-
-	needsWrite := true
-	if existing, err := os.ReadFile(dst); err == nil {
-		if sha256.Sum256(existing) == sha256.Sum256(src) {
-			needsWrite = false
-		}
-	}
-
-	if needsWrite {
-		tmp := dst + ".tmp"
-		if err := os.WriteFile(tmp, src, 0o755); err != nil {
-			return fmt.Errorf("write guest agent into rootfs-dir: %w", err)
-		}
-		if err := os.Rename(tmp, dst); err != nil {
-			return fmt.Errorf("install guest agent into rootfs-dir: %w", err)
-		}
-	}
-	_ = os.MkdirAll(filepath.Join(rootfsDir, "var", "lib"), 0o755)
-	// Virtiofs-root launches cannot reliably run apt/dpkg ownership changes on
-	// rootfs paths. Only write toolchain stamps when required binaries already
-	// exist in rootfs-dir (from a successful bake/seed), so we never mask
-	// genuinely missing toolchains.
-	required := requiredRootfsDirToolchainPaths(rootfsDir)
-	allPresent := true
-	for _, p := range required {
-		if _, err := os.Stat(p); err != nil {
-			allPresent = false
-			break
-		}
-	}
-	baseStamp := filepath.Join(rootfsDir, "var", "lib", "nexus-tools-base-v7")
-	legacyBaseStampV6 := filepath.Join(rootfsDir, "var", "lib", "nexus-tools-base-v6")
-	legacyBaseStampV5 := filepath.Join(rootfsDir, "var", "lib", "nexus-tools-base-v5")
-	legacyOptionalStamp := filepath.Join(rootfsDir, "var", "lib", "nexus-tools-optional-v5")
-	if allPresent {
-		_ = os.WriteFile(baseStamp, []byte("ok\n"), 0o644)
-		_ = os.Remove(legacyBaseStampV6)
-		_ = os.Remove(legacyBaseStampV5)
-		_ = os.Remove(legacyOptionalStamp)
-	} else {
-		_ = os.Remove(baseStamp)
-		_ = os.Remove(legacyBaseStampV6)
-		_ = os.Remove(legacyBaseStampV5)
-		_ = os.Remove(legacyOptionalStamp)
-	}
-	return nil
-}
-
-func ensureRootfsDirSeeded(rootfsExt4, rootfsDir string) error {
-	rootfsExt4 = strings.TrimSpace(rootfsExt4)
-	rootfsDir = strings.TrimSpace(rootfsDir)
-	if rootfsExt4 == "" || rootfsDir == "" {
-		return nil
-	}
-	if _, err := os.Stat(rootfsExt4); err != nil {
-		return nil
-	}
-	if _, err := exec.LookPath("debugfs"); err != nil {
-		return nil
-	}
-
-	required := requiredRootfsDirToolchainPaths(rootfsDir)
-	allPresent := true
-	for _, p := range required {
-		if _, err := os.Stat(p); err != nil {
-			allPresent = false
-			break
-		}
-	}
-	if allPresent {
-		return nil
-	}
-
-	parent := filepath.Dir(rootfsDir)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return fmt.Errorf("create rootfs-dir parent: %w", err)
-	}
-
-	// Acquire a per-user flock so parallel daemon starts (e2e tests) don't race.
-	lockPath := filepath.Join(parent, "rootfs-dir.seed.lock")
-	unlock, err := acquireFileLock(lockPath)
-	if err != nil {
-		return fmt.Errorf("acquire rootfs-dir seed lock: %w", err)
-	}
-	defer unlock()
-
-	// Re-check after acquiring the lock: another daemon may have finished.
-	allPresent = true
-	for _, p := range required {
-		if _, err := os.Stat(p); err != nil {
-			allPresent = false
-			break
-		}
-	}
-	if allPresent {
-		return nil
-	}
-
-	tmpDir, err := os.MkdirTemp(parent, "rootfs-dir-seed-*")
-	if err != nil {
-		return fmt.Errorf("create rootfs-dir temp: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	cmd := exec.Command("debugfs", "-R", fmt.Sprintf("rdump / %s", tmpDir), rootfsExt4)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("seed rootfs-dir from ext4: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-
-	backupDir := rootfsDir + ".bak"
-	_ = os.RemoveAll(backupDir)
-	if _, err := os.Stat(rootfsDir); err == nil {
-		if err := os.Rename(rootfsDir, backupDir); err != nil {
-			return fmt.Errorf("backup existing rootfs-dir: %w", err)
-		}
-	}
-	if err := os.Rename(tmpDir, rootfsDir); err != nil {
-		if _, statErr := os.Stat(backupDir); statErr == nil {
-			_ = os.Rename(backupDir, rootfsDir)
-		}
-		return fmt.Errorf("activate seeded rootfs-dir: %w", err)
-	}
-	_ = os.RemoveAll(backupDir)
-	return nil
-}
-
-// acquireFileLock acquires an exclusive flock on lockPath and returns an
-// unlock function. The lock is released when unlock is called.
-func acquireFileLock(lockPath string) (func(), error) {
-	f, err := os.Create(lockPath)
-	if err != nil {
-		return nil, fmt.Errorf("create lock file: %w", err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("flock: %w", err)
-	}
-	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-	}, nil
-}
-
-func requiredRootfsDirToolchainPaths(rootfsDir string) []string {
-	return []string{
-		filepath.Join(rootfsDir, "usr", "bin", "docker"),
-		filepath.Join(rootfsDir, "usr", "bin", "dockerd"),
-		filepath.Join(rootfsDir, "usr", "bin", "node"),
-		filepath.Join(rootfsDir, "usr", "bin", "npm"),
-		filepath.Join(rootfsDir, "usr", "local", "bin", "opencode"),
-		filepath.Join(rootfsDir, "usr", "local", "bin", "codex"),
-		filepath.Join(rootfsDir, "usr", "local", "bin", "claude"),
-	}
 }
 
 // sha256HexFile returns the hex-encoded SHA-256 digest of the file at path.

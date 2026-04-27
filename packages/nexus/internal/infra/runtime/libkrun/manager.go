@@ -42,9 +42,6 @@ type ManagerConfig struct {
 	// RootFSBasePath is the canonical rootfs.ext4 created during bootstrap.
 	// It is kept for rootfs bake/bootstrap flows.
 	RootFSBasePath string
-	// RootFSDirPath is the directory-form rootfs used by libkrun set_root+set_exec
-	// launch mode (smolvm-style). Required for the virtiofs-only libkrun path.
-	RootFSDirPath string
 	// KernelPath is the kernel image passed to krun_set_kernel.
 	KernelPath string
 	// BasesDir stores cached per-repo base workspace images.
