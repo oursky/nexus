@@ -136,22 +136,25 @@ const (
 )
 
 // vmKernelURL returns the URL for the Linux kernel image (vmlinux ELF).
-// Prefer Ubuntu cloud image kernels, which are generally more available.
+// We use the Firecracker vmlinux ELF because it is a known-good format for
+// libkrun on x86_64 (ELF, not the PE bzImage that Ubuntu ships).  The Ubuntu
+// vmlinuz is a bzImage that libkrun's x86_64 loader does not handle when
+// misdetected as RAW, so we avoid it as a primary source.
 func vmKernelURL() string {
 	switch runtime.GOARCH {
 	case "arm64":
-		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-arm64-vmlinuz-generic"
+		return "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/vmlinux-5.10.239"
 	default:
-		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-amd64-vmlinuz-generic"
+		return "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/x86_64/vmlinux-5.10.239"
 	}
 }
 
 func vmKernelFallbackURL() string {
 	switch runtime.GOARCH {
 	case "arm64":
-		return "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/vmlinux-5.10.239"
+		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-arm64-vmlinuz-generic"
 	default:
-		return "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/x86_64/vmlinux-5.10.239"
+		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/unpacked/ubuntu-24.04-minimal-cloudimg-amd64-vmlinuz-generic"
 	}
 }
 
