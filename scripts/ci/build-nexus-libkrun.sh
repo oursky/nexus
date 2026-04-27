@@ -66,7 +66,12 @@ fi
 
 # shellcheck disable=SC2086
 CGO_ENABLED=0 go build $BUILD_TAGS -o /tmp/nexus-bin ./cmd/nexus/
-rm -f "$EMBED_DIR/libkrun-embed.so" "$EMBED_DIR/libkrunfw-embed.so" "$EMBED_DIR/assets/vmlinux"
+rm -f "$EMBED_DIR/libkrun-embed.so" "$EMBED_DIR/libkrunfw-embed.so"
+# Preserve the compiled kernel in CI so the actions/cache post-step can save it.
+# Local builds clean it up to avoid a dirty working tree.
+if [[ -z "${CI:-}" ]]; then
+  rm -f "$EMBED_DIR/assets/vmlinux"
+fi
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   echo "NEXUS_E2E_BINARY=/tmp/nexus-bin" >> "$GITHUB_ENV"
