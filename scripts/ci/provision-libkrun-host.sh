@@ -6,7 +6,7 @@ SOCK=/tmp/nexus-provision.sock
 DB=/tmp/nexus-provision.db
 
 sudo NEXUS_LIBKRUN_SKIP_BAKE=1 NEXUS_LIBKRUN_BAKE_TIMEOUT=120s NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS=1 /tmp/nexus-bin daemon start \
-  --db "$DB" --socket "$SOCK" --workdir-root /data/nexus/libkrun-vms-provision &
+  --db "$DB" --socket "$SOCK" --workdir-root /data/nexus/libkrun-vms-provision --network=false &
 DPID=$!
 
 timeout 180 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \

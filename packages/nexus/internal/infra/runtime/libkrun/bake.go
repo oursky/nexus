@@ -334,11 +334,20 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 		case <-childDone:
 			// Child exited before we saw the completion marker — either it
 			// crashed during startup or the bake failed and rebooted, but we
-			// missed the marker. Dump the hvc0 log so we can diagnose.
+			// missed the marker. Dump both the launcher stderr (bake.log) and
+			// the hvc0 serial log so we can diagnose.
+			launcherLog, _ := os.ReadFile(serialLog)
+			if len(launcherLog) > 0 {
+				lines := strings.Split(string(launcherLog), "\n")
+				if len(lines) > 50 {
+					lines = lines[len(lines)-50:]
+				}
+				log.Printf("[libkrun] bake VM: child exited early (%v elapsed) — launcher stderr tail:\n%s",
+					time.Since(start).Round(time.Second), strings.Join(lines, "\n"))
+			}
 			hvc0Data, _ := os.ReadFile(hvc0Path)
-			hvc0 := string(hvc0Data)
-			if len(hvc0) > 0 {
-				lines := strings.Split(hvc0, "\n")
+			if len(hvc0Data) > 0 {
+				lines := strings.Split(string(hvc0Data), "\n")
 				if len(lines) > 100 {
 					lines = lines[len(lines)-100:]
 				}
@@ -349,10 +358,10 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 					time.Since(start).Round(time.Second))
 			}
 			if childCmd.ProcessState != nil {
-				return "", fmt.Errorf("bake VM exited early with code %d (%v elapsed) — see serial log above",
+				return "", fmt.Errorf("bake VM exited early with code %d (%v elapsed)",
 					childCmd.ProcessState.ExitCode(), time.Since(start).Round(time.Second))
 			}
-			return "", fmt.Errorf("bake VM exited early (%v elapsed) — see serial log above",
+			return "", fmt.Errorf("bake VM exited early (%v elapsed)",
 				time.Since(start).Round(time.Second))
 
 		case <-ticker.C:

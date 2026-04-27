@@ -13,7 +13,7 @@ fi
 SOCK=/tmp/nexus-prewarm.sock
 DB=/tmp/nexus-prewarm.db
 sudo CI=false NEXUS_LIBKRUN_BAKE_TIMEOUT=600s NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS=1 /tmp/nexus-bin daemon start \
-  --db "$DB" --socket "$SOCK" --workdir-root /data/nexus/libkrun-vms-prewarm &
+  --db "$DB" --socket "$SOCK" --workdir-root /data/nexus/libkrun-vms-prewarm --network=false &
 DPID=$!
 
 # Wait up to 12 minutes for the daemon socket to appear (bake can take 8-10 min).
