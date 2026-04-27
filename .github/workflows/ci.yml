@@ -138,7 +138,13 @@ jobs:
       - name: Verify VM assets after provisioning
         run: scripts/ci/verify-vm-assets.sh required
 
+      - name: Probe runner VM network forwarding
+        id: runner-network-probe
+        continue-on-error: true
+        run: scripts/ci/probe-runner-network.sh
+
       - name: Prewarm default-profile baked rootfs (best effort, bounded)
+        if: steps.runner-network-probe.outcome == 'success'
         continue-on-error: true
         run: scripts/ci/prewarm-default-profile.sh
 
