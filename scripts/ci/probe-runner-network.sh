@@ -3,62 +3,46 @@ set -euo pipefail
 
 # Quick probe: can this self-hosted runner forward VM TCP traffic via passt?
 #
-# Starts a minimal bake VM and monitors the serial log. If apt-get stalls at
-# "0% [Connecting..." for too long, passt TCP forwarding is broken in this
-# runner environment (common in restricted containers without NET_ADMIN).
-#
-# Exits 0  → network OK, prewarm can proceed
-# Exits 1  → network broken, skip prewarm to avoid a 10-minute timeout
+# Fast path: if baked stamp already exists (cache hit), no probe needed.
+# Otherwise check runner capabilities (iptables, network namespaces) that
+# passt requires. If missing, fail fast instead of wasting 10 minutes.
 
-SOCK=/tmp/nexus-probe.sock
-DB=/tmp/nexus-probe.db
+# ── Fast path: already baked ────────────────────────────────────────────────
+if sudo test -f /root/.local/state/nexus/rootfs-baked-v7; then
+  echo "[probe] Baked stamp already present; network probe not needed"
+  exit 0
+fi
 
-# Clean up any stale probe artifacts
-sudo rm -rf "$SOCK" "$DB" /tmp/nexus-probe-*
+# ── Capability checks ───────────────────────────────────────────────────────
+echo "[probe] checking runner capabilities for passt VM networking..."
 
-echo "[probe] starting daemon with 90s bake timeout..."
-sudo CI=false NEXUS_LIBKRUN_BAKE_TIMEOUT=90s NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS=1 /tmp/nexus-bin daemon start \
-  --db "$DB" --socket "$SOCK" --workdir-root /tmp/nexus-probe --network=false > /dev/null 2>&1 &
-DPID=$!
-
-cleanup() {
-  sudo /tmp/nexus-bin daemon stop --socket "$SOCK" > /dev/null 2>&1 || true
-  kill $DPID 2>/dev/null || true
-  wait $DPID 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# Wait for socket (max 180s — daemon may need time to extract assets and build rootfs)
-if ! timeout 180 bash -c 'until [ -S "$0" ]; do sleep 1; done' "$SOCK"; then
-  echo "[probe] daemon start timed out"
+# Passt needs iptables for NAT rules
+if ! sudo iptables -t nat -L > /dev/null 2>&1; then
+  echo "[probe] Runner cannot manage iptables; passt TCP forwarding likely broken"
+  echo "[probe] skipping prewarm on this runner"
   exit 1
 fi
 
-# Wait for bake VM to boot and apt-get to start (typical: 20-40s)
-sleep 35
-
-# Find the bake log
-BAKE_LOG=$(ls /tmp/nexus-probe-*/bake.log.hvc0 2>/dev/null | head -1 || true)
-if [[ ! -f "$BAKE_LOG" ]]; then
-  echo "[probe] no bake log found — assuming network broken"
+# Passt needs network namespaces
+if ! sudo unshare -n true 2>/dev/null; then
+  echo "[probe] Runner cannot create network namespaces"
+  echo "[probe] skipping prewarm on this runner"
   exit 1
 fi
 
-# Check for DNS failure
-if grep -q "Temporary failure resolving" "$BAKE_LOG"; then
-  echo "[probe] DNS resolution failed inside VM"
+# Passt needs /dev/net/tun for TAP devices
+if [[ ! -c /dev/net/tun ]]; then
+  echo "[probe] /dev/net/tun not available"
+  echo "[probe] skipping prewarm on this runner"
   exit 1
 fi
 
-# Check for TCP stall: apt-get stuck at 0% with no progress
-# A healthy run shows package download progress within ~60s.
-if grep -q "0% \[Connecting" "$BAKE_LOG"; then
-  # See if any download progressed past 0%
-  if ! grep -E "[1-9][0-9]*% \[.*(Working|Connecting|Waiting)" "$BAKE_LOG" > /dev/null; then
-    echo "[probe] apt-get stalled at 0% — passt TCP forwarding is broken in this runner"
-    exit 1
-  fi
+# Passt needs CAP_NET_ADMIN (check if we can add a dummy interface in a ns)
+if ! sudo unshare -n -r bash -c 'ip link set lo up && ip link add dummy0 type dummy 2>/dev/null || exit 1' 2>/dev/null; then
+  echo "[probe] Runner lacks NET_ADMIN capability inside network namespaces"
+  echo "[probe] skipping prewarm on this runner"
+  exit 1
 fi
 
-echo "[probe] VM network forwarding looks OK"
+echo "[probe] Runner capabilities look OK"
 exit 0
