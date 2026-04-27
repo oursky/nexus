@@ -44,16 +44,6 @@ jobs:
       - name: Package VM assets
         run: scripts/ci/package-prebuilt-vm-assets.sh
 
-      - name: Stage standalone kernel ELF for download
-        run: |
-          set -euo pipefail
-          KERNEL_VERSION="${KERNEL_VERSION:-6.6.59}"
-          ARCH="$(uname -m)"
-          KERNEL_ASSET="vmlinux-${KERNEL_VERSION}-linux-${ARCH}"
-          cp packages/nexus/cmd/nexus/assets/vmlinux "${KERNEL_ASSET}"
-          echo "KERNEL_ASSET=${KERNEL_ASSET}" >> "$GITHUB_ENV"
-          echo "Staged kernel asset: ${KERNEL_ASSET} ($(du -sh "${KERNEL_ASSET}" | cut -f1))"
-
       - name: Upload prebuilt VM artifact
         uses: actions/upload-artifact@v4
         with:
@@ -62,13 +52,6 @@ jobs:
             prebuilt-libkrun-vm-linux-amd64.tar.gz
             prebuilt-libkrun-vm-linux-amd64.tar.gz.sha256
           retention-days: 14
-
-      - name: Upload standalone kernel artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-elf-linux-amd64
-          path: ${{ env.KERNEL_ASSET }}
-          retention-days: 30
 
       - name: Publish release assets
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' }}
@@ -79,5 +62,4 @@ jobs:
           files: |
             prebuilt-libkrun-vm-linux-amd64.tar.gz
             prebuilt-libkrun-vm-linux-amd64.tar.gz.sha256
-            ${{ env.KERNEL_ASSET }}
           generate_release_notes: true
