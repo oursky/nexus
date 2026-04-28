@@ -1,3 +1,5 @@
+//go:build linux
+
 package libkrun
 
 // BakeStampVersion is bumped whenever the set of tools baked into the

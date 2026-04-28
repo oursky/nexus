@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package libkrun implements a VM runtime driver using libkrun as the VMM.
 // Unlike a separate hypervisor subprocess + REST API, libkrun is a shared library.
 // VMs are run in child processes that call krun_start_enter() which takes
