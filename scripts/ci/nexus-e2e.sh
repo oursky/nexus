@@ -16,6 +16,11 @@ if [[ "${CI:-}" == "true" ]] && [[ "$(uname -s)" == "Linux" ]] && [[ "${NEXUS_E2
   exit 1
 fi
 
-# -short skips tests that boot libkrun VMs (3-5 min each); remove when
-# focusing on full VM lifecycle tests.
-go test -tags e2e -count=1 -timeout=10m -short -v ./test/e2e/...
+# -short skips tests that boot libkrun VMs (3-5 min each).
+# NEXUS_E2E_SHORT=0 disables -short so full VM lifecycle tests run.
+short_flag="-short"
+if [[ "${NEXUS_E2E_SHORT:-1}" == "0" ]]; then
+  short_flag=""
+fi
+
+go test -tags e2e -count=1 -timeout=30m ${short_flag} -v ./test/e2e/...

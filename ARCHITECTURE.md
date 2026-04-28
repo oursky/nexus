@@ -2,18 +2,36 @@
 
 ## Table of Contents
 
-1. [System Overview](#system-overview)
-2. [Components](#components)
-3. [Request Flow](#request-flow)
+1. [Design Principles](#design-principles)
+2. [Bird's Eye View](#birds-eye-view)
+3. [Core Concepts](#core-concepts)
 4. [Layer Architecture](#layer-architecture)
-5. [VM Architecture](#vm-architecture)
-6. [Workspace Lifecycle](#workspace-lifecycle)
-7. [Auth & Security](#auth--security)
-8. [Package Index](#package-index)
+5. [Key Flows](#key-flows)
+6. [Architecture Invariants](#architecture-invariants)
+7. [Code Map](#code-map)
+8. [Cross-Cutting Concerns](#cross-cutting-concerns)
 
 ---
 
-## System Overview
+## Design Principles
+
+These principles explain *why* the system is built the way it is. They should change rarely.
+
+- **Hardware isolation per workspace.** Each workspace runs inside its own libkrun micro-VM with a dedicated kernel, memory space, and virtual devices. This provides stronger isolation than containers while keeping startup times competitive.
+
+- **CGO-free daemon.** The main `nexus` daemon is pure Go. `libkrun.so` requires CGO and process takeover (`krun_start_enter` never returns). By spawning `nexus-libkrun-vm` as a separate child process, the daemon avoids linking `libkrun.so` directly and keeps the main binary portable and simple.
+
+- **CoW/reflink is the foundation.** Workspace creation must be O(1). Base images (rootfs, project snapshot) are built once and then reflink-cloned (`cp --reflink=always`) per workspace. On XFS/Btrfs this is nearly instantaneous and shares disk blocks until written.
+
+- **Hybrid disk model: live code + mutable overlay.** The host project directory is exposed to the guest as a read-only virtiofs mount. All mutations (uncommitted changes, installed dependencies, build artifacts) are written to a separate workspace block device that acts as the overlayfs upperdir. This gives the guest a live view of the codebase while keeping mutations isolated, snapshot-able, and discard-able.
+
+- **Deterministic guest networking.** Every workspace gets the same MAC and IPv4 address across restarts because they are derived from the workspace ID via FNV-1a hash. This avoids stale ARP caches, simplifies SSH known_hosts, and makes port forwarding stable.
+
+- **Two transports, two trust models.** Local CLI talks to the daemon over a Unix domain socket with no authentication (filesystem ACL only). Remote clients connect over WebSocket with a static Bearer token. The two paths are kept separate so local tools never need tokens.
+
+---
+
+## Bird's Eye View
 
 Nexus is a remote workspace daemon that runs isolated development environments inside libkrun micro-VMs on a Linux host. Users connect via a local CLI or a macOS app over SSH-tunnelled WebSocket.
 
@@ -29,8 +47,8 @@ graph LR
     end
 
     subgraph "Daemon Host (Linux)"
-        NL["transport.NetworkListener<br/>WebSocket + Bearer auth"]
-        US["transport.Listener<br/>Unix socket"]
+        NL["NetworkListener<br/>WebSocket + Bearer"]
+        US["Listener<br/>Unix socket"]
         Daemon["nexus daemon"]
         VM[("nexus-libkrun-vm<br/>per workspace")]
         GA[("nexus-guest-agent<br/>inside VM")]
@@ -41,94 +59,71 @@ graph LR
     ST -->|"SSH -L"| NL
     NL --> Daemon
     US --> Daemon
-    Daemon -->|"spawn"| VM
+    Daemon -->|"fork+exec"| VM
     VM -->|"vsock"| GA
 ```
 
----
-
-## Components
-
-### Binaries
-
-| Binary | Source | Role |
-|--------|--------|------|
-| `nexus` | `cmd/nexus/` | CLI + daemon. `daemon start` runs the server; all other subcommands are RPC clients. |
-| `nexus-guest-agent` | `cmd/nexus-guest-agent/` | In-VM agent. JSON-RPC over vsock for exec, PTY, port-forwarding, mounts. |
-| `nexus-libkrun-vm` | `cmd/nexus-libkrun-vm/` | CGO VMM wrapper. Spawned per workspace; links `libkrun.so` and becomes the VM monitor. |
-| `schema` | `cmd/schema/` | JSON schema generator for RPC contracts. |
-
-### Why the VMM is a separate binary
-
-The main daemon is CGO-free. `libkrun.so` requires CGO and takeover semantics (`krun_start_enter` never returns). By spawning `nexus-libkrun-vm` as a child process, the daemon avoids linking `libkrun.so` directly.
-
-```mermaid
-graph TD
-    Daemon["nexus daemon<br/>(Go, pure)"] -->|"writes VMSpec JSON"| Spec[("/tmp/nexus-vm-*.json")]
-    Daemon -->|"exec"| VMM["nexus-libkrun-vm<br/>(CGO + libkrun.so)"]
-    Spec --> VMM
-    VMM -->|"krun_start_enter"| VM[("libkrun microVM")]
-    VM -->|"vsock CID=2"| GA["nexus-guest-agent"]
-    VMM -->|"passt fd"| Passt["passt process"]
-```
+The daemon is a long-lived Go process. It listens on both a Unix socket (local CLI) and a TCP port (WebSocket for remote clients). When a user starts a workspace, the daemon spawns a `nexus-libkrun-vm` child process that becomes the VMM. The guest agent inside the VM connects back to the host over vsock to accept exec, PTY, and port-forward commands.
 
 ---
 
-## Request Flow
+## Core Concepts
 
-### CLI / App to Daemon
+### Workspace
 
-```mermaid
-sequenceDiagram
-    actor User
-    participant CLI as nexus CLI / App
-    participant Tunnel as SSH Tunnel
-    participant NL as NetworkListener
-    participant Reg as rpc/registry
-    participant H as RPC Handler
-    participant S as app Service
-    participant I as infra
-
-    User->>CLI: nexus workspace start
-    CLI->>Tunnel: ssh -L <local>:127.0.0.1:<remote>
-    CLI->>NL: WebSocket upgrade + Bearer token
-    NL->>CLI: 101 Switching Protocols
-    CLI->>NL: JSON-RPC: workspace.start {"id":"ws-1"}
-    NL->>Reg: Dispatch("workspace.start", params)
-    Reg->>H: invoke handler
-    H->>S: service.Start(ctx, "ws-1")
-    S->>I: store.Get, runtime.Start
-    I-->>S: Workspace, Instance
-    S-->>H: nil
-    H-->>Reg: {"workspace": {...}}
-    Reg-->>NL: result
-    NL-->>CLI: JSON-RPC response
-```
-
-### Daemon to Guest Agent (VM Session)
+A workspace is a runnable remote development environment. It has a lifecycle state machine:
 
 ```mermaid
-sequenceDiagram
-    participant Daemon as nexus daemon
-    participant M as libkrun.Manager
-    participant VMM as nexus-libkrun-vm
-    participant GA as nexus-guest-agent
-    participant PTY as guest shell
-
-    Daemon->>M: Spawn(ctx, spec)
-    M->>VMM: exec nexus-libkrun-vm --config=spec.json
-    VMM->>GA: krun_start_enter (VM boots)
-    GA->>GA: mount virtiofs + overlayfs
-    GA->>GA: start sshd, dockerd
-
-    Note over Daemon,PTY: Later: pty.create RPC
-    Daemon->>M: vsock dial port 10789
-    M->>GA: JSON-RPC: {"id":"1","type":"shell.open",...}
-    GA->>PTY: pty.StartWithSize(bash)
-    PTY-->>GA: stdout
-    GA-->>Daemon: {"type":"chunk","stream":"stdout","data":"..."}
-    Daemon-->>Client: WebSocket push: pty.data
+stateDiagram-v2
+    [*] --> created: Create
+    created --> starting: Start
+    starting --> running: success
+    starting --> created: failure / rollback
+    running --> stopped: Stop
+    stopped --> starting: Start
+    stopped --> restored: Restore
+    restored --> running: Start
+    created --> removed: Remove
+    stopped --> removed: Remove
+    restored --> removed: Remove
 ```
+
+**Fork** creates a new workspace (new ID) as a CoW copy of a parent. The parent images are reflink-copied into `.snapshots/<childID>.*.ext4` and the child record points to them. Fork is used to branch a new environment from an existing one.
+
+**Restore** re-points an existing workspace (same ID) to saved snapshot images. It is used to resume from a previously saved state.
+
+### Disk Model & Volumes
+
+Each libkrun VM sees several block devices and one virtiofs share. They are deliberately separated so each can evolve, be snapshotted, or be discarded independently.
+
+| Guest Device | Mount Point | Source | Purpose & Why |
+|-------------|-------------|--------|---------------|
+| `/dev/vda` | `/` | reflink clone of baked rootfs | Base OS + pre-installed developer toolchains (Docker, Node, global npm packages). Kept separate from the workspace so tool updates can be baked once and shared. |
+| `/dev/vdb` | `/workspace` (overlay upper) | reflink clone of per-repo base image | Mutable project-specific state: uncommitted changes, `node_modules`, build artifacts. This is a block device because overlayfs requires a native kernel filesystem for its upperdir. |
+| virtiofs "nexus-workspace" | `/workspace` (overlay lower) | host project directory | Live read-only view of the repo on the host. Developers see file changes on the host instantly without syncing. |
+| `/dev/vdc` | `/var/lib/docker` | sparse ext4 | Docker daemon data-root. Docker's overlay2 storage driver requires a native kernel filesystem and cannot run on virtiofs. Isolated per workspace so containers/images don't leak across users. |
+| `/dev/vdd` | `/run/nexus-host` | read-only ext4 (optional) | Injected dotfiles, SSH keys, agent profiles, and credentials. Mounted read-only so the guest can read secrets but not mutate the injection volume. |
+
+**Why overlayfs?** The guest needs to see the host project directory (live, read-only) and be able to write files (build artifacts, installed packages) without polluting the host. Overlayfs merges the virtiofs lowerdir (host project) with the block-device upperdir (workspace.ext4) into a single `/workspace` view. The upperdir can be snapshotted, forked, or discarded independently.
+
+**Base image caching.** The first time a project is used, the daemon runs `mkfs.ext4 -d <repoRoot>` to create a cached base image. All subsequent workspaces for that project reflink-clone this base in O(1) time.
+
+### Networking Model
+
+The VM gets network access via **passt** (Plug A Simple Socket Transport) paired with **virtio-net**:
+
+```mermaid
+graph LR
+    Host["Host"] -->|"AF_UNIX socketpair"| Passt["passt process"]
+    Passt -->|"virtio-net"| VM["libkrun VM"]
+    VM -->|"sshd :22"| SSH["SSH session"]
+    VM -->|"vsock:10792"| SF["spotlight forwards"]
+```
+
+- **passt** runs as a separate child process per VM. It creates a user-space network stack and forwards TCP/UDP between the host and guest without requiring root privileges or bridge interfaces.
+- **Deterministic addressing:** The guest MAC and IPv4 are derived from the workspace ID via FNV-1a. The IPv4 lives in the host gateway's `/16` subnet. This means a workspace always gets the same IP across restarts.
+- **SSH access:** passt forwards a random host loopback port to guest port 22. The CLI uses this for `ProxyJump` SSH tunnels.
+- **Spotlight forwards:** The guest agent listens on vsock port 10792. The host daemon dials this port to set up port-forwarding from the host into the VM (e.g., for web services running inside the workspace).
 
 ---
 
@@ -154,331 +149,155 @@ graph BT
     daemon --> app
     daemon --> rpc
     daemon --> transport
-    daemon --> identity
     cmd --> daemon
     cmd --> app
     cmd --> infra/cli
 ```
 
-### Layer Responsibilities
-
 | Layer | Responsibility | Import Rule |
 |-------|----------------|-------------|
-| `domain/` | Entities, state machines, repository interfaces, sentinel errors | Zero internal imports |
-| `infra/` | Repository implementations, DB, filesystem, VM runtime drivers | `domain/` only |
-| `app/` | Use-case orchestration; multi-step workflows | `domain/` interfaces only |
-| `rpc/` | Transport adapters; JSON-RPC deserialization/serialization | `app/` via narrow interfaces |
-| `transport/` | Socket listeners, WebSocket upgrade, push notifications | `rpc/registry` only |
-| `daemon/` | Composition root; constructs and wires all layers | All layers |
+| `domain/` | Entities, state machines, repository interfaces, sentinel errors. This is the core vocabulary of the system. | Zero internal imports |
+| `infra/` | Repository implementations (SQLite, filesystem), VM runtime drivers (libkrun, sandbox), config parsing. | `domain/` only |
+| `app/` | Use-case orchestration: multi-step workflows like start, stop, fork, restore. | `domain/` interfaces only |
+| `rpc/` | Transport adapters: JSON-RPC deserialization/serialization, handler wiring. | `app/` via narrow interfaces |
+| `transport/` | Socket listeners (Unix, TCP, WebSocket), push notifications. | `rpc/registry` only |
+| `daemon/` | Composition root: constructs and wires all layers together. | All layers |
+
+**Why this layering?** The domain layer is kept pure so business rules (state transitions, invariants) can be tested without IO. The app layer orchestrates without knowing whether the workspace runs in a VM or a process. The RPC and transport layers are swappable adapters.
 
 ---
 
-## VM Architecture
+## Key Flows
 
-### Per-Workspace Process Tree
-
-```mermaid
-graph TD
-    Daemon["nexus daemon"] -->|"fork+exec"| VMM["nexus-libkrun-vm<br/>--config spec.json"]
-    Daemon -->|"fork+exec"| Passt["passt<br/>--fd 3 --foreground"]
-
-    VMM -->|"krun_start_enter"| VM[("libkrun microVM")]
-    VM -->|"virtiofs"| HostFS["host project dir<br/>(read-only lower)"]
-    VM -->|"virtio-blk"| Rootfs["rootfs.ext4<br/>(reflink clone, rw)"]
-    VM -->|"virtio-blk"| WsImg["workspace.ext4<br/>(overlay upper, rw)"]
-    VM -->|"virtio-blk"| DockerImg["docker-data.ext4<br/>(sparse 50GiB)"]
-    VM -->|"virtio-blk"| ConfigImg["hostconfig.ext4<br/>(dotfiles, creds)"]
-
-    VM -->|"vsock:10789"| GA["nexus-guest-agent"]
-    GA -->|"mount"| Overlay["overlayfs<br/>lower+upper= /workspace"]
-    GA -->|"start"| SSHD["sshd"]
-    GA -->|"start"| Docker["dockerd"]
-    GA -->|"proxy"| SF["spotlight forwards<br/>(vsock:10792)"]
-```
-
-### Disk Layout (Hybrid Mode)
-
-```mermaid
-graph LR
-    subgraph "Host Filesystem"
-        Base["base.ext4<br/>(cached per repo)"]
-        RootBase["rootfs.ext4<br/>(baked base image)"]
-    end
-
-    subgraph "Per-Workspace Directory"
-        Root["rootfs.ext4<br/>(reflink clone)"]
-        Ws["workspace.ext4<br/>(reflink clone from base)"]
-        Dock["docker-data.ext4<br/>(sparse)"]
-        Snap["snapshots/<br/>(fork images)"]
-    end
-
-    Base -->|"cp --reflink=always"| Ws
-    RootBase -->|"cp --reflink=always"| Root
-```
-
-### Overlayfs Assembly Inside the Guest
-
-```mermaid
-graph TB
-    Virtiofs["virtiofs nexus-workspace<br/>host project dir<br/>(read-only)"] -->|"lowerdir"| Overlay["overlayfs /workspace"]
-    Block["/dev/vdb workspace.ext4<br/>(read-write)"] -->|"upperdir + workdir"| Overlay
-    Overlay -->|"merged view"| Shell["bash /workspace"]
-```
-
-### Base Image → Workspace Image Flow
+### Starting a Workspace (High-Level)
 
 ```mermaid
 sequenceDiagram
-    participant S as Manager.Spawn
-    participant E as EnsureBaseImage
-    participant B as buildBaseImage
-    participant C as copyFile
+    participant User
+    participant CLI as nexus CLI
+    participant Daemon as nexus daemon
+    participant LK as libkrun Manager
+    participant GA as Guest Agent
 
-    S->>E: repoRoot, basesDir, manifestHash
-    E->>E: compute cache key<br/>SHA256(repoRoot + manifestHash + version)
-    alt cache miss
-        E->>B: repoRoot, imagePath
-        B->>B: compute size = 2×projectSize + overhead<br/>clamp 2–20 GiB
-        B->>B: mkfs.ext4 -F -d repoRoot imagePath
-        E->>E: store in basesDir/<key>/base.ext4
-    else cache hit
-        E-->>S: return cached path
-    end
-    S->>C: cp --reflink=always base.ext4 workspace.ext4
-    C-->>S: O(1) CoW clone
+    User->>CLI: nexus workspace start ws-1
+    CLI->>Daemon: JSON-RPC workspace.start
+    Daemon->>Daemon: transition state → starting
+    Daemon-->>CLI: ws-1 (state=starting)
+    Daemon->>LK: Spawn(ctx, spec)
+    LK->>LK: ensure base image (cache)
+    LK->>LK: reflink clone rootfs + workspace + docker-data
+    LK->>LK: start passt
+    LK->>LK: exec nexus-libkrun-vm
+    LK->>GA: VM boots, agent starts
+    GA->>GA: mount overlayfs (/workspace)
+    GA->>GA: start sshd, dockerd
+    Daemon->>GA: readiness probe
+    Daemon->>Daemon: transition state → running
 ```
 
-### Baking Flow
+The start is asynchronous. The RPC returns immediately with `state=starting` and the client polls `workspace.info` until `state=running`.
 
-```mermaid
-sequenceDiagram
-    participant M as libkrun.Manager
-    participant Bake as BakeRootfsIfNeeded
-    participant VMM as nexus-libkrun-vm
-    participant GA as nexus-guest-agent
+### Baking the Rootfs
 
-    Bake->>Bake: check stamps<br/>host: ~/.local/state/nexus/rootfs-baked-v7<br/>image: /var/lib/nexus-tools-base-v7
-    alt stamps match
-        Bake-->>M: skip
-    else bake required
-        Bake->>Bake: reflink clone rootfs
-        Bake->>Bake: inject guest agent via debugfs
-        Bake->>Bake: create workspace + docker ext4
-        Bake->>Bake: start passt for internet
-        Bake->>VMM: spawn with nexus.bake=1
-        VMM->>GA: boot VM
-        GA->>GA: apt-get install docker nodejs ...
-        GA->>GA: npm install -g opencode codex claude
-        GA->>GA: sync && poweroff
-        Bake->>Bake: poll hvc0 for "agent bake: all tools installed"
-        Bake->>Bake: e2fsck -f -y baked.rootfs
-        Bake->>Bake: write stamp via debugfs
-        Bake->>Bake: atomic replace base rootfs
-    end
-```
+Baking is the process of pre-installing developer tools into the base rootfs image so that every workspace starts with them already present.
 
-### Networking
+1. The daemon checks a bake stamp (e.g. `~/.local/state/nexus/rootfs-baked-v7`).
+2. If missing, it reflink-clones the rootfs, injects the guest agent via debugfs, and spawns a temporary VM in "bake mode."
+3. The guest agent runs `apt-get install docker nodejs ...` and `npm install -g opencode codex claude`, then powers off.
+4. The host validates the baked image with `e2fsck`, atomically replaces the base rootfs, and writes the stamp.
 
-```mermaid
-graph LR
-    subgraph Host
-        Daemon["nexus daemon"]
-        Passt["passt process"]
-        SSH["ssh -L ..."]
-    end
-
-    subgraph "libkrun VM"
-        GA["nexus-guest-agent"]
-        GuestSSH["sshd :22"]
-        GuestSvc["service :8080"]
-    end
-
-    Daemon -->|"AF_UNIX socketpair<br/>fd→passt, fd→libkrun"| Passt
-    Passt -->|"virtio-net / TSI"| GA
-    GA -->|"port 10792<br/>spotlight forward"| GuestSvc
-    SSH -->|"127.0.0.1:<random>→:22"| GuestSSH
-```
-
-**MAC and IP assignment:** deterministically derived from `workspaceID` via FNV-1a hash. Guest IPv4 lives in the gateway's `/16` subnet.
-
----
-
-## Workspace Lifecycle
-
-### State Machine
-
-```mermaid
-stateDiagram-v2
-    [*] --> created: Create
-    created --> starting: Start
-    starting --> running: success
-    starting --> created: failure / rollback
-    running --> stopped: Stop
-    running --> paused: Pause
-    paused --> running: Resume
-    paused --> stopped: Stop
-    stopped --> starting: Start
-    stopped --> running: Start (fast path)
-    stopped --> restored: Restore
-    restored --> running: Start
-    created --> removed: Remove
-    stopped --> removed: Remove
-    restored --> removed: Remove
-    running --> removed: Remove (invalid — guard missing)
-```
-
-States: `created` → `starting` → `running` → `paused` → `stopped` → `restored` → `removed`
-
-**Note:** `paused` is defined in the enum but has no RPC handlers yet; transitions to/from `paused` are unreachable.
+**Why bake?** Installing toolchains takes minutes and requires network access. Baking moves this cost from every workspace start to a one-time daemon bootstrap step.
 
 ### Fork vs Restore
 
-```mermaid
-graph LR
-    subgraph Fork
-        P["parent workspace"]
-        C["child workspace<br/>(new ID)"]
-        P -->|"copy images<br/>CoW reflink"| C
-    end
-
-    subgraph Restore
-        W["workspace<br/>(same ID)"]
-        Snap["snapshot images"]
-        Snap -->|"re-point runtime"| W
-    end
-```
-
-| | Fork | Restore |
+| Aspect | Fork | Restore |
 |---|---|---|
-| Record | **New** child ID | **Same** workspace ID |
+| Workspace ID | **New** child ID | **Same** workspace ID |
 | Lineage | Sets `ParentWorkspaceID` | No change |
-| Images | Copies to `.snapshots/<childID>.*.ext4` | Reuses existing snapshot |
-| Use case | Branch a new workspace | Resume from saved state |
-
-### Driver-Specific Fork Behaviour
-
-**libkrun driver:**
-1. Stop parent VM briefly (`CheckpointFork`) for filesystem consistency.
-2. `cp --reflink=always` parent workspace + docker-data images to child snapshot paths.
-3. Restart parent VM.
-
-**sandbox driver:**
-1. `git worktree add <childPath> <ref>`.
-2. `git diff HEAD | git apply --3way` to replay parent's uncommitted changes.
+| Images | CoW reflink copy to `.snapshots/<child>.*.ext4` | Re-uses existing snapshot |
+| Use case | Branch a new environment | Resume from saved state |
 
 ---
 
-## Auth & Security
+## Architecture Invariants
 
-### Transport Security Model
+These invariants are deliberately enforced by the code structure. They are often expressed as an *absence* of dependencies.
 
-```mermaid
-graph LR
-    subgraph "Unix Socket"
-        US["transport.Listener<br/>~/.local/state/nexus/nexusd.sock"]
-        US -->|"no auth<br/>filesystem ACL only"| Daemon
-    end
+- **The daemon never links `libkrun.so` directly.** All libkrun interaction happens inside the `nexus-libkrun-vm` child process.
+- **`infra/` never imports `app/` or `rpc/`.** Infrastructure concerns (databases, VM runtimes) must not depend on use-case orchestration or transport adapters.
+- **`domain/` has zero internal imports.** The core entities and state machines are completely self-contained.
+- **Guest networking is deterministic.** MAC and IPv4 for a workspace are always derived from the workspace ID. There is no dynamic allocation.
+- **Workspace images are immutable after creation.** A workspace image is always a CoW clone; mutations happen inside the VM on the cloned copy. The base cache is never modified in-place.
+- **The Unix socket transport has no authentication.** Any process with filesystem access to `nexusd.sock` can invoke any RPC. Network transport requires Bearer token auth.
 
-    subgraph "Network"
-        NL["transport.NetworkListener<br/>TCP + WebSocket"]
-        NL -->|"Bearer <token><br/>constant-time compare"| Daemon
-    end
-```
+---
+
+## Code Map
+
+This is a *conceptual* map, not a file listing. Use symbol search (`grep`, `rg`) to find the exact files for each name.
+
+### Workspace Lifecycle
+
+| Concept | Responsibility | Starting Points |
+|---------|---------------|-----------------|
+| Workspace entity | State machine, validation rules, transitions | `domain/workspace.Workspace`, `domain/workspace.State` |
+| Workspace service | Orchestrates create, start, stop, fork, restore, remove | `app/workspace.Service` |
+| Workspace store | SQLite persistence for workspace records | `infra/store.WorkspaceStore` |
+
+### Runtime Backends
+
+| Concept | Responsibility | Starting Points |
+|---------|---------------|-----------------|
+| libkrun driver | VM lifecycle, baking, image management, networking | `infra/runtime/libkrun.Manager`, `infra/runtime/libkrun.VMSpec` |
+| Sandbox driver | Process-isolation fallback backend (non-VM) | `infra/runtime/sandbox.Driver` |
+| Runtime registry | Selects the correct backend for a workspace | `domain/runtime.Registry` |
+
+### In-VM Services
+
+| Concept | Responsibility | Starting Points |
+|---------|---------------|-----------------|
+| Guest agent | In-VM agent: exec, PTY, port-forwards, mounts, sshd/dockerd startup | `cmd/nexus-guest-agent` |
+| PTY sessions | In-process shell registry and management | `app/pty.Registry`, `app/pty.Session` |
+| Spotlight | Port-forward lifecycle orchestration (host → VM) | `app/spotlight.Service` |
+
+### Transport & Auth
+
+| Concept | Responsibility | Starting Points |
+|---------|---------------|-----------------|
+| Unix listener | Local CLI access, no auth | `transport.Listener` |
+| Network listener | Remote WebSocket access, Bearer token | `transport.NetworkListener` |
+| Token store | Secure daemon token storage on client (Keychain, SecretService, file) | `auth/tokenstore.Store` |
+| Auth relay | Short-lived workspace token broker | `creds/relay.Broker` |
+
+### CLI Client
+
+| Concept | Responsibility | Starting Points |
+|---------|---------------|-----------------|
+| Daemon client | Auto-start local daemon, health polling | `infra/cli/daemonclient` |
+| SSH tunnel | Client-side SSH tunnel manager | `infra/cli/sshtunnel` |
+| Connection profile | Daemon connection profiles, token storage integration | `infra/cli/profile` |
+
+---
+
+## Cross-Cutting Concerns
+
+### Auth & Security
 
 | Transport | Authentication | Notes |
 |---|---|---|
-| Unix socket | **None** | Any process with socket access can call any RPC |
+| Unix socket | **None** | Filesystem ACL only |
 | WebSocket / TCP | Static Bearer token | Auto-generated at daemon start; compared via `subtle.ConstantTimeCompare` |
 
 **Caveat:** `internal/identity/` and `LocalTokenProvider` (JWT validation) exist but are **not yet wired** into the active transport path.
 
-### Token Storage (Client-Side)
+Client-side tokens are stored in the OS credential store when available (macOS Keychain, Linux SecretService), falling back to `~/.config/nexus/daemon-token`.
 
-```mermaid
-graph LR
-    CLI["nexus CLI"] -->|"store token"| TS["auth/tokenstore"]
-    TS -->|"macOS"| KC["Keychain<br/>/usr/bin/security"]
-    TS -->|"Linux + D-Bus"| SS["SecretService<br/>GNOME Keyring"]
-    TS -->|"Linux headless"| FS["FileStore<br/>~/.config/nexus/daemon-token"]
-```
+### Secrets Injection
 
----
+User credentials, dotfiles, and agent profiles are bundled at workspace creation time and injected into the VM via the `hostconfig.ext4` drive. The guest agent mounts this read-only and applies the contents to the guest filesystem at boot.
 
-## Package Index
+### Observability
 
-### Core Application (`internal/`)
-
-| Package | Description |
-|---------|-------------|
-| `app/pty` | PTY session registry and in-process management |
-| `app/spotlight` | Port-forward lifecycle orchestration |
-| `app/workspace` | Workspace lifecycle: create, start, stop, fork, restore, delete |
-| `domain/project` | Project entity, repository interface |
-| `domain/runtime` | `Driver` interface for VM/sandbox backends |
-| `domain/spotlight` | Forward entity, repository interface |
-| `domain/workspace` | Workspace entity, state machine, repository interface |
-| `infra/store` | SQLite persistence; implements all domain repository interfaces |
-| `infra/store/migrations` | Goose migration files |
-| `infra/fsworkspace` | Filesystem operations for workspace directories on daemon host |
-| `infra/config` | Nexusfile config parsing |
-| `infra/dockercompose` | Docker Compose port discovery |
-| `infra/hostpaths` | XDG base directory helpers |
-| `infra/runtime/libkrun` | libkrun microVM adapter: VM lifecycle, baking, image management |
-| `infra/runtime/sandbox` | Process-isolation fallback backend |
-| `infra/runtime/toolchain` | Guest toolchain readiness probe (codex/opencode/claude) |
-| `infra/secrets/inject` | Secrets injection into workspace environments |
-| `rpc/workspace` | Workspace lifecycle RPC handlers |
-| `rpc/project` | Project CRUD RPC handlers |
-| `rpc/spotlight` | Spotlight + `workspace.ports.*` handlers |
-| `rpc/pty` | PTY session handlers |
-| `rpc/daemon` | `node.info`, `daemon.log.tail` |
-| `rpc/fs` | Filesystem RPC handlers |
-| `rpc/auth` | `authrelay.mint`, `authrelay.revoke` |
-| `rpc/registry` | `MapRegistry` — flat method dispatch table |
-| `rpc/errors` | JSON-RPC error types |
-| `transport` | Unix socket + TCP/WebSocket/TLS listeners, push notifications |
-| `daemon` | Composition root — constructs and wires all layers |
-
-### Cross-Cutting
-
-| Package | Description |
-|---------|-------------|
-| `identity` | Authentication principal; `Provider` interface; `LocalTokenProvider` |
-| `auth/tokenstore` | Secure token storage: Keychain / SecretService / file fallback |
-| `creds/agentprofile` | Agent profile credentials |
-| `creds/bundle` | Credential bundling for `workspace.create` |
-| `creds/inject` | Credential injection into guest environments |
-| `creds/relay` | Auth relay broker for short-lived workspace tokens |
-| `tunnel` | Daemon-side SSH tunnel manager (raw `ssh` process) |
-
-### CLI-Only (`internal/infra/cli/`)
-
-| Package | Description |
-|---------|-------------|
-| `cli/daemonclient` | Auto-start local daemon; healthz polling |
-| `cli/profile` | Daemon connection profiles; secure token storage integration |
-| `cli/sshtunnel` | Client-side SSH tunnel manager (`ssh -fNL`) |
-| `cli/mutagenbin` | Legacy Mutagen binaries (retained for build compatibility) |
-
-### Build / Metadata
-
-| Package | Description |
-|---------|-------------|
-| `build` | Build metadata via ldflags (legacy — consolidate into buildinfo) |
-| `buildinfo` | Build metadata via ldflags (version, commit, time) |
-| `profile` | Profile management (legacy — consolidate into cli/profile) |
-
-### Binaries (`cmd/`)
-
-| Package | Description |
-|---------|-------------|
-| `nexus` | CLI + daemon entrypoint |
-| `nexus/commands/daemon` | Daemon start/stop/status CLI |
-| `nexus/commands/project` | Project CLI commands |
-| `nexus/commands/spotlight` | Spotlight CLI commands |
-| `nexus/commands/workspace` | Workspace CLI commands |
-| `nexus/commands/rpc` | RPC client helpers: `MuxConn`, `EnsureDaemon`, `Do` |
-| `nexus/commands/libkrunvm` | Hidden libkrun-vm command (superseded by standalone binary) |
-| `nexus-guest-agent` | In-VM guest agent (Linux only) |
-| `nexus-libkrun-vm` | Standalone libkrun VM helper (CGO) |
-| `schema` | JSON schema generator |
+- The daemon logs all RPC method calls and their duration.
+- Each VM writes a serial log (`libkrun.log`) and passt writes its own log (`passt.log`) in the workspace workdir.
+- The guest agent can be instructed to tail logs back to the client via RPC.

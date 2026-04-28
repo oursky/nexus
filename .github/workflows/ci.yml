@@ -166,6 +166,24 @@ jobs:
           # Limit VM memory to reduce peak RSS when tests run in parallel.
           NEXUS_LIBKRUN_MEM_MIB: "256"
 
+      - name: Run full VM e2e tests
+        working-directory: packages/nexus
+        run: |
+          set -euo pipefail
+          source ../../scripts/ci/e2e-ssh-bootstrap.sh
+          # Run without -short so VM tests execute.
+          # -p 1 -parallel 1 prevents concurrent VM boots which exhaust host resources.
+          go test -tags e2e -count=1 -timeout=30m -v -p 1 -parallel 1 ./test/e2e/...
+        env:
+          CI: true
+          NEXUS_LIBKRUN_SKIP_BAKE: "1"
+          NEXUS_LIBKRUN_BAKE_TIMEOUT: "120s"
+          NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "1"
+          NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
+          NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
+          NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
+          NEXUS_LIBKRUN_MEM_MIB: "256"
+
       - name: Upload test results on failure
         if: failure()
         uses: actions/upload-artifact@v4

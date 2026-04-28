@@ -83,7 +83,7 @@ Source spec directory: `../../docs/spec`
 | CLI-083 | covered | `TestCLI_ProjectCreateListGetRemove` (test/e2e/cli/cli_test.go:17) |  |
 | CLI-090 | waived | - | nexus dev up command. |
 | CLI-091 | waived | - | nexus dev up behavior pipeline. |
-| CLI-092 | waived | - | nexus dev up dev workspace reuse. |
+| CLI-092 | covered | `TestWorkspaceIdempotency` (test/e2e/workspace/idempotency_test.go:15) |  |
 | CLI-093 | waived | - | nexus dev up exit codes. |
 | CLI-094 | waived | - | nexus dev up port readiness polling. |
 | CLI-095 | waived | - | nexus dev down command. |
@@ -177,7 +177,7 @@ Source spec directory: `../../docs/spec`
 | ERR-082 | covered | `TestCLI_UnknownSubcommand` (test/e2e/cli/cli_test.go:135) |  |
 | INV-001 | waived | - | Workspace ID uniqueness is guaranteed by UUID generation; not testable in e2e. |
 | INV-002 | covered | `TestErrors_DuplicateWorkspaceName` (test/e2e/workspace/errors_test.go:146) |  |
-| INV-003 | covered | `TestProject` (test/e2e/project/project_test.go:12) |  |
+| INV-003 | covered | `TestProject` (test/e2e/project/project_test.go:12)<br>`TestProjectRepoDedup` (test/e2e/workspace/idempotency_test.go:83) |  |
 | INV-004 | covered | `TestProject` (test/e2e/project/project_test.go:12)<br>`TestProject_DuplicateName` (test/e2e/project/project_test.go:97) |  |
 | INV-005 | covered | `TestSpotlight` (test/e2e/spotlight/spotlight_test.go:12) |  |
 | INV-006 | waived | - | workspace.list no duplicates — guaranteed by database primary key; not testable in e2e. |
@@ -204,7 +204,7 @@ Source spec directory: `../../docs/spec`
 | INV-027 | waived | - | Removed workspace cleanup is an internal implementation detail. |
 | PRJ-001 | waived | - | Conceptual clause: definition of a project. |
 | PRJ-002 | waived | - | Conceptual clause: project ID format. |
-| PRJ-003 | waived | - | Conceptual clause: project name uniqueness. |
+| PRJ-003 | covered | `TestProjectRepoDedup` (test/e2e/workspace/idempotency_test.go:83) |  |
 | PRJ-004 | waived | - | Conceptual clause: repoUrl non-empty requirement. |
 | PRJ-005 | waived | - | Conceptual clause: rootPath definition. |
 | PRJ-006 | waived | - | Conceptual clause: project config defaults. |
@@ -219,7 +219,7 @@ Source spec directory: `../../docs/spec`
 | PRJ-018 | covered | `TestProject` (test/e2e/project/project_test.go:12) |  |
 | PRJ-019 | covered | `TestProject` (test/e2e/project/project_test.go:12) |  |
 | PRJ-020 | covered | `TestProject` (test/e2e/project/project_test.go:12) |  |
-| PRJ-030 | covered | `TestProject` (test/e2e/project/project_test.go:12) |  |
+| PRJ-030 | covered | `TestProject` (test/e2e/project/project_test.go:12)<br>`TestProjectRepoDedup` (test/e2e/workspace/idempotency_test.go:83) |  |
 | PTY-001 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:42)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:62)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:141) |  |
 | PTY-002 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:42)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:62)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:141) |  |
 | PTY-003 | covered | `TestPTY_SessionNotPersisted` (test/e2e/pty/pty_test.go:194) |  |
@@ -330,13 +330,13 @@ Source spec directory: `../../docs/spec`
 | VM-PROOF-003 | waived | - | Requires deterministic daemon restart harness coverage for VM workspaces; tracked in child PRD 06 TD follow-up. |
 | VM-PROOF-004 | covered | `TestCLI_WorkspaceForkAndRestore` (test/e2e/cli/fork_restore_test.go:14) |  |
 | VM-PROOF-005 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:42) |  |
-| VM-PROOF-006 | waived | - | Requires stable workspace tool bootstrap in CI profile to assert codex/opencode binary availability. |
+| VM-PROOF-006 | covered | `TestVMProof_GuestCLITools` (test/e2e/vmproof/tools_test.go:55) |  |
 | WS-001 | waived | - | Conceptual clause: workspace definition. |
 | WS-002 | waived | - | Conceptual clause: workspace ID uniqueness. |
 | WS-003 | waived | - | Conceptual clause: workspace ID non-reuse. |
 | WS-004 | waived | - | Conceptual clause: workspaceName uniqueness. |
-| WS-005 | waived | - | Conceptual clause: state enum definition. |
-| WS-006 | waived | - | Conceptual clause: projectId association. |
+| WS-005 | covered | `TestWorkspaceIdempotency` (test/e2e/workspace/idempotency_test.go:15) |  |
+| WS-006 | covered | `TestWorkspaceIdempotency` (test/e2e/workspace/idempotency_test.go:15) |  |
 | WS-007 | waived | - | Conceptual clause: parentWorkspaceId definition. |
 | WS-008 | waived | - | Conceptual clause: backend enum definition. |
 | WS-009 | waived | - | Conceptual clause: policy definition. |

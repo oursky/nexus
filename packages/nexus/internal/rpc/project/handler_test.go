@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	domainproject "github.com/oursky/nexus/packages/nexus/internal/domain/project"
@@ -68,6 +69,31 @@ func TestCreate_DedupByRepo(t *testing.T) {
 	if res1.Project.ID != res2.Project.ID {
 		t.Fatalf("expected same project id for same repo; got %s and %s", res1.Project.ID, res2.Project.ID)
 	}
+	all, _ := repo.List(context.Background())
+	if len(all) != 1 {
+		t.Fatalf("expected exactly one project row, got %d", len(all))
+	}
+}
+
+func TestCreate_RejectDuplicateName(t *testing.T) {
+	repo := newFakeProjectRepo()
+	h := New(repo)
+
+	raw1 := json.RawMessage(`{"name":"duplicate-name","repoUrl":"https://github.com/oursky/first.git"}`)
+	_, err := h.create(context.Background(), raw1)
+	if err != nil {
+		t.Fatalf("create #1: %v", err)
+	}
+
+	raw2 := json.RawMessage(`{"name":"duplicate-name","repoUrl":"https://github.com/oursky/second.git"}`)
+	_, err = h.create(context.Background(), raw2)
+	if err == nil {
+		t.Fatal("create #2: expected error for duplicate name, got nil")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("create #2: expected 'already exists' error, got: %v", err)
+	}
+
 	all, _ := repo.List(context.Background())
 	if len(all) != 1 {
 		t.Fatalf("expected exactly one project row, got %d", len(all))

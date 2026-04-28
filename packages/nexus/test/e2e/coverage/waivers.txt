@@ -2,7 +2,6 @@
 
 # VM backend formal verification (existing waivers)
 VM-PROOF-003 | Requires deterministic daemon restart harness coverage for VM workspaces; tracked in child PRD 06 TD follow-up.
-VM-PROOF-006 | Requires stable workspace tool bootstrap in CI profile to assert codex/opencode binary availability.
 
 # Conceptual clauses — describe domain models, not testable behaviors
 AUTH-001 | Conceptual clause: definition of auth relay tokens.
