@@ -24,7 +24,6 @@ import (
 //	/dev/vdc  docker-data.ext4        (sparse, Docker data)   → /var/lib/docker
 //	/dev/vdd  hostconfig.ext4         (read-only, optional)   → /run/nexus-host
 //	virtiofs "nexus-workspace"        project dir (ro lower layer)
-//
 func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) {
 	spawnStart := time.Now()
 	log.Printf("[libkrun] Spawn start: workspace=%s", spec.WorkspaceID)
@@ -168,7 +167,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		},
 	}
 
-	kernelCmdline := "console=hvc0"
+	kernelCmdline := "console=hvc0 root=/dev/vda rw rootfstype=ext4 init=/usr/local/bin/nexus-guest-agent"
 	if gw := strings.TrimSpace(hostDefaultGatewayIP()); gw != "" {
 		kernelCmdline += " nexus.gw=" + gw
 	}

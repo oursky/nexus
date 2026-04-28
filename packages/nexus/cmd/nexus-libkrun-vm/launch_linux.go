@@ -235,6 +235,12 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 		return fmt.Errorf("add virtiofs workspace share: %w", err)
 	}
 
+	if strings.TrimSpace(spec.KernelPath) != "" {
+		if err := setKernel(ctx, spec, logf); err != nil {
+			return err
+		}
+	}
+
 	if err := configureNetworking(ctx, spec, logf); err != nil {
 		return err
 	}
