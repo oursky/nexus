@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Rebuild the vmlinux ELF kernel from source.
+# Rebuild the vmlinux ELF kernel from source and embed it in the nexus binary.
 #
-# The prebuilt kernel is already committed to the repo at
+# The kernel is committed directly to the repo at
 # packages/nexus/cmd/nexus/assets/vmlinux and embedded via //go:embed.
-# This script is only needed when you want to update the kernel (new version,
-# different config, etc.).
+# Only run this script when you need to update the kernel version or config.
 #
-# Requires: build-essential, libncurses-dev, bison, flex, libssl-dev, bc, libelf-dev
+# Uses libkrunfw's kernel config as a base (tuned for microVMs) and adds
+# the networking options Docker needs (bridge, netfilter, iptables/nat).
+#
+# Requires: build-essential, libncurses-dev, bison, flex, libssl-dev, bc,
+#           libelf-dev, binutils
 #
 # Usage:
-#   build-kernel.sh <output-path>
+#   build-kernel.sh [output-path]
 #
 # Example:
 #   build-kernel.sh packages/nexus/cmd/nexus/assets/vmlinux
@@ -33,9 +36,6 @@ echo "Kernel version: ${KERNEL_VERSION}"
 echo "Output: ${OUTPUT_PATH}"
 echo "Build dir: ${BUILD_DIR}"
 echo "Parallel jobs: ${JOBS}"
-echo ""
-echo "NOTE: A prebuilt kernel is already committed to the repo."
-echo "Only run this if you need to update the kernel version or config."
 echo ""
 
 mkdir -p "${BUILD_DIR}"
@@ -119,7 +119,7 @@ echo ""
 echo "=== Build complete ==="
 echo "Output: ${OUTPUT_PATH}"
 echo "Size: $(du -h "${OUTPUT_PATH}" | cut -f1)"
-file "${OUTPUT_PATH}"
+readelf -h "${OUTPUT_PATH}" | head -5
 echo ""
 echo "Remember to commit the updated kernel:"
 echo "  git add ${OUTPUT_PATH}"
