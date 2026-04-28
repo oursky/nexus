@@ -1,17 +1,13 @@
 package workspace
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
-	"os/exec"
 	"strings"
-	"time"
 
 	appws "github.com/oursky/nexus/packages/nexus/internal/app/workspace"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
@@ -34,7 +30,6 @@ type createRes struct {
 	Workspace *workspace.Workspace `json:"workspace"`
 }
 
-type listReq struct{}
 type listRes struct {
 	Workspaces []*workspace.Workspace `json:"workspaces"`
 }
@@ -94,7 +89,7 @@ func (h *Handler) handleInfo(ctx context.Context, raw json.RawMessage) (any, err
 		return nil, err
 	}
 	if req.ID == "" {
-		return nil, rpce.InvalidParams("id is required")
+		return nil, rpce.InvalidParams("workspace.invalid_params", "id is required")
 	}
 	ws, err := h.svc.Info(ctx, req.ID)
 	if err != nil {
@@ -118,7 +113,7 @@ func (h *Handler) handleCreate(ctx context.Context, raw json.RawMessage) (any, e
 func (h *Handler) handleList(ctx context.Context, raw json.RawMessage) (any, error) {
 	all, err := h.svc.List(ctx)
 	if err != nil {
-		return nil, rpce.Internal(err.Error())
+		return nil, rpce.Internal("workspace.internal", err.Error())
 	}
 	return &listRes{Workspaces: all}, nil
 }
@@ -129,7 +124,7 @@ func (h *Handler) handleRemove(ctx context.Context, raw json.RawMessage) (any, e
 		return nil, err
 	}
 	if req.ID == "" {
-		return nil, rpce.InvalidParams("id is required")
+		return nil, rpce.InvalidParams("workspace.invalid_params", "id is required")
 	}
 	if err := h.svc.Remove(ctx, req.ID); err != nil {
 		return nil, mapErr(err)
@@ -143,7 +138,7 @@ func (h *Handler) handleStop(ctx context.Context, raw json.RawMessage) (any, err
 		return nil, err
 	}
 	if req.ID == "" {
-		return nil, rpce.InvalidParams("id is required")
+		return nil, rpce.InvalidParams("workspace.invalid_params", "id is required")
 	}
 	ws, err := h.svc.Stop(ctx, req.ID)
 	if err != nil {
@@ -158,7 +153,7 @@ func (h *Handler) handleStart(ctx context.Context, raw json.RawMessage) (any, er
 		return nil, err
 	}
 	if req.ID == "" {
-		return nil, rpce.InvalidParams("id is required")
+		return nil, rpce.InvalidParams("workspace.invalid_params", "id is required")
 	}
 	ws, err := h.svc.Start(ctx, req.ID)
 	if err != nil {
@@ -173,7 +168,7 @@ func (h *Handler) handleRestore(ctx context.Context, raw json.RawMessage) (any, 
 		return nil, err
 	}
 	if req.ID == "" {
-		return nil, rpce.InvalidParams("id is required")
+		return nil, rpce.InvalidParams("workspace.invalid_params", "id is required")
 	}
 	ws, err := h.svc.Restore(ctx, req.ID)
 	if err != nil {
@@ -188,7 +183,7 @@ func (h *Handler) handleFork(ctx context.Context, raw json.RawMessage) (any, err
 		return nil, err
 	}
 	if req.ID == "" {
-		return nil, rpce.InvalidParams("id is required")
+		return nil, rpce.InvalidParams("workspace.invalid_params", "id is required")
 	}
 	ws, err := h.svc.Fork(ctx, req.ID, appws.ForkSpec{
 		ChildWorkspaceName: req.ChildWorkspaceName,
@@ -206,7 +201,7 @@ func (h *Handler) handleReady(ctx context.Context, raw json.RawMessage) (any, er
 		return nil, err
 	}
 	if req.ID == "" {
-		return nil, rpce.InvalidParams("id is required")
+		return nil, rpce.InvalidParams("workspace.invalid_params", "id is required")
 	}
 	ready, err := h.svc.Ready(ctx, req.ID)
 	if err != nil {
@@ -217,15 +212,15 @@ func (h *Handler) handleReady(ctx context.Context, raw json.RawMessage) (any, er
 
 func mapErr(err error) error {
 	if errors.Is(err, workspace.ErrNotFound) {
-		return rpce.NotFound("workspace not found")
+		return rpce.NotFound("workspace.not_found", "workspace not found")
 	}
 	if errors.Is(err, workspace.ErrInvalidTransition) {
-		return rpce.InvalidParams(err.Error())
+		return rpce.InvalidParams("workspace.invalid_params", err.Error())
 	}
 	if rpcErr, ok := err.(*rpce.RPCError); ok {
 		return rpcErr
 	}
-	return rpce.Internal(fmt.Sprintf("internal error: %v", err))
+	return rpce.Internal("workspace.internal", fmt.Sprintf("internal error: %v", err))
 }
 
 // ── Discover Ports ──────────────────────────────────────────────────────────
@@ -240,105 +235,13 @@ func (h *Handler) handleDiscoverPorts(ctx context.Context, raw json.RawMessage) 
 		return nil, err
 	}
 	if req.ID == "" {
-		return nil, rpce.InvalidParams("id is required")
+		return nil, rpce.InvalidParams("workspace.invalid_params", "id is required")
 	}
 	ports, err := h.svc.DiscoverPorts(ctx, req.ID)
 	if err != nil {
 		return nil, mapErr(err)
 	}
 	return ports, nil
-}
-
-// ── SSH Check ────────────────────────────────────────────────────────────────
-
-type sshCheckReq struct {
-	ID string `json:"id"`
-}
-
-// SSHCheckResult is the response for workspace.sshcheck.
-type SSHCheckResult struct {
-	OK      bool   `json:"ok"`
-	GuestIP string `json:"guestIp,omitempty"`
-	Whoami  string `json:"whoami,omitempty"`
-	Error   string `json:"error,omitempty"`
-	Stderr  string `json:"stderr,omitempty"`
-}
-
-// handleSSHCheck runs `ssh root@<host> [-p port] whoami` from the daemon host
-// and returns whether the connection succeeded, along with any error details.
-// This lets the Mac app verify SSH connectivity via RPC before opening Cursor.
-//
-// GuestIP may be a bare host (bridge networking) or host:port (libkrun port-
-// forward). Both forms are handled: host:port is split into -p PORT root@host.
-func (h *Handler) handleSSHCheck(ctx context.Context, raw json.RawMessage) (any, error) {
-	req, err := decode[sshCheckReq](raw)
-	if err != nil {
-		return nil, err
-	}
-	if req.ID == "" {
-		return nil, rpce.InvalidParams("id is required")
-	}
-
-	ws, err := h.svc.Info(ctx, req.ID)
-	if err != nil {
-		return nil, mapErr(err)
-	}
-
-	guestIP := ws.GuestIP
-	if guestIP == "" {
-		return &SSHCheckResult{
-			OK:    false,
-			Error: fmt.Sprintf("workspace %q (state: %s) has no guest IP — is it running?", req.ID, ws.State),
-		}, nil
-	}
-
-	// Run ssh with a 15 s timeout from the daemon host.
-	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	// GuestIP may be "host" or "host:port". Split accordingly.
-	sshHost := guestIP
-	sshPort := ""
-	if h, p, splitErr := net.SplitHostPort(guestIP); splitErr == nil {
-		sshHost = h
-		sshPort = p
-	}
-
-	sshArgs := []string{
-		"-o", "StrictHostKeyChecking=accept-new",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "ConnectTimeout=10",
-		"-o", "BatchMode=yes",
-		"-o", "LogLevel=ERROR",
-	}
-	if sshPort != "" {
-		sshArgs = append(sshArgs, "-p", sshPort)
-	}
-	sshArgs = append(sshArgs, "root@"+sshHost, "whoami")
-
-	cmd := exec.CommandContext(checkCtx, "ssh", sshArgs...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	runErr := cmd.Run()
-	whoami := strings.TrimSpace(stdout.String())
-	stderrStr := strings.TrimSpace(stderr.String())
-
-	if runErr != nil {
-		return &SSHCheckResult{
-			OK:      false,
-			GuestIP: guestIP,
-			Error:   runErr.Error(),
-			Stderr:  stderrStr,
-		}, nil
-	}
-
-	return &SSHCheckResult{
-		OK:      true,
-		GuestIP: guestIP,
-		Whoami:  whoami,
-	}, nil
 }
 
 // ── Serial log ────────────────────────────────────────────────────────────────
@@ -360,7 +263,7 @@ func (h *Handler) handleSerialLog(_ context.Context, raw json.RawMessage) (any, 
 		return nil, err
 	}
 	if req.ID == "" {
-		return nil, rpce.InvalidParams("id is required")
+		return nil, rpce.InvalidParams("workspace.invalid_params", "id is required")
 	}
 	if req.Lines <= 0 {
 		req.Lines = 200

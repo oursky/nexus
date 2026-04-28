@@ -64,7 +64,7 @@ func decode[Req any](raw json.RawMessage) (Req, error) {
 		norm = []byte("{}")
 	}
 	if err := json.Unmarshal(norm, &req); err != nil {
-		return req, rpce.InvalidParams("invalid params: " + err.Error())
+		return req, rpce.InvalidParams("workspace.invalid_params", "invalid params: "+err.Error())
 	}
 	return req, nil
 }

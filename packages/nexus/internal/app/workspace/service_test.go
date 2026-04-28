@@ -213,7 +213,7 @@ func newTestService() (*Service, *fakeWorkspaceRepo, *fakeProjectRepo, *fakeDriv
 	wr := newFakeWorkspaceRepo()
 	pr := newFakeProjectRepo()
 	d := &fakeDriver{backend: "test"}
-	svc := NewService(wr, pr, d, context.Background())
+	svc := NewService(wr, pr, d, nil, nil, context.Background())
 	return svc, wr, pr, d
 }
 
@@ -221,7 +221,7 @@ func newTestService() (*Service, *fakeWorkspaceRepo, *fakeProjectRepo, *fakeDriv
 func newTestServiceNoDriver() (*Service, *fakeWorkspaceRepo) {
 	wr := newFakeWorkspaceRepo()
 	pr := newFakeProjectRepo()
-	svc := NewService(wr, pr, nil, context.Background())
+	svc := NewService(wr, pr, nil, nil, nil, context.Background())
 	return svc, wr
 }
 
@@ -955,7 +955,7 @@ func TestService_PortsAdd_Duplicate(t *testing.T) {
 
 	ws := createAndStore(t, repo, "ws-dup", workspace.StateRunning)
 
-	svc.PortsAdd(ctx, ws.ID, 8080)
+	_, _ = svc.PortsAdd(ctx, ws.ID, 8080)
 	ports, err := svc.PortsAdd(ctx, ws.ID, 8080)
 	if err != nil {
 		t.Fatalf("duplicate add: %v", err)
@@ -988,8 +988,8 @@ func TestService_PortsRemove(t *testing.T) {
 
 	ws := createAndStore(t, repo, "ws-rmport", workspace.StateRunning)
 
-	svc.PortsAdd(ctx, ws.ID, 8080)
-	svc.PortsAdd(ctx, ws.ID, 3000)
+	_, _ = svc.PortsAdd(ctx, ws.ID, 8080)
+	_, _ = svc.PortsAdd(ctx, ws.ID, 3000)
 
 	ports, err := svc.PortsRemove(ctx, ws.ID, 8080)
 	if err != nil {
@@ -1005,7 +1005,7 @@ func TestService_PortsList(t *testing.T) {
 	ctx := context.Background()
 
 	ws := createAndStore(t, repo, "ws-listports", workspace.StateRunning)
-	svc.PortsAdd(ctx, ws.ID, 8080)
+	_, _ = svc.PortsAdd(ctx, ws.ID, 8080)
 
 	ports, err := svc.PortsList(ctx, ws.ID)
 	if err != nil {

@@ -8,6 +8,17 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 )
 
+// ForkSpec describes parameters for forking a workspace.
+type ForkSpec struct {
+	ChildWorkspaceName string `json:"childWorkspaceName,omitempty"`
+	ChildRef           string `json:"childRef"`
+}
+
+// CheckoutSpec describes parameters for checking out a new ref.
+type CheckoutSpec struct {
+	TargetRef string `json:"targetRef"`
+}
+
 func (s *Service) Fork(ctx context.Context, parentID string, spec ForkSpec) (*workspace.Workspace, error) {
 	parent, err := s.repo.Get(ctx, parentID)
 	if err != nil {

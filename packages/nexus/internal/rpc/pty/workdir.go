@@ -58,7 +58,7 @@ func validateDir(hostDir, logical string) (string, string, error) {
 		return "", logical, fmt.Errorf("workDir %q: %w", hostDir, err)
 	}
 	if !fi.IsDir() {
-		return "", logical, rpcerrors.InvalidParams(fmt.Sprintf("workDir %q is not a directory", hostDir))
+		return "", logical, rpcerrors.InvalidParams("pty.invalid_params", fmt.Sprintf("workDir %q is not a directory", hostDir))
 	}
 	return hostDir, logical, nil
 }
@@ -90,7 +90,7 @@ func (h *Handler) resolveWorkspaceHostRoot(ctx context.Context, ws *domainws.Wor
 		}
 		seen[c] = true
 		if hostpaths.IsRemoteGitLocation(c) {
-			lastErr = rpcerrors.InvalidParams("remote Git URLs are not supported; workspace and project must use local directory paths that exist on the daemon host")
+			lastErr = rpcerrors.InvalidParams("pty.invalid_params", "remote Git URLs are not supported; workspace and project must use local directory paths that exist on the daemon host")
 			continue
 		}
 		hostRoot, err := hostpaths.ResolveLocalDirOnHost(c)
@@ -101,7 +101,7 @@ func (h *Handler) resolveWorkspaceHostRoot(ctx context.Context, ws *domainws.Wor
 		return hostRoot, nil
 	}
 	if lastErr == nil {
-		return "", rpcerrors.InvalidParams("no local project directory on the daemon for this workspace; use the same absolute path where the project exists on this host")
+		return "", rpcerrors.InvalidParams("pty.invalid_params", "no local project directory on the daemon for this workspace; use the same absolute path where the project exists on this host")
 	}
 	return "", lastErr
 }
@@ -110,12 +110,12 @@ func (h *Handler) resolveWorkspaceHostRoot(ctx context.Context, ws *domainws.Wor
 // to a host directory for local PTY processes. Session metadata uses logical paths.
 func (h *Handler) resolveHostWorkDir(ctx context.Context, workspaceID, requested string) (hostDir string, logical string, err error) {
 	if h.ws == nil {
-		return "", "", rpcerrors.Internal("workspace store not configured")
+		return "", "", rpcerrors.Internal("pty.internal", "workspace store not configured")
 	}
 	ws, err := h.ws.Get(ctx, workspaceID)
 	if err != nil {
 		if errors.Is(err, domainws.ErrNotFound) {
-			return "", "", rpcerrors.NotFound("workspace not found")
+			return "", "", rpcerrors.NotFound("pty.not_found", "workspace not found")
 		}
 		return "", "", err
 	}
@@ -142,10 +142,10 @@ func (h *Handler) resolveHostWorkDir(ctx context.Context, workspaceID, requested
 
 	if filepath.IsAbs(req) {
 		if !isUnderHostRoot(hostRoot, req) {
-			return "", req, rpcerrors.InvalidParams("workDir must be inside the workspace checkout directory")
+			return "", req, rpcerrors.InvalidParams("pty.invalid_params", "workDir must be inside the workspace checkout directory")
 		}
 		return validateDir(req, req)
 	}
 
-	return "", req, rpcerrors.InvalidParams("workDir must be an absolute logical path (/workspace/...) or a path inside the workspace checkout")
+	return "", req, rpcerrors.InvalidParams("pty.invalid_params", "workDir must be an absolute logical path (/workspace/...) or a path inside the workspace checkout")
 }

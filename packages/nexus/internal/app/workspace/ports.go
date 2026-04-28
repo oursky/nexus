@@ -59,4 +59,3 @@ func (s *Service) PortsRemove(ctx context.Context, id string, port int) ([]int, 
 	}
 	return ws.TunnelPorts, nil
 }
-
