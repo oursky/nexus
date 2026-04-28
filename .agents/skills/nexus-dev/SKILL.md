@@ -67,7 +67,8 @@ nexus daemon status       # prod daemon status
 | Daemon log (remote Linux dev)       | `${REMOTE_XDG_STATE_HOME:-~/.local/state-dev}/nexus/daemon.log`                                          |
 | Client workspace state              | `~/.local/share/nexus/workspaces.json`                                                                   |
 | Fork worktrees                      | `<gitRoot>/.worktrees/<name>/`                                                                           |
-| Headless RPC (Mac app testing)      | `127.0.0.1:7778` — activate with `touch ~/.nexus-headless-rpc`                                           |
+| Headless RPC — Debug build          | `127.0.0.1:7778` — activate with `touch ~/.nexus-headless-rpc`                                           |
+| Headless RPC — Release/TestFlight   | `127.0.0.1:7779` — same sentinel; port set via `#if DEBUG` in `HeadlessRPCServer.swift`                  |
 
 
 ---
@@ -210,7 +211,14 @@ nexus-dev workspace list
 
 ### How it works
 
-`HeadlessRPCServer` is a local HTTP server built into the Mac app, listening on `127.0.0.1:7778`. It is activated by a sentinel file:
+`HeadlessRPCServer` is a local HTTP server built into the Mac app. The port depends on the build variant (`#if DEBUG` in `HeadlessRPCServer.swift`):
+
+| Build | Port |
+|-------|------|
+| Debug (Xcode / `scripts/swift/open.sh`) | `127.0.0.1:7778` |
+| Release (TestFlight / prod) | `127.0.0.1:7779` |
+
+It is activated by a sentinel file:
 
 ```bash
 touch ~/.nexus-headless-rpc   # persists across app restarts; remove to disable
@@ -222,10 +230,12 @@ The app checks for this file on startup. If already running, restart:
 pkill -x NexusApp; scripts/swift/open.sh
 ```
 
-Verify it's active:
+Verify it's active (Debug build):
 
 ```bash
 curl -sf http://127.0.0.1:7778/status   # → {"ok":true,"version":"1"}
+# For Release/TestFlight:
+# curl -sf http://127.0.0.1:7779/status
 ```
 
 ### Endpoints
@@ -334,7 +344,8 @@ rpc_exec "$TAB" "docker compose ps" 3
 
 | Thing | Value |
 |---|---|
-| Headless RPC port | `127.0.0.1:7778` |
+| Headless RPC port (Debug) | `127.0.0.1:7778` |
+| Headless RPC port (Release/TestFlight) | `127.0.0.1:7779` |
 | Sentinel file | `~/.nexus-headless-rpc` |
 | Implementation | `packages/nexus-swift/Sources/NexusCore/HeadlessRPCServer.swift` |
 | Terminal registry | `packages/nexus-swift/Sources/NexusCore/TerminalRegistry.swift` |
@@ -461,65 +472,158 @@ bootstrap runtime-verify | runtime-verify: runtime verified and state persisted
 bootstrap daemon-launch | daemon-launch: background process pid=...
 ```
 
-### Full end-to-end test sequence
+### Full end-to-end test sequence — core functionality
+
+This is the **minimum bar** for confirming a dev build works. It covers workspace creation from a real project, docker-compose startup, spotlight port forwarding, opencode/codex execution, git operations, and fork isolation.
+
+Use a real docker-compose project on the remote host (e.g. a repo with a `docker-compose.yml`). Adjust `REPO_PATH` and `FORK_REF` below.
 
 ```bash
 # ── 0. Prerequisites ──────────────────────────────────────────────────────────
-touch ~/.nexus-headless-rpc       # enable headless RPC (once)
-curl -sf http://127.0.0.1:7778/status   # must return {"ok":true}
+RPC="http://127.0.0.1:7778"
+touch ~/.nexus-headless-rpc
+/usr/bin/curl -sf $RPC/status | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok'] and d['connection']['connectionState']=='connected', d"
+echo "✓ headless RPC ok and connected"
+
+# Helper — run a command in a terminal tab and return stripped output
+rpc_run() {
+  local tab="$1" cmd="$2" delay="${3:-3}"
+  /usr/bin/curl -s -X POST $RPC/terminal/write \
+    -H "Content-Type: application/json" \
+    -d "{\"tabID\":\"$tab\",\"text\":\"$cmd\n\"}" > /dev/null
+  sleep "$delay"
+  /usr/bin/curl -s "$RPC/terminal/read?tabID=$tab" \
+    | python3 -c "import sys,json,re; print(re.sub(r'\x1b\[[^a-zA-Z]*[a-zA-Z]|\[\?2004[hl]|\r','',json.load(sys.stdin).get('output',''))[-600:])"
+}
 
 # ── 1. Build + provision ──────────────────────────────────────────────────────
-task dev:remote                   # or manual steps above
+task dev:remote
 
-curl -s -X POST http://127.0.0.1:7778/daemon/provision \
+/usr/bin/curl -s -X POST $RPC/daemon/provision \
   -H "Content-Type: application/json" \
-  -d '{"sshTarget":"newman@linuxbox"}' --max-time 300 | python3 -c "
-import sys,json; d=json.load(sys.stdin)
-for p in d.get('phases',[]): print(p['phase'], p['message'])"
+  -d '{"sshTarget":"newman@linuxbox"}' --max-time 300 \
+  | python3 -c "import sys,json; d=json.load(sys.stdin)
+for p in d.get('phases',[]): print(p['phase'], p['message'])
+print('status:', d.get('status','?'))"
 
-# ── 2. Start workspace (stays "starting" ~30s on first boot) ─────────────────
-WS_ID="ws-1776919582972649535"   # or from: nexus workspace list
+# ── 2. Create workspace from a docker-compose project ─────────────────────────
+# REPO_PATH must exist on the *remote* host (it's the linux-side path)
+REPO_PATH="/home/newman/magic/my-docker-project"   # adjust to real repo
 
-curl -s -X POST http://127.0.0.1:7778/workspace/start \
-  -H "Content-Type: application/json" -d "{\"workspaceID\":\"$WS_ID\"}"
+WS_ID=$(/usr/bin/curl -s -X POST $RPC/workspace/create \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"e2e-test\",\"repo\":\"$REPO_PATH\"}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['workspace']['id'])")
+echo "Created workspace: $WS_ID"
 
-# Poll until running
-for i in $(seq 1 60); do
-  STATE=$(curl -s http://127.0.0.1:7778/workspace/list | python3 -c "
-import sys,json; ws=[w for w in json.load(sys.stdin).get('workspaces',[]) if '$WS_ID' in w['id']]; print(ws[0]['state'] if ws else '?')")
+# ── 3. Start workspace and wait for running ───────────────────────────────────
+/usr/bin/curl -s -X POST $RPC/workspace/start \
+  -H "Content-Type: application/json" \
+  -d "{\"workspaceID\":\"$WS_ID\"}" > /dev/null
+
+for i in $(seq 1 120); do
+  STATE=$(/usr/bin/curl -s $RPC/workspace/list \
+    | python3 -c "import sys,json; ws=[w for w in json.load(sys.stdin).get('workspaces',[]) if w['id']=='$WS_ID']; print(ws[0]['state'] if ws else '?')")
   echo "[$i] $STATE"
   [ "$STATE" = "running" ] && break
-  sleep 5
+  sleep 3
 done
+[ "$STATE" = "running" ] || { echo "FAIL: workspace never reached running"; exit 1; }
 
-# ── 3. Open terminal and verify tools ─────────────────────────────────────────
-sleep 3   # brief settle after running state
+sleep 3   # terminal handshake settle
 
-TAB=$(curl -s -X POST http://127.0.0.1:7778/terminal/open \
+# ── 4. Open terminal + verify workspace contents ──────────────────────────────
+TAB=$(/usr/bin/curl -s -X POST $RPC/terminal/open \
   -H "Content-Type: application/json" \
-  -d "{\"workspaceID\":\"$WS_ID\",\"name\":\"verify\"}" \
+  -d "{\"workspaceID\":\"$WS_ID\",\"name\":\"e2e\"}" \
   | python3 -c "import sys,json; print(json.load(sys.stdin).get('tabID','ERROR'))")
 echo "Tab: $TAB"
 
-rpc_run() {
-  local cmd="$1" delay="${2:-3}"
-  curl -s -X POST http://127.0.0.1:7778/terminal/write \
-    -H "Content-Type: application/json" \
-    -d "{\"tabID\":\"$TAB\",\"text\":\"$cmd\n\"}" > /dev/null
-  sleep "$delay"
-  curl -s "http://127.0.0.1:7778/terminal/read?tabID=$TAB" \
-    | python3 -c "
-import sys,json,re
-out=re.sub(r'\x1b\[[^a-zA-Z]*[a-zA-Z]|\[\?2004[hl]|\r','',json.load(sys.stdin).get('output',''))
-print(out[-400:])"
-}
+# Verify project files are present in /workspace
+rpc_run "$TAB" "ls /workspace"
+rpc_run "$TAB" "cat /workspace/docker-compose.yml 2>/dev/null | head -5 || echo 'no docker-compose.yml'"
 
-rpc_run "node --version; npm --version; make --version | head -1; docker --version"
-rpc_run "docker ps"                  # dockerd starts in background, wait 3s
-rpc_run "echo TERM=\$TERM"          # should be xterm-256color
-rpc_run "cat /var/lib/nexus-tools-installed-v3"   # "ok" = stamp written
-rpc_run "ls /workspace"             # project files visible
+# ── 5. docker-compose up ──────────────────────────────────────────────────────
+rpc_run "$TAB" "cd /workspace && docker compose up -d 2>&1 | tail -5" 10
+rpc_run "$TAB" "docker compose ps"   # containers should be Up
+
+# ── 6. Spotlight — forward docker-compose ports to localhost ──────────────────
+# This runs on the Mac (uses nexus-dev CLI, not headless RPC — spotlight is CLI-level)
+nexus-dev spotlight start "$WS_ID"
+# Expected output: "  <service> → localhost:<port>"
+# Then visit http://localhost:<port> in the browser to confirm the app is reachable.
+# To list active forwards:
+nexus-dev spotlight list
+# To stop:
+# nexus-dev spotlight stop "$WS_ID"
+
+# ── 7. opencode / codex inside the workspace ──────────────────────────────────
+# Both tools read credentials from the config drive (see "Host config drive" section)
+rpc_run "$TAB" "which opencode && opencode --version 2>/dev/null || echo 'opencode not in PATH'"
+rpc_run "$TAB" "which codex && codex --version 2>/dev/null || echo 'codex not in PATH'"
+# Run a non-interactive codex/opencode task (pass --no-interactive or similar flag):
+rpc_run "$TAB" "cd /workspace && opencode run 'list files in this repo' --no-interactive 2>&1 | tail -10" 20
+
+# ── 8. git operations inside workspace ────────────────────────────────────────
+rpc_run "$TAB" "cd /workspace && git status --short"
+rpc_run "$TAB" "cd /workspace && git fetch --dry-run 2>&1"   # should succeed (SSH keys on config drive)
+rpc_run "$TAB" "cd /workspace && git log --oneline -3"
+
+# ── 9. Fork the workspace ─────────────────────────────────────────────────────
+# Fork runs via CLI (not headless RPC). It creates a git worktree on the remote host.
+FORK_REF="main"   # adjust to a real branch/ref in the repo
+FORK_ID=$(nexus-dev workspace fork "$WS_ID" --name "e2e-fork" --ref "$FORK_REF" \
+  | grep -oE 'ws-[0-9]+')
+echo "Fork workspace: $FORK_ID"
+
+# Start the fork
+/usr/bin/curl -s -X POST $RPC/workspace/start \
+  -H "Content-Type: application/json" \
+  -d "{\"workspaceID\":\"$FORK_ID\"}" > /dev/null
+
+for i in $(seq 1 60); do
+  STATE=$(/usr/bin/curl -s $RPC/workspace/list \
+    | python3 -c "import sys,json; ws=[w for w in json.load(sys.stdin).get('workspaces',[]) if w['id']=='$FORK_ID']; print(ws[0]['state'] if ws else '?')")
+  echo "fork [$i] $STATE"
+  [ "$STATE" = "running" ] && break
+  sleep 3
+done
+
+sleep 3
+FORK_TAB=$(/usr/bin/curl -s -X POST $RPC/terminal/open \
+  -H "Content-Type: application/json" \
+  -d "{\"workspaceID\":\"$FORK_ID\",\"name\":\"fork\"}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('tabID','ERROR'))")
+
+# Verify fork isolation: write a file in parent, confirm it's invisible in fork
+rpc_run "$TAB"      "echo 'parent-only' > /workspace/PARENT_ONLY.txt && ls /workspace/PARENT_ONLY.txt"
+rpc_run "$FORK_TAB" "ls /workspace/PARENT_ONLY.txt 2>&1"   # should say "No such file"
+
+# ── 10. Cleanup ───────────────────────────────────────────────────────────────
+nexus-dev spotlight stop "$WS_ID" 2>/dev/null || true
+/usr/bin/curl -s -X POST $RPC/workspace/stop  -H "Content-Type: application/json" -d "{\"workspaceID\":\"$FORK_ID\"}" > /dev/null
+/usr/bin/curl -s -X POST $RPC/workspace/stop  -H "Content-Type: application/json" -d "{\"workspaceID\":\"$WS_ID\"}"  > /dev/null
+/usr/bin/curl -s -X POST $RPC/workspace/delete -H "Content-Type: application/json" -d "{\"workspaceID\":\"$FORK_ID\"}" > /dev/null
+/usr/bin/curl -s -X POST $RPC/workspace/delete -H "Content-Type: application/json" -d "{\"workspaceID\":\"$WS_ID\"}"  > /dev/null
+echo "✓ cleanup done"
 ```
+
+### Checklist — what to assert at each step
+
+| Step | What to check | Pass condition |
+|------|--------------|----------------|
+| RPC status | `/status` → `connection.connectionState` | `"connected"` |
+| Provision | phases output | all 4 phases printed, `status: "success"` |
+| Create | `/workspace/create` response | returns `workspace.id` |
+| Start | `/workspace/list` polling | reaches `"running"` within 6 min (first boot) / 30s (subsequent) |
+| Files | `ls /workspace` in terminal | project files present (not empty) |
+| docker-compose | `docker compose ps` | services listed as `Up` |
+| Spotlight | `nexus-dev spotlight list` | at least one forwarded port |
+| Spotlight visit | `curl -sf http://localhost:<port>` | HTTP response from the app |
+| opencode/codex | tool invocation | exits 0, no "command not found" |
+| git fetch | `git fetch --dry-run` | exits 0, no auth error |
+| Fork | fork workspace reaches `running` | same boot path as parent |
+| Fork isolation | `PARENT_ONLY.txt` missing in fork | `ls` returns "No such file" |
 
 ### ANSI stripping — always do this
 
@@ -708,3 +812,199 @@ ssh newman@linuxbox "ls -lh /data/nexus/firecracker-vms/"
 
 
 **Port mismatch** — `nexus daemon status --json` per repo/worktree when multiple daemons run.
+
+---
+
+## libkrun full validation gate
+
+This checklist verifies all core features of a **libkrun** workspace build. Run it after every deployment (`task dev:libkrun`) before declaring the build good.
+
+### Deploy
+
+```bash
+task dev:libkrun   # build guest-agent → embed → build nexus → scp → restart daemon
+```
+
+### Shared helpers
+
+```bash
+RPC="http://127.0.0.1:7778"
+WS_ID="<paste workspace id>"
+
+rpc_write() {
+  /usr/bin/curl -sf -X POST $RPC/terminal/write \
+    -H "Content-Type: application/json" \
+    -d "{\"tabID\":\"$TAB\",\"text\":\"$1\n\"}" > /dev/null
+}
+rpc_read() {
+  sleep "${1:-2}"
+  /usr/bin/curl -sf "$RPC/terminal/read?tabID=$TAB" \
+    | python3 -c "import sys,json,re; print(re.sub(r'\x1b\[[^a-zA-Z]*[a-zA-Z]|\[\?2004[hl]|\r','',json.load(sys.stdin).get('output',''))[-800:])"
+}
+rpc_run() { rpc_write "$1"; rpc_read "${2:-2}"; }
+```
+
+### 1. RPC connected
+
+```bash
+/usr/bin/curl -sf $RPC/status \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('connection',{}).get('connectionState')=='connected', d; print('RPC: OK')"
+```
+
+### 2. Create + start workspace, wait for running
+
+```bash
+WS_ID=$(/usr/bin/curl -sf -X POST $RPC/workspace/create \
+  -H "Content-Type: application/json" \
+  -d '{"name":"e2e-libkrun","repo":"/home/newman/magic/nexus"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['workspace']['id'])")
+echo "WS: $WS_ID"
+
+/usr/bin/curl -sf -X POST $RPC/workspace/start \
+  -H "Content-Type: application/json" \
+  -d "{\"workspaceID\":\"$WS_ID\"}" > /dev/null
+
+for i in $(seq 1 120); do
+  STATE=$(/usr/bin/curl -s $RPC/workspace/list \
+    | python3 -c "import sys,json; ws=[w for w in json.load(sys.stdin).get('workspaces',[]) if w['id']=='$WS_ID']; print(ws[0]['state'] if ws else '?')")
+  echo "[$i] $STATE"; [ "$STATE" = "running" ] && break; sleep 3
+done
+[ "$STATE" = "running" ] || { echo "FAIL: never running"; exit 1; }
+sleep 3
+
+TAB=$(/usr/bin/curl -sf -X POST $RPC/terminal/open \
+  -H "Content-Type: application/json" \
+  -d "{\"workspaceID\":\"$WS_ID\",\"name\":\"e2e\"}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['tabID'])")
+echo "TAB: $TAB"
+```
+
+### 3. Kernel version
+
+```bash
+rpc_run "uname -r"
+# Expected: 6.6.x
+```
+
+### 4. Bridge networking
+
+```bash
+rpc_run "ip link add br-e2e type bridge && echo 'BRIDGE: OK' || echo 'BRIDGE: FAIL'"
+rpc_run "ip link del br-e2e 2>/dev/null; echo done"
+```
+
+### 5. Docker daemon
+
+```bash
+rpc_run "docker ps" 3
+# Expected: header line (CONTAINER ID ...)
+rpc_run "cat /var/lib/nexus-tools-installed-v3"
+# Expected: ok
+```
+
+### 6. docker compose (multi-service)
+
+Write a minimal compose file and bring it up:
+
+```bash
+rpc_run "mkdir -p /tmp/e2e-compose"
+rpc_run "python3 -c \"
+import os
+content='''services:
+  web:
+    image: nginx:alpine
+    ports:
+      - 18080:80
+  sidecar:
+    image: alpine
+    command: sleep 300
+'''
+open('/tmp/e2e-compose/docker-compose.yml','w').write(content)
+print('compose file written')
+\""
+rpc_run "cd /tmp/e2e-compose && docker compose up -d 2>&1 | tail -5" 15
+rpc_run "cd /tmp/e2e-compose && docker compose ps"
+# Expected: both services Up
+rpc_run "cd /tmp/e2e-compose && docker compose down" 5
+```
+
+### 7. SSH vm
+
+Run from the **Mac** (not inside the VM):
+
+```bash
+/Users/newman/.local/bin/nexus-dev workspace ssh-vm "$WS_ID" --check
+# Expected: exits 0, prints "root" (or similar success message)
+```
+
+### 8. Spotlight
+
+```bash
+# Start spot forwarding (discovers ports from docker-compose.yml in the workspace)
+/Users/newman/.local/bin/nexus-dev spotlight start "$WS_ID"
+# Expected: at least one line "  <service> → localhost:<port>"
+
+/Users/newman/.local/bin/nexus-dev spotlight list
+# Stop when done:
+/Users/newman/.local/bin/nexus-dev spotlight stop "$WS_ID" 2>/dev/null || true
+```
+
+### 9. Stop + restart cycle (dockerd clean start)
+
+This validates the stale containerd fix — dockerd must start cleanly after a VM stop/start without manual intervention.
+
+```bash
+/usr/bin/curl -sf -X POST $RPC/workspace/stop \
+  -H "Content-Type: application/json" \
+  -d "{\"workspaceID\":\"$WS_ID\"}" > /dev/null
+sleep 5
+
+/usr/bin/curl -sf -X POST $RPC/workspace/start \
+  -H "Content-Type: application/json" \
+  -d "{\"workspaceID\":\"$WS_ID\"}" > /dev/null
+
+for i in $(seq 1 60); do
+  STATE=$(/usr/bin/curl -s $RPC/workspace/list \
+    | python3 -c "import sys,json; ws=[w for w in json.load(sys.stdin).get('workspaces',[]) if w['id']=='$WS_ID']; print(ws[0]['state'] if ws else '?')")
+  echo "restart [$i] $STATE"; [ "$STATE" = "running" ] && break; sleep 2
+done
+[ "$STATE" = "running" ] || { echo "FAIL: restart never running"; exit 1; }
+
+sleep 3
+TAB=$(/usr/bin/curl -sf -X POST $RPC/terminal/open \
+  -H "Content-Type: application/json" \
+  -d "{\"workspaceID\":\"$WS_ID\",\"name\":\"restart-check\"}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['tabID'])")
+
+rpc_run "docker ps" 3
+# Expected: header line — NO zombie dockerd, NO "containerd is already running" error
+rpc_run "cat /tmp/nexus-agent-dockerd.log | grep -iE 'error|failed|warn' | head -10"
+# Expected: empty or only benign warnings
+```
+
+### 10. Cleanup
+
+```bash
+/usr/bin/curl -sf -X POST $RPC/workspace/stop \
+  -H "Content-Type: application/json" \
+  -d "{\"workspaceID\":\"$WS_ID\"}" > /dev/null
+/usr/bin/curl -sf -X POST $RPC/workspace/delete \
+  -H "Content-Type: application/json" \
+  -d "{\"workspaceID\":\"$WS_ID\"}" > /dev/null
+echo "cleanup done"
+```
+
+### Full validation checklist
+
+| # | Check | Command | Pass condition |
+|---|-------|---------|---------------|
+| 1 | RPC connected | `/status` | `connectionState == "connected"` |
+| 2 | Workspace running | poll `/workspace/list` | `state == "running"` within 6 min (first boot) / 30s (stamp hit) |
+| 3 | Kernel version | `uname -r` in VM | `6.6.x` |
+| 4 | Bridge networking | `ip link add br-e2e type bridge` | `BRIDGE: OK` |
+| 5 | Docker daemon | `docker ps` | header line, no error |
+| 6 | Tools stamp | `cat /var/lib/nexus-tools-installed-v3` | `ok` |
+| 7 | docker compose up | multi-service compose file | both services `Up` |
+| 8 | SSH vm | `nexus-dev workspace ssh-vm --check` | exits 0 |
+| 9 | Spotlight | `nexus-dev spotlight start` | ports forwarded |
+| 10 | Stop/restart | second boot + `docker ps` | dockerd ready, no stale containerd error |

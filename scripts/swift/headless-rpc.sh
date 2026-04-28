@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 APP_PATH="$REPO_ROOT/packages/nexus-swift/.build/xcbuild/Build/Products/Debug/NexusApp.app"
+# Default port matches the Debug build (#if DEBUG in HeadlessRPCServer.swift).
+# For the Release/TestFlight build, set NEXUS_HEADLESS_RPC_PORT=7779.
 RPC_PORT="${NEXUS_HEADLESS_RPC_PORT:-7778}"
 RPC_BASE="http://127.0.0.1:${RPC_PORT}"
 SENTINEL="$HOME/.nexus-headless-rpc"
