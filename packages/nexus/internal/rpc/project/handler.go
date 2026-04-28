@@ -126,6 +126,13 @@ func (h *Handler) create(ctx context.Context, raw json.RawMessage) (any, error) 
 		return nil, rpce.InvalidParams("project.invalid_params", "repoUrl is required")
 	}
 
+	// Enforce uniqueness by name.
+	if existing, err := h.findProjectByName(ctx, name); err != nil {
+		return nil, mapErr(err)
+	} else if existing != nil {
+		return nil, rpce.InvalidParams("project.duplicate_name", fmt.Sprintf("project name %q already exists", name))
+	}
+
 	// Enforce uniqueness by repository regardless of requested display name.
 	if existing, err := h.findCanonicalProjectByRepo(ctx, repoURL); err != nil {
 		return nil, mapErr(err)
@@ -180,6 +187,22 @@ func (h *Handler) remove(ctx context.Context, raw json.RawMessage) (any, error) 
 		return nil, mapErr(err)
 	}
 	return &removeRes{Removed: true}, nil
+}
+
+func (h *Handler) findProjectByName(ctx context.Context, name string) (*project.Project, error) {
+	all, err := h.repo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range all {
+		if p == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(p.Name), name) {
+			return p, nil
+		}
+	}
+	return nil, nil
 }
 
 func (h *Handler) findCanonicalProjectByRepo(ctx context.Context, repoURL string) (*project.Project, error) {
