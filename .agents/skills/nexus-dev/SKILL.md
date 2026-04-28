@@ -14,6 +14,7 @@ Set `REMOTE_HOST` in `.env.local` (see `.env.local.example`). Core tasks:
 | -------------------------------------- | ---------------------------------------------------------------------------------- |
 | `task setup`                           | Prerequisites check + `go mod download`                                            |
 | `task dev:remote`                      | `linux/amd64` build, deploy to `REMOTE_HOST`, restart daemon                       |
+| `task dev:libkrun`                     | libkrun-specific deploy: build guest-agent + nexus, scp, restart daemon on remote  |
 | `task dev:cli`                         | `dev:remote` + install Mac CLI to `~/.local/bin/nexus-dev`                         |
 | `task dev:swift`                       | `dev:remote` + `generate:sdk` + `scripts/swift/build.sh` + `scripts/swift/open.sh` |
 | `task generate:sdk`                    | Regenerate `NexusRPC.swift` from Go types                                          |
@@ -427,6 +428,30 @@ ssh newman@linuxbox "rm -f ~/.local/state-dev/nexus/rootfs-agent.sha256"
 # then restart daemon (provision or daemon restart)
 ```
 
+### Agent injection mechanics — libkrun
+
+libkrun uses a **separate** agent binary (`nexus-guest-agent`, not `nexus-firecracker-agent`) and injects it into the libkrun base rootfs. The mechanics are the same SHA-based skip, but the paths differ:
+
+| | Firecracker | libkrun |
+|---|---|---|
+| Agent binary (extracted) | `~/.local/bin/nexus-firecracker-agent` | `~/.local/bin/nexus-guest-agent` |
+| Hash file | `$XDG_STATE_HOME/nexus/rootfs-agent.sha256` | `$XDG_STATE_HOME/nexus/rootfs-agent.sha256` (same key) |
+| Base rootfs injected into | `~/.local/share/nexus/vm/rootfs.ext4` | `/data/nexus/vm/rootfs.ext4` |
+| Per-workspace copy | `/data/nexus/firecracker-vms/<ws-id>/rootfs.ext4` | `/data/nexus/libkrun-vms/<ws-id>/rootfs.ext4` |
+| Bake stamp | n/a | `$XDG_STATE_HOME/nexus/rootfs-baked-v7` |
+
+**Key difference**: the bake stamp (`rootfs-baked-v7`) controls tool installation and is checked separately from the agent hash. A new agent fix only requires deleting the agent hash file — the bake stamp does not need to be deleted unless tools changed.
+
+**Verify injection after deploy**:
+```bash
+# Agent fix string present in base rootfs?
+ssh newman@linuxbox "strings /data/nexus/vm/rootfs.ext4 | grep -c 'YOUR_FIX_STRING'"
+# Hash file updated?
+ssh newman@linuxbox "cat ~/.local/state/nexus/rootfs-agent.sha256 | cut -c1-16"
+ssh newman@linuxbox "sha256sum ~/.local/bin/nexus-guest-agent | cut -c1-16"
+# Both should match
+```
+
 ### Rootfs lifecycle
 
 | File | Location | When rebuilt |
@@ -453,7 +478,7 @@ Always provision through the Mac app's Headless RPC to simulate the real user fl
 
 ```bash
 # Provision: uploads binary, starts daemon, builds rootfs if missing, injects agent
-curl -s -X POST http://127.0.0.1:7778/daemon/provision \
+/usr/bin/curl -s -X POST http://127.0.0.1:7778/daemon/provision \
   -H "Content-Type: application/json" \
   -d '{"sshTarget":"newman@linuxbox"}' --max-time 300 \
   | python3 -c "
@@ -646,7 +671,7 @@ curl -s "http://127.0.0.1:7778/terminal/read?tabID=$TAB" \
 | Check | Command | Expected |
 |-------|---------|----------|
 | Tools installed | `node --version; make --version; docker --version` | version strings, no "not found" |
-| Stamp written | `cat /var/lib/nexus-tools-installed-v3` | `ok` |
+| Stamp written | `cat /var/lib/nexus-tools-base-v7` (libkrun) or `cat /var/lib/nexus-tools-installed-v3` (Firecracker) | `ok` |
 | Docker daemon | `docker ps` | header line (CONTAINER ID...) |
 | TERM | `echo $TERM` | `xterm-256color` |
 | Codex auth | `ls /root/.codex/` | includes `auth.json` |
@@ -720,6 +745,21 @@ Look for:
 - `apt-get install failed` → package issue; check full log
 - `vsock connection refused` → VM booted but agent crashed
 
+### 9. libkrun: agent fix not taking effect after deploy (hash file false-positive skip)
+**Symptom**: deployed a new guest-agent with a fix, but the fix is not present inside the VM.
+**Cause**: `ensureGuestAgent` compares the SHA-256 of the extracted `nexus-guest-agent` binary against `~/.local/state/nexus/rootfs-agent.sha256`. If both were written during the same deploy (agent extracted → hash recorded → rootfs NOT re-injected because hashes match on first compare), or the build was cached and produced the same binary SHA, the injection into `rootfs.ext4` is silently skipped.
+**Verify**: `ssh newman@linuxbox "strings ~/.local/share/nexus/vm/rootfs.ext4 | grep -c 'YOUR_FIX_STRING'"` — if `0`, the rootfs doesn't have the fix.
+**Fix**: delete the hash file to force re-injection on the next daemon start:
+```bash
+ssh newman@linuxbox "rm -f ~/.local/state/nexus/rootfs-agent.sha256"
+# Stop + start daemon so ensureGuestAgent runs
+ssh newman@linuxbox "~/.local/bin/nexus daemon stop 2>/dev/null || true; sleep 2; bash -l -c '~/.local/bin/nexus daemon start --driver=libkrun'"
+# Confirm injection happened
+ssh newman@linuxbox "strings ~/.local/share/nexus/vm/rootfs.ext4 | grep -c 'YOUR_FIX_STRING'"
+# Must return > 0
+```
+Note: per-workspace rootfs copies (`/data/nexus/libkrun-vms/<ws-id>/rootfs.ext4`) are made from the base at spawn time — existing running workspaces must be stopped and restarted to pick up the injected fix.
+
 ---
 
 ## Diagnostics reference
@@ -771,7 +811,8 @@ rpc_run() {
 }
 
 rpc_run "df -h /"                           # disk usage
-rpc_run "cat /var/lib/nexus-tools-installed-v3" # stamp present?
+rpc_run "cat /var/lib/nexus-tools-installed-v3" # Firecracker stamp present?
+rpc_run "cat /var/lib/nexus-tools-base-v7"      # libkrun stamp present?
 rpc_run "cat /tmp/nexus-agent-dockerd.log"  # dockerd startup errors
 rpc_run "ls /run/nexus-host/"               # config drive contents
 rpc_run "env | grep -iE 'openai|anthropic|gemini' | sed 's/=.*/=***/' | head"
@@ -898,8 +939,8 @@ rpc_run "ip link del br-e2e 2>/dev/null; echo done"
 ```bash
 rpc_run "docker ps" 3
 # Expected: header line (CONTAINER ID ...)
-rpc_run "cat /var/lib/nexus-tools-installed-v3"
-# Expected: ok
+rpc_run "ls /var/lib/nexus-tools-base-v7 2>/dev/null && echo ok || echo MISSING"
+# Expected: ok  (libkrun uses nexus-tools-base-v7, not nexus-tools-installed-v3)
 ```
 
 ### 6. docker compose (multi-service)
@@ -1003,7 +1044,7 @@ echo "cleanup done"
 | 3 | Kernel version | `uname -r` in VM | `6.6.x` |
 | 4 | Bridge networking | `ip link add br-e2e type bridge` | `BRIDGE: OK` |
 | 5 | Docker daemon | `docker ps` | header line, no error |
-| 6 | Tools stamp | `cat /var/lib/nexus-tools-installed-v3` | `ok` |
+| 6 | Tools stamp | `ls /var/lib/nexus-tools-base-v7` (libkrun) | `ok` |
 | 7 | docker compose up | multi-service compose file | both services `Up` |
 | 8 | SSH vm | `nexus-dev workspace ssh-vm --check` | exits 0 |
 | 9 | Spotlight | `nexus-dev spotlight start` | ports forwarded |
