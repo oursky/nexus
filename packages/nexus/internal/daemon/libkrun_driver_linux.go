@@ -137,15 +137,30 @@ func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 	adapter := lkruntime.NewAdapter(driver)
 	return libkrunDriverBundle{
 		rtDriver: adapter,
-		adapter:  adapter,
-		driver:   driver,
+		agent:    adapter,
+		vm:       driver,
 	}, nil
+}
+
+// agentDialer matches the subset of lkruntime.Adapter used by the daemon bundle.
+type agentDialer interface {
+	AgentConn(ctx context.Context, workspaceID string) (net.Conn, error)
+	GuestWorkdir(workspaceID string) string
+	DialPort(ctx context.Context, workspaceID string, remotePort int) (net.Conn, error)
+}
+
+// vmDriver matches the subset of lkruntime.Driver used by the daemon bundle.
+type vmDriver interface {
+	domainruntime.Driver
+	CleanupStaleInstances(ctx context.Context) error
+	WorkspaceReady(ctx context.Context, workspaceID string) (bool, error)
+	SerialLogPath(workspaceID string) (string, error)
 }
 
 type libkrunDriverBundle struct {
 	rtDriver domainruntime.Driver
-	adapter  *lkruntime.Adapter
-	driver   *lkruntime.Driver
+	agent    agentDialer
+	vm       vmDriver
 }
 
 func (b libkrunDriverBundle) AsDriver() domainruntime.Driver { return b.rtDriver }

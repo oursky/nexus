@@ -16,6 +16,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/creds/relay"
 	domainruntime "github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
 	domainws "github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/dockercompose"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/sandbox"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/store"
 	rpcauth "github.com/oursky/nexus/packages/nexus/internal/rpc/auth"
@@ -70,8 +71,10 @@ type Config struct {
 	NodeName    string
 	NodeTags    []string
 	Network     NetworkConfig
-	// Driver selects the runtime driver: "libkrun" or "sandbox".
+	// Driver selects the runtime driver implementation: "libkrun" or "sandbox".
 	Driver string
+	// DriverCategory is the user-facing category: "vm" or "process".
+	DriverCategory string
 	// EmbeddedAgentFn returns the embedded guest-agent binary bytes.
 	// When set, the libkrun driver injects the current agent into each VM's rootfs
 	// on spawn so the agent stays in sync with the nexus binary.
@@ -133,8 +136,6 @@ func New(cfg Config) (*Daemon, error) {
 		log.Printf("daemon: sandbox (process) runtime driver wired")
 	}
 
-	wsSvc := appworkspace.NewService(wsStore, projStore, rtDriver, context.Background())
-
 	// ── Workspace handler with optional serial log provider ────────────────
 	wsHandlerOpts := []rpcworkspace.HandlerOption{}
 	if cfg.Driver == "libkrun" {
@@ -146,6 +147,8 @@ func New(cfg Config) (*Daemon, error) {
 		spotlightOpts = append(spotlightOpts, appspotlight.WithPortDialer(lkBundle))
 	}
 	spotlightSvc := appspotlight.New(fwdStore, wsStore, spotlightOpts...)
+
+	wsSvc := appworkspace.NewService(wsStore, projStore, rtDriver, dockercomposePortDiscoverer{}, spotlightSvc, context.Background())
 	ptyReg := apppty.NewRegistry()
 	broker := relay.NewBroker()
 
@@ -265,13 +268,6 @@ func (d *Daemon) Stop() error {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func orDefault(v, def string) string {
-	if v != "" {
-		return v
-	}
-	return def
-}
-
 func defaultDataDir() string {
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
 		return filepath.Join(xdg, "nexus")
@@ -295,4 +291,26 @@ func (n *nodeInfo) Capabilities() []rpcdaemon.Capability {
 		{Name: "runtime.process", Available: true},
 		{Name: "runtime.libkrun", Available: n.cfg.Driver == "libkrun"},
 	}
+}
+
+// dockercomposePortDiscoverer adapts the dockercompose package to satisfy
+// workspace.PortDiscoverer without leaking the concrete package into app/workspace.
+type dockercomposePortDiscoverer struct{}
+
+func (dockercomposePortDiscoverer) DiscoverPublishedPorts(ctx context.Context, repoRoot string) ([]domainws.DiscoveredPort, error) {
+	ports, err := dockercompose.DiscoverPublishedPorts(ctx, repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]domainws.DiscoveredPort, len(ports))
+	for i, p := range ports {
+		result[i] = domainws.DiscoveredPort{
+			LocalPort:  p.HostPort,
+			RemotePort: p.HostPort,
+			Service:    p.Service,
+			Protocol:   p.Protocol,
+			Source:     "compose",
+		}
+	}
+	return result, nil
 }

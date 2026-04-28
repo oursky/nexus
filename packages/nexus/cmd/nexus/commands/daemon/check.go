@@ -95,21 +95,33 @@ func runEnvChecks(driver string) []CheckResult {
 		add(name, ok, msg)
 	}
 
-	// ── Host system ──────────────────────────────────────────────────────────
+	checkHostSystem(check)
+	checkVMAssets(check)
+	checkGuestAgent(check)
+	checkNetworkBackend(check)
+	checkDriverSpecific(check, driver, &results)
+	checkHostTooling(check)
+	checkAuthTokens(check)
+	checkDaemonSocket(check)
 
-	if runtime.GOOS == "linux" {
-		check("kvm.access", func() (bool, string) {
-			f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
-			if err != nil {
-				return false, fmt.Sprintf("/dev/kvm not accessible: sudo usermod -aG kvm $USER")
-			}
-			f.Close()
-			return true, "/dev/kvm accessible (O_RDWR)"
-		})
+	return results
+}
+
+func checkHostSystem(check func(string, func() (bool, string))) {
+	if runtime.GOOS != "linux" {
+		return
 	}
+	check("kvm.access", func() (bool, string) {
+		f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
+		if err != nil {
+			return false, "/dev/kvm not accessible: sudo usermod -aG kvm $USER"
+		}
+		f.Close()
+		return true, "/dev/kvm accessible (O_RDWR)"
+	})
+}
 
-	// ── VM assets ────────────────────────────────────────────────────────────
-
+func checkVMAssets(check func(string, func() (bool, string))) {
 	kernelPath := xdgVMAsset("vmlinux.bin")
 	check("vm.kernel", func() (bool, string) {
 		fi, err := os.Stat(kernelPath)
@@ -127,20 +139,18 @@ func runEnvChecks(driver string) []CheckResult {
 		}
 		return true, fmt.Sprintf("%s (%s)", rootfsPath, humanSize(fi.Size()))
 	})
+}
 
-	// ── Guest agent ──────────────────────────────────────────────────────────
-
+func checkGuestAgent(check func(string, func() (bool, string))) {
+	rootfsPath := xdgVMAsset("rootfs.ext4")
 	check("vm.guest-agent", func() (bool, string) {
 		if _, err := os.Stat(rootfsPath); err != nil {
 			return false, "rootfs not present, cannot verify agent"
 		}
-		// Primary: check the injection hash file written by ensureGuestAgent.
-		// This avoids running debugfs on a live (potentially locked) rootfs.
 		hashFile := filepath.Join(defaultDataDir(), "rootfs-agent.sha256")
 		if _, err := os.Stat(hashFile); err == nil {
 			return true, "nexus-guest-agent injected (hash file present)"
 		}
-		// Fallback: try debugfs (only works when rootfs is not mounted).
 		if _, err := exec.LookPath("debugfs"); err == nil {
 			out, _ := exec.Command("debugfs", "-R", "stat /usr/local/bin/nexus-guest-agent", rootfsPath).CombinedOutput()
 			if strings.Contains(string(out), "Inode:") {
@@ -149,14 +159,12 @@ func runEnvChecks(driver string) []CheckResult {
 		}
 		return false, "nexus-guest-agent not injected — run: nexus daemon start"
 	})
+}
 
-	// ── Network backend ──────────────────────────────────────────────────────
-
+func checkNetworkBackend(check func(string, func() (bool, string))) {
 	check("net.passt", func() (bool, string) {
 		home, _ := os.UserHomeDir()
-		candidates := []string{
-			filepath.Join(home, ".local", "bin", "passt"),
-		}
+		candidates := []string{filepath.Join(home, ".local", "bin", "passt")}
 		if p, err := exec.LookPath("passt"); err == nil {
 			candidates = append([]string{p}, candidates...)
 		}
@@ -167,14 +175,13 @@ func runEnvChecks(driver string) []CheckResult {
 		}
 		return false, "passt not found (run: nexus daemon start)"
 	})
+}
 
-	// ── Driver-specific ──────────────────────────────────────────────────────
-
+func checkDriverSpecific(check func(string, func() (bool, string)), driver string, results *[]CheckResult) {
 	effectiveDriver := driver
 	if effectiveDriver == "" {
 		effectiveDriver = "libkrun"
 	}
-
 	check("runtime.libkrun", func() (bool, string) {
 		home, _ := os.UserHomeDir()
 		libDir := filepath.Join(home, ".local", "share", "nexus", "lib")
@@ -184,15 +191,12 @@ func runEnvChecks(driver string) []CheckResult {
 		}
 		return true, soPath
 	})
-	_ = effectiveDriver
-
-	// Delegate to main package for any additional driver-specific checks.
 	if CheckSetupFn != nil {
-		results = append(results, CheckSetupFn(effectiveDriver)...)
+		*results = append(*results, CheckSetupFn(effectiveDriver)...)
 	}
+}
 
-	// ── Host tooling ─────────────────────────────────────────────────────────
-
+func checkHostTooling(check func(string, func() (bool, string))) {
 	check("host.docker", func() (bool, string) {
 		out, err := exec.Command("docker", "version", "--format", "{{.Server.Version}}").Output()
 		if err != nil {
@@ -207,7 +211,6 @@ func runEnvChecks(driver string) []CheckResult {
 		if _, err := os.Stat(gitConfig); err == nil {
 			return true, gitConfig
 		}
-		// Check XDG config
 		xdgCfg := os.Getenv("XDG_CONFIG_HOME")
 		if xdgCfg == "" {
 			xdgCfg = filepath.Join(home, ".config")
@@ -238,9 +241,9 @@ func runEnvChecks(driver string) []CheckResult {
 		}
 		return true, fmt.Sprintf("%d key file(s) in %s", count, sshDir)
 	})
+}
 
-	// ── Auth tokens for AI tools ─────────────────────────────────────────────
-
+func checkAuthTokens(check func(string, func() (bool, string))) {
 	check("auth.opencode", func() (bool, string) {
 		home, _ := os.UserHomeDir()
 		paths := []string{
@@ -263,19 +266,16 @@ func runEnvChecks(driver string) []CheckResult {
 		}
 		return false, "claude credentials not found — claude CLI may require manual auth inside workspace"
 	})
+}
 
-	// ── Daemon connectivity ───────────────────────────────────────────────────
-
+func checkDaemonSocket(check func(string, func() (bool, string))) {
 	check("daemon.socket", func() (bool, string) {
-		sockPath := defaultDataDir()
-		sock := filepath.Join(sockPath, "nexusd.sock")
+		sock := filepath.Join(defaultDataDir(), "nexusd.sock")
 		if _, err := os.Stat(sock); err != nil {
 			return false, fmt.Sprintf("%s not found (daemon not running?)", sock)
 		}
 		return true, sock
 	})
-
-	return results
 }
 
 // humanSize returns a human-readable size string.

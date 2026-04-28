@@ -3,9 +3,9 @@ package daemon
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
-	"os/exec"
 	"strings"
 
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
@@ -121,7 +121,7 @@ func ensureRemoteEditorSSHIncludes() error {
 	newBody := regexp.MustCompile(`(?m)^# nexus VM remote-editor.*\n`).ReplaceAllString(bodyStr, "")
 	for _, includeLine := range includeLines {
 		pattern := regexp.QuoteMeta(includeLine)
-		newBody = regexp.MustCompile(`(?m)^` + pattern + `\n?`).ReplaceAllString(newBody, "")
+		newBody = regexp.MustCompile(`(?m)^`+pattern+`\n?`).ReplaceAllString(newBody, "")
 	}
 	prefix := "# nexus VM remote-editor (managed by Nexus — must be first)\n" + strings.Join(includeLines, "\n") + "\n\n"
 	return os.WriteFile(cfgPath, []byte(prefix+newBody), 0o600)
