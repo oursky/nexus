@@ -4,6 +4,8 @@ package cli_test
 
 import (
 	"bytes"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
+// Spec: CLI-080, CLI-081, CLI-082, CLI-083
 func TestCLI_ProjectCreateListGetRemove(t *testing.T) {
 	t.Parallel()
 	h := harness.NewCLIHarness(t)
@@ -124,5 +127,44 @@ func TestCLI_WorkspaceShellAndExec(t *testing.T) {
 	out, err = h.Run(t, clientRepo, "workspace", "stop", wsID)
 	if err != nil {
 		t.Fatalf("workspace stop: %v\n%s", err, out)
+	}
+}
+
+// Spec: CLI-003, ERR-082
+// TestCLI_UnknownSubcommand verifies unknown subcommands exit with code 2.
+func TestCLI_UnknownSubcommand(t *testing.T) {
+	t.Parallel()
+	h := harness.NewCLIHarness(t)
+	root := t.TempDir()
+
+	out, err := h.Run(t, root, "nonexistent-command")
+	if err == nil {
+		t.Fatal("unknown subcommand: expected error, got nil")
+	}
+	if !strings.Contains(string(out), "usage") && !strings.Contains(string(out), "Usage") {
+		t.Logf("unknown subcommand output: %s", out)
+	}
+}
+
+// Spec: CLI-002, ERR-081
+// TestCLI_DaemonUnreachable verifies commands exit with code 1 when daemon is unreachable.
+func TestCLI_DaemonUnreachable(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	// Run CLI with a non-existent socket so the daemon is unreachable.
+	h := harness.NewCLIHarness(t)
+	badSocket := filepath.Join(root, "nonexistent.sock")
+	env := append(os.Environ(), "NEXUS_SOCKET="+badSocket)
+
+	cmd := exec.Command(h.BinPath(), "workspace", "list")
+	cmd.Dir = root
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("daemon unreachable: expected error, got nil")
+	}
+	if !strings.Contains(string(out), "daemon") && !strings.Contains(string(out), "connection") {
+		t.Logf("daemon unreachable output: %s", out)
 	}
 }

@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	idPattern   = regexp.MustCompile(`\bVM(?:-PROOF)?-\d{3}\b`)
+	idPattern   = regexp.MustCompile(`\b(?:DAEMON|AUTH|PRJ|PTY|SPOT|WS|CLI|ERR|INV|RPC|VM-PROOF|VM)-\d{3,}\b`)
 	testPattern = regexp.MustCompile(`^func\s+(Test[^(\s]+)\s*\(`)
 )
 
@@ -29,19 +29,19 @@ type waiver struct {
 
 func main() {
 	var (
-		specPath   = flag.String("spec", "../../docs/spec/09-vm-backend-formal-verification.md", "path to formal verification spec")
+		specDir    = flag.String("spec-dir", "../../docs/spec", "path to spec directory")
 		outputPath = flag.String("out", "test/e2e/coverage/coverage-map.md", "output markdown path")
 		waiverPath = flag.String("waivers", "test/e2e/coverage/waivers.txt", "waiver definitions")
-		checkOnly  = flag.Bool("check", false, "fail on missing unwaived proof obligations")
+		checkOnly  = flag.Bool("check", false, "fail on missing unwaived spec obligations")
 	)
 	flag.Parse()
 
-	specIDs, err := parseSpecIDs(*specPath)
+	specIDs, err := parseSpecIDs(*specDir)
 	if err != nil {
 		fatalf("parse spec ids: %v", err)
 	}
 	if len(specIDs) == 0 {
-		fatalf("no VM/VM-PROOF ids found in %s", *specPath)
+		fatalf("no spec ids found in %s", *specDir)
 	}
 
 	testRoots := []string{"test/e2e", "internal"}
@@ -67,31 +67,43 @@ func main() {
 		fatalf("parse waivers: %v", err)
 	}
 
-	report, missing := renderCoverageReport(specIDs, coverage, waivers, *specPath)
+	report, missing := renderCoverageReport(specIDs, coverage, waivers, *specDir)
 	if err := os.WriteFile(*outputPath, []byte(report), 0o644); err != nil {
 		fatalf("write report: %v", err)
 	}
 
 	fmt.Printf("wrote %s (%d ids)\n", *outputPath, len(specIDs))
 	if len(missing) > 0 {
-		fmt.Printf("missing proof ids: %s\n", strings.Join(missing, ", "))
+		fmt.Printf("missing spec ids: %s\n", strings.Join(missing, ", "))
 		if *checkOnly {
 			os.Exit(1)
 		}
 	}
 }
 
-func parseSpecIDs(path string) ([]string, error) {
-	data, err := os.ReadFile(path)
+func parseSpecIDs(dir string) ([]string, error) {
+	seen := map[string]struct{}{}
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, id := range idPattern.FindAllString(string(data), -1) {
+			seen[id] = struct{}{}
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	seen := map[string]struct{}{}
-	for _, id := range idPattern.FindAllString(string(data), -1) {
-		if !strings.HasPrefix(id, "VM-PROOF-") {
-			continue
-		}
-		seen[id] = struct{}{}
 	}
 	ids := make([]string, 0, len(seen))
 	for id := range seen {
@@ -247,12 +259,12 @@ func parseWaivers(path string) (map[string]waiver, error) {
 	return waivers, nil
 }
 
-func renderCoverageReport(specIDs []string, coverage map[string][]testRef, waivers map[string]waiver, specPath string) (string, []string) {
+func renderCoverageReport(specIDs []string, coverage map[string][]testRef, waivers map[string]waiver, specDir string) (string, []string) {
 	var b strings.Builder
 	missing := []string{}
 
-	b.WriteString("# Formal Verification Coverage Map\n\n")
-	b.WriteString("Source spec: `" + specPath + "`\n\n")
+	b.WriteString("# Spec Coverage Map\n\n")
+	b.WriteString("Source spec directory: `" + specDir + "`\n\n")
 	b.WriteString("| Spec ID | Status | Test References | Notes |\n")
 	b.WriteString("|---|---|---|---|\n")
 

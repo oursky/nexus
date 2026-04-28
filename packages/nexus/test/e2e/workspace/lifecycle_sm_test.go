@@ -57,6 +57,7 @@ func rpcErrorCode(err error) int {
 	return 0
 }
 
+// Spec: WS-017, WS-018, WS-020, INV-007, INV-008
 // TestLifecycle_StartAndStop verifies a workspace can be started and stopped.
 func TestLifecycle_StartAndStop(t *testing.T) {
 	t.Parallel()
@@ -86,6 +87,7 @@ func TestLifecycle_StartAndStop(t *testing.T) {
 	}
 }
 
+// Spec: WS-067, WS-068
 // TestLifecycle_ReadyState verifies workspace.ready follows start/stop transitions.
 func TestLifecycle_ReadyState(t *testing.T) {
 	t.Parallel()
@@ -107,6 +109,7 @@ func TestLifecycle_ReadyState(t *testing.T) {
 	}
 }
 
+// Spec: WS-021, WS-063, WS-064, WS-065, WS-066
 // TestLifecycle_RestoreFromStopped verifies a stopped workspace can be restored.
 func TestLifecycle_RestoreFromStopped(t *testing.T) {
 	t.Parallel()
@@ -135,6 +138,7 @@ func TestLifecycle_RestoreFromStopped(t *testing.T) {
 	}
 }
 
+// Spec: WS-022, WS-023, INV-009
 // TestLifecycle_RemoveNotInList verifies a removed workspace is absent from workspace.list.
 func TestLifecycle_RemoveNotInList(t *testing.T) {
 	t.Parallel()
@@ -165,6 +169,7 @@ func TestLifecycle_RemoveNotInList(t *testing.T) {
 	}
 }
 
+// Spec: WS-046, WS-047, ERR-011
 // TestLifecycle_NotFound verifies workspace.info for an unknown id returns a 404 error.
 func TestLifecycle_NotFound(t *testing.T) {
 	t.Parallel()
@@ -179,6 +184,7 @@ func TestLifecycle_NotFound(t *testing.T) {
 	}
 }
 
+// Spec: ERR-011
 // TestLifecycle_StartNotFound verifies workspace.start for an unknown id returns a 404 error.
 func TestLifecycle_StartNotFound(t *testing.T) {
 	t.Parallel()
@@ -193,6 +199,7 @@ func TestLifecycle_StartNotFound(t *testing.T) {
 	}
 }
 
+// Spec: WS-034, ERR-014
 // TestLifecycle_ForkRequiresChildRef verifies workspace.fork without childRef is rejected.
 func TestLifecycle_ForkRequiresChildRef(t *testing.T) {
 	t.Parallel()

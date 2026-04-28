@@ -8,6 +8,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
+// Spec: SPOT-024, SPOT-025, SPOT-026, SPOT-027, SPOT-028, SPOT-029, SPOT-030, SPOT-031, SPOT-032, SPOT-033, SPOT-034, SPOT-035, INV-005
 func TestSpotlight(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
@@ -111,5 +112,22 @@ func TestSpotlight(t *testing.T) {
 		if f.ID == fwdID {
 			t.Fatalf("ports.list: forward %s still present after remove", fwdID)
 		}
+	}
+}
+
+// Spec: ERR-050
+// TestSpotlight_WorkspaceNotFound verifies workspace.ports.add on unknown workspace returns error.
+func TestSpotlight_WorkspaceNotFound(t *testing.T) {
+	t.Parallel()
+	h := harness.New(t)
+	err := h.Call("workspace.ports.add", map[string]any{
+		"workspaceId": "ws-does-not-exist",
+		"spec": map[string]any{
+			"localPort":  8080,
+			"remotePort": 8080,
+		},
+	}, nil)
+	if err == nil {
+		t.Fatal("ports.add unknown workspace: expected error, got nil")
 	}
 }

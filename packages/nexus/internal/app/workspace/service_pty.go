@@ -18,7 +18,8 @@ func (s *Service) cloneWithGuestIP(ctx context.Context, ws *workspace.Workspace)
 
 func (s *Service) attachGuestIP(ctx context.Context, ws *workspace.Workspace) {
 	ws.GuestIP = ""
-	if s.driver == nil {
+	driver := s.driverFor(ws)
+	if driver == nil {
 		return
 	}
 	if ws.State != workspace.StateRunning && ws.State != workspace.StateRestored {
@@ -27,7 +28,7 @@ func (s *Service) attachGuestIP(ctx context.Context, ws *workspace.Workspace) {
 	if !workspace.UsesGuestVM(ws.Backend) {
 		return
 	}
-	ip, ok := s.driver.GuestSSHHost(ctx, ws.ID)
+	ip, ok := driver.GuestSSHHost(ctx, ws.ID)
 	if ok {
 		ip = strings.TrimSpace(ip)
 		if ip != "" {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -76,6 +77,11 @@ func New(repo spotlight.Repository, workspaceRepo workspace.Repository, opts ...
 //     and proxy each connection via vsock (PortDialer) to the guest port. The
 //     ephemeral port is returned as targetPort so the CLI SSH-tunnels to it.
 //     Each workspace gets its own ephemeral port → no multi-tenant collision.
+//
+// Only one workspace may have active spotlight at a time. StartSpotlight stops
+// any other workspace's forwards before creating new ones for workspaceID. This
+// enforces the invariant at the daemon level regardless of how many clients call
+// spotlight.start concurrently.
 func (s *Service) StartSpotlight(ctx context.Context, workspaceID string, spec spotlight.ExposeSpec) (*spotlight.Forward, error) {
 	if spec.LocalPort <= 0 || spec.RemotePort <= 0 {
 		return nil, fmt.Errorf("localPort and remotePort must be > 0")
@@ -87,6 +93,21 @@ func (s *Service) StartSpotlight(ctx context.Context, workspaceID string, spec s
 	}
 	if ws == nil {
 		return nil, fmt.Errorf("workspace not found: %s", workspaceID)
+	}
+
+	// Enforce one-active-workspace invariant: stop spotlight on any other
+	// workspace before adding forwards for this one. This prevents the Mac app
+	// from seeing tunnels on multiple workspaces simultaneously and flickering.
+	if err := s.stopOtherWorkspaces(ctx, workspaceID); err != nil {
+		return nil, fmt.Errorf("stop other workspaces: %w", err)
+	}
+
+	// Deduplicate: if an existing forward for this workspace+localPort already
+	// exists, close and remove it before creating a fresh one. This prevents
+	// accumulation when the Mac app calls spotlight.start in bursts (e.g. on
+	// reconnect) without calling spotlight.stop first.
+	if err := s.closeExistingForward(ctx, workspaceID, spec.LocalPort); err != nil {
+		return nil, fmt.Errorf("close existing forward: %w", err)
 	}
 
 	now := time.Now().UTC()
@@ -187,6 +208,50 @@ func (s *Service) StopWorkspaceSpotlight(ctx context.Context, workspaceID string
 	for _, fwd := range fwds {
 		if err := s.CloseForward(ctx, fwd.ID); err != nil && !errors.Is(err, spotlight.ErrNotFound) {
 			return err
+		}
+	}
+	return nil
+}
+
+// closeExistingForward closes and removes any existing forward for the given
+// workspace+localPort pair. This prevents accumulation when StartSpotlight is
+// called repeatedly (e.g. Mac app reconnect bursts) without a prior stop.
+func (s *Service) closeExistingForward(ctx context.Context, workspaceID string, localPort int) error {
+	fwds, err := s.repo.ListByWorkspace(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("list forwards: %w", err)
+	}
+	for _, fwd := range fwds {
+		if fwd.LocalPort == localPort {
+			if err := s.CloseForward(ctx, fwd.ID); err != nil && !errors.Is(err, spotlight.ErrNotFound) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// stopOtherWorkspaces stops spotlight on all workspaces except the given one.
+// This enforces the one-active-workspace invariant at the daemon level.
+func (s *Service) stopOtherWorkspaces(ctx context.Context, activeWorkspaceID string) error {
+	workspaces, err := s.workspaceRepo.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list workspaces: %w", err)
+	}
+	for _, ws := range workspaces {
+		if ws.ID == activeWorkspaceID {
+			continue
+		}
+		fwds, err := s.repo.ListByWorkspace(ctx, ws.ID)
+		if err != nil {
+			return fmt.Errorf("list forwards for workspace %s: %w", ws.ID, err)
+		}
+		if len(fwds) == 0 {
+			continue
+		}
+		log.Printf("[spotlight] stopping spotlight for workspace %s (switching to %s)", ws.ID, activeWorkspaceID)
+		if err := s.StopWorkspaceSpotlight(ctx, ws.ID); err != nil {
+			return fmt.Errorf("stop spotlight for workspace %s: %w", ws.ID, err)
 		}
 	}
 	return nil

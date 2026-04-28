@@ -46,8 +46,8 @@ func (s *Service) runStartAsync(ws *workspace.Workspace) {
 
 func (s *Service) performStart(ctx context.Context, ws *workspace.Workspace) (*workspace.Workspace, bool) {
 	var startErr error
-	if s.driver != nil {
-		startErr = s.driver.Start(ctx, ws)
+	if driver := s.driverFor(ws); driver != nil {
+		startErr = driver.Start(ctx, ws)
 	}
 
 	current, fetchErr := s.repo.Get(ctx, ws.ID)
@@ -67,7 +67,8 @@ func (s *Service) performStart(ctx context.Context, ws *workspace.Workspace) (*w
 }
 
 func (s *Service) waitForReadiness(ctx context.Context, current *workspace.Workspace) *workspace.Workspace {
-	rd, ok := s.driver.(runtimeReadinessDriver)
+	driver := s.driverFor(current)
+	rd, ok := driver.(runtimeReadinessDriver)
 	if !ok {
 		return current
 	}
@@ -150,8 +151,8 @@ func (s *Service) runReadinessProbe(ctx context.Context, rd runtimeReadinessDriv
 }
 
 func (s *Service) markWorkspaceRunning(ctx context.Context, current *workspace.Workspace) {
-	if current.Backend == "" && s.driver != nil {
-		current.Backend = s.driver.Backend()
+	if current.Backend == "" && s.registry != nil {
+		current.Backend = s.registry.DefaultBackend()
 	}
 	current.State = workspace.StateRunning
 	current.UpdatedAt = time.Now().UTC()
@@ -162,6 +163,10 @@ func (s *Service) markWorkspaceRunning(ctx context.Context, current *workspace.W
 
 func (s *Service) autoForwardPorts(ctx context.Context, current *workspace.Workspace) {
 	if s.forwardCreator == nil || s.portDiscoverer == nil {
+		return
+	}
+	// Spotlight port forwarding only works for VM backends.
+	if !workspace.UsesGuestVM(current.Backend) {
 		return
 	}
 	discoverCtx, cancel := context.WithTimeout(ctx, 15*time.Second)

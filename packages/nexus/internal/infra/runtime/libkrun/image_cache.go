@@ -36,8 +36,13 @@ func EnsureBaseImage(ctx context.Context, repoRoot, basesDir, manifestHash strin
 	}
 	basePath := filepath.Join(dir, "base.ext4")
 	if _, err := os.Stat(basePath); err == nil {
-		log.Printf("[libkrun] base image cache hit: %s", basePath)
-		return basePath, nil
+		if !isValidExt4(basePath) {
+			log.Printf("[libkrun] base image cache hit but ext4 magic invalid, removing corrupt file: %s", basePath)
+			_ = os.Remove(basePath)
+		} else {
+			log.Printf("[libkrun] base image cache hit: %s", basePath)
+			return basePath, nil
+		}
 	}
 
 	// Acquire per-repo lock to prevent concurrent builds.
@@ -46,10 +51,18 @@ func EnsureBaseImage(ctx context.Context, repoRoot, basesDir, manifestHash strin
 	mu.Lock()
 	defer mu.Unlock()
 
+	// Remove any stale .tmp from a previous crashed build.
+	_ = os.Remove(basePath + ".tmp")
+
 	// Double-check after acquiring lock.
 	if _, err := os.Stat(basePath); err == nil {
-		log.Printf("[libkrun] base image cache hit (after lock): %s", basePath)
-		return basePath, nil
+		if !isValidExt4(basePath) {
+			log.Printf("[libkrun] base image cache hit (after lock) but ext4 magic invalid, removing corrupt file: %s", basePath)
+			_ = os.Remove(basePath)
+		} else {
+			log.Printf("[libkrun] base image cache hit (after lock): %s", basePath)
+			return basePath, nil
+		}
 	}
 
 	log.Printf("[libkrun] building base image %s → %s", repoRoot, basePath)

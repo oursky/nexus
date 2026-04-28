@@ -73,8 +73,8 @@ func (s *Service) Fork(ctx context.Context, parentID string, spec ForkSpec) (*wo
 		return nil, fmt.Errorf("persist child workspace: %w", err)
 	}
 
-	if s.driver != nil {
-		childRoot, err := s.driver.Fork(ctx, parent, child)
+	if driver := s.driverFor(parent); driver != nil {
+		childRoot, err := driver.Fork(ctx, parent, child)
 		if err != nil {
 			_ = s.repo.Delete(ctx, child.ID)
 			return nil, fmt.Errorf("runtime fork: %w", err)

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	apppty "github.com/oursky/nexus/packages/nexus/internal/app/pty"
@@ -108,47 +109,67 @@ func New(cfg Config) (*Daemon, error) {
 	projStore := store.NewProjectStore(db)
 	fwdStore := store.NewForwardStore(db)
 
-	var rtDriver domainruntime.Driver
-	var lkBundle libkrunDriverBundle
+	// Build runtime registry with all available drivers.
+	registry := domainruntime.NewRegistry()
 
-	switch cfg.Driver {
-	case "libkrun":
-		var err error
-		lkBundle, err = buildLibkrunDriver(cfg)
-		if err != nil {
-			db.Close()
-			return nil, fmt.Errorf("daemon: libkrun driver: %w", err)
-		}
+	// Sandbox (process) driver is always available.
+	sandboxDriver := sandbox.NewAdapter(sandbox.NewDriver())
+	registry.Register(sandboxDriver)
+	log.Printf("daemon: sandbox (process) runtime driver registered")
+
+	// Attempt to register libkrun driver on all platforms (stub on non-Linux).
+	var lkBundle libkrunDriverBundle
+	var lkErr error
+	lkBundle, lkErr = buildLibkrunDriver(cfg)
+	if lkErr == nil {
 		if err := lkBundle.CleanupStaleInstances(context.Background()); err != nil {
 			log.Printf("daemon: libkrun stale cleanup warning: %v", err)
 		}
-		reconcileLibkrunWorkspaceStates(context.Background(), wsStore)
-		rtDriver = lkBundle.AsDriver()
-		log.Printf("daemon: libkrun runtime driver wired")
+		registry.Register(lkBundle.AsDriver())
+		log.Printf("daemon: libkrun runtime driver registered")
 
 		// Pre-warm base workspace images for all known libkrun workspaces in
 		// the background so the first workspace start doesn't block on
 		// mkfs.ext4 -d <project_root> (which can take 30-120s for large repos).
 		go prewarmLibkrunBaseImages(wsStore, cfg.BasesDir)
-
-	default:
-		rtDriver = sandbox.NewAdapter(sandbox.NewDriver())
-		log.Printf("daemon: sandbox (process) runtime driver wired")
+	} else {
+		log.Printf("daemon: libkrun driver not available: %v", lkErr)
 	}
+
+	// Determine default backend: explicit driver flag > platform default.
+	switch cfg.Driver {
+	case "libkrun":
+		if !registry.SetDefaultBackend("libkrun") {
+			db.Close()
+			return nil, fmt.Errorf("daemon: requested driver %q is not available on this node", cfg.Driver)
+		}
+	case "sandbox", "process":
+		registry.SetDefaultBackend("sandbox")
+	default:
+		if runtime.GOOS == "linux" && registry.HasBackend("libkrun") {
+			registry.SetDefaultBackend("libkrun")
+		} else {
+			registry.SetDefaultBackend("sandbox")
+		}
+	}
+	log.Printf("daemon: default backend=%s", registry.DefaultBackend())
+
+	// Reconcile workspace states for all backends that need it.
+	reconcileWorkspaceStates(context.Background(), wsStore)
 
 	// ── Workspace handler with optional serial log provider ────────────────
 	wsHandlerOpts := []rpcworkspace.HandlerOption{}
-	if cfg.Driver == "libkrun" {
+	if registry.HasBackend("libkrun") {
 		wsHandlerOpts = append(wsHandlerOpts, rpcworkspace.WithSerialLogProvider(lkBundle))
 	}
 
 	spotlightOpts := []appspotlight.Option{}
-	if cfg.Driver == "libkrun" {
+	if registry.HasBackend("libkrun") {
 		spotlightOpts = append(spotlightOpts, appspotlight.WithPortDialer(lkBundle))
 	}
 	spotlightSvc := appspotlight.New(fwdStore, wsStore, spotlightOpts...)
 
-	wsSvc := appworkspace.NewService(wsStore, projStore, rtDriver, dockercomposePortDiscoverer{}, spotlightSvc, context.Background())
+	wsSvc := appworkspace.NewService(wsStore, projStore, registry, dockercomposePortDiscoverer{}, spotlightSvc, context.Background())
 	ptyReg := apppty.NewRegistry()
 	broker := relay.NewBroker()
 
@@ -163,14 +184,14 @@ func New(cfg Config) (*Daemon, error) {
 		rpcpty.WithWorkspaceRepo(wsStore),
 		rpcpty.WithProjectRepo(projStore),
 	}
-	if cfg.Driver == "libkrun" {
+	if registry.HasBackend("libkrun") {
 		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithVsockDialer(lkBundle))
 		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithWorkspaceReadyChecker(lkBundle))
 	}
 	rpcpty.New(ptyReg, ptyHandlerOpts...).Register(reg)
 	rpcfs.New("/").Register(reg)
 	daemonLogPath := filepath.Join(filepath.Dir(cfg.SocketPath), "daemon.log")
-	rpcdaemon.New(newNodeInfo(cfg), rpcdaemon.WithLogPath(daemonLogPath)).Register(reg)
+	rpcdaemon.New(newNodeInfo(cfg, registry), rpcdaemon.WithLogPath(daemonLogPath)).Register(reg)
 	rpcproject.New(projStore, rpcproject.WithWorkspaceRepo(wsStore)).Register(reg)
 	rpcauth.New(wsStore, broker).Register(reg)
 
@@ -202,15 +223,16 @@ func New(cfg Config) (*Daemon, error) {
 	return d, nil
 }
 
-// reconcileLibkrunWorkspaceStates resets stale libkrun workspace states after restart.
-func reconcileLibkrunWorkspaceStates(ctx context.Context, wsStore *store.WorkspaceStore) {
+// reconcileWorkspaceStates resets stale workspace states after daemon restart.
+// Both VM and process workspaces lose their runtime when the daemon restarts.
+func reconcileWorkspaceStates(ctx context.Context, wsStore *store.WorkspaceStore) {
 	all, err := wsStore.List(ctx)
 	if err != nil {
-		log.Printf("daemon: libkrun workspace state reconcile skipped: %v", err)
+		log.Printf("daemon: workspace state reconcile skipped: %v", err)
 		return
 	}
 	for _, ws := range all {
-		if ws == nil || ws.Backend != "libkrun" {
+		if ws == nil {
 			continue
 		}
 		switch ws.State {
@@ -223,7 +245,7 @@ func reconcileLibkrunWorkspaceStates(ctx context.Context, wsStore *store.Workspa
 		}
 		ws.UpdatedAt = time.Now().UTC()
 		if err := wsStore.Update(ctx, ws); err != nil {
-			log.Printf("daemon: libkrun workspace state reconcile %s: %v", ws.ID, err)
+			log.Printf("daemon: workspace state reconcile %s: %v", ws.ID, err)
 		}
 	}
 }
@@ -280,17 +302,29 @@ func defaultDataDir() string {
 }
 
 // nodeInfo wraps Config to satisfy rpcdaemon.NodeInfoProvider.
-type nodeInfo struct{ cfg Config }
+type nodeInfo struct {
+	cfg      Config
+	registry *domainruntime.Registry
+}
 
-func newNodeInfo(cfg Config) *nodeInfo { return &nodeInfo{cfg: cfg} }
+func newNodeInfo(cfg Config, registry *domainruntime.Registry) *nodeInfo {
+	return &nodeInfo{cfg: cfg, registry: registry}
+}
 
 func (n *nodeInfo) NodeName() string   { return n.cfg.NodeName }
 func (n *nodeInfo) NodeTags() []string { return n.cfg.NodeTags }
 func (n *nodeInfo) Capabilities() []rpcdaemon.Capability {
-	return []rpcdaemon.Capability{
-		{Name: "runtime.process", Available: true},
-		{Name: "runtime.libkrun", Available: n.cfg.Driver == "libkrun"},
+	if n.registry == nil {
+		return []rpcdaemon.Capability{
+			{Name: "runtime.process", Available: true},
+			{Name: "runtime.libkrun", Available: false},
+		}
 	}
+	caps := make([]rpcdaemon.Capability, 0, len(n.registry.Backends()))
+	for _, backend := range n.registry.Backends() {
+		caps = append(caps, rpcdaemon.Capability{Name: "runtime." + backend, Available: true})
+	}
+	return caps
 }
 
 // dockercomposePortDiscoverer adapts the dockercompose package to satisfy

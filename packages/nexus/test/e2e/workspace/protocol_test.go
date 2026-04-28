@@ -12,6 +12,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
+// Spec: RPC-009
 // TestProtocol_Healthz verifies the /healthz HTTP endpoint returns 200 OK.
 func TestProtocol_Healthz(t *testing.T) {
 	t.Parallel()
@@ -35,6 +36,28 @@ func TestProtocol_Healthz(t *testing.T) {
 	t.Fatalf("/healthz: %v", lastErr)
 }
 
+// Spec: RPC-010
+// TestProtocol_Version verifies the /version HTTP endpoint returns version JSON.
+func TestProtocol_Version(t *testing.T) {
+	t.Parallel()
+	h := harness.NewCLIHarness(t)
+	url := fmt.Sprintf("http://127.0.0.1:%d/version", h.DaemonPort())
+
+	resp, err := http.Get(url) //nolint:noctx
+	if err != nil {
+		t.Fatalf("/version: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/version: expected 200, got %d body=%q", resp.StatusCode, body)
+	}
+	if len(body) == 0 {
+		t.Fatal("/version: empty body")
+	}
+}
+
+// Spec: DAEMON-020, DAEMON-021, DAEMON-022, DAEMON-023, DAEMON-024, DAEMON-025
 // TestProtocol_NodeInfo verifies node.info returns a valid response with capabilities.
 func TestProtocol_NodeInfo(t *testing.T) {
 	t.Parallel()
@@ -59,6 +82,7 @@ func TestProtocol_NodeInfo(t *testing.T) {
 	t.Logf("node.info: name=%q capabilities=%d", res.Node.Name, len(res.Capabilities))
 }
 
+// Spec: DAEMON-054
 // TestProtocol_AuthReject verifies the HTTP endpoint rejects requests without a valid token.
 func TestProtocol_AuthReject(t *testing.T) {
 	t.Parallel()
@@ -79,6 +103,7 @@ func TestProtocol_AuthReject(t *testing.T) {
 	}
 }
 
+// Spec: WS-040, WS-043, WS-048, WS-049, WS-050, WS-051, WS-052, WS-053, WS-054, WS-055, WS-056
 // TestProtocol_WorkflowRoundTrip verifies a complete create/start/stop/remove workflow via RPC.
 func TestProtocol_WorkflowRoundTrip(t *testing.T) {
 	t.Parallel()

@@ -86,7 +86,7 @@ func Command() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := validateVMAssets(sandboxMode, paths.rootfsPath, paths.kernelPath); err != nil {
+			if err := validateVMAssets(isLibkrun, paths.rootfsPath, paths.kernelPath); err != nil {
 				return err
 			}
 			setupLDLibraryPath(isLibkrun)
@@ -279,8 +279,8 @@ func resolveVMPaths(isLibkrun bool, rootfsPath, kernelPath, workDirRoot string) 
 }
 
 // validateVMAssets ensures rootfs and kernel exist when not in sandbox mode.
-func validateVMAssets(sandboxMode bool, rootfsPath, kernelPath string) error {
-	if sandboxMode {
+func validateVMAssets(needsVMAssets bool, rootfsPath, kernelPath string) error {
+	if !needsVMAssets {
 		return nil
 	}
 	if rootfsPath == "" || kernelPath == "" {
@@ -317,7 +317,7 @@ func setupLDLibraryPath(isLibkrun bool) {
 // injectAgentAndBake refreshes the guest-agent binary in the rootfs and, in
 // non-CI environments, pre-bakes developer tools into the base rootfs.
 func injectAgentAndBake(cfg daemon.Config, isLibkrun, isForegroundChild bool, emitPhase func(phase, status, message string)) error {
-	if sandboxMode || isForegroundChild {
+	if !isLibkrun || isForegroundChild {
 		return nil
 	}
 	if err := ensureGuestAgent(cfg.RootFSPath); err != nil {

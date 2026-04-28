@@ -9,6 +9,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
+// Spec: CLI-030, CLI-031, CLI-032, CLI-033, CLI-034, CLI-035
 // TestCLI_WorkspaceCreate_EndToEnd runs workspace create against a real daemon over the
 // SSH profile (same entrypoint developers use).
 func TestCLI_WorkspaceCreate_EndToEnd(t *testing.T) {

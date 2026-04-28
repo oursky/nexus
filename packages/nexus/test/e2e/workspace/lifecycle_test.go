@@ -8,7 +8,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
-// Spec: VM-005, VM-PROOF-002, INV-007, INV-008, INV-009
+// Spec: VM-005, VM-PROOF-002, INV-007, INV-008, INV-009, INV-011, WS-040, WS-041, WS-043, WS-045, WS-048, WS-049, WS-050, WS-051, WS-052, WS-053, WS-054, WS-055, WS-056
 func TestWorkspaceLifecycle(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)

@@ -8,6 +8,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
+// Spec: PRJ-010, PRJ-011, PRJ-012, PRJ-013, PRJ-014, PRJ-015, PRJ-016, PRJ-017, PRJ-018, PRJ-019, PRJ-020, PRJ-030, INV-003, INV-004, INV-015
 func TestProject(t *testing.T) {
 	t.Parallel()
 	h := harness.New(t)
@@ -88,5 +89,31 @@ func TestProject(t *testing.T) {
 		if p.ID == id {
 			t.Fatalf("list: project %s still present after remove", id)
 		}
+	}
+}
+
+// Spec: ERR-040, INV-004
+// TestProject_DuplicateName verifies project.create rejects duplicate names.
+func TestProject_DuplicateName(t *testing.T) {
+	t.Parallel()
+	h := harness.New(t)
+	repo := harness.MakeLocalGitRepo(t, "proj-dup")
+
+	var res struct {
+		Project struct{ ID string `json:"id"` } `json:"project"`
+	}
+	h.MustCall("project.create", map[string]any{
+		"name":    "dup-proj-name",
+		"repoUrl": repo,
+	}, &res)
+	id := res.Project.ID
+	t.Cleanup(func() { _ = h.Call("project.remove", map[string]any{"id": id}, nil) })
+
+	err := h.Call("project.create", map[string]any{
+		"name":    "dup-proj-name",
+		"repoUrl": repo,
+	}, nil)
+	if err == nil {
+		t.Fatal("create duplicate project name: expected error, got nil")
 	}
 }

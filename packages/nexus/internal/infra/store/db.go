@@ -33,11 +33,23 @@ func Open(path string) (*DB, error) {
 	// persist-state write to fail immediately with "database is locked".
 	// _journal_mode=WAL: allows concurrent readers + one writer without
 	// blocking reads during long write transactions (workspace start).
-	dsn := path + "?_busy_timeout=30000&_journal_mode=WAL"
+	dsn := path + "?_journal_mode=WAL"
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+
+	// modernc.org/sqlite does not reliably honor _busy_timeout in the DSN,
+	// so set it explicitly after opening.
+	if _, err := sqlDB.Exec("PRAGMA busy_timeout = 30000"); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("set sqlite busy_timeout: %w", err)
+	}
+
+	// Serialize all DB access through a single connection to avoid
+	// "database is locked" errors with multiple concurrent writers.
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
 
 	d := &DB{db: sqlDB}
 	if err := d.migrate(); err != nil {

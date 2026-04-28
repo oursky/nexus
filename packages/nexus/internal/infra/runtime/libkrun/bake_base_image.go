@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -19,18 +20,25 @@ func buildBaseImage(repoRoot, imagePath string) error {
 	if err != nil {
 		return fmt.Errorf("compute project size: %w", err)
 	}
-	if err := createSparseFile(imagePath, workspaceImageSizeBytes(size)); err != nil {
+	tmpPath := imagePath + ".tmp"
+	if err := createSparseFile(tmpPath, workspaceImageSizeBytes(size)); err != nil {
 		return err
 	}
-	out, err := exec.Command("mkfs.ext4", "-F", "-d", repoRoot, imagePath).CombinedOutput()
+	out, err := exec.Command("mkfs.ext4", "-F", "-d", repoRoot, tmpPath).CombinedOutput()
 	if err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("mkfs.ext4 base image: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if err := os.Rename(tmpPath, imagePath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("promote base image: %w", err)
 	}
 	return nil
 }
 
 // buildBaseImageWithContext builds a base image with context support and timeout.
 // Retries transient failures up to 3 times with exponential backoff.
+// The image is written to imagePath+".tmp" and atomically renamed to imagePath on success.
 func buildBaseImageWithContext(ctx context.Context, repoRoot, imagePath string) error {
 	start := time.Now()
 	log.Printf("[libkrun] buildBaseImage start: %s → %s", repoRoot, imagePath)
@@ -46,7 +54,9 @@ func buildBaseImageWithContext(ctx context.Context, repoRoot, imagePath string) 
 	if err != nil {
 		return fmt.Errorf("compute project size: %w", err)
 	}
-	if err := createSparseFile(imagePath, workspaceImageSizeBytes(size)); err != nil {
+
+	tmpPath := imagePath + ".tmp"
+	if err := createSparseFile(tmpPath, workspaceImageSizeBytes(size)); err != nil {
 		return err
 	}
 
@@ -57,17 +67,57 @@ func buildBaseImageWithContext(ctx context.Context, repoRoot, imagePath string) 
 			log.Printf("[libkrun] buildBaseImage retry attempt=%d backoff=%s: %s → %s", attempt, backoff, repoRoot, imagePath)
 			select {
 			case <-ctx.Done():
+				_ = os.Remove(tmpPath)
 				return ctx.Err()
 			case <-time.After(backoff):
 			}
 		}
 
-		cmd := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-d", repoRoot, imagePath)
+		cmd := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-d", repoRoot, tmpPath)
 		out, err := cmd.CombinedOutput()
 		if err == nil {
-			return nil
+			lastErr = nil
+			break
 		}
 		lastErr = fmt.Errorf("mkfs.ext4 base image: %w: %s", err, strings.TrimSpace(string(out)))
 	}
-	return fmt.Errorf("buildBaseImage failed after 3 attempts: %w", lastErr)
+
+	if lastErr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("buildBaseImage failed after 3 attempts: %w", lastErr)
+	}
+
+	// Validate with e2fsck if available.
+	if fsck, err := exec.LookPath("e2fsck"); err == nil {
+		cmd := exec.CommandContext(ctx, fsck, "-n", tmpPath)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("[libkrun] e2fsck validation FAILED for %s: %v: %s", tmpPath, err, strings.TrimSpace(string(out)))
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("e2fsck validation failed: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		log.Printf("[libkrun] base image validated OK: %s", tmpPath)
+	} else {
+		log.Printf("[libkrun] e2fsck not found, skipping validation: %v", err)
+	}
+
+	if err := os.Rename(tmpPath, imagePath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("promote base image: %w", err)
+	}
+	return nil
+}
+
+// isValidExt4 does a fast superblock magic check on path.
+// Returns false if the file cannot be read or the magic is wrong.
+func isValidExt4(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var buf [2]byte
+	if _, err := f.ReadAt(buf[:], 1080); err != nil {
+		return false
+	}
+	return buf[0] == 0x53 && buf[1] == 0xef
 }

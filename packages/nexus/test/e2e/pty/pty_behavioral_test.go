@@ -37,7 +37,7 @@ func createWorkspaceLocalRepo(t *testing.T, h *harness.CLIHarness, repoPath, nam
 	return id
 }
 
-// Spec: VM-002, VM-003, VM-PROOF-005
+// Spec: VM-002, VM-003, VM-PROOF-005, PTY-001, PTY-002, PTY-005, PTY-006, PTY-007, PTY-009
 // TestPTY_ExecPWD verifies that workspace exec runs in the workspace's repo directory.
 func TestPTY_ExecPWD(t *testing.T) {
 	t.Parallel()
@@ -57,7 +57,7 @@ func TestPTY_ExecPWD(t *testing.T) {
 	}
 }
 
-// Spec: VM-001, VM-PROOF-001
+// Spec: VM-001, VM-PROOF-001, PTY-001, PTY-002, PTY-005, PTY-006, PTY-007, PTY-009
 // TestPTY_ExecEcho verifies stdout is streamed back from workspace exec.
 func TestPTY_ExecEcho(t *testing.T) {
 	t.Parallel()
@@ -136,7 +136,7 @@ func TestPTY_ExecExitCode(t *testing.T) {
 	}
 }
 
-// Spec: VM-001, VM-PROOF-001
+// Spec: VM-001, VM-PROOF-001, PTY-001, PTY-002, PTY-005, PTY-006, PTY-007, PTY-009
 // TestPTY_ShellNonInteractiveScript verifies workspace shell with stdin pipe runs a script.
 func TestPTY_ShellNonInteractiveScript(t *testing.T) {
 	t.Parallel()
@@ -154,6 +154,7 @@ func TestPTY_ShellNonInteractiveScript(t *testing.T) {
 	}
 }
 
+// Spec: PTY-017, PTY-018
 // TestPTY_ListSession verifies pty.list shows a created session.
 func TestPTY_ListSession(t *testing.T) {
 	t.Parallel()

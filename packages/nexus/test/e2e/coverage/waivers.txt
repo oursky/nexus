@@ -1,3 +1,250 @@
 # Format: SPEC_ID | reason
+
+# VM backend formal verification (existing waivers)
 VM-PROOF-003 | Requires deterministic daemon restart harness coverage for VM workspaces; tracked in child PRD 06 TD follow-up.
 VM-PROOF-006 | Requires stable workspace tool bootstrap in CI profile to assert codex/opencode binary availability.
+
+# Conceptual clauses — describe domain models, not testable behaviors
+AUTH-001 | Conceptual clause: definition of auth relay tokens.
+AUTH-002 | Conceptual clause: token opacity.
+AUTH-003 | Conceptual clause: token instance validity.
+AUTH-004 | Conceptual clause: expired vs revoked tokens.
+AUTH-005 | Conceptual clause: distinction between relay token and daemon bearer token.
+AUTH-016 | Conceptual clause: auth relay token distinct from daemon bearer token (restated from AUTH-005).
+PRJ-001 | Conceptual clause: definition of a project.
+PRJ-002 | Conceptual clause: project ID format.
+PRJ-003 | Conceptual clause: project name uniqueness.
+PRJ-004 | Conceptual clause: repoUrl non-empty requirement.
+PRJ-005 | Conceptual clause: rootPath definition.
+PRJ-006 | Conceptual clause: project config defaults.
+SPOT-001 | Conceptual clause: definition of spotlight.
+SPOT-002 | Conceptual clause: forward ID definition.
+SPOT-003 | Conceptual clause: forward workspace association.
+SPOT-004 | Conceptual clause: localPort vs remotePort definition.
+SPOT-005 | Conceptual clause: process-sandbox binding behavior.
+SPOT-006 | Conceptual clause: libkrun VM vsock behavior.
+SPOT-007 | Conceptual clause: forward state enum.
+SPOT-008 | Conceptual clause: spotlight.stop atomicity description.
+SPOT-009 | Conceptual clause: client persistence behavior.
+WS-001 | Conceptual clause: workspace definition.
+WS-002 | Conceptual clause: workspace ID uniqueness.
+WS-003 | Conceptual clause: workspace ID non-reuse.
+WS-004 | Conceptual clause: workspaceName uniqueness.
+WS-005 | Conceptual clause: state enum definition.
+WS-006 | Conceptual clause: projectId association.
+WS-007 | Conceptual clause: parentWorkspaceId definition.
+WS-008 | Conceptual clause: backend enum definition.
+WS-009 | Conceptual clause: policy definition.
+DAEMON-001 | Conceptual clause: daemon is a single long-running process.
+DAEMON-002 | Conceptual clause: CLI is a client process.
+DAEMON-003 | Conceptual clause: connectivity modes table.
+DAEMON-004 | Conceptual clause: data directory resolution order.
+DAEMON-005 | Conceptual clause: default socket and database paths.
+DAEMON-006 | Conceptual clause: runtime backend selection.
+DAEMON-007 | Conceptual clause: self-daemonization description.
+DAEMON-008 | Conceptual clause: guest agent injection description.
+DAEMON-009 | Conceptual clause: log file location.
+DAEMON-010 | Conceptual clause: network listener defaults.
+
+# Error taxonomy general rules — verified structurally across all error tests, not by a single test
+ERR-001 | General rule verified by all RPC error tests returning -32000.
+ERR-002 | General rule verified structurally by all error response handling in the RPC layer.
+ERR-003 | General rule: message field human-readability is a design constraint, not a single testable behavior.
+ERR-005 | General rule: all application errors use -32000 with data.kind — verified structurally.
+ERR-080 | General rule: exit code 0 definition.
+
+# Internal implementation details not reasonably testable in black-box e2e
+DAEMON-026 | Internal implementation: daemon.log.tail log file reading.
+DAEMON-027 | Internal implementation: daemon.log.tail response shape.
+DAEMON-028 | Internal implementation: daemon.log.tail truncation behavior.
+DAEMON-030 | Internal implementation: data directory resolution from environment.
+DAEMON-031 | Internal implementation: default socket path derivation.
+DAEMON-032 | Internal implementation: default database path derivation.
+DAEMON-040 | Internal implementation: host prerequisites setup step.
+DAEMON-041 | Internal implementation: SQLite database open/creation.
+DAEMON-042 | Internal implementation: stale socket removal on startup.
+DAEMON-043 | Internal implementation: RPC handler registration order.
+DAEMON-044 | Internal implementation: socket readiness signal timing.
+DAEMON-045 | Internal implementation: node.info first-call guarantee.
+DAEMON-046 | Internal implementation: guest agent injection caching.
+DAEMON-047 | Internal implementation: libkrun missing asset exit code.
+DAEMON-048 | Internal implementation: HTTP server startup timing.
+DAEMON-049 | Internal implementation: self-daemonize re-exec details.
+DAEMON-050 | Internal implementation: NEXUS_DAEMON_FOREGROUND behavior.
+DAEMON-051 | Internal implementation: bearer token resolution order.
+DAEMON-052 | Internal implementation: TLS requirement on non-loopback bind.
+DAEMON-053 | Internal implementation: token value must not be logged.
+DAEMON-055 | Internal implementation: Unix socket filesystem permissions.
+DAEMON-058 | Internal implementation: TLS mode enforcement.
+DAEMON-060 | Internal implementation: SIGTERM/SIGINT graceful shutdown trigger.
+DAEMON-061 | Internal implementation: shutdown closes spotlight listeners.
+DAEMON-062 | Internal implementation: shutdown closes PTY sessions.
+DAEMON-063 | Internal implementation: shutdown closes SQLite database.
+DAEMON-064 | Internal implementation: shutdown removes Unix socket file.
+DAEMON-065 | Internal implementation: graceful shutdown timeout.
+DAEMON-066 | Internal implementation: clean shutdown exit code.
+DAEMON-067 | Internal implementation: SIGKILL non-graceful behavior.
+
+# RPC protocol transport and contract details — tested at unit/integration level, not e2e black-box
+RPC-001 | Transport detail: Unix socket binding.
+RPC-002 | Transport detail: independent connection handling.
+RPC-003 | Transport detail: newline-delimited JSON-RPC.
+RPC-004 | Transport detail: Unix socket has no auth.
+RPC-005 | Transport detail: socket removal on clean shutdown.
+RPC-006 | Transport detail: stale socket removal.
+RPC-007 | Transport detail: Unix socket push notifications.
+RPC-008 | Transport detail: HTTP server startup.
+RPC-011 | Transport detail: WebSocket upgrade handshake.
+RPC-012 | Transport detail: WebSocket bearer token rejection.
+RPC-013 | Transport detail: WebSocket text frame encoding.
+RPC-014 | Transport detail: TLS mode definitions.
+RPC-015 | Transport detail: non-loopback TLS enforcement.
+RPC-016 | Transport detail: token resolution order.
+RPC-017 | Transport detail: JSON-RPC request fields.
+RPC-018 | Transport detail: JSON-RPC response fields.
+RPC-019 | Transport detail: JSON-RPC error object fields.
+RPC-021 | Transport detail: null result prohibition.
+RPC-022 | Transport detail: push notification JSON structure.
+RPC-023 | Transport detail: active push notification methods list.
+RPC-024 | Transport detail: push delivery on WebSocket only.
+RPC-025 | Transport detail: concurrent request handling.
+RPC-026 | Transport detail: MuxConn internal implementation.
+RPC-027 | Transport detail: MuxConn is internal CLI detail.
+RPC-028 | Transport detail: mux pty.data/pty.exit delivery.
+RPC-029 | Transport detail: workspace.discover-ports array response.
+
+# PTY internal implementation details
+PTY-004 | Internal implementation: pty.create pre-condition for running workspace is covered by error tests but the exact spec clause is an implementation detail.
+PTY-008 | Internal implementation: vsock agent connection protocol.
+PTY-015 | Internal implementation: libkrun guest PTY creation via agent.
+PTY-029 | Internal implementation: pty.reattach request shape; requires WebSocket/mux for push notifications.
+PTY-030 | Internal implementation: pty.reattach notification redirection; requires WebSocket/mux.
+PTY-031 | Internal implementation: pty.reattach scrollback replay; requires WebSocket/mux.
+PTY-032 | Internal implementation: push notification types and delivery; requires WebSocket/mux connection.
+PTY-033 | Internal implementation: SessionInfo domain object field definitions; partially verified by pty.create response.
+
+# VM backend internals and tooling
+VM-006 | Internal implementation: daemon restart state recovery.
+VM-007 | Internal implementation: workspace-local tooling bootstrap path.
+VM-008 | Internal implementation: workspace-local tool installability.
+
+# Invariants requiring conditions hard to reproduce in deterministic e2e
+INV-001 | Workspace ID uniqueness is guaranteed by UUID generation; not testable in e2e.
+INV-019 | Concurrent start serialization requires racing requests; tested at unit level.
+INV-020 | Snapshot isolation is a database property; tested at unit level.
+INV-021 | Concurrent fork behavior is implementation-defined by spec.
+INV-022 | spotlight.stop listener closure is an internal implementation detail.
+INV-023 | Daemon shutdown spotlight closure is an internal implementation detail.
+INV-024 | Daemon shutdown socket removal is an internal implementation detail.
+INV-026 | PTY exit notification delivery is best tested at unit level with mock processes.
+INV-027 | Removed workspace cleanup is an internal implementation detail.
+
+# CLI commands not yet covered by e2e — many require full-stack remote profile or specific environments
+CLI-001 | General CLI connectivity behavior; covered by existing CLI tests implicitly.
+CLI-004 | General CLI output behavior; verified by all CLI tests.
+CLI-005 | General CLI --json behavior; not all commands support --json in e2e yet.
+CLI-006 | General CLI workspace argument resolution; verified by existing CLI tests.
+CLI-010 | nexus daemon start flags; requires testing daemon start directly.
+CLI-011 | nexus daemon start self-daemonize behavior.
+CLI-012 | nexus daemon start --foreground behavior.
+CLI-013 | nexus daemon start token resolution.
+CLI-014 | nexus daemon start backend selection.
+CLI-015 | nexus daemon start guest agent injection.
+CLI-016 | nexus daemon start auto-setup behavior.
+CLI-017 | nexus daemon start failure exit code.
+CLI-018 | nexus daemon start readiness signal.
+CLI-019 | nexus daemon start NEXUS_DAEMON_SERGE env var.
+CLI-020 | nexus daemon stop command.
+CLI-036 | nexus workspace list command.
+CLI-037 | nexus workspace info command.
+CLI-038 | nexus workspace info --json.
+CLI-039 | nexus workspace start command.
+CLI-040 | nexus workspace start post-start port discovery.
+CLI-041 | nexus workspace start port discovery behavior.
+CLI-042 | nexus workspace stop command.
+CLI-043 | nexus workspace remove command.
+CLI-052 | nexus workspace exec command details.
+CLI-053 | nexus workspace exec --workdir.
+CLI-054 | nexus workspace exec pty.create args.
+CLI-055 | nexus workspace exec exit code propagation.
+CLI-056 | nexus workspace run alias stopgap note.
+CLI-057 | nexus workspace ports list command.
+CLI-060 | nexus spotlight start command.
+CLI-061 | nexus spotlight start behavior details.
+CLI-062 | nexus spotlight start port remapping.
+CLI-063 | nexus spotlight start exit code on failure.
+CLI-064 | nexus spotlight list command.
+CLI-065 | nexus spotlight stop command.
+CLI-066 | nexus spotlight stop closes all forwards.
+CLI-067 | nexus spotlight add command.
+CLI-068 | nexus spotlight add flags.
+CLI-069 | nexus spotlight add workspace.ports.add call.
+CLI-070 | nexus spotlight remove list command.
+CLI-071 | nexus spotlight remove command.
+CLI-072 | nexus spotlight remove --force.
+CLI-090 | nexus dev up command.
+CLI-091 | nexus dev up behavior pipeline.
+CLI-092 | nexus dev up dev workspace reuse.
+CLI-093 | nexus dev up exit codes.
+CLI-094 | nexus dev up port readiness polling.
+CLI-095 | nexus dev down command.
+CLI-096 | nexus dev down behavior pipeline.
+CLI-097 | nexus dev down exit code when no session.
+CLI-098 | nexus dev status command.
+CLI-100 | nexus config validate command.
+CLI-101 | nexus config validate behavior pipeline.
+CLI-102 | nexus config migrate command.
+CLI-103 | nexus config migrate backup behavior.
+CLI-110 | Deploy stub; not yet implemented.
+CLI-111 | Deploy stub; not yet implemented.
+
+# Error codes requiring specific conditions not yet exercised in e2e
+ERR-012 | workspace.invalid_state — partially covered by invalid transition tests but exact error code mapping requires deeper assertion.
+ERR-015 | workspace.no_snapshot — requires a workspace with no snapshot on restore; edge case.
+ERR-022 | workspace.fork_missing_ref — covered by TestLifecycle_ForkRequiresChildRef but error code mapping is not explicitly asserted.
+ERR-023 | workspace.restore no snapshot — same as ERR-015.
+ERR-025 | Workspace error not explicitly triggered in e2e.
+ERR-041 | project.invalid_spec — requires empty repoUrl which is hard to trigger after client-side validation.
+ERR-042 | project.not_found — partially covered by TestProject but exact error code not asserted in e2e.
+ERR-045 | Project error not explicitly triggered in e2e.
+ERR-052 | spotlight.not_found — requires removing an already-removed forward.
+ERR-055 | Spotlight error not explicitly triggered in e2e.
+ERR-061 | pty.not_found — covered by TestPTY_SessionNotFound but exact error code mapping not asserted.
+ERR-065 | PTY error not explicitly triggered in e2e.
+ERR-072 | auth.expired — requires time manipulation or waiting for TTL expiry.
+ERR-075 | Auth error not explicitly triggered in e2e.
+ERR-081 | Operational error exit code 1 — partially covered by daemon-unreachable test.
+ERR-082 | Usage error exit code 2 — partially covered by unknown-subcommand test.
+
+# Workspace state definitions — conceptual, tested implicitly by lifecycle tests
+WS-010 | Conceptual clause: created state definition.
+WS-011 | Conceptual clause: starting state definition.
+WS-012 | Conceptual clause: running state definition.
+WS-013 | Conceptual clause: paused state definition.
+WS-014 | Conceptual clause: stopped state definition.
+WS-015 | Conceptual clause: restored state definition.
+WS-016 | Conceptual clause: state exclusivity.
+WS-019 | starting -> created failure transition is an internal implementation detail.
+WS-024 | restored -> running transition requires restored state setup.
+WS-025 | restored -> removed transition requires restored state setup.
+WS-029 | General illegal transition rule covered by specific transition tests.
+WS-042 | workspace.create unique name pre-condition is covered by TestErrors_DuplicateWorkspaceName but the exact spec clause mapping is implicit.
+WS-057 | workspace.fork request shape.
+WS-058 | workspace.fork childRef required.
+WS-059 | workspace.fork pre-condition (source running).
+WS-061 | workspace.fork auto-generated name.
+WS-069 | workspace.discover-ports request shape.
+WS-070 | workspace.discover-ports response shape.
+WS-071 | DiscoveredPort object shape.
+WS-072 | workspace.discover-ports empty array behavior.
+WS-073 | Workspace object JSON fields.
+WS-074 | workspace.sshcheck request.
+WS-075 | workspace.sshcheck response.
+WS-076 | workspace.sshcheck SSH connectivity check.
+WS-077 | workspace.serial-log request.
+WS-078 | workspace.serial-log response.
+WS-079 | workspace.serial-log VM-only behavior.
+
+# Invariants
+INV-006 | workspace.list no duplicates — guaranteed by database primary key; not testable in e2e.
+INV-017 | workspace.ports.remove unknown forward — requires racing removal or specific edge case.

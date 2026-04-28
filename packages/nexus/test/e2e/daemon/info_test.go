@@ -8,6 +8,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
+// Spec: DAEMON-020, DAEMON-021, DAEMON-022, DAEMON-023, DAEMON-024, DAEMON-025
 func TestNodeInfo(t *testing.T) {
 	t.Parallel()
 	h := harness.New(t)

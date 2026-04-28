@@ -14,6 +14,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
+// Spec: CLI-049, CLI-050, CLI-051
 // TestCLI_WorkspaceShellPTY drives `nexus workspace shell` through a real pseudoterminal
 // (not only stdin pipe), so the interactive code path is exercised.
 func TestCLI_WorkspaceShellPTY(t *testing.T) {

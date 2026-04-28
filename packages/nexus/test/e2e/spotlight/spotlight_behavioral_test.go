@@ -71,7 +71,7 @@ func createSpotlightWorkspace(t *testing.T, h *harness.Harness, repoPath, name s
 	return wsID
 }
 
-// Spec: VM-005, VM-PROOF-002
+// Spec: VM-005, VM-PROOF-002, SPOT-013, SPOT-014, SPOT-015, SPOT-016, SPOT-017, SPOT-018, SPOT-019, SPOT-020, SPOT-021, SPOT-022, SPOT-023
 // TestSpotlight_TCPProxyTraffic verifies that spotlight actually proxies TCP traffic.
 func TestSpotlight_TCPProxyTraffic(t *testing.T) {
 	t.Parallel()
@@ -141,6 +141,7 @@ func TestSpotlight_TCPProxyTraffic(t *testing.T) {
 	}
 }
 
+// Spec: SPOT-017, SPOT-018, SPOT-019, SPOT-020, SPOT-021, SPOT-022, SPOT-023, INV-016
 // TestSpotlight_ListAndStop verifies spotlight.list shows active forwards and spotlight.stop removes them.
 func TestSpotlight_ListAndStop(t *testing.T) {
 	t.Parallel()
@@ -202,6 +203,7 @@ func TestSpotlight_ListAndStop(t *testing.T) {
 	}
 }
 
+// Spec: ERR-051
 // TestSpotlight_PortConflict verifies that binding the same local port twice returns an error.
 func TestSpotlight_PortConflict(t *testing.T) {
 	t.Parallel()
@@ -239,6 +241,7 @@ func TestSpotlight_PortConflict(t *testing.T) {
 	}
 }
 
+// Spec: SPOT-010, SPOT-011, SPOT-012
 // TestSpotlight_WorkspacePortsAlias verifies workspace.ports.* are aliases for spotlight.*.
 func TestSpotlight_WorkspacePortsAlias(t *testing.T) {
 	t.Parallel()

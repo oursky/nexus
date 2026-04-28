@@ -10,7 +10,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
-// Spec: VM-PROOF-004, VM-005
+// Spec: VM-PROOF-004, VM-005, CLI-044, CLI-045, CLI-046, CLI-047, CLI-048
 func TestCLI_WorkspaceForkAndRestore(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)

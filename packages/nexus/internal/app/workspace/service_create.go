@@ -22,6 +22,11 @@ func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*works
 		return nil, err
 	}
 
+	// Validate requested backend is available on this node.
+	if spec.Backend != "" && s.registry != nil && !s.registry.HasBackend(spec.Backend) {
+		return nil, fmt.Errorf("runtime backend %q is not available on this node (available: %v)", spec.Backend, s.registry.Backends())
+	}
+
 	// Check for duplicate workspace name among non-removed workspaces.
 	all, err := s.repo.List(ctx)
 	if err != nil {
@@ -78,7 +83,8 @@ func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*works
 }
 
 func (s *Service) createWorkspaceRuntime(ctx context.Context, ws *workspace.Workspace, configBundle string) error {
-	if s.driver == nil {
+	driver := s.driverFor(ws)
+	if driver == nil {
 		return nil
 	}
 	req := &runtime.CreateRequest{
@@ -87,12 +93,12 @@ func (s *Service) createWorkspaceRuntime(ctx context.Context, ws *workspace.Work
 		ProjectRoot:   ws.Repo,
 		ConfigBundle:  configBundle,
 	}
-	if err := s.driver.Create(ctx, req); err != nil && !isAlreadyExists(err) {
+	if err := driver.Create(ctx, req); err != nil && !isAlreadyExists(err) {
 		return fmt.Errorf("runtime create: %w", err)
 	}
 	// Stamp backend so the PTY handler knows which session type to use.
 	if ws.Backend == "" {
-		ws.Backend = s.driver.Backend()
+		ws.Backend = driver.Backend()
 		ws.UpdatedAt = time.Now().UTC()
 		_ = s.repo.Update(ctx, ws)
 	}

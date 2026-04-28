@@ -12,6 +12,14 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 )
 
+// RegistryResolver resolves the correct runtime driver for a workspace.
+type RegistryResolver interface {
+	Driver(backend string) (runtime.Driver, bool)
+	DefaultBackend() string
+	HasBackend(backend string) bool
+	Backends() []string
+}
+
 // ForwardCreator creates port forwards for a workspace.
 type ForwardCreator interface {
 	StartSpotlight(ctx context.Context, workspaceID string, spec spotlight.ExposeSpec) (*spotlight.Forward, error)
@@ -21,7 +29,7 @@ type ForwardCreator interface {
 type Service struct {
 	repo           workspace.Repository
 	projectRepo    project.Repository
-	driver         runtime.Driver
+	registry       RegistryResolver
 	portDiscoverer workspace.PortDiscoverer
 	forwardCreator ForwardCreator
 	// bgCtx is a long-lived context used for async workspace starts so they
@@ -33,10 +41,19 @@ type runtimeReadinessDriver interface {
 	WorkspaceReady(ctx context.Context, ws *workspace.Workspace) (bool, error)
 }
 
-// NewService constructs a Service. driver may be nil if no runtime backend is available.
+// NewService constructs a Service. registry may be nil if no runtime backend is available.
 // bgCtx should be the daemon's root context (cancelled only on shutdown).
-func NewService(repo workspace.Repository, projectRepo project.Repository, driver runtime.Driver, portDiscoverer workspace.PortDiscoverer, forwardCreator ForwardCreator, bgCtx context.Context) *Service {
-	return &Service{repo: repo, projectRepo: projectRepo, driver: driver, portDiscoverer: portDiscoverer, forwardCreator: forwardCreator, bgCtx: bgCtx}
+func NewService(repo workspace.Repository, projectRepo project.Repository, registry RegistryResolver, portDiscoverer workspace.PortDiscoverer, forwardCreator ForwardCreator, bgCtx context.Context) *Service {
+	return &Service{repo: repo, projectRepo: projectRepo, registry: registry, portDiscoverer: portDiscoverer, forwardCreator: forwardCreator, bgCtx: bgCtx}
+}
+
+// driverFor returns the runtime driver for a workspace, or nil if none is available.
+func (s *Service) driverFor(ws *workspace.Workspace) runtime.Driver {
+	if s.registry == nil {
+		return nil
+	}
+	d, _ := s.registry.Driver(ws.Backend)
+	return d
 }
 
 // Relations is a graph of workspaces grouped by repo.
@@ -129,8 +146,8 @@ func (s *Service) Stop(ctx context.Context, id string) (*workspace.Workspace, er
 		return nil, fmt.Errorf("cannot stop removed workspace: %s", id)
 	}
 
-	if s.driver != nil {
-		if err := s.driver.Stop(ctx, ws); err != nil {
+	if driver := s.driverFor(ws); driver != nil {
+		if err := driver.Stop(ctx, ws); err != nil {
 			return nil, fmt.Errorf("runtime stop: %w", err)
 		}
 	}
@@ -152,8 +169,8 @@ func (s *Service) Remove(ctx context.Context, id string) error {
 		return fmt.Errorf("cannot remove running workspace: %s", id)
 	}
 
-	if s.driver != nil {
-		if err := s.driver.Destroy(ctx, ws); err != nil {
+	if driver := s.driverFor(ws); driver != nil {
+		if err := driver.Destroy(ctx, ws); err != nil {
 			_ = err
 		}
 	}
@@ -170,9 +187,9 @@ func (s *Service) Restore(ctx context.Context, id string) (*workspace.Workspace,
 		return nil, fmt.Errorf("cannot restore removed workspace: %s", id)
 	}
 
-	if s.driver != nil {
+	if driver := s.driverFor(ws); driver != nil {
 		snap := &runtime.Snapshot{WorkspaceID: ws.ID}
-		if err := s.driver.Restore(ctx, ws, snap); err != nil {
+		if err := driver.Restore(ctx, ws, snap); err != nil {
 			return nil, fmt.Errorf("runtime restore: %w", err)
 		}
 	}
@@ -193,7 +210,8 @@ func (s *Service) Ready(ctx context.Context, id string) (bool, error) {
 	if ws.State != workspace.StateRunning {
 		return false, nil
 	}
-	checker, ok := s.driver.(runtimeReadinessDriver)
+	driver := s.driverFor(ws)
+	checker, ok := driver.(runtimeReadinessDriver)
 	if !ok || checker == nil {
 		return true, nil
 	}

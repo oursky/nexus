@@ -213,7 +213,9 @@ func newTestService() (*Service, *fakeWorkspaceRepo, *fakeProjectRepo, *fakeDriv
 	wr := newFakeWorkspaceRepo()
 	pr := newFakeProjectRepo()
 	d := &fakeDriver{backend: "test"}
-	svc := NewService(wr, pr, d, nil, nil, context.Background())
+	reg := runtime.NewRegistry()
+	reg.Register(d)
+	svc := NewService(wr, pr, reg, nil, nil, context.Background())
 	return svc, wr, pr, d
 }
 

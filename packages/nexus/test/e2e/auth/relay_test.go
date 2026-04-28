@@ -8,6 +8,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
+// Spec: AUTH-010, AUTH-011, AUTH-012, AUTH-013, AUTH-014, AUTH-015, AUTH-017, AUTH-018, AUTH-019, ERR-070, ERR-071
 func TestAuthRelay(t *testing.T) {
 	t.Parallel()
 	h := harness.New(t)

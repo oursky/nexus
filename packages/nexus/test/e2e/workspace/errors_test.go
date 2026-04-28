@@ -8,6 +8,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
+// Spec: ERR-011
 // TestErrors_WorkspaceNotFound verifies workspace operations on unknown IDs return 404.
 func TestErrors_WorkspaceNotFound(t *testing.T) {
 	t.Parallel()
@@ -41,6 +42,7 @@ func TestErrors_WorkspaceNotFound(t *testing.T) {
 	}
 }
 
+// Spec: WS-044, ERR-013
 // TestErrors_CreateMissingRequiredFields verifies workspace.create rejects missing fields.
 func TestErrors_CreateMissingRequiredFields(t *testing.T) {
 	t.Parallel()
@@ -63,6 +65,7 @@ func TestErrors_CreateMissingRequiredFields(t *testing.T) {
 	}
 }
 
+// Spec: ERR-004
 // TestErrors_MissingIDParam verifies methods that require id reject empty/missing id.
 func TestErrors_MissingIDParam(t *testing.T) {
 	t.Parallel()
@@ -88,6 +91,7 @@ func TestErrors_MissingIDParam(t *testing.T) {
 	}
 }
 
+// Spec: ERR-004
 // TestErrors_SpotlightStopMissingWorkspaceID verifies spotlight.stop with no workspaceId returns 400.
 func TestErrors_SpotlightStopMissingWorkspaceID(t *testing.T) {
 	t.Parallel()
@@ -98,6 +102,7 @@ func TestErrors_SpotlightStopMissingWorkspaceID(t *testing.T) {
 	}
 }
 
+// Spec: INV-016
 // TestErrors_SpotlightStopUnknownWorkspace verifies spotlight.stop on a workspace with no
 // active forwards succeeds (idempotent — nothing to stop is not an error).
 func TestErrors_SpotlightStopUnknownWorkspace(t *testing.T) {
@@ -109,6 +114,7 @@ func TestErrors_SpotlightStopUnknownWorkspace(t *testing.T) {
 	}
 }
 
+// Spec: ERR-004, RPC-020
 // TestErrors_MethodNotFound verifies calling an unregistered method returns an error.
 func TestErrors_MethodNotFound(t *testing.T) {
 	t.Parallel()
@@ -119,6 +125,7 @@ func TestErrors_MethodNotFound(t *testing.T) {
 	}
 }
 
+// Spec: ERR-011
 // TestErrors_PTYCreateMissingWorkspace verifies pty.create with unknown workspace returns an error.
 func TestErrors_PTYCreateMissingWorkspace(t *testing.T) {
 	t.Parallel()
@@ -131,5 +138,97 @@ func TestErrors_PTYCreateMissingWorkspace(t *testing.T) {
 	}, nil)
 	if err == nil {
 		t.Fatal("pty.create unknown workspace: expected error, got nil")
+	}
+}
+
+// Spec: ERR-010, INV-002, INV-018
+// TestErrors_DuplicateWorkspaceName verifies workspace.create rejects duplicate names.
+func TestErrors_DuplicateWorkspaceName(t *testing.T) {
+	t.Parallel()
+	h := harness.New(t)
+	repoPath := harness.MakeLocalGitRepo(t, "dup-name")
+
+	var res struct {
+		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+	}
+	h.MustCall("workspace.create", map[string]any{
+		"spec": map[string]any{"repo": repoPath, "ref": "main", "workspaceName": "dup-test"},
+	}, &res)
+	id := res.Workspace.ID
+	t.Cleanup(func() { _ = h.Call("workspace.remove", map[string]any{"id": id}, nil) })
+
+	// Second create with same name must fail.
+	err := h.Call("workspace.create", map[string]any{
+		"spec": map[string]any{"repo": repoPath, "ref": "main", "workspaceName": "dup-test"},
+	}, nil)
+	if err == nil {
+		t.Fatal("create duplicate name: expected error, got nil")
+	}
+}
+
+// Spec: INV-012, INV-013, WS-026, WS-027, WS-028
+// TestErrors_InvalidStateTransitions verifies illegal workspace state transitions are rejected.
+func TestErrors_InvalidStateTransitions(t *testing.T) {
+	t.Parallel()
+	harness.SkipIfVMBoot(t)
+	h := harness.New(t)
+	repoPath := harness.MakeLocalGitRepo(t, "invalid-sm")
+
+	var res struct {
+		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+	}
+	h.MustCall("workspace.create", map[string]any{
+		"spec": map[string]any{"repo": repoPath, "ref": "main", "workspaceName": "invalid-sm-test"},
+	}, &res)
+	id := res.Workspace.ID
+	t.Cleanup(func() { _ = h.Call("workspace.remove", map[string]any{"id": id}, nil) })
+
+	// WS-026: start on created workspace is legal, but start on running is not.
+	h.MustCall("workspace.start", map[string]any{"id": id}, nil)
+	err := h.Call("workspace.start", map[string]any{"id": id}, nil)
+	if err == nil {
+		t.Error("start on running workspace: expected error, got nil")
+	}
+
+	// INV-012: start on running must return error.
+	if err == nil {
+		t.Error("start on running: expected error (INV-012)")
+	}
+
+	// WS-027: stop on not-running workspace.
+	h.MustCall("workspace.stop", map[string]any{"id": id}, nil)
+	err = h.Call("workspace.stop", map[string]any{"id": id}, nil)
+	if err == nil {
+		t.Error("stop on stopped workspace: expected error, got nil")
+	}
+
+	// WS-028: remove on running workspace.
+	h.MustCall("workspace.start", map[string]any{"id": id}, nil)
+	err = h.Call("workspace.remove", map[string]any{"id": id}, nil)
+	if err == nil {
+		t.Error("remove on running workspace: expected error, got nil")
+	}
+}
+
+// Spec: INV-014
+// TestErrors_RemoveAlreadyRemoved verifies removing an already-removed workspace returns not-found.
+func TestErrors_RemoveAlreadyRemoved(t *testing.T) {
+	t.Parallel()
+	h := harness.New(t)
+	repoPath := harness.MakeLocalGitRepo(t, "remove-twice")
+
+	var res struct {
+		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+	}
+	h.MustCall("workspace.create", map[string]any{
+		"spec": map[string]any{"repo": repoPath, "ref": "main", "workspaceName": "remove-twice-test"},
+	}, &res)
+	id := res.Workspace.ID
+
+	h.MustCall("workspace.remove", map[string]any{"id": id}, nil)
+
+	err := h.Call("workspace.remove", map[string]any{"id": id}, nil)
+	if err == nil {
+		t.Fatal("remove already removed: expected error, got nil")
 	}
 }

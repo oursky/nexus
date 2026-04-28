@@ -8,6 +8,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
+// Spec: WS-063, WS-064, WS-065, WS-066
 // TestWorkspaceRestore verifies that a stopped workspace can be restored via
 // workspace.restore and ends up in the restored state.
 //
