@@ -26,9 +26,23 @@ func TestDiscoverPublishedPorts_DetectsYMLAndParsesPublishedPorts(t *testing.T) 
 
 	orig := runComposeCommand
 	t.Cleanup(func() { runComposeCommand = orig })
-	runComposeCommand = func(_ context.Context, _ string, args ...string) (composeCommandOutput, error) {
-		if len(args) >= 4 && args[len(args)-2] == "--format" && args[len(args)-1] == "json" {
-			return composeCommandOutput{stdout: []byte(`{
+	runComposeCommand = mockComposeCommandWithPorts
+
+	ports, err := DiscoverPublishedPorts(context.Background(), root)
+	if err != nil {
+		t.Fatalf("discover ports: %v", err)
+	}
+
+	assertPortMappings(t, ports, []portMappingExpectation{
+		{service: "api", hostPort: 8000, targetPort: 8000},
+		{service: "student", hostPort: 5173, targetPort: 5173},
+		{service: "student", hostPort: 6006, targetPort: 6006},
+	})
+}
+
+func mockComposeCommandWithPorts(_ context.Context, _ string, args ...string) (composeCommandOutput, error) {
+	if len(args) >= 4 && args[len(args)-2] == "--format" && args[len(args)-1] == "json" {
+		return composeCommandOutput{stdout: []byte(`{
   "services": {
     "student": {
       "ports": [
@@ -41,27 +55,26 @@ func TestDiscoverPublishedPorts_DetectsYMLAndParsesPublishedPorts(t *testing.T) 
     }
   }
 }`)}, nil
+	}
+	return composeCommandOutput{}, nil
+}
+
+type portMappingExpectation struct {
+	service    string
+	hostPort   int
+	targetPort int
+}
+
+func assertPortMappings(t *testing.T, ports []PublishedPort, expected []portMappingExpectation) {
+	t.Helper()
+	if len(ports) != len(expected) {
+		t.Fatalf("expected %d ports, got %d", len(expected), len(ports))
+	}
+	for i, exp := range expected {
+		p := ports[i]
+		if p.Service != exp.service || p.HostPort != exp.hostPort || p.TargetPort != exp.targetPort {
+			t.Fatalf("unexpected mapping %d: %+v", i, p)
 		}
-		return composeCommandOutput{}, nil
-	}
-
-	ports, err := DiscoverPublishedPorts(context.Background(), root)
-	if err != nil {
-		t.Fatalf("discover ports: %v", err)
-	}
-
-	if len(ports) != 3 {
-		t.Fatalf("expected 3 ports, got %d", len(ports))
-	}
-
-	if ports[0].Service != "api" || ports[0].HostPort != 8000 || ports[0].TargetPort != 8000 {
-		t.Fatalf("unexpected first mapping: %+v", ports[0])
-	}
-	if ports[1].Service != "student" || ports[1].HostPort != 5173 || ports[1].TargetPort != 5173 {
-		t.Fatalf("unexpected second mapping: %+v", ports[1])
-	}
-	if ports[2].Service != "student" || ports[2].HostPort != 6006 || ports[2].TargetPort != 6006 {
-		t.Fatalf("unexpected third mapping: %+v", ports[2])
 	}
 }
 

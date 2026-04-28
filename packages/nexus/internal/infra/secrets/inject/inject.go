@@ -41,11 +41,11 @@ type AuthRelayRevokeResult struct {
 // HandleAuthRelayMint mints a short-lived relay token for a workspace binding.
 func HandleAuthRelayMint(_ context.Context, req AuthRelayMintParams, lookup WorkspaceAuthLookup, broker *relay.Broker) (*AuthRelayMintResult, *rpcerrors.RPCError) {
 	if broker == nil || lookup == nil {
-		return nil, rpcerrors.Internal("auth relay not configured")
+		return nil, rpcerrors.Internal("secrets.internal", "auth relay not configured")
 	}
 
 	if req.WorkspaceID == "" || req.Binding == "" {
-		return nil, rpcerrors.InvalidParams("workspaceId and binding are required")
+		return nil, rpcerrors.InvalidParams("secrets.invalid_params", "workspaceId and binding are required")
 	}
 
 	bindingValue, err := lookup.GetAuthBinding(context.Background(), req.WorkspaceID, req.Binding)
@@ -57,7 +57,7 @@ func HandleAuthRelayMint(_ context.Context, req AuthRelayMintParams, lookup Work
 	}
 
 	ttl := time.Duration(req.TTLSeconds) * time.Second
-	token := broker.Mint(req.WorkspaceID, relay.RelayEnv(req.Binding, bindingValue), ttl)
+	token := broker.Mint(req.WorkspaceID, relay.Env(req.Binding, bindingValue), ttl)
 
 	return &AuthRelayMintResult{Token: token}, nil
 }
@@ -65,11 +65,11 @@ func HandleAuthRelayMint(_ context.Context, req AuthRelayMintParams, lookup Work
 // HandleAuthRelayRevoke revokes an existing relay token.
 func HandleAuthRelayRevoke(_ context.Context, req AuthRelayRevokeParams, broker *relay.Broker) (*AuthRelayRevokeResult, *rpcerrors.RPCError) {
 	if broker == nil {
-		return nil, rpcerrors.Internal("auth relay not configured")
+		return nil, rpcerrors.Internal("secrets.internal", "auth relay not configured")
 	}
 
 	if req.Token == "" {
-		return nil, rpcerrors.InvalidParams("token is required")
+		return nil, rpcerrors.InvalidParams("secrets.invalid_params", "token is required")
 	}
 
 	broker.Revoke(req.Token)

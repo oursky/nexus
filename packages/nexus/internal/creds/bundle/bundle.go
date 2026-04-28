@@ -119,58 +119,62 @@ func addDirToTar(tw *tar.Writer, src, relBase string) error {
 		if info.IsDir() && filepath.Base(path) == "node_modules" {
 			return filepath.SkipDir
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			resolved, err := filepath.EvalSymlinks(path)
-			if err != nil {
-				return nil
-			}
-			targetInfo, err := os.Stat(resolved)
-			if err != nil {
-				return nil
-			}
-			relPath, err := filepath.Rel(src, path)
-			if err != nil {
-				return err
-			}
-			targetRel := filepath.ToSlash(filepath.Join(relBase, relPath))
-			if targetInfo.IsDir() {
-				return nil
-			}
-			if targetInfo.Size() > maxBundledFileBytes {
-				return nil
-			}
-			return addFileToTar(tw, targetRel, resolved, targetInfo)
-		}
 		relPath, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
 		}
 		targetRel := filepath.ToSlash(filepath.Join(relBase, relPath))
-		if !info.IsDir() && info.Size() > maxBundledFileBytes {
-			return nil
-		}
-		hdr, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return err
-		}
-		hdr.Name = targetRel
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return nil
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		defer f.Close()
-		_, err = io.Copy(tw, f)
-		return err
+		return addWalkEntryToTar(tw, path, targetRel, info)
 	})
+}
+
+func addWalkEntryToTar(tw *tar.Writer, path, targetRel string, info os.FileInfo) error {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return addSymlinkToTar(tw, path, targetRel)
+	}
+	if !info.IsDir() && info.Size() > maxBundledFileBytes {
+		return nil
+	}
+	hdr, err := tar.FileInfoHeader(info, "")
+	if err != nil {
+		return err
+	}
+	hdr.Name = targetRel
+	if err := tw.WriteHeader(hdr); err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return nil
+	}
+	return copyFileToTar(tw, path)
+}
+
+func addSymlinkToTar(tw *tar.Writer, path, targetRel string) error {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil
+	}
+	targetInfo, err := os.Stat(resolved)
+	if err != nil {
+		return nil
+	}
+	if targetInfo.IsDir() || targetInfo.Size() > maxBundledFileBytes {
+		return nil
+	}
+	return addFileToTar(tw, targetRel, resolved, targetInfo)
+}
+
+func copyFileToTar(tw *tar.Writer, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(tw, f)
+	return err
 }
 
 func addFileToTar(tw *tar.Writer, rel, src string, fi os.FileInfo) error {

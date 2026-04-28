@@ -7,11 +7,10 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
-	"sync"
 	"time"
 )
 
-type TunnelConfig struct {
+type Config struct {
 	SSHTarget   string
 	SSHPort     int
 	SSHIdentity string
@@ -20,14 +19,13 @@ type TunnelConfig struct {
 }
 
 type Manager struct {
-	cfg       TunnelConfig
+	cfg       Config
 	localPort int
-	mu        sync.Mutex
 	cancel    context.CancelFunc
 	done      chan struct{}
 }
 
-func New(cfg TunnelConfig) *Manager {
+func New(cfg Config) *Manager {
 	return &Manager{
 		cfg:       cfg,
 		localPort: cfg.LocalPort,

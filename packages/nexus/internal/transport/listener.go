@@ -11,8 +11,6 @@ import (
 	"net"
 	"os"
 	"sync"
-
-	"github.com/oursky/nexus/packages/nexus/internal/rpc/registry"
 )
 
 // rpcRequest is the incoming JSON-RPC 2.0 envelope.
@@ -52,7 +50,7 @@ type Listener struct {
 }
 
 // NewListener creates a Listener that will serve on socketPath.
-func NewListener(socketPath string, reg *registry.MapRegistry) *Listener {
+func NewListener(socketPath string, reg Dispatcher) *Listener {
 	return &Listener{
 		socketPath: socketPath,
 		dispatcher: reg,

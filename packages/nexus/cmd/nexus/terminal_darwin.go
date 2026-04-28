@@ -1,5 +1,6 @@
 //go:build darwin
 
+//nolint:unused
 package main
 
 import (

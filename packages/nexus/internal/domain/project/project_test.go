@@ -11,7 +11,7 @@ func TestProjectFields(t *testing.T) {
 		ID:        "proj-1",
 		Name:      "My Project",
 		RepoURL:   "https://github.com/example/repo",
-		Config:    ProjectConfig{DefaultBackend: "libkrun", DefaultRef: "main"},
+		Config:    Config{DefaultBackend: "libkrun", DefaultRef: "main"},
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -29,7 +29,7 @@ func TestProjectZeroValue(t *testing.T) {
 		t.Error("zero-value Project should have empty string fields")
 	}
 	if p.Config.DefaultBackend != "" || p.Config.DefaultRef != "" {
-		t.Error("zero-value ProjectConfig should have empty string fields")
+		t.Error("zero-value Config should have empty string fields")
 	}
 }
 

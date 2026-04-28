@@ -93,7 +93,7 @@ func decode[T any](raw json.RawMessage) (T, error) {
 		norm = []byte("{}")
 	}
 	if err := json.Unmarshal(norm, &v); err != nil {
-		return v, rpce.InvalidParams("invalid params: " + err.Error())
+		return v, rpce.InvalidParams("daemon.invalid_params", "invalid params: "+err.Error())
 	}
 	return v, nil
 }

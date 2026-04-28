@@ -216,7 +216,7 @@ func newTestProject(id, name string) *project.Project {
 		ID:        id,
 		Name:      name,
 		RepoURL:   "https://github.com/example/" + name,
-		Config:    project.ProjectConfig{DefaultBackend: "libkrun", DefaultRef: "main"},
+		Config:    project.Config{DefaultBackend: "libkrun", DefaultRef: "main"},
 		CreatedAt: now,
 		UpdatedAt: now,
 	}

@@ -64,7 +64,7 @@ func decode[T any](raw json.RawMessage) (T, error) {
 		norm = []byte("{}")
 	}
 	if err := json.Unmarshal(norm, &v); err != nil {
-		return v, rpce.InvalidParams("invalid params: " + err.Error())
+		return v, rpce.InvalidParams("auth.invalid_params", "invalid params: "+err.Error())
 	}
 	return v, nil
 }
@@ -77,21 +77,21 @@ func (h *Handler) mint(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	if req.WorkspaceID == "" {
-		return nil, rpce.InvalidParams("workspaceId is required")
+		return nil, rpce.InvalidParams("auth.invalid_params", "workspaceId is required")
 	}
 	if req.Binding == "" {
-		return nil, rpce.InvalidParams("binding is required")
+		return nil, rpce.InvalidParams("auth.invalid_params", "binding is required")
 	}
 	ws, err := h.wsRepo.Get(ctx, req.WorkspaceID)
 	if err != nil {
-		return nil, rpce.NotFound("workspace not found")
+		return nil, rpce.NotFound("auth.not_found", "workspace not found")
 	}
 	bindingValue, ok := ws.AuthBinding[req.Binding]
 	if !ok || bindingValue == "" {
-		return nil, rpce.NotFound(fmt.Sprintf("auth binding not found: %s", req.Binding))
+		return nil, rpce.NotFound("auth.not_found", fmt.Sprintf("auth binding not found: %s", req.Binding))
 	}
 	ttl := time.Duration(req.TTLSeconds) * time.Second
-	token := h.broker.Mint(req.WorkspaceID, relay.RelayEnv(req.Binding, bindingValue), ttl)
+	token := h.broker.Mint(req.WorkspaceID, relay.Env(req.Binding, bindingValue), ttl)
 	return &mintRes{Token: token}, nil
 }
 
@@ -101,7 +101,7 @@ func (h *Handler) revoke(_ context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	if req.Token == "" {
-		return nil, rpce.InvalidParams("token is required")
+		return nil, rpce.InvalidParams("auth.invalid_params", "token is required")
 	}
 	h.broker.Revoke(req.Token)
 	return &revokeRes{Revoked: true}, nil

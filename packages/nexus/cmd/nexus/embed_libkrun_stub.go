@@ -1,5 +1,6 @@
 //go:build !(linux && libkrun)
 
+//nolint:unused
 package main
 
 // Stubs for non-libkrun builds. The embedded VM binary and shared libraries

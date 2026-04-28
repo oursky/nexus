@@ -64,6 +64,7 @@ func New(repo spotlight.Repository, workspaceRepo workspace.Repository, opts ...
 // StartSpotlight creates and activates a port forward for the given workspace.
 //
 // Design:
+//
 //   - Non-VM workspaces: the service runs directly on the daemon host.
 //     No TCP proxy is needed — we record the forward and return
 //     targetHost=127.0.0.1 + targetPort=remotePort so the CLI can SSH-forward

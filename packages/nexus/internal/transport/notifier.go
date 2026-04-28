@@ -2,8 +2,6 @@ package transport
 
 import (
 	"context"
-	"encoding/json"
-	"log"
 )
 
 // Notifier pushes server-initiated JSON-RPC notifications to a connected client.
@@ -24,31 +22,6 @@ func NotifierFromCtx(ctx context.Context) Notifier {
 		return n
 	}
 	return noopNotifier{}
-}
-
-// ── channel-backed notifier ───────────────────────────────────────────────────
-
-type chanNotifier struct {
-	ch chan<- []byte
-}
-
-func (n chanNotifier) Notify(method string, params any) {
-	msg := map[string]any{
-		"jsonrpc": "2.0",
-		"method":  method,
-		"params":  params,
-	}
-	b, err := json.Marshal(msg)
-	if err != nil {
-		log.Printf("transport: notifier marshal: %v", err)
-		return
-	}
-	// Non-blocking: drop if the channel is full or closed.
-	select {
-	case n.ch <- b:
-	default:
-		log.Printf("transport: notifier: channel full, dropping %s", method)
-	}
 }
 
 // ── no-op notifier ────────────────────────────────────────────────────────────

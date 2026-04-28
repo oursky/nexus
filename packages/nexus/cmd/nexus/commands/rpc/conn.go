@@ -10,12 +10,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// notification is a server-pushed JSON-RPC notification (no id field).
-type notification struct {
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params"`
-}
-
 // muxMessage is the union type used when parsing incoming WebSocket frames.
 type muxMessage struct {
 	JSONRPC string          `json:"jsonrpc"`

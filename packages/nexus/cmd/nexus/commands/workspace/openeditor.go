@@ -36,111 +36,7 @@ Flags:
   --skip-check          Skip SSH test and open the editor immediately.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			conn, err := rpc.EnsureDaemon()
-			if err != nil {
-				return fmt.Errorf("open-editor: %w", err)
-			}
-			defer conn.Close()
-
-			wsID, err := rpc.ResolveWorkspaceID(cmd.Context(), conn, args[0])
-			if err != nil {
-				return fmt.Errorf("open-editor: %w", err)
-			}
-
-			var result struct {
-				Workspace struct {
-					ID      string `json:"id"`
-					State   string `json:"state"`
-					Backend string `json:"backend"`
-					GuestIP string `json:"guestIp"`
-				} `json:"workspace"`
-			}
-			if err := rpc.Do(conn, "workspace.info", map[string]any{"id": wsID}, &result); err != nil {
-				return fmt.Errorf("open-editor: workspace.info: %w", err)
-			}
-
-			ws := result.Workspace
-			if ws.GuestIP == "" {
-				if !domainws.UsesGuestVM(ws.Backend) {
-					return fmt.Errorf("open-editor: workspace %q uses backend %q — only libkrun workspaces support VM remote-editor access", args[0], ws.Backend)
-				}
-				return fmt.Errorf("open-editor: workspace %q (state: %s) has no guest IP — is it running?\n  hint: nexus workspace start %s", args[0], ws.State, args[0])
-			}
-
-			// Prefer NEXUS_DAEMON_SSH_HOST (injected by Mac app) so the command
-			// works inside the app sandbox where the CLI profile is not accessible.
-			proxyJump := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_HOST"))
-			jumpPort := 0
-			if rawPort := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_PORT")); rawPort != "" {
-				parsedPort, err := strconv.Atoi(rawPort)
-				if err != nil || parsedPort <= 0 {
-					return fmt.Errorf("open-editor: invalid NEXUS_DAEMON_SSH_PORT=%q", rawPort)
-				}
-				jumpPort = parsedPort
-			}
-			jumpIdentity := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_IDENTITY"))
-			if proxyJump == "" {
-				p, err := profile.LoadDefault()
-				if err != nil {
-					return fmt.Errorf("open-editor: %w", err)
-				}
-				proxyJump = buildProxyJump(p)
-				if jumpPort == 0 && p != nil && p.SSHPort > 0 {
-					jumpPort = p.SSHPort
-				}
-			}
-			if proxyJump == "" {
-				return fmt.Errorf("open-editor: no engine SSH host configured (set NEXUS_DAEMON_SSH_HOST or run 'nexus daemon connect' first)")
-			}
-
-			hostAlias := "nexus-vm-" + ws.ID
-
-			// ── 1. Write ~/.nexus/ssh/<alias>.ssh.config ──────────────────────────
-			if err := writeNexusSSHConfig(hostAlias, ws.GuestIP, proxyJump, jumpPort, jumpIdentity); err != nil {
-				return fmt.Errorf("open-editor: writing SSH config: %w", err)
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "wrote ~/.nexus/ssh/%s.ssh.config\n", hostAlias)
-
-			// ── 2. SSH connectivity check ─────────────────────────────────────────
-			if !skipCheck {
-				sshTarget := ws.GuestIP
-				if h, p := parseGuestIPPort(ws.GuestIP); p != "22" {
-					sshTarget = fmt.Sprintf("%s (port %s)", h, p)
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "checking SSH: Mac → %s → %s ...\n", proxyJump, sshTarget)
-				ok, detail := runLocalSSHCheck(ws.GuestIP, proxyJump, jumpPort, jumpIdentity)
-				if !ok {
-					fmt.Fprintf(cmd.ErrOrStderr(), "FAIL: %s\n", detail)
-					fmt.Fprintf(cmd.ErrOrStderr(), "\nTroubleshoot:\n")
-					fmt.Fprintf(cmd.ErrOrStderr(), "  nexus workspace ssh-vm %s --diagnose\n", args[0])
-					return fmt.Errorf("SSH check failed — editor not opened")
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "OK: SSH connection successful\n")
-			}
-
-			if checkOnly {
-				return nil
-			}
-
-			// ── 3. Ensure remote editor server directories exist ─────────────────
-			// On libkrun VMs, ~/.cursor-server and ~/.vscode-server are symlinks
-			// to /workspace/.cursor-server and /workspace/.vscode-server respectively.
-			// The symlink targets may not exist on a fresh VM, causing the editor
-			// remote install script to fail. Pre-create both unconditionally.
-			ensureRemoteDir(ws.GuestIP, proxyJump, jumpPort, jumpIdentity, "/workspace/.cursor-server")
-			ensureRemoteDir(ws.GuestIP, proxyJump, jumpPort, jumpIdentity, "/workspace/.vscode-server")
-
-			// ── 4. Open editor deep-link ──────────────────────────────────────────
-			editorApp := strings.ToLower(strings.TrimSpace(app))
-			if editorApp == "" {
-				editorApp = "cursor"
-			}
-			editorURL := fmt.Sprintf("%s://vscode-remote/ssh-remote+%s/workspace", editorApp, hostAlias)
-			fmt.Fprintf(cmd.OutOrStdout(), "opening %s: %s\n", editorApp, editorURL)
-			if err := openURL(editorURL); err != nil {
-				return fmt.Errorf("could not open %s (is it installed?): %w", editorApp, err)
-			}
-			return nil
+			return runOpenEditor(cmd, args[0], app, checkOnly, skipCheck)
 		},
 	}
 
@@ -148,6 +44,112 @@ Flags:
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "only test SSH, do not open editor")
 	cmd.Flags().BoolVar(&skipCheck, "skip-check", false, "skip SSH test, open editor immediately")
 	return cmd
+}
+
+func runOpenEditor(cmd *cobra.Command, wsNameOrID, app string, checkOnly, skipCheck bool) error {
+	conn, err := rpc.EnsureDaemon()
+	if err != nil {
+		return fmt.Errorf("open-editor: %w", err)
+	}
+	defer conn.Close()
+
+	wsID, err := rpc.ResolveWorkspaceID(cmd.Context(), conn, wsNameOrID)
+	if err != nil {
+		return fmt.Errorf("open-editor: %w", err)
+	}
+
+	var result struct {
+		Workspace struct {
+			ID      string `json:"id"`
+			State   string `json:"state"`
+			Backend string `json:"backend"`
+			GuestIP string `json:"guestIp"`
+		} `json:"workspace"`
+	}
+	if err := rpc.Do(conn, "workspace.info", map[string]any{"id": wsID}, &result); err != nil {
+		return fmt.Errorf("open-editor: workspace.info: %w", err)
+	}
+
+	ws := result.Workspace
+	if ws.GuestIP == "" {
+		if !domainws.UsesGuestVM(ws.Backend) {
+			return fmt.Errorf("open-editor: workspace %q uses backend %q — only libkrun workspaces support VM remote-editor access", wsNameOrID, ws.Backend)
+		}
+		return fmt.Errorf("open-editor: workspace %q (state: %s) has no guest IP — is it running?\n  hint: nexus workspace start %s", wsNameOrID, ws.State, wsNameOrID)
+	}
+
+	proxyJump, jumpPort, jumpIdentity, err := resolveProxyJump()
+	if err != nil {
+		return err
+	}
+
+	hostAlias := "nexus-vm-" + ws.ID
+
+	if err := writeNexusSSHConfig(hostAlias, ws.GuestIP, proxyJump, jumpPort, jumpIdentity); err != nil {
+		return fmt.Errorf("open-editor: writing SSH config: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "wrote ~/.nexus/ssh/%s.ssh.config\n", hostAlias)
+
+	if !skipCheck {
+		sshTarget := ws.GuestIP
+		if h, p := parseGuestIPPort(ws.GuestIP); p != "22" {
+			sshTarget = fmt.Sprintf("%s (port %s)", h, p)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "checking SSH: Mac → %s → %s ...\n", proxyJump, sshTarget)
+		ok, detail := runLocalSSHCheck(ws.GuestIP, proxyJump, jumpPort, jumpIdentity)
+		if !ok {
+			fmt.Fprintf(cmd.ErrOrStderr(), "FAIL: %s\n", detail)
+			fmt.Fprintf(cmd.ErrOrStderr(), "\nTroubleshoot:\n")
+			fmt.Fprintf(cmd.ErrOrStderr(), "  nexus workspace ssh-vm %s --diagnose\n", wsNameOrID)
+			return fmt.Errorf("SSH check failed — editor not opened")
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "OK: SSH connection successful\n")
+	}
+
+	if checkOnly {
+		return nil
+	}
+
+	ensureRemoteDir(ws.GuestIP, proxyJump, jumpPort, jumpIdentity, "/workspace/.cursor-server")
+	ensureRemoteDir(ws.GuestIP, proxyJump, jumpPort, jumpIdentity, "/workspace/.vscode-server")
+
+	editorApp := strings.ToLower(strings.TrimSpace(app))
+	if editorApp == "" {
+		editorApp = "cursor"
+	}
+	editorURL := fmt.Sprintf("%s://vscode-remote/ssh-remote+%s/workspace", editorApp, hostAlias)
+	fmt.Fprintf(cmd.OutOrStdout(), "opening %s: %s\n", editorApp, editorURL)
+	if err := openURL(editorURL); err != nil {
+		return fmt.Errorf("could not open %s (is it installed?): %w", editorApp, err)
+	}
+	return nil
+}
+
+func resolveProxyJump() (string, int, string, error) {
+	proxyJump := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_HOST"))
+	jumpPort := 0
+	if rawPort := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_PORT")); rawPort != "" {
+		parsedPort, err := strconv.Atoi(rawPort)
+		if err != nil || parsedPort <= 0 {
+			return "", 0, "", fmt.Errorf("open-editor: invalid NEXUS_DAEMON_SSH_PORT=%q", rawPort)
+		}
+		jumpPort = parsedPort
+	}
+	jumpIdentity := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_IDENTITY"))
+	if proxyJump == "" {
+		p, err := profile.LoadDefault()
+		if err != nil {
+			return "", 0, "", fmt.Errorf("open-editor: %w", err)
+		}
+		proxyJump = buildProxyJump(p)
+		if jumpPort == 0 && p != nil && p.SSHPort > 0 {
+			jumpPort = p.SSHPort
+		}
+	}
+	if proxyJump == "" {
+		return "", 0, "", fmt.Errorf("open-editor: no engine SSH host configured (set NEXUS_DAEMON_SSH_HOST or run 'nexus daemon connect' first)")
+	}
+	return proxyJump, jumpPort, jumpIdentity, nil
 }
 
 // writeNexusSSHConfig writes ~/.nexus/ssh/<hostAlias>.ssh.config and ensures
@@ -243,7 +245,7 @@ func ensureSSHInclude() error {
 	newBody := regexp.MustCompile(`(?m)^# nexus VM remote-editor.*\n`).ReplaceAllString(bodyStr, "")
 	for _, includeLine := range includeLines {
 		pattern := regexp.QuoteMeta(includeLine)
-		newBody = regexp.MustCompile(`(?m)^` + pattern + `\n?`).ReplaceAllString(newBody, "")
+		newBody = regexp.MustCompile(`(?m)^`+pattern+`\n?`).ReplaceAllString(newBody, "")
 	}
 
 	prefix := "# nexus VM remote-editor (managed by Nexus — must be first)\n" + strings.Join(includeLines, "\n") + "\n\n"

@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -119,8 +118,7 @@ func EnsureRunning(port int, token, workspaceDir string) error {
 	logPath := filepath.Join(runDir, "daemon.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		logFile = io.Discard.(*os.File) // best-effort; fall back to /dev/null below
-		logFile, _ = os.Open(os.DevNull)
+		logFile, _ = os.Open(os.DevNull) // best-effort; fall back to /dev/null
 	}
 
 	if workspaceDir == "" {

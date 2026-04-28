@@ -124,12 +124,12 @@ func (h *Handler) securePath(userPath string) (string, error) {
 		return h.root, nil
 	}
 	if filepath.IsAbs(userPath) {
-		return "", rpce.InvalidParams("absolute paths not allowed")
+		return "", rpce.InvalidParams("fs.invalid_params", "absolute paths not allowed")
 	}
 	clean := filepath.Clean(userPath)
 	full := filepath.Join(h.root, clean)
 	if !strings.HasPrefix(full, h.root) {
-		return "", rpce.InvalidParams("path traversal not allowed")
+		return "", rpce.InvalidParams("fs.invalid_params", "path traversal not allowed")
 	}
 	return full, nil
 }
@@ -141,7 +141,7 @@ func decode[T any](raw json.RawMessage) (T, error) {
 		norm = []byte("{}")
 	}
 	if err := json.Unmarshal(norm, &v); err != nil {
-		return v, rpce.InvalidParams("invalid params: " + err.Error())
+		return v, rpce.InvalidParams("fs.invalid_params", "invalid params: "+err.Error())
 	}
 	return v, nil
 }
@@ -154,7 +154,7 @@ func (h *Handler) readFile(_ context.Context, raw json.RawMessage) (any, error) 
 		return nil, err
 	}
 	if p.Path == "" {
-		return nil, rpce.InvalidParams("path is required")
+		return nil, rpce.InvalidParams("fs.invalid_params", "path is required")
 	}
 	safe, err := h.securePath(p.Path)
 	if err != nil {
@@ -163,9 +163,9 @@ func (h *Handler) readFile(_ context.Context, raw json.RawMessage) (any, error) 
 	data, err := os.ReadFile(safe)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, rpce.NotFound("file not found: " + p.Path)
+			return nil, rpce.NotFound("fs.not_found", "file not found: "+p.Path)
 		}
-		return nil, rpce.Internal(err.Error())
+		return nil, rpce.Internal("fs.internal", err.Error())
 	}
 	enc := "utf8"
 	if p.Encoding != "" {
@@ -184,28 +184,28 @@ func (h *Handler) writeFile(_ context.Context, raw json.RawMessage) (any, error)
 		return nil, err
 	}
 	if p.Path == "" {
-		return nil, rpce.InvalidParams("path is required")
+		return nil, rpce.InvalidParams("fs.invalid_params", "path is required")
 	}
 	safe, err := h.securePath(p.Path)
 	if err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(safe), 0755); err != nil {
-		return nil, rpce.Internal(err.Error())
+		return nil, rpce.Internal("fs.internal", err.Error())
 	}
 	content := []byte(p.Content)
 	if p.Encoding == "base64" {
 		content, err = base64.StdEncoding.DecodeString(p.Content)
 		if err != nil {
-			return nil, rpce.InvalidParams("invalid base64 content")
+			return nil, rpce.InvalidParams("fs.invalid_params", "invalid base64 content")
 		}
 	}
 	if err := os.WriteFile(safe, content, 0644); err != nil {
-		return nil, rpce.Internal(err.Error())
+		return nil, rpce.Internal("fs.internal", err.Error())
 	}
 	info, err := os.Stat(safe)
 	if err != nil {
-		return nil, rpce.Internal(err.Error())
+		return nil, rpce.Internal("fs.internal", err.Error())
 	}
 	return &writeFileResult{OK: true, Path: p.Path, Size: info.Size()}, nil
 }
@@ -239,9 +239,9 @@ func (h *Handler) readdir(_ context.Context, raw json.RawMessage) (any, error) {
 	entries, err := os.ReadDir(safe)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, rpce.NotFound("directory not found: " + path)
+			return nil, rpce.NotFound("fs.not_found", "directory not found: "+path)
 		}
-		return nil, rpce.Internal(err.Error())
+		return nil, rpce.Internal("fs.internal", err.Error())
 	}
 	result := make([]dirEntry, 0, len(entries))
 	for _, e := range entries {
@@ -266,14 +266,14 @@ func (h *Handler) mkdir(_ context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	if p.Path == "" {
-		return nil, rpce.InvalidParams("path is required")
+		return nil, rpce.InvalidParams("fs.invalid_params", "path is required")
 	}
 	safe, err := h.securePath(p.Path)
 	if err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(safe, 0755); err != nil {
-		return nil, rpce.Internal(err.Error())
+		return nil, rpce.Internal("fs.internal", err.Error())
 	}
 	return &writeFileResult{OK: true, Path: p.Path}, nil
 }
@@ -284,7 +284,7 @@ func (h *Handler) rm(_ context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	if p.Path == "" {
-		return nil, rpce.InvalidParams("path is required")
+		return nil, rpce.InvalidParams("fs.invalid_params", "path is required")
 	}
 	safe, err := h.securePath(p.Path)
 	if err != nil {
@@ -292,14 +292,14 @@ func (h *Handler) rm(_ context.Context, raw json.RawMessage) (any, error) {
 	}
 	if p.Recursive {
 		if err := os.RemoveAll(safe); err != nil {
-			return nil, rpce.Internal(err.Error())
+			return nil, rpce.Internal("fs.internal", err.Error())
 		}
 	} else {
 		if err := os.Remove(safe); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return nil, rpce.NotFound("not found: " + p.Path)
+				return nil, rpce.NotFound("fs.not_found", "not found: "+p.Path)
 			}
-			return nil, rpce.Internal(err.Error())
+			return nil, rpce.Internal("fs.internal", err.Error())
 		}
 	}
 	return &writeFileResult{OK: true, Path: p.Path}, nil
@@ -311,7 +311,7 @@ func (h *Handler) stat(_ context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	if p.Path == "" {
-		return nil, rpce.InvalidParams("path is required")
+		return nil, rpce.InvalidParams("fs.invalid_params", "path is required")
 	}
 	safe, err := h.securePath(p.Path)
 	if err != nil {
@@ -320,9 +320,9 @@ func (h *Handler) stat(_ context.Context, raw json.RawMessage) (any, error) {
 	info, err := os.Stat(safe)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, rpce.NotFound("not found: " + p.Path)
+			return nil, rpce.NotFound("fs.not_found", "not found: "+p.Path)
 		}
-		return nil, rpce.Internal(err.Error())
+		return nil, rpce.Internal("fs.internal", err.Error())
 	}
 	mtime := info.ModTime().Format("2006-01-02T15:04:05Z07:00")
 	res := &statResult{

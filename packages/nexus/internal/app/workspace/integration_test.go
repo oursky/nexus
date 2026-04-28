@@ -31,10 +31,17 @@ func TestIntegration_CreateAndGetLifecycle(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil, context.Background()) // no runtime driver for integration
+	svc := NewService(wsStore, projStore, nil, nil, nil, context.Background()) // no runtime driver for integration
 	ctx := context.Background()
 
-	// Create
+	ws := createWorkspaceAndVerify(t, svc, wsStore, ctx)
+	startAndPollRunning(t, svc, wsStore, ctx, ws.ID)
+	stopAndVerify(t, svc, ctx, ws.ID)
+	listAndVerifyCount(t, svc, ctx, 1)
+	removeAndVerifyGone(t, svc, wsStore, ctx, ws.ID)
+}
+
+func createWorkspaceAndVerify(t *testing.T, svc *Service, wsStore *store.WorkspaceStore, ctx context.Context) *workspace.Workspace {
 	spec := workspace.CreateSpec{
 		Repo:          "https://github.com/example/integration-test",
 		Ref:           "main",
@@ -42,7 +49,6 @@ func TestIntegration_CreateAndGetLifecycle(t *testing.T) {
 		AgentProfile:  "default",
 		Backend:       "test",
 	}
-
 	ws, err := svc.Create(ctx, spec)
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -50,8 +56,6 @@ func TestIntegration_CreateAndGetLifecycle(t *testing.T) {
 	if ws.ID == "" {
 		t.Fatal("expected non-empty ID")
 	}
-
-	// Verify persisted via direct store read (not through service)
 	persisted, err := wsStore.Get(ctx, ws.ID)
 	if err != nil {
 		t.Fatalf("store get: %v", err)
@@ -62,15 +66,17 @@ func TestIntegration_CreateAndGetLifecycle(t *testing.T) {
 	if persisted.State != workspace.StateCreated {
 		t.Errorf("persisted state: got %q, want %q", persisted.State, workspace.StateCreated)
 	}
+	return ws
+}
 
-	// Start returns StateStarting immediately; poll until StateRunning.
-	_, err = svc.Start(ctx, ws.ID)
+func startAndPollRunning(t *testing.T, svc *Service, wsStore *store.WorkspaceStore, ctx context.Context, wsID string) {
+	_, err := svc.Start(ctx, wsID)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	var check *workspace.Workspace
 	for i := 0; i < 20; i++ {
-		check, _ = wsStore.Get(ctx, ws.ID)
+		check, _ = wsStore.Get(ctx, wsID)
 		if check != nil && check.State == workspace.StateRunning {
 			break
 		}
@@ -79,33 +85,34 @@ func TestIntegration_CreateAndGetLifecycle(t *testing.T) {
 	if check == nil || check.State != workspace.StateRunning {
 		t.Errorf("persisted running state: got %q", check.State)
 	}
+}
 
-	// Stop
-	stopped, err := svc.Stop(ctx, ws.ID)
+func stopAndVerify(t *testing.T, svc *Service, ctx context.Context, wsID string) {
+	stopped, err := svc.Stop(ctx, wsID)
 	if err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	if stopped.State != workspace.StateStopped {
 		t.Errorf("stopped state: got %q", stopped.State)
 	}
+}
 
-	// List
+func listAndVerifyCount(t *testing.T, svc *Service, ctx context.Context, want int) {
 	all, err := svc.List(ctx)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(all) != 1 {
-		t.Errorf("expected 1 workspace, got %d", len(all))
+	if len(all) != want {
+		t.Errorf("expected %d workspace(s), got %d", want, len(all))
 	}
+}
 
-	// Remove
-	err = svc.Remove(ctx, ws.ID)
+func removeAndVerifyGone(t *testing.T, svc *Service, wsStore *store.WorkspaceStore, ctx context.Context, wsID string) {
+	err := svc.Remove(ctx, wsID)
 	if err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-
-	// Verify gone
-	_, err = wsStore.Get(ctx, ws.ID)
+	_, err = wsStore.Get(ctx, wsID)
 	if err != workspace.ErrNotFound {
 		t.Errorf("expected ErrNotFound after remove, got: %v", err)
 	}
@@ -117,7 +124,7 @@ func TestIntegration_ForkWithRealPersistence(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil, context.Background())
+	svc := NewService(wsStore, projStore, nil, nil, nil, context.Background())
 	ctx := context.Background()
 
 	// Create parent
@@ -169,7 +176,7 @@ func TestIntegration_PortsPersistence(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil, context.Background())
+	svc := NewService(wsStore, projStore, nil, nil, nil, context.Background())
 	ctx := context.Background()
 
 	ws, _ := svc.Create(ctx, workspace.CreateSpec{
@@ -193,14 +200,14 @@ func TestIntegration_PortsPersistence(t *testing.T) {
 	}
 
 	// Add another
-	svc.PortsAdd(ctx, ws.ID, 3000)
+	_, _ = svc.PortsAdd(ctx, ws.ID, 3000)
 	got, _ = wsStore.Get(ctx, ws.ID)
 	if len(got.TunnelPorts) != 2 {
 		t.Errorf("expected 2 ports, got %d: %v", len(got.TunnelPorts), got.TunnelPorts)
 	}
 
 	// Remove
-	svc.PortsRemove(ctx, ws.ID, 8080)
+	_, _ = svc.PortsRemove(ctx, ws.ID, 8080)
 	got, _ = wsStore.Get(ctx, ws.ID)
 	if len(got.TunnelPorts) != 1 || got.TunnelPorts[0] != 3000 {
 		t.Errorf("after remove: %v", got.TunnelPorts)
@@ -213,7 +220,7 @@ func TestIntegration_CheckoutPersistence(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil, context.Background())
+	svc := NewService(wsStore, projStore, nil, nil, nil, context.Background())
 	ctx := context.Background()
 
 	ws, _ := svc.Create(ctx, workspace.CreateSpec{
@@ -243,7 +250,7 @@ func TestIntegration_WithProject(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil, context.Background())
+	svc := NewService(wsStore, projStore, nil, nil, nil, context.Background())
 	ctx := context.Background()
 
 	// Create a project first

@@ -43,9 +43,9 @@ var ToolNames = []string{"codex", "opencode", "claude"}
 
 // Prober manages per-workspace toolchain readiness state.
 type Prober struct {
-	dial   AgentDialer
-	exec   AgentExecFn
-	ready  map[string]bool
+	dial  AgentDialer
+	exec  AgentExecFn
+	ready map[string]bool
 }
 
 // NewProber creates a Prober backed by the given dialer and exec implementations.

@@ -6,8 +6,8 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/creds/agentprofile"
 )
 
-// RelayEnv builds an environment variable map for the given auth binding.
-func RelayEnv(binding, value string) map[string]string {
+// Env builds an environment variable map for the given auth binding.
+func Env(binding, value string) map[string]string {
 	out := map[string]string{
 		"NEXUS_AUTH_BINDING": binding,
 		"NEXUS_AUTH_VALUE":   value,

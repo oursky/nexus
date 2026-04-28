@@ -61,60 +61,60 @@ func startCommand() *cobra.Command {
 				return fmt.Errorf("nexus spotlight start: stop previous spotlight: %w", err)
 			}
 
-		// Create daemon-side spotlight forwards + SSH tunnels for each port.
-		// On any failure, roll back the whole workspace spotlight via spotlight.stop.
-		forwarded := 0
-		for _, port := range ports {
-			spec := spotlight.ExposeSpec{
-				WorkspaceID: workspaceID,
-				LocalPort:   port.LocalPort,
-				RemotePort:  port.RemotePort,
-				Protocol:    port.Protocol,
-			}
-			var result struct {
-				Forward *spotlight.Forward `json:"forward"`
-			}
-			if err := conn.Call("spotlight.start", map[string]any{
-				"workspaceId": workspaceID,
-				"spec":        spec,
-			}, &result); err != nil {
-				_ = conn.Call("spotlight.stop", map[string]any{"workspaceId": workspaceID}, nil)
-				return fmt.Errorf("%d/%s: daemon forward failed: %w", port.LocalPort, port.Service, err)
-			}
-
-			targetHost := "127.0.0.1"
-			targetPort := port.RemotePort
-			if result.Forward != nil {
-				if result.Forward.TargetHost != "" {
-					targetHost = result.Forward.TargetHost
+			// Create daemon-side spotlight forwards + SSH tunnels for each port.
+			// On any failure, roll back the whole workspace spotlight via spotlight.stop.
+			forwarded := 0
+			for _, port := range ports {
+				spec := spotlight.ExposeSpec{
+					WorkspaceID: workspaceID,
+					LocalPort:   port.LocalPort,
+					RemotePort:  port.RemotePort,
+					Protocol:    port.Protocol,
 				}
-				if result.Forward.RemotePort > 0 {
-					targetPort = result.Forward.RemotePort
+				var result struct {
+					Forward *spotlight.Forward `json:"forward"`
 				}
+				if err := conn.Call("spotlight.start", map[string]any{
+					"workspaceId": workspaceID,
+					"spec":        spec,
+				}, &result); err != nil {
+					_ = conn.Call("spotlight.stop", map[string]any{"workspaceId": workspaceID}, nil)
+					return fmt.Errorf("%d/%s: daemon forward failed: %w", port.LocalPort, port.Service, err)
+				}
+
+				targetHost := "127.0.0.1"
+				targetPort := port.RemotePort
+				if result.Forward != nil {
+					if result.Forward.TargetHost != "" {
+						targetHost = result.Forward.TargetHost
+					}
+					if result.Forward.RemotePort > 0 {
+						targetPort = result.Forward.RemotePort
+					}
+				}
+
+				boundPort, err := openSSHTunnel(p, port.LocalPort, targetHost, targetPort)
+				if err != nil {
+					_ = conn.Call("spotlight.stop", map[string]any{"workspaceId": workspaceID}, nil)
+					return fmt.Errorf("%d/%s: tunnel failed: %w", port.LocalPort, port.Service, err)
+				}
+
+				label := port.Service
+				if label == "" {
+					label = fmt.Sprintf(":%d", port.RemotePort)
+				}
+				if boundPort != port.LocalPort {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s → localhost:%d (remapped from :%d, port in use)\n", label, boundPort, port.LocalPort)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s → localhost:%d\n", label, boundPort)
+				}
+				forwarded++
 			}
 
-			boundPort, err := openSSHTunnel(p, port.LocalPort, targetHost, targetPort)
-			if err != nil {
-				_ = conn.Call("spotlight.stop", map[string]any{"workspaceId": workspaceID}, nil)
-				return fmt.Errorf("%d/%s: tunnel failed: %w", port.LocalPort, port.Service, err)
+			if err := persistClientActiveSpotlight(p, workspaceID); err != nil {
+				return fmt.Errorf("persist spotlight client state: %w", err)
 			}
-
-			label := port.Service
-			if label == "" {
-				label = fmt.Sprintf(":%d", port.RemotePort)
-			}
-			if boundPort != port.LocalPort {
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s → localhost:%d (remapped from :%d, port in use)\n", label, boundPort, port.LocalPort)
-			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s → localhost:%d\n", label, boundPort)
-			}
-			forwarded++
-		}
-
-		if err := persistClientActiveSpotlight(p, workspaceID); err != nil {
-			return fmt.Errorf("persist spotlight client state: %w", err)
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "forwarded %d/%d ports\n", forwarded, len(ports))
+			fmt.Fprintf(cmd.OutOrStdout(), "forwarded %d/%d ports\n", forwarded, len(ports))
 			return nil
 		},
 	}

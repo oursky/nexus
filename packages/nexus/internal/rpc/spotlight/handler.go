@@ -45,16 +45,16 @@ type startResult struct {
 func (h *Handler) HandleStart(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p startParams
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, rpcerrors.InvalidParams("invalid params: " + err.Error())
+		return nil, rpcerrors.InvalidParams("spotlight.invalid_params", "invalid params: "+err.Error())
 	}
 	if p.WorkspaceID == "" {
-		return nil, rpcerrors.InvalidParams("workspaceId is required")
+		return nil, rpcerrors.InvalidParams("spotlight.invalid_params", "workspaceId is required")
 	}
 	p.Spec.WorkspaceID = p.WorkspaceID
 
 	fwd, err := h.svc.StartSpotlight(ctx, p.WorkspaceID, p.Spec)
 	if err != nil {
-		return nil, rpcerrors.Internal(err.Error())
+		return nil, rpcerrors.Internal("spotlight.internal", err.Error())
 	}
 	return &startResult{Forward: fwd}, nil
 }
@@ -72,15 +72,15 @@ type listResult struct {
 func (h *Handler) HandleList(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p listParams
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, rpcerrors.InvalidParams("invalid params: " + err.Error())
+		return nil, rpcerrors.InvalidParams("spotlight.invalid_params", "invalid params: "+err.Error())
 	}
 	if p.WorkspaceID == "" {
-		return nil, rpcerrors.InvalidParams("workspaceId is required")
+		return nil, rpcerrors.InvalidParams("spotlight.invalid_params", "workspaceId is required")
 	}
 
 	fwds, err := h.svc.ListForwards(ctx, p.WorkspaceID)
 	if err != nil {
-		return nil, rpcerrors.Internal(err.Error())
+		return nil, rpcerrors.Internal("spotlight.internal", err.Error())
 	}
 	if fwds == nil {
 		fwds = []*spotlight.Forward{}
@@ -101,14 +101,14 @@ type closeResult struct {
 func (h *Handler) HandleStop(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p stopParams
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, rpcerrors.InvalidParams("invalid params: " + err.Error())
+		return nil, rpcerrors.InvalidParams("spotlight.invalid_params", "invalid params: "+err.Error())
 	}
 	if p.WorkspaceID == "" {
-		return nil, rpcerrors.InvalidParams("workspaceId is required")
+		return nil, rpcerrors.InvalidParams("spotlight.invalid_params", "workspaceId is required")
 	}
 
 	if err := h.svc.StopWorkspaceSpotlight(ctx, p.WorkspaceID); err != nil {
-		return nil, rpcerrors.Internal(err.Error())
+		return nil, rpcerrors.Internal("spotlight.internal", err.Error())
 	}
 	return &closeResult{Closed: true}, nil
 }
@@ -122,15 +122,15 @@ type portsListParams struct {
 func (h *Handler) HandlePortsList(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p portsListParams
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, rpcerrors.InvalidParams("invalid params: " + err.Error())
+		return nil, rpcerrors.InvalidParams("spotlight.invalid_params", "invalid params: "+err.Error())
 	}
 	if p.WorkspaceID == "" {
-		return nil, rpcerrors.InvalidParams("workspaceId is required")
+		return nil, rpcerrors.InvalidParams("spotlight.invalid_params", "workspaceId is required")
 	}
 
 	fwds, err := h.svc.ListForwards(ctx, p.WorkspaceID)
 	if err != nil {
-		return nil, rpcerrors.Internal(err.Error())
+		return nil, rpcerrors.Internal("spotlight.internal", err.Error())
 	}
 	if fwds == nil {
 		fwds = []*spotlight.Forward{}
@@ -148,16 +148,16 @@ type portsAddParams struct {
 func (h *Handler) HandlePortsAdd(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p portsAddParams
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, rpcerrors.InvalidParams("invalid params: " + err.Error())
+		return nil, rpcerrors.InvalidParams("spotlight.invalid_params", "invalid params: "+err.Error())
 	}
 	if p.WorkspaceID == "" {
-		return nil, rpcerrors.InvalidParams("workspaceId is required")
+		return nil, rpcerrors.InvalidParams("spotlight.invalid_params", "workspaceId is required")
 	}
 	p.Spec.WorkspaceID = p.WorkspaceID
 
 	fwd, err := h.svc.StartSpotlight(ctx, p.WorkspaceID, p.Spec)
 	if err != nil {
-		return nil, rpcerrors.Internal(err.Error())
+		return nil, rpcerrors.Internal("spotlight.internal", err.Error())
 	}
 	return &startResult{Forward: fwd}, nil
 }
@@ -172,15 +172,14 @@ type portsRemoveParams struct {
 func (h *Handler) HandlePortsRemove(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p portsRemoveParams
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, rpcerrors.InvalidParams("invalid params: " + err.Error())
+		return nil, rpcerrors.InvalidParams("spotlight.invalid_params", "invalid params: "+err.Error())
 	}
 	if p.ForwardID == "" {
-		return nil, rpcerrors.InvalidParams("forwardId is required")
+		return nil, rpcerrors.InvalidParams("spotlight.invalid_params", "forwardId is required")
 	}
 
 	if err := h.svc.CloseForward(ctx, p.ForwardID); err != nil {
-		return nil, rpcerrors.Internal(err.Error())
+		return nil, rpcerrors.Internal("spotlight.internal", err.Error())
 	}
 	return &closeResult{Closed: true}, nil
 }
-

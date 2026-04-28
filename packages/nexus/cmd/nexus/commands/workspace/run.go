@@ -94,43 +94,47 @@ func runCommand() *cobra.Command {
 				}
 			}()
 
-			for {
-				select {
-				case raw, ok := <-dataCh:
-					if !ok {
-						return nil
-					}
-					var p ptyDataParams
-					if err := json.Unmarshal(raw, &p); err != nil {
-						continue
-					}
-					if p.SessionID == session.ID {
-						_, _ = os.Stdout.WriteString(p.Data)
-					}
-				case raw, ok := <-exitCh:
-					if !ok {
-						return nil
-					}
-					var p ptyExitParams
-					if err := json.Unmarshal(raw, &p); err != nil {
-						continue
-					}
-					if p.SessionID == session.ID {
-						if p.ExitCode != 0 {
-							os.Exit(p.ExitCode)
-						}
-						return nil
-					}
-				case <-cmd.Context().Done():
-					_ = conn.Send("pty.close", map[string]any{"sessionId": session.ID})
-					return context.Canceled
-				}
-			}
+			return runExecEventLoop(cmd.Context(), conn, session, dataCh, exitCh)
 		},
 	}
 	cmd.Flags().StringVar(&workDir, "workdir", "/workspace", "working directory inside the workspace")
 	cmd.Aliases = []string{"run"}
 	return cmd
+}
+
+func runExecEventLoop(ctx context.Context, conn *rpc.MuxConn, session ptySessionInfo, dataCh, exitCh <-chan json.RawMessage) error {
+	for {
+		select {
+		case raw, ok := <-dataCh:
+			if !ok {
+				return nil
+			}
+			var p ptyDataParams
+			if err := json.Unmarshal(raw, &p); err != nil {
+				continue
+			}
+			if p.SessionID == session.ID {
+				_, _ = os.Stdout.WriteString(p.Data)
+			}
+		case raw, ok := <-exitCh:
+			if !ok {
+				return nil
+			}
+			var p ptyExitParams
+			if err := json.Unmarshal(raw, &p); err != nil {
+				continue
+			}
+			if p.SessionID == session.ID {
+				if p.ExitCode != 0 {
+					os.Exit(p.ExitCode)
+				}
+				return nil
+			}
+		case <-ctx.Done():
+			_ = conn.Send("pty.close", map[string]any{"sessionId": session.ID})
+			return context.Canceled
+		}
+	}
 }
 
 func shellJoin(args []string) string {
