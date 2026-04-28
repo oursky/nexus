@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -399,6 +400,35 @@ func ensureDockerDaemon() error {
 	_ = os.Remove("/var/run/docker.pid")
 	_ = os.Remove("/var/run/docker.sock")
 	_ = os.Remove(socketPath)
+
+	// Kill any stale containerd process left from a previous session.
+	// dockerd manages its own containerd instance and stores the PID at a
+	// well-known location inside exec-root.  If that process is still alive
+	// (e.g. after a hard VM reboot) dockerd refuses to start because it
+	// thinks containerd is already running.
+	staleContainerdPIDs := []string{
+		filepath.Join(execRoot, "containerd/containerd.pid"),
+		"/var/run/docker/containerd/containerd.pid",
+		"/run/docker/containerd/containerd.pid",
+	}
+	for _, pidFile := range staleContainerdPIDs {
+		data, err := os.ReadFile(pidFile)
+		if err != nil {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil || pid <= 0 {
+			_ = os.Remove(pidFile)
+			continue
+		}
+		if err := syscall.Kill(pid, syscall.SIGKILL); err == nil {
+			// Brief pause so the kernel can reap the process before dockerd starts.
+			time.Sleep(200 * time.Millisecond)
+		}
+		_ = os.Remove(pidFile)
+		emitDiagnostic("agent docker daemon: removed stale containerd pid file %s (pid %d)", pidFile, pid)
+	}
+
 	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
 		return fmt.Errorf("mkdir docker data root: %w", err)
 	}

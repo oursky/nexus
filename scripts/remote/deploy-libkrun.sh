@@ -129,6 +129,17 @@ if [[ -z "${LIBKRUNFW_REAL}" ]]; then
 fi
 cp "${LIBKRUNFW_REAL}"                  "${EMBED_DIR}/libkrunfw-embed.so"
 cp tmp/nexus-libkrun-vm                "${EMBED_DIR}/nexus-libkrun-vm"
+# Stage passt binary for embedding so the release binary is fully self-contained.
+PASST_EMBED="${EMBED_DIR}/passt-embed"
+if [[ -x "$(command -v passt)" ]]; then
+  cp "$(command -v passt)" "$PASST_EMBED"
+  echo "  → staged system passt for embed ($(du -sh "$PASST_EMBED" | cut -f1))"
+else
+  echo "  downloading passt for embed (x86_64 static build)..."
+  curl -fsSL --retry 3 -o "$PASST_EMBED" "https://passt.top/builds/latest/x86_64/passt"
+  chmod +x "$PASST_EMBED"
+  echo "  → downloaded passt for embed ($(du -sh "$PASST_EMBED" | cut -f1))"
+fi
 echo "  → staged libkrun-embed.so ($(du -sh ${EMBED_DIR}/libkrun-embed.so | cut -f1))"
 echo "  → staged libkrunfw-embed.so ($(du -sh ${EMBED_DIR}/libkrunfw-embed.so | cut -f1))"
 echo "  → staged nexus-libkrun-vm ($(du -sh ${EMBED_DIR}/nexus-libkrun-vm | cut -f1))"
@@ -149,7 +160,8 @@ echo "── Step 7: clean staging files from source tree ───────�
 # Run: git add packages/nexus/cmd/nexus/nexus-libkrun-vm && git commit
 rm -f "${EMBED_DIR}/libkrun-embed.so" \
       "${EMBED_DIR}/libkrunfw-embed.so" \
-      "${EMBED_DIR}/agent-linux-amd64"
+      "${EMBED_DIR}/agent-linux-amd64" \
+      "${EMBED_DIR}/passt-embed"
 echo "  → done (nexus-libkrun-vm kept in ${EMBED_DIR}/ — remember to git commit it)"
 REMOTE
 
