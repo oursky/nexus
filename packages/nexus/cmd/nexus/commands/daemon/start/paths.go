@@ -1,4 +1,4 @@
-package daemon
+package start
 
 import (
 	"fmt"
@@ -10,18 +10,18 @@ import (
 
 // defaultVMKernelPath returns the user-scoped kernel path under XDG_DATA_HOME.
 func defaultVMKernelPath() string {
-	return xdgVMAsset("vmlinux.bin")
+	return XDGVMAsset("vmlinux.bin")
 }
 
 // defaultVMRootfsPath returns the user-scoped rootfs path under XDG_DATA_HOME.
 func defaultVMRootfsPath() string {
-	return xdgVMAsset("rootfs.ext4")
+	return XDGVMAsset("rootfs.ext4")
 }
 
-// xdgVMAsset returns the path to a VM asset under ~/.local/share/nexus/vm/
+// XDGVMAsset returns the path to a VM asset under ~/.local/share/nexus/vm/
 // or the legacy /var/lib/nexus/ path if the legacy file still exists and the
 // XDG file does not, providing seamless migration for existing setups.
-func xdgVMAsset(name string) string {
+func XDGVMAsset(name string) string {
 	home, _ := os.UserHomeDir()
 	xdgPath := filepath.Join(home, ".local", "share", "nexus", "vm", name)
 	legacyPath := "/var/lib/nexus/" + name
@@ -35,7 +35,8 @@ func xdgVMAsset(name string) string {
 	return xdgPath
 }
 
-func defaultDataDir() string {
+// DefaultDataDir returns the default data directory for nexus state.
+func DefaultDataDir() string {
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
 		return filepath.Join(xdg, "nexus")
 	}
@@ -48,7 +49,7 @@ func defaultDataDir() string {
 
 // agentHashFile returns a user-writable path for the agent SHA-256 cache.
 func agentHashFile() string {
-	return filepath.Join(defaultDataDir(), "rootfs-agent.sha256")
+	return filepath.Join(DefaultDataDir(), "rootfs-agent.sha256")
 }
 
 func preferredLibkrunStorageRoot() (string, bool) {

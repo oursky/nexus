@@ -1,4 +1,4 @@
-package daemon
+package start
 
 import (
 	"context"
@@ -53,7 +53,7 @@ type resolvedPaths struct {
 	basesDir    string
 }
 
-func startCommand() *cobra.Command {
+func Command() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start the Nexus daemon (auto-provisions prerequisites; listens on 127.0.0.1:7777 by default)",
@@ -206,8 +206,8 @@ func buildNetworkConfig(token string) (daemon.NetworkConfig, error) {
 
 // resolveDriver parses the driver flag and applies compile-time defaults.
 func resolveDriver(driver string, sandboxMode bool) (DriverInfo, error) {
-	if driver == "" && defaultDriver != "" {
-		driver = defaultDriver
+	if driver == "" && DefaultDriver != "" {
+		driver = DefaultDriver
 		log.Printf("daemon: using compile-time default driver=%s", driver)
 	}
 	info, err := ParseDriver(driver)
@@ -223,7 +223,7 @@ func resolveDriver(driver string, sandboxMode bool) (DriverInfo, error) {
 // resolveVMPaths promotes VM assets to the preferred storage root when using
 // libkrun and derives the bases and work directories.
 func resolveVMPaths(isLibkrun bool, rootfsPath, kernelPath, workDirRoot string) (resolvedPaths, error) {
-	defaultData := defaultDataDir()
+	defaultData := DefaultDataDir()
 	basesDir := filepath.Join(defaultData, "bases")
 
 	if !isLibkrun {

@@ -15,10 +15,10 @@ import (
 // NexusfileConfig is a lightweight project config loaded from Nexusfile.
 // It is intentionally small and user-facing.
 type NexusfileConfig struct {
-	Schema   string               `json:"$schema,omitempty" toml:"$schema"`
-	VM       NexusfileVMSection   `json:"vm,omitempty" toml:"vm"`
-	Manifest NexusfileManifest    `json:"manifest,omitempty" toml:"manifest"`
-	Dev      NexusfileDevSection  `json:"dev,omitempty" toml:"dev"`
+	Schema   string              `json:"$schema,omitempty" toml:"$schema"`
+	VM       NexusfileVMSection  `json:"vm,omitempty" toml:"vm"`
+	Manifest NexusfileManifest   `json:"manifest,omitempty" toml:"manifest"`
+	Dev      NexusfileDevSection `json:"dev,omitempty" toml:"dev"`
 }
 
 type NexusfileVMSection struct {

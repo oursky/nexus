@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon/start"
 	"github.com/spf13/cobra"
 )
 
@@ -122,7 +123,7 @@ func checkHostSystem(check func(string, func() (bool, string))) {
 }
 
 func checkVMAssets(check func(string, func() (bool, string))) {
-	kernelPath := xdgVMAsset("vmlinux.bin")
+	kernelPath := start.XDGVMAsset("vmlinux.bin")
 	check("vm.kernel", func() (bool, string) {
 		fi, err := os.Stat(kernelPath)
 		if err != nil {
@@ -131,7 +132,7 @@ func checkVMAssets(check func(string, func() (bool, string))) {
 		return true, fmt.Sprintf("%s (%s)", kernelPath, humanSize(fi.Size()))
 	})
 
-	rootfsPath := xdgVMAsset("rootfs.ext4")
+	rootfsPath := start.XDGVMAsset("rootfs.ext4")
 	check("vm.rootfs", func() (bool, string) {
 		fi, err := os.Stat(rootfsPath)
 		if err != nil {
@@ -142,12 +143,12 @@ func checkVMAssets(check func(string, func() (bool, string))) {
 }
 
 func checkGuestAgent(check func(string, func() (bool, string))) {
-	rootfsPath := xdgVMAsset("rootfs.ext4")
+	rootfsPath := start.XDGVMAsset("rootfs.ext4")
 	check("vm.guest-agent", func() (bool, string) {
 		if _, err := os.Stat(rootfsPath); err != nil {
 			return false, "rootfs not present, cannot verify agent"
 		}
-		hashFile := filepath.Join(defaultDataDir(), "rootfs-agent.sha256")
+		hashFile := filepath.Join(start.DefaultDataDir(), "rootfs-agent.sha256")
 		if _, err := os.Stat(hashFile); err == nil {
 			return true, "nexus-guest-agent injected (hash file present)"
 		}
@@ -270,7 +271,7 @@ func checkAuthTokens(check func(string, func() (bool, string))) {
 
 func checkDaemonSocket(check func(string, func() (bool, string))) {
 	check("daemon.socket", func() (bool, string) {
-		sock := filepath.Join(defaultDataDir(), "nexusd.sock")
+		sock := filepath.Join(start.DefaultDataDir(), "nexusd.sock")
 		if _, err := os.Stat(sock); err != nil {
 			return false, fmt.Sprintf("%s not found (daemon not running?)", sock)
 		}

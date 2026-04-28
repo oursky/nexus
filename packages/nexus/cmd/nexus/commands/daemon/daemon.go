@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon/start"
 	"github.com/spf13/cobra"
 )
 
@@ -11,7 +12,7 @@ func Command() *cobra.Command {
 		Short: "Manage the Nexus daemon",
 	}
 	cmd.AddCommand(
-		startCommand(),
+		start.Command(),
 		stopCommand(),
 		statusCommand(),
 		tokenCommand(),

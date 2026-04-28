@@ -1,1 +1,10 @@
 "$schema" = "./schemas/nexusfile.schema.json"
+name = "nexus"
+
+[build]
+setup = ["go mod download"]
+
+[dev]
+up = "go run ./cmd/nexus daemon start --foreground"
+down = "go run ./cmd/nexus daemon stop"
+port = 7777

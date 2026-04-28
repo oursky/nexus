@@ -1,6 +1,6 @@
 //go:build linux
 
-package daemon
+package start
 
 import (
 	"context"
@@ -30,7 +30,7 @@ func ensureLibkrunRootfsBaked(libkrunVMBin, rootfsPath, kernelPath string, emit 
 		}
 	}
 
-	stampDir := defaultDataDir()
+	stampDir := DefaultDataDir()
 	report("start", "checking cached rootfs bake")
 
 	if libkrunVMBin == "" {

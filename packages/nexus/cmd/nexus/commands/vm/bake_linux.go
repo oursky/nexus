@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	daemoncmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon"
+	startcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon/start"
 	lkruntime "github.com/oursky/nexus/packages/nexus/internal/infra/runtime/libkrun"
 	"github.com/spf13/cobra"
 )
@@ -37,16 +37,16 @@ but exposed as an explicit command for better visibility and debugging.`,
 
 func runBake(stdout, stderr io.Writer, timeoutStr string) error {
 	// Ensure bootstrap has run so kernel, passt, and libkrun libs are present.
-	if daemoncmd.StartSetupFn != nil {
+	if startcmd.StartSetupFn != nil {
 		fmt.Fprintln(stderr, "vm bake: ensuring host prerequisites...")
-		if err := daemoncmd.StartSetupFn(stderr, "libkrun"); err != nil {
+		if err := startcmd.StartSetupFn(stderr, "libkrun"); err != nil {
 			return fmt.Errorf("host setup failed: %w", err)
 		}
 		fmt.Fprintln(stderr, "vm bake: host prerequisites ready")
 	}
 
-	kernelPath := daemoncmd.DefaultVMKernelPath
-	rootfsPath := daemoncmd.DefaultVMRootfsPath
+	kernelPath := startcmd.DefaultVMKernelPath
+	rootfsPath := startcmd.DefaultVMRootfsPath
 
 	// Sanity-check assets exist.
 	for _, path := range []string{kernelPath, rootfsPath} {
@@ -78,7 +78,7 @@ func runBake(stdout, stderr io.Writer, timeoutStr string) error {
 		KernelPath:      kernelPath,
 		RootFSBasePath:  rootfsPath,
 		NetworkBackend:  "tsi",
-		EmbeddedAgentFn: daemoncmd.EmbeddedAgentFn,
+		EmbeddedAgentFn: startcmd.EmbeddedAgentFn,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

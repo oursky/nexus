@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon/start"
 	"github.com/spf13/cobra"
 )
 
@@ -67,7 +68,7 @@ func stopCommand() *cobra.Command {
 		},
 	}
 
-	defaultData := defaultDataDir()
+	defaultData := start.DefaultDataDir()
 	cmd.Flags().StringVar(&socketPath, "socket", filepath.Join(defaultData, "nexusd.sock"), "Unix socket path")
 	cmd.Flags().IntVar(&port, "port", 7777, "Network listener port")
 	return cmd

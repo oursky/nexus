@@ -3,52 +3,169 @@
   "$id": "https://oursky.github.io/nexus/schemas/nexusfile.schema.json",
   "title": "Nexusfile",
   "type": "object",
+  "description": "Intent-first app declaration for Nexus. Declares services, domains, resources, and local development workflow. Infrastructure implementation details (Ingress class, TLS issuer, etc.) are intentionally excluded.",
   "additionalProperties": false,
+  "required": ["name"],
   "properties": {
     "$schema": {
-      "type": "string"
+      "type": "string",
+      "description": "Optional schema reference for IDE validation."
     },
-    "vm": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "App identifier used by Nexus orchestration."
+    },
+    "build": {
       "type": "object",
+      "description": "Workspace base-layer intent: runtime hint and one-time setup commands.",
       "additionalProperties": false,
       "properties": {
-        "profile": {
-          "type": "string",
-          "enum": [
-            "minimal",
-            "default"
-          ],
-          "description": "minimal keeps boot fast; default installs additional developer tooling. If omitted, default is used."
-        },
         "image": {
           "type": "string",
-          "description": "Reserved for future prebuilt image/channel selection."
+          "description": "Base image reference or well-known shorthand (e.g. 'node', 'go', 'python'). Used for VM channel selection and deploy base image defaults."
+        },
+        "setup": {
+          "type": "array",
+          "description": "One-time commands run during workspace base-layer bake. Changing this invalidates the base image cache.",
+          "items": { "type": "string" }
         }
       }
     },
-    "manifest": {
-      "type": "object",
-      "description": "Base layer manifest for cache invalidation and toolchain configuration. Changing this section forces a rebuild of the cached base image.",
-      "additionalProperties": true
-    },
     "dev": {
       "type": "object",
-      "description": "Development environment configuration. Inspired by smolvm's Smolfile [dev] table.",
+      "description": "Local development lifecycle metadata. Consumed by UI actions or workspace flags, not a CLI subcommand.",
       "additionalProperties": false,
       "properties": {
-        "init": {
-          "type": "array",
-          "description": "Commands to run once when the workspace base layer is built.",
-          "items": {
-            "type": "string"
+        "up": {
+          "type": "string",
+          "description": "Local dev start command. Opaque string — can call npm, make, docker compose, etc."
+        },
+        "down": {
+          "type": "string",
+          "description": "Local dev stop command. Optional."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Primary local port for auto-forwarding and health checks."
+        }
+      }
+    },
+    "services": {
+      "type": "array",
+      "description": "Runtime service topology. Each service becomes a Deployment + Service at deploy time.",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Unique service key."
+          },
+          "source": {
+            "type": "string",
+            "description": "Service working directory relative to project root. Default: project root.",
+            "default": "."
+          },
+          "start": {
+            "type": "string",
+            "description": "Deploy runtime command. Auto-detected from Procfile or package.json if omitted. If dockerfile is set, Dockerfile CMD is used for deploy and start is optional."
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535,
+            "description": "Listening port. Required if targeted by a domain."
+          },
+          "dockerfile": {
+            "type": "string",
+            "description": "Path to Dockerfile for deploy build. Mutually exclusive with 'image' on the same service."
+          },
+          "image": {
+            "type": "string",
+            "description": "Container base image for deploy. Mutually exclusive with 'dockerfile' on the same service."
           }
         },
-        "volumes": {
-          "type": "array",
-          "description": "Host-to-guest volume mappings.",
-          "items": {
-            "type": "string"
+        "oneOf": [
+          { "not": { "required": ["dockerfile", "image"] } },
+          { "required": ["dockerfile"], "not": { "required": ["image"] } },
+          { "required": ["image"], "not": { "required": ["dockerfile"] } }
+        ]
+      }
+    },
+    "domains": {
+      "type": "array",
+      "description": "Domain routing intent. Maps to Ingress or Gateway HTTPRoute at deploy time.",
+      "items": {
+        "type": "object",
+        "required": ["host", "service"],
+        "additionalProperties": false,
+        "properties": {
+          "host": {
+            "type": "string",
+            "description": "Desired public domain."
+          },
+          "service": {
+            "type": "string",
+            "description": "Target service name. Must reference a declared service."
+          },
+          "path": {
+            "type": "string",
+            "default": "/",
+            "description": "Route path prefix."
           }
+        }
+      }
+    },
+    "resources": {
+      "type": "array",
+      "description": "Managed resource intent (e.g. Postgres).",
+      "items": {
+        "type": "object",
+        "required": ["name", "type", "bind", "as"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Unique resource key."
+          },
+          "type": {
+            "type": "string",
+            "enum": ["postgres"],
+            "description": "Resource type. 'postgres' is the only supported type in v1."
+          },
+          "mode": {
+            "type": "string",
+            "enum": ["managed", "local"],
+            "default": "managed",
+            "description": "managed = platform-provisioned; local = dev-only."
+          },
+          "bind": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" },
+            "description": "Services that receive the resource connection."
+          },
+          "as": {
+            "type": "string",
+            "description": "Env var name for the connection string (e.g. DATABASE_URL)."
+          }
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "description": "Release-phase command executed before traffic cutover.",
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "One-off pre-traffic command (e.g. database migration). Equivalent to Helm pre-upgrade hook."
         }
       }
     }

@@ -1,4 +1,4 @@
-package daemon
+package start
 
 import (
 	"crypto/sha256"

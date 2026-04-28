@@ -1,4 +1,4 @@
-package daemon
+package start
 
 import (
 	"os"
@@ -30,7 +30,7 @@ var (
 )
 
 func registerStartFlags(cmd *cobra.Command) {
-	defaultData := defaultDataDir()
+	defaultData := DefaultDataDir()
 
 	cmd.Flags().StringVar(&dbPath, "db", filepath.Join(defaultData, "nexus.db"), "SQLite database path")
 	cmd.Flags().StringVar(&socketPath, "socket", filepath.Join(defaultData, "nexusd.sock"), "Unix socket path")
