@@ -109,7 +109,7 @@ threshold_for() {
 
 fail=0
 
-for raw in "${files[@]}"; do
+for raw in "${files[@]:-}"; do
   [[ -z "$raw" ]] && continue
   rel=$(to_rel "$raw")
   [[ -f "$rel" ]] || continue
