@@ -151,7 +151,6 @@ type agentDialer interface {
 
 // vmDriver matches the subset of lkruntime.Driver used by the daemon bundle.
 type vmDriver interface {
-	domainruntime.Driver
 	CleanupStaleInstances(ctx context.Context) error
 	WorkspaceReady(ctx context.Context, workspaceID string) (bool, error)
 	SerialLogPath(workspaceID string) (string, error)
@@ -166,36 +165,36 @@ type libkrunDriverBundle struct {
 func (b libkrunDriverBundle) AsDriver() domainruntime.Driver { return b.rtDriver }
 
 func (b libkrunDriverBundle) CleanupStaleInstances(ctx context.Context) error {
-	if b.driver == nil {
+	if b.vm == nil {
 		return nil
 	}
-	return b.driver.CleanupStaleInstances(ctx)
+	return b.vm.CleanupStaleInstances(ctx)
 }
 
 func (b libkrunDriverBundle) AgentConn(ctx context.Context, workspaceID string) (net.Conn, error) {
-	return b.adapter.AgentConn(ctx, workspaceID)
+	return b.agent.AgentConn(ctx, workspaceID)
 }
 
 func (b libkrunDriverBundle) GuestWorkdir(workspaceID string) string {
-	return b.adapter.GuestWorkdir(workspaceID)
+	return b.agent.GuestWorkdir(workspaceID)
 }
 
 func (b libkrunDriverBundle) WorkspaceReady(ctx context.Context, workspaceID string) (bool, error) {
-	if b.driver == nil {
+	if b.vm == nil {
 		return false, fmt.Errorf("libkrun driver is unavailable")
 	}
-	return b.driver.WorkspaceReady(ctx, workspaceID)
+	return b.vm.WorkspaceReady(ctx, workspaceID)
 }
 
 func (b libkrunDriverBundle) DialPort(ctx context.Context, workspaceID string, port int) (net.Conn, error) {
-	return b.adapter.DialPort(ctx, workspaceID, port)
+	return b.agent.DialPort(ctx, workspaceID, port)
 }
 
 func (b libkrunDriverBundle) SerialLogPath(workspaceID string) (string, error) {
-	if b.driver == nil {
+	if b.vm == nil {
 		return "", fmt.Errorf("libkrun driver is unavailable")
 	}
-	return b.driver.SerialLogPath(workspaceID)
+	return b.vm.SerialLogPath(workspaceID)
 }
 
 // prewarmLibkrunBaseImages builds cached base workspace ext4 images for all

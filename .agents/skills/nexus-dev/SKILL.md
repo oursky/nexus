@@ -14,13 +14,40 @@ Set `REMOTE_HOST` in `.env.local` (see `.env.local.example`). Core tasks:
 | -------------------------------------- | ---------------------------------------------------------------------------------- |
 | `task setup`                           | Prerequisites check + `go mod download`                                            |
 | `task dev:remote`                      | `linux/amd64` build, deploy to `REMOTE_HOST`, restart daemon                       |
-| `task dev:cli`                         | `dev:remote` + install Mac CLI to `~/.local/bin/nexus`                             |
+| `task dev:cli`                         | `dev:remote` + install Mac CLI to `~/.local/bin/nexus-dev`                         |
 | `task dev:swift`                       | `dev:remote` + `generate:sdk` + `scripts/swift/build.sh` + `scripts/swift/open.sh` |
 | `task generate:sdk`                    | Regenerate `NexusRPC.swift` from Go types                                          |
 | `task build` / `task test` / `task ci` | Local Go compile, tests, CI-shaped checks                                          |
 
 
 Remote scripts (same `REMOTE_HOST` / `REMOTE_BIN` as Taskfile): `scripts/remote/deploy.sh`, `daemon-restart.sh`, `daemon-status.sh`, `daemon-logs.sh`, `daemon-token.sh`.
+
+## Dev/prod isolation
+
+Dev and prod daemons are fully separated by binary name, port, and state directory so they never collide on the same remote host.
+
+| Resource | Prod | Dev (default) |
+|---|---|---|
+| Remote binary | `~/.local/bin/nexus` | `~/.local/bin/nexus-dev` |
+| Remote port | `7777` | `7778` |
+| Remote state dir | `~/.local/state/nexus/` | `~/.local/state-dev/nexus/` |
+| Local CLI | `~/.local/bin/nexus` | `~/.local/bin/nexus-dev` |
+| Mac app profile | connects to prod daemon | connects to dev daemon (separate `nexus-dev daemon connect`) |
+
+Configure in `.env.local` (copy from `.env.local.example`). Defaults are already set to dev values — no file needed to start dev work. Prod daemon is never touched by any `task dev:*` command.
+
+### Mac app: local dev build vs TestFlight prod
+
+- **Local dev build** (`task dev:swift`): built from source, runs as `NexusApp.app` from Xcode. Connect it to the dev daemon: `nexus-dev daemon connect <host>`. This stores a separate Keychain profile.
+- **TestFlight prod app**: uses the prod daemon at port `7777`. Connect via `nexus daemon connect <host>`.
+
+The two apps use different Keychain entries because the CLI binary name differs (`nexus` vs `nexus-dev`). Run both simultaneously — they target different daemons on different ports with different state dirs.
+
+To confirm which daemon a running app is connected to, check the active profile:
+```bash
+nexus-dev daemon status   # dev daemon status
+nexus daemon status       # prod daemon status
+```
 
 ## Key paths
 
@@ -35,9 +62,9 @@ Remote scripts (same `REMOTE_HOST` / `REMOTE_BIN` as Taskfile): `scripts/remote/
 | Daemon token (macOS)                | Keychain — service `nexus`, account `daemon-token`                                                       |
 | Daemon token (Linux headless)       | `~/.local/share/nexus/daemon-token` (0600, fallback only)                                                |
 | Daemon port (local Mac)             | default `63987`; process-isolation worktrees use `64100-64999`                                           |
-| Daemon port (remote Linux dev)      | `7777` by convention                                                                                     |
+| Daemon port (remote Linux dev)      | `7778` by convention (dev); prod uses `7777`                                                             |
 | Daemon log (local Mac)              | `~/.config/nexus/run/daemon.log`                                                                         |
-| Daemon log (remote Linux)           | `${XDG_STATE_HOME:-~/.local/state}/nexus/daemon.log`                                                     |
+| Daemon log (remote Linux dev)       | `${REMOTE_XDG_STATE_HOME:-~/.local/state-dev}/nexus/daemon.log`                                          |
 | Client workspace state              | `~/.local/share/nexus/workspaces.json`                                                                   |
 | Fork worktrees                      | `<gitRoot>/.worktrees/<name>/`                                                                           |
 | Headless RPC (Mac app testing)      | `127.0.0.1:7778` — activate with `touch ~/.nexus-headless-rpc`                                           |
@@ -135,9 +162,9 @@ If you see `"Method not found"`, the Mac client is newer than the remote daemon 
 cd packages/nexus
 GOOS=linux GOARCH=amd64 go build -o /tmp/nexus-linux ./cmd/nexus
 ssh <host> "mkdir -p ~/.local/bin"
-scp /tmp/nexus-linux <host>:~/.local/bin/nexus
-ssh <host> "~/.local/bin/nexus daemon start"
-nexus daemon connect <host>
+scp /tmp/nexus-linux <host>:~/.local/bin/nexus-dev
+ssh <host> "XDG_STATE_HOME=~/.local/state-dev ~/.local/bin/nexus-dev daemon start --port 7778"
+nexus-dev daemon connect <host>
 ```
 
 Day-to-day, prefer `**task dev:remote**` from the repo root with `.env.local` instead of ad hoc `scp`.
@@ -145,10 +172,10 @@ Day-to-day, prefer `**task dev:remote**` from the repo root with `.env.local` in
 ### Workspace lifecycle
 
 ```bash
-nexus workspace create --name myws --repo ~/magic/my-project
-nexus workspace start myws
-nexus workspace list
-nexus workspace fork myws --name myws-feature --ref feature-branch
+nexus-dev workspace create --name myws --repo ~/magic/my-project
+nexus-dev workspace start myws
+nexus-dev workspace list
+nexus-dev workspace fork myws --name myws-feature --ref feature-branch
 ```
 
 Fork worktrees live at `<gitRoot>/.worktrees/<name>`; `.worktrees/` is auto-added to `.git/info/exclude`.
@@ -156,23 +183,23 @@ Fork worktrees live at `<gitRoot>/.worktrees/<name>`; `.worktrees/` is auto-adde
 ### Fresh start (implode)
 
 ```bash
-ssh <host> "~/.local/bin/nexus daemon implode --force"
-ssh <host> "~/.local/bin/nexus daemon start"
-nexus daemon connect <host>
+ssh <host> "XDG_STATE_HOME=~/.local/state-dev ~/.local/bin/nexus-dev daemon implode --force"
+ssh <host> "XDG_STATE_HOME=~/.local/state-dev ~/.local/bin/nexus-dev daemon start --port 7778"
+nexus-dev daemon connect <host>
 ```
 
 ### Token handling
 
-- Mac CLI: token in Keychain after `nexus daemon connect`
-- Non-interactive SSH uses full path: `$HOME/.local/bin/nexus daemon token`
+- Mac CLI: token in Keychain after `nexus-dev daemon connect`
+- Non-interactive SSH uses full path: `$HOME/.local/bin/nexus-dev daemon token`
 - Inspect: `security find-generic-password -s nexus -a daemon-token -w`
 
 ### Logs and diagnostics
 
 ```bash
 REMOTE_HOST=user@host scripts/remote/daemon-logs.sh
-ssh <host> "cat ~/.local/state/nexus/vms/<ws-id>/firecracker.log"
-nexus workspace list
+ssh <host> "cat ~/.local/state-dev/nexus/vms/<ws-id>/firecracker.log"
+nexus-dev workspace list
 ```
 
 ---
@@ -219,9 +246,9 @@ curl -sf http://127.0.0.1:7778/status   # → {"ok":true,"version":"1"}
 touch ~/.nexus-headless-rpc
 
 # 2. Workspace management via Mac CLI (talks directly to remote daemon)
-/Users/newman/.local/bin/nexus workspace create --name myws --repo /home/user/magic/my-project
-/Users/newman/.local/bin/nexus workspace start ws-<id>
-/Users/newman/.local/bin/nexus workspace list
+/Users/newman/.local/bin/nexus-dev workspace create --name myws --repo /home/user/magic/my-project
+/Users/newman/.local/bin/nexus-dev workspace start ws-<id>
+/Users/newman/.local/bin/nexus-dev workspace list
 
 # 3. Open a terminal tab in the Mac app
 TAB=$(curl -sf -X POST http://127.0.0.1:7778/terminal/open \
@@ -329,9 +356,10 @@ This section covers the end-to-end flow for the rootless Firecracker setup: from
 ```
 macOS (Mac app)
   └─ Headless RPC :7778   ← test harness
-  └─ SSH tunnel → :7777   ← nexus daemon on linuxbox
+  └─ SSH tunnel → :7778   ← nexus-dev daemon on linuxbox (dev)
+                    :7777   ← nexus daemon on linuxbox (prod — never touched by dev tasks)
 
-linuxbox (~/.local/bin/nexus daemon)
+linuxbox (~/.local/bin/nexus-dev daemon, state in ~/.local/state-dev/nexus/)
   ├─ rootfs.ext4 (8 GB, Ubuntu, tools)  ← ~/.local/share/nexus/vm/
   ├─ vmlinux.bin                         ← ~/.local/share/nexus/vm/
   ├─ nexus-firecracker-agent (embedded in nexus binary, injected into rootfs)
@@ -364,10 +392,10 @@ GOOS=linux GOARCH=amd64 go build -o /tmp/nexus-linux ./cmd/nexus/
 # Step 3 — deploy
 scp /tmp/nexus-linux newman@linuxbox:/tmp/nexus-new
 ssh newman@linuxbox "
-  ~/.local/bin/nexus daemon stop 2>/dev/null || true
+  XDG_STATE_HOME=~/.local/state-dev ~/.local/bin/nexus-dev daemon stop 2>/dev/null || true
   pkill -f firecracker 2>/dev/null || true
   sleep 1
-  install -m 0755 /tmp/nexus-new ~/.local/bin/nexus
+  install -m 0755 /tmp/nexus-new ~/.local/bin/nexus-dev
 "
 ```
 
@@ -384,7 +412,7 @@ On `nexus daemon start`, the daemon:
 After a **fresh rootfs build** the hash file is deleted automatically so the agent is always re-injected. If the agent seems stale in the VM:
 
 ```bash
-ssh newman@linuxbox "rm -f ~/.local/state/nexus/rootfs-agent.sha256"
+ssh newman@linuxbox "rm -f ~/.local/state-dev/nexus/rootfs-agent.sha256"
 # then restart daemon (provision or daemon restart)
 ```
 
@@ -394,7 +422,7 @@ ssh newman@linuxbox "rm -f ~/.local/state/nexus/rootfs-agent.sha256"
 |------|----------|-------------|
 | `ubuntu.squashfs` | `~/.local/share/nexus/vm/` | Once, downloaded on first provision |
 | `rootfs.ext4` | `~/.local/share/nexus/vm/` | Only when missing; delete to force rebuild |
-| `rootfs-agent.sha256` | `~/.local/state/nexus/` | Deleted after rootfs rebuild; updated after agent injection |
+| `rootfs-agent.sha256` | `~/.local/state-dev/nexus/` | Deleted after rootfs rebuild; updated after agent injection |
 | `workspace.ext4` | `/data/nexus/firecracker-vms/<ws-id>/` | XFS reflink of `base.ext4`, per workspace |
 | `.nexus-host-config.ext4` | `<project-root>/` | Rebuilt fresh on every workspace `Start()` call |
 
@@ -404,7 +432,7 @@ ssh newman@linuxbox "rm -f ~/.local/state/nexus/rootfs-agent.sha256"
 
 To force a clean rootfs rebuild (e.g. after patching `patchRootfsForRoot`):
 ```bash
-ssh newman@linuxbox "rm -f ~/.local/share/nexus/vm/rootfs.ext4 ~/.local/state/nexus/rootfs-agent.sha256"
+ssh newman@linuxbox "rm -f ~/.local/share/nexus/vm/rootfs.ext4 ~/.local/state-dev/nexus/rootfs-agent.sha256"
 # then provision
 ```
 
@@ -569,7 +597,7 @@ ssh newman@linuxbox "rm -f ~/.local/state/nexus/rootfs-agent.sha256"
 **Symptom**: `df -h /` shows 100%; npm or apt errors with "no space left on device".
 **Cause**: old rootfs was 4 GB; current is 8 GB. If you have an old rootfs:
 ```bash
-ssh newman@linuxbox "rm ~/.local/share/nexus/vm/rootfs.ext4 ~/.local/state/nexus/rootfs-agent.sha256"
+ssh newman@linuxbox "rm ~/.local/share/nexus/vm/rootfs.ext4 ~/.local/state-dev/nexus/rootfs-agent.sha256"
 ```
 Then provision to rebuild.
 
@@ -595,10 +623,10 @@ Look for:
 ### Daemon health
 ```bash
 # Is it running and what version?
-ssh newman@linuxbox "~/.local/bin/nexus daemon status"
+ssh newman@linuxbox "XDG_STATE_HOME=~/.local/state-dev ~/.local/bin/nexus-dev daemon status"
 
 # Tail live logs
-ssh newman@linuxbox "tail -f ~/.local/state/nexus/daemon.log"
+ssh newman@linuxbox "tail -f ~/.local/state-dev/nexus/daemon.log"
 
 # Or via script
 REMOTE_HOST=newman@linuxbox scripts/remote/daemon-logs.sh
@@ -617,7 +645,7 @@ ssh newman@linuxbox "pgrep -a firecracker"
 ssh newman@linuxbox "ls -lh ~/.local/share/nexus/vm/"
 
 # Agent hash
-ssh newman@linuxbox "cat ~/.local/state/nexus/rootfs-agent.sha256 | cut -c1-16"
+ssh newman@linuxbox "cat ~/.local/state-dev/nexus/rootfs-agent.sha256 | cut -c1-16"
 ssh newman@linuxbox "sha256sum ~/.local/bin/nexus-firecracker-agent | cut -c1-16"
 # These must match for the currently-running agent to be up to date
 ```
@@ -676,7 +704,7 @@ ssh newman@linuxbox "ls -lh /data/nexus/firecracker-vms/"
 
 **Repeated `401`** — `security find-generic-password -s nexus -a daemon-token -w`; re-run `nexus daemon connect <host>` for remote.
 
-`**nexus daemon connect` exit 127** — deploy binary to `$HOME/.local/bin/nexus` on the remote host.
+`**nexus-dev daemon connect` exit 127** — deploy binary to `$HOME/.local/bin/nexus-dev` on the remote host.
 
 
 **Port mismatch** — `nexus daemon status --json` per repo/worktree when multiple daemons run.

@@ -3,9 +3,11 @@ version: "3"
 dotenv: [".env.local"]
 
 vars:
-  REMOTE_HOST: '{{.REMOTE_HOST | default ""}}'
-  REMOTE_BIN:  '{{.REMOTE_BIN  | default "~/.local/bin/nexus"}}'
-  REMOTE_PORT: '{{.REMOTE_PORT | default "7777"}}'
+  REMOTE_HOST:         '{{.REMOTE_HOST         | default ""}}'
+  REMOTE_BIN:          '{{.REMOTE_BIN          | default "~/.local/bin/nexus-dev"}}'
+  REMOTE_PORT:         '{{.REMOTE_PORT         | default "7778"}}'
+  REMOTE_XDG_STATE_HOME: '{{.REMOTE_XDG_STATE_HOME | default "~/.local/state-dev"}}'
+  LOCAL_BIN:           '{{.LOCAL_BIN           | default "~/.local/bin/nexus-dev"}}'
 
 tasks:
   # ── Setup ────────────────────────────────────────────────────────────────
@@ -89,6 +91,8 @@ tasks:
     env:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
       REMOTE_BIN:  "{{.REMOTE_BIN}}"
+      REMOTE_PORT: "{{.REMOTE_PORT}}"
+      REMOTE_XDG_STATE_HOME: "{{.REMOTE_XDG_STATE_HOME}}"
     cmds:
       - scripts/remote/deploy.sh       # builds linux binary, stages to Resources/, deploys to remote
       - scripts/remote/daemon-restart.sh  # restarts daemon + prints remote version for confirmation
@@ -101,6 +105,9 @@ tasks:
     env:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
       REMOTE_BIN:  "{{.REMOTE_BIN}}"
+      REMOTE_PORT: "{{.REMOTE_PORT}}"
+      REMOTE_XDG_STATE_HOME: "{{.REMOTE_XDG_STATE_HOME}}"
+      LOCAL_BIN:   "{{.LOCAL_BIN}}"
     cmds:
       - scripts/local/deploy.sh
 
@@ -112,6 +119,8 @@ tasks:
     env:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
       REMOTE_BIN:  "{{.REMOTE_BIN}}"
+      REMOTE_PORT: "{{.REMOTE_PORT}}"
+      REMOTE_XDG_STATE_HOME: "{{.REMOTE_XDG_STATE_HOME}}"
     cmds:
       - scripts/remote/deploy-libkrun.sh
 
@@ -133,6 +142,9 @@ tasks:
     env:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
       REMOTE_BIN:  "{{.REMOTE_BIN}}"
+      REMOTE_PORT: "{{.REMOTE_PORT}}"
+      REMOTE_XDG_STATE_HOME: "{{.REMOTE_XDG_STATE_HOME}}"
+      LOCAL_BIN:   "{{.LOCAL_BIN}}"
     cmds:
       - task: dev:cli
       - task: stage:nexus-macos

@@ -3,14 +3,15 @@
 # Normalize remote runtime state by removing stale libkrun workspace VMs and
 # lingering processes before restarting the daemon.
 #
-# Usage: REMOTE_HOST=user@host [REMOTE_BIN='$HOME/.local/bin/nexus'] [REMOTE_PORT=7777] \
+# Usage: REMOTE_HOST=user@host [REMOTE_BIN='$HOME/.local/bin/nexus-dev'] [REMOTE_PORT=7778] \
 #        [DRY_RUN=1] scripts/remote/daemon-clean-state.sh
 set -euo pipefail
 
 REMOTE_HOST="${REMOTE_HOST:?REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname}"
-REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin/nexus}"
-REMOTE_PORT="${REMOTE_PORT:-7777}"
+REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin/nexus-dev}"
+REMOTE_PORT="${REMOTE_PORT:-7778}"
 DRY_RUN="${DRY_RUN:-0}"
+REMOTE_XDG_STATE_HOME="${REMOTE_XDG_STATE_HOME:-\$HOME/.local/state-dev}"
 
 if ! command -v ssh >/dev/null 2>&1; then
   echo "ssh not found" >&2
@@ -18,7 +19,7 @@ if ! command -v ssh >/dev/null 2>&1; then
 fi
 
 run_remote() {
-  ssh "$REMOTE_HOST" REMOTE_BIN="$REMOTE_BIN" REMOTE_PORT="$REMOTE_PORT" DRY_RUN="$DRY_RUN" bash -s <<'REMOTE_SCRIPT'
+  ssh "$REMOTE_HOST" REMOTE_BIN="$REMOTE_BIN" REMOTE_PORT="$REMOTE_PORT" DRY_RUN="$DRY_RUN" XDG_STATE_HOME="$REMOTE_XDG_STATE_HOME" bash -s <<'REMOTE_SCRIPT'
     set -euo pipefail
 
     remote_bin="$REMOTE_BIN"

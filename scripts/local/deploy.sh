@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NEXUS_PKG="$SCRIPT_DIR/../../packages/nexus"
-LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin/nexus}"
+LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin/nexus-dev}"
 
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 GIT_COMMIT="$(git -C "$SCRIPT_DIR/../.." rev-parse --short HEAD 2>/dev/null || echo dev)"

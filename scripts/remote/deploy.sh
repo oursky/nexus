@@ -11,11 +11,11 @@
 # needed for CGO).  Only rebuild nexus-libkrun-vm itself (rarely) via:
 #   scripts/remote/deploy-libkrun.sh
 #
-# Usage: REMOTE_HOST=user@host [REMOTE_BIN='$HOME/.local/bin/nexus'] scripts/remote/deploy.sh
+# Usage: REMOTE_HOST=user@host [REMOTE_BIN='$HOME/.local/bin/nexus-dev'] scripts/remote/deploy.sh
 set -euo pipefail
 
 REMOTE_HOST="${REMOTE_HOST:?REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname}"
-REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin/nexus}"
+REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin/nexus-dev}"
 # v0.5.20 libkrun is built without virtio-net symbols.
 # v0.5.19 exports krun_add_net_unixstream and krun_set_passt_fd.
 SMOLVM_VERSION="${SMOLVM_VERSION:-v0.5.19}"
@@ -106,7 +106,7 @@ fi
 
 # The guest agent binary is embedded in nexus and extracted automatically by
 # the daemon on first start (resolveGuestAgentBinary) — no separate deploy needed.
-echo "Deploying to ${REMOTE_HOST}:${REMOTE_BIN}..."
+echo "Deploying to ${REMOTE_HOST}:${REMOTE_BIN} (dev env)..."
 ssh "$REMOTE_HOST" "BIN=${REMOTE_BIN}; mkdir -p \"\$(dirname \"\$BIN\")\"; rm -f \"\$BIN\""
 scp "$NEXUS_PKG/tmp/nexus-linux" "${REMOTE_HOST}:${REMOTE_BIN}"
 ssh "$REMOTE_HOST" "chmod +x ${REMOTE_BIN}"
