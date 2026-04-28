@@ -11,6 +11,7 @@ func TestBackendUsesGuestControlChannel(t *testing.T) {
 		{backend: "", want: true},
 		{backend: "libkrun", want: true},
 		{backend: "Libkrun", want: true},
+		{backend: "vm", want: true},
 	}
 
 	for _, tt := range tests {

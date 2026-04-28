@@ -1,0 +1,168 @@
+package workspace
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/oursky/nexus/packages/nexus/internal/domain/project"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+)
+
+func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*workspace.Workspace, error) {
+	if spec.Repo == "" {
+		return nil, fmt.Errorf("repo is required")
+	}
+	if spec.WorkspaceName == "" {
+		return nil, fmt.Errorf("workspaceName is required")
+	}
+	if err := spec.Policy.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Check for duplicate workspace name among non-removed workspaces.
+	all, err := s.repo.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list workspaces: %w", err)
+	}
+	for _, ws := range all {
+		if ws.WorkspaceName == spec.WorkspaceName && ws.State != workspace.StateRemoved {
+			return nil, fmt.Errorf("workspace name %q already exists", spec.WorkspaceName)
+		}
+	}
+
+	projectID, err := s.resolveProjectIDForCreate(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	id := fmt.Sprintf("ws-%d", now.UnixNano())
+	ref := normalizeRef(spec.Ref)
+
+	authBinding := spec.AuthBinding
+	if authBinding == nil {
+		authBinding = make(map[string]string)
+	}
+
+	ws := &workspace.Workspace{
+		ID:            id,
+		ProjectID:     projectID,
+		Repo:          spec.Repo,
+		RepoID:        deriveRepoID(spec.Repo),
+		Ref:           ref,
+		WorkspaceName: spec.WorkspaceName,
+		AgentProfile:  spec.AgentProfile,
+		Policy:        spec.Policy,
+		State:         workspace.StateCreated,
+		Backend:       spec.Backend,
+		AuthBinding:   authBinding,
+		ConfigBundle:  spec.ConfigBundle,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	ws.LineageRootID = ws.ID
+
+	if err := s.repo.Create(ctx, ws); err != nil {
+		return nil, fmt.Errorf("persist workspace: %w", err)
+	}
+
+	if err := s.createWorkspaceRuntime(ctx, ws, spec.ConfigBundle); err != nil {
+		_ = s.repo.Delete(ctx, ws.ID)
+		return nil, err
+	}
+
+	return ws, nil
+}
+
+func (s *Service) createWorkspaceRuntime(ctx context.Context, ws *workspace.Workspace, configBundle string) error {
+	if s.driver == nil {
+		return nil
+	}
+	req := &runtime.CreateRequest{
+		WorkspaceID:   ws.ID,
+		WorkspaceName: ws.WorkspaceName,
+		ProjectRoot:   ws.Repo,
+		ConfigBundle:  configBundle,
+	}
+	if err := s.driver.Create(ctx, req); err != nil && !isAlreadyExists(err) {
+		return fmt.Errorf("runtime create: %w", err)
+	}
+	// Stamp backend so the PTY handler knows which session type to use.
+	if ws.Backend == "" {
+		ws.Backend = s.driver.Backend()
+		ws.UpdatedAt = time.Now().UTC()
+		_ = s.repo.Update(ctx, ws)
+	}
+	return nil
+}
+
+func (s *Service) resolveProjectIDForCreate(ctx context.Context, spec workspace.CreateSpec) (string, error) {
+	repoKey := project.NormalizeRepoURL(spec.Repo)
+	if repoKey == "" {
+		return "", fmt.Errorf("repo is required")
+	}
+	requested := strings.TrimSpace(spec.ProjectID)
+	if requested != "" {
+		p, err := s.projectRepo.Get(ctx, requested)
+		if err != nil {
+			return "", fmt.Errorf("projectId %q not found", requested)
+		}
+		if project.NormalizeRepoURL(p.RepoURL) != repoKey {
+			return "", fmt.Errorf("projectId %q repo mismatch", requested)
+		}
+		return p.ID, nil
+	}
+
+	// Backward-compatible create: if no project id is provided, bind to existing
+	// project by repo; otherwise create a canonical project record.
+	allProjects, err := s.projectRepo.List(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list projects: %w", err)
+	}
+	var canonical *project.Project
+	for _, p := range allProjects {
+		if p == nil {
+			continue
+		}
+		if project.NormalizeRepoURL(p.RepoURL) != repoKey {
+			continue
+		}
+		if canonical == nil || p.CreatedAt.Before(canonical.CreatedAt) || (p.CreatedAt.Equal(canonical.CreatedAt) && p.ID < canonical.ID) {
+			canonical = p
+		}
+	}
+	if canonical != nil {
+		return canonical.ID, nil
+	}
+
+	now := time.Now().UTC()
+	newProject := &project.Project{
+		ID:        project.DeriveIDFromRepo(spec.Repo),
+		Name:      project.InferNameFromRepo(spec.Repo),
+		RepoURL:   spec.Repo,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.projectRepo.Create(ctx, newProject); err != nil {
+		return "", fmt.Errorf("create inferred project: %w", err)
+	}
+	return newProject.ID, nil
+}
+
+func normalizeRef(ref string) string {
+	return strings.TrimSpace(ref)
+}
+
+func deriveRepoID(repo string) string {
+	repo = strings.TrimSpace(repo)
+	repo = strings.TrimSuffix(repo, ".git")
+	repo = strings.NewReplacer(":", "/", "@", "", "//", "/").Replace(repo)
+	return repo
+}
+
+func isAlreadyExists(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "already exists")
+}

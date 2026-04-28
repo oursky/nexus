@@ -5,9 +5,10 @@ import (
 	"time"
 )
 
-// UsesGuestVM reports whether the backend runs code inside a micro-VM (libkrun).
+// UsesGuestVM reports whether the backend runs code inside a micro-VM.
 func UsesGuestVM(backend string) bool {
-	return strings.ToLower(strings.TrimSpace(backend)) == "libkrun"
+	s := strings.ToLower(strings.TrimSpace(backend))
+	return s == "libkrun" || s == "vm"
 }
 
 // Workspace is the core domain entity representing a remote development environment.
@@ -29,10 +30,10 @@ type Workspace struct {
 	Backend           string            `json:"backend,omitempty"`
 	// GuestIP is the micro-VM address on the engine bridge (libkrun VM).
 	// Populated for API responses when the VM is running; not persisted in the workspace store.
-	GuestIP           string            `json:"guestIp,omitempty"`
-	ConfigBundle      string            `json:"configBundle,omitempty"`
-	CreatedAt         time.Time         `json:"created_at,omitempty"`
-	UpdatedAt         time.Time         `json:"updated_at,omitempty"`
+	GuestIP      string    `json:"guestIp,omitempty"`
+	ConfigBundle string    `json:"configBundle,omitempty"`
+	CreatedAt    time.Time `json:"created_at,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`
 }
 
 // CreateSpec holds parameters for creating a new workspace.

@@ -2,7 +2,7 @@
 
 package daemon
 
-// defaultDriver is "libkrun" on Linux — the primary VM backend.
-// The daemon auto-installs libkrun assets during bootstrap and prefers libkrun
+// defaultDriver is "vm" on Linux — the primary VM backend (libkrun).
+// The daemon auto-installs libkrun assets during bootstrap and prefers VM
 // unless explicitly overridden with --driver.
-const defaultDriver = "libkrun"
+const defaultDriver = "vm"
