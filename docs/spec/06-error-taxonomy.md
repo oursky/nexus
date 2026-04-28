@@ -2,6 +2,9 @@
 
 > **Status**: Normative
 
+> **Note**: `data.kind` is specified in this document, but the implementation is in progress.
+> Not all error responses currently include a `data.kind` field.
+
 ---
 
 ## General rules — `ERR-001`–`ERR-005`
@@ -66,7 +69,7 @@ condition.
 
 | Clause | `data.kind` | Condition | Returned by |
 |--------|------------|-----------|-------------|
-| `ERR-060` | `pty.not_found` | PTY session not found | `pty.write`, `pty.resize`, `pty.rename`, `pty.close` |
+| `ERR-060` | `pty.not_found` | PTY session not found | `pty.write`, `pty.resize`, `pty.rename`, `pty.close`, `pty.reattach` |
 
 ---
 

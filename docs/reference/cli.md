@@ -1,21 +1,5 @@
 # CLI Reference
 
-## Architecture Overview
-
-```
-┌──────────────────┐                    ┌──────────────────────┐
-│  Mac CLI         │   SSH tunnel       │  Linux Daemon (Go)   │
-│  (nexus ...)     │ ◄────────────────► │  Unix socket / WS    │
-└──────────────────┘                    └──────────────────────┘
-        │
-        │  ~/.config/nexus/profiles/default.json
-        │  (host, port, token, sshPort)
-```
-
-The CLI runs on the local machine. All workspace operations are forwarded over an SSH tunnel to the remote daemon as JSON-RPC 2.0 over WebSocket with Bearer token auth.
-
----
-
 ## Connection Model
 
 **Profile** — stored at `~/.config/nexus/profiles/default.json` after `nexus daemon connect`.
@@ -78,13 +62,14 @@ Full workspace lifecycle management.
 | `nexus workspace start <id>` | Start a workspace |
 | `nexus workspace stop <id>` | Stop a workspace |
 | `nexus workspace remove <id>` | Remove a workspace |
-| `nexus workspace checkout <id>` | Checkout workspace |
 | `nexus workspace fork <id>` | Fork a workspace |
 | `nexus workspace portal <id>` | Open workspace portal |
 | `nexus workspace ready <id>` | Poll until workspace is ready |
 | `nexus workspace restore <id>` | Restore workspace state |
 | `nexus workspace run <id> <command>` | Run a command in the workspace |
 | `nexus workspace shell <id>` | Open an interactive shell |
+| `nexus workspace sshcheck <id>` | Check SSH connectivity to workspace guest |
+| `nexus workspace serial-log <id>` | Show workspace serial log |
 
 ---
 
@@ -114,29 +99,33 @@ Project management.
 | `nexus project create` | Create a project |
 | `nexus project get <id>` | Get project details |
 | `nexus project remove <id>` | Remove a project |
+| `nexus project reconcile` | Reconcile project workspace repositories |
 
 ---
 
 ### `nexus exec`
 
-Execute a command in a workspace runtime.
+Run a command in a workspace and stream its output. Alias: `nexus workspace exec` / `nexus workspace run`.
 
 ```bash
-nexus exec --project-root <abs-path> [--timeout DURATION] -- <command>
+nexus exec <workspace> -- <command> [args...]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--project-root` | Absolute path to the project root |
-| `--timeout` | Command timeout duration |
-
-Runtime backends: `libkrun` (Linux micro-VM), `seatbelt` (macOS sandbox).
+| `--workdir` | Working directory inside the workspace (default `/workspace`) |
 
 ---
 
 ## RPC Methods
 
 The daemon exposes JSON-RPC 2.0 over WebSocket. These methods are called by the CLI and SDK.
+
+### Node
+
+| Method | Description |
+|--------|-------------|
+| `node.info` | Node identity and capabilities |
 
 ### Workspace
 
@@ -152,6 +141,8 @@ The daemon exposes JSON-RPC 2.0 over WebSocket. These methods are called by the 
 | `workspace.restore` | Restore workspace state |
 | `workspace.ready` | Poll readiness until success/timeout |
 | `workspace.discover-ports` | Discover Docker Compose published ports |
+| `workspace.sshcheck` | Check SSH connectivity to workspace guest |
+| `workspace.serial-log` | Read workspace serial log |
 
 ### Spotlight
 
@@ -160,7 +151,6 @@ The daemon exposes JSON-RPC 2.0 over WebSocket. These methods are called by the 
 | `spotlight.start` | Start port forwards for a workspace |
 | `spotlight.stop` | Stop port forwards for a workspace |
 | `spotlight.list` | List active forwards |
-| `spotlight.close` | Close a specific forward |
 
 ### Project
 
@@ -170,6 +160,7 @@ The daemon exposes JSON-RPC 2.0 over WebSocket. These methods are called by the 
 | `project.create` | Create a project |
 | `project.get` | Get project by id |
 | `project.remove` | Remove project by id |
+| `project.reconcile` | Reconcile project workspace repositories |
 
 ### Filesystem
 
@@ -187,14 +178,13 @@ The daemon exposes JSON-RPC 2.0 over WebSocket. These methods are called by the 
 
 | Method | Description |
 |--------|-------------|
-| `exec` | Execute a command in the workspace |
-| `pty.*` | PTY session operations (open, resize, close) |
+| `pty.*` | PTY session operations (create, list, write, resize, rename, close, reattach) |
 
 ### Daemon
 
 | Method | Description |
 |--------|-------------|
-| `daemon.info` | Node info and capabilities |
+| `daemon.log.tail` | Tail daemon log lines |
 
 ### Auth
 

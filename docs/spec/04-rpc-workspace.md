@@ -34,7 +34,7 @@ Params are nested under `"spec"`. A flat param shape is NOT accepted.
 
 **`WS-042`** — Pre-conditions:
 - `spec.workspaceName` MUST be unique among non-`removed` workspaces — returns `ERR-001` on
-  duplicate.
+  duplicate. Duplicate-name validation is enforced by the daemon.
 - If `spec.projectId` is set, the project SHOULD exist at creation time (implementation may
   defer validation).
 
@@ -68,7 +68,9 @@ Workspaces in state `removed` MUST NOT appear.
 **`WS-049`** — Pre-condition: workspace MUST be in state `created`, `stopped`, or `restored`.
 Any other state returns `ERR-011`.
 
-**`WS-050`** — Post-condition: workspace is in state `running`.
+**`WS-050`** — Post-condition: workspace is in state `starting`. Start is asynchronous: the
+daemon transitions the workspace to `starting` immediately and completes boot in the background.
+The caller MUST poll `workspace.info` until state becomes `running` (or `created` on failure).
 
 ---
 
@@ -88,8 +90,8 @@ The `workspace` field is optional (`omitempty`).
 
 **`WS-054`** — Request: `{"id": "string"}`. Response: `{"removed": bool}`.
 
-**`WS-055`** — Pre-condition: workspace MUST NOT be in state `running`. Running state returns
-`ERR-013`.
+**`WS-055`** — Pre-condition: workspace MUST NOT be in state `running` or `starting`. Running or
+starting state returns `ERR-013`.
 
 **`WS-056`** — Post-condition: workspace is in state `removed`. It MUST NOT appear in subsequent
 `workspace.list` results.
@@ -167,6 +169,51 @@ wrapped in an object. Clients MUST decode directly into `[]DiscoveredPort`.
 ```
 
 **`WS-072`** — If no ports are discovered, returns an empty array `[]`, not an error.
+
+---
+
+## `workspace.sshcheck` — `WS-074`–`WS-076`
+
+**`WS-074`** — Request: `{"id": "string (required)"}`.
+
+**`WS-075`** — Response:
+```json
+{
+  "ok":      "bool",
+  "guestIp": "string (optional)",
+  "whoami":  "string (optional)",
+  "error":   "string (optional)",
+  "stderr":  "string (optional)"
+}
+```
+
+**`WS-076`** — Runs an SSH connectivity check from the daemon host to the workspace guest. Returns
+`ok: true` with `whoami` output on success, or `ok: false` with `error` and `stderr` details on
+failure. If the workspace has no guest IP, returns `ok: false` without raising an RPC error.
+
+---
+
+## `workspace.serial-log` — `WS-077`–`WS-079`
+
+**`WS-077`** — Request:
+```json
+{
+  "id":    "string (required)",
+  "lines": "int (optional, default all available)"
+}
+```
+
+**`WS-078`** — Response:
+```json
+{
+  "lines":     ["string", "..."],
+  "path":      "string",
+  "available": "bool"
+}
+```
+
+**`WS-079`** — Returns the last `lines` entries from the workspace serial log (VM backend only).
+`available` is `false` if no log file exists for the workspace. `path` is the log file path.
 
 ---
 

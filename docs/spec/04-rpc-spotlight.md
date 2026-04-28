@@ -53,7 +53,7 @@ then calls `spotlight.start` once per discovered port in a loop.
 **`SPOT-018`** — Response: `{"forwards": [<Forward>...]}`. Returns all active forwards for the
 given workspace. If no forwards, returns `{"forwards": []}`.
 
-**`SPOT-019`** — `workspaceId` is REQUIRED. An empty value returns `ERR-`invalid-params`.
+**`SPOT-019`** — `workspaceId` is REQUIRED. An empty value returns invalid params error.
 
 ---
 
@@ -137,7 +137,7 @@ forward is not found, returns `ERR-052`.
   "remotePort":  "int",
   "targetHost":  "string (libkrun guest host, or '' for process backend)",
   "protocol":    "string",
-  "state":       "string ('active' | 'closed')",
+  "state":       "string ('active' | 'inactive')",
   "created_at":  "RFC3339"
 }
 ```

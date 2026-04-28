@@ -85,9 +85,30 @@ closes any underlying connections, and removes the session from the registry.
 
 ---
 
-## Push notifications — `PTY-029`
+## `pty.reattach` — `PTY-029`–`PTY-031`
 
-**`PTY-029`** — The daemon sends two types of push notifications for PTY sessions (WebSocket/mux
+**`PTY-029`** — Request: `{"sessionId": "string (required)"}`.
+
+**`PTY-030`** — Redirects an existing PTY session's `pty.data` push notifications to the current
+WebSocket connection. Used by clients when reconnecting and discovering live sessions from a
+previous connection.
+
+**`PTY-031`** — Response: `{"ok": true}`. Replays buffered scrollback output via a `pty.data`
+notification immediately after the response. Returns `ERR-061` if session is not found.
+
+---
+
+## Pre-conditions — `PTY-004`
+
+**`PTY-004`** — `pty.create` pre-condition: the target workspace MUST be in state `running`. If
+the workspace is in any other state (including `starting`), the call MUST be rejected. This prevents
+clients from opening a terminal into a workspace that has not finished booting.
+
+---
+
+## Push notifications — `PTY-032`
+
+**`PTY-032`** — The daemon sends two types of push notifications for PTY sessions (WebSocket/mux
 connections only):
 
 | Method | Params | Notes |
@@ -97,9 +118,9 @@ connections only):
 
 ---
 
-## SessionInfo domain object — `PTY-030`
+## SessionInfo domain object — `PTY-033`
 
-**`PTY-030`** — The `SessionInfo` object has these JSON fields:
+**`PTY-033`** — The `SessionInfo` object has these JSON fields:
 ```json
 {
   "id":          "string (pty-<nanoseconds>)",

@@ -19,8 +19,9 @@ at creation time. They identify the source of the workspace's content.
 `**WS-004**` — `workspaceName` is a human-readable label. It MUST be unique among workspaces not
 in state `removed` at any given time.
 
-`**WS-005**` — A workspace MUST be in exactly one `state` at all times. See `02-state-machines.md`
-for the full state machine.
+`**WS-005**` — A workspace MUST be in exactly one `state` at all times: `created`, `starting`,
+`running`, `paused`, `stopped`, `restored`, or `removed`. See `02-state-machines.md` for the full
+state machine.
 
 `**WS-006**` — `projectId` optionally associates a workspace with a project. If set, the project
 MUST have existed at workspace creation time (stale references are not actively enforced after the
@@ -49,7 +50,7 @@ creation time, the daemon selects based on its startup configuration.
 `**PRJ-001**` — A **project** is an optional organizing concept representing a tracked repository
 registration. Workspaces may exist without a project.
 
-`**PRJ-002`** — Every project has a globally unique string ID (UUID format).
+`**PRJ-002**` — Every project has a globally unique string ID (UUID format).
 
 `**PRJ-003**` — `name` is a human-readable label. It MUST be unique at all times (not scoped to
 non-removed state as with workspaces — projects are hard-deleted).
@@ -68,10 +69,10 @@ creation and are not enforced by the daemon.
 `**SPOT-001**` — **Spotlight** is the system for exposing ports from a running workspace runtime to
 the daemon host's network, and optionally further to the developer's local machine via SSH tunnel.
 
-`**SPOT-002`** — A **forward** is a single active port-forwarding rule. Every forward has a unique
+`**SPOT-002**` — A **forward** is a single active port-forwarding rule. Every forward has a unique
 ID of the form `spot-<nanoseconds>`.
 
-`**SPOT-003`** — A forward MUST be associated with an existing workspace.
+`**SPOT-003**` — A forward MUST be associated with an existing workspace.
 
 `**SPOT-004**` — `localPort` is the port on the daemon host. `remotePort` is the port inside the
 workspace runtime. `protocol` is `"tcp"` (default), `"udp"`, or `"http"`.
@@ -83,12 +84,12 @@ proxies TCP connections to `127.0.0.1:<remotePort>` inside the workspace process
 (port `10792`) to reach the guest. The returned `Forward.targetHost` holds the resolved guest
 endpoint. SSH tunnels from the CLI target `targetHost:remotePort` on the daemon host.
 
-`**SPOT-007**` — `Forward.state` is one of: `"active"`, `"closed"`.
+`**SPOT-007**` — `Forward.state` is one of: `"active"`, `"inactive"`.
 
 `**SPOT-008**` — The `spotlight.stop` RPC closes **all** active forwards for a workspace atomically.
 There is no per-forward close at the RPC level; per-forward close uses `workspace.ports.remove`.
 
-`**SPOT-009`** — The client (`nexus spotlight start`) persists the active workspace ID to
+`**SPOT-009**` — The client (`nexus spotlight start`) persists the active workspace ID to
 `<data-dir>/spotlight-client-state.json` keyed by `"<host>|<port>|<sshPort>"`. This is used to
 tear down the previous spotlight session when a new one is started.
 
@@ -99,7 +100,7 @@ tear down the previous spotlight session when a new one is started.
 `**PTY-001**` — A **PTY session** is an interactive (or non-interactive) terminal session attached
 to a workspace runtime.
 
-`**PTY-002`** — Every PTY session has a unique string ID of the form `pty-<nanoseconds>`.
+`**PTY-002**` — Every PTY session has a unique string ID of the form `pty-<nanoseconds>`.
 
 `**PTY-003**` — PTY sessions are in-memory only; they do NOT survive daemon restart.
 
@@ -130,7 +131,7 @@ is provided, the shell executes the specified command and exits when it complete
 `**AUTH-001**` — The **auth relay** issues short-lived bearer tokens tied to a workspace's auth
 bindings, enabling secure temporary access delegation.
 
-`**AUTH-002`** — Tokens are opaque strings. Their internal format is implementation-defined.
+`**AUTH-002**` — Tokens are opaque strings. Their internal format is implementation-defined.
 
 `**AUTH-003**` — Tokens are valid only on the daemon instance that issued them.
 

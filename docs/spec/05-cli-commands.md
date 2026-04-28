@@ -311,3 +311,66 @@ Calls `project.create {"name", "repoUrl", "rootPath?"}`.
 ## `nexus project remove` — `CLI-083`
 
 **`CLI-083`** — Positional arg: `<id-or-name>` (required). Calls `project.remove {"id": resolvedID}`.
+
+---
+
+## `nexus dev up` — `CLI-090`–`CLI-094`
+
+**`CLI-090`** — Use: `up` (no positional args). Flags:
+- `--name string` — Override app name
+- `--port int` — Override dev port
+- `--build-init` — Force re-run of build.init (invalidate cache)
+- `--detach, -d` — Run in background and return immediately
+- `--json` — Output workspace info as JSON
+
+**`CLI-091`** — Behaviour: resolve Nexusfile (or infer conventions) → create/start dev workspace → run `dev.up` → auto-forward `dev.port` (and discovered compose ports) → print summary.
+
+**`CLI-092`** — The dev workspace is tagged with label `dev=true`. `nexus dev up` finds an existing dev workspace by this label and reuses it if the project root matches.
+
+**`CLI-093`** — Exit code 0 on success; 1 if daemon unreachable, workspace start fails, or `dev.up` exits non-zero; 2 for invalid flags.
+
+**`CLI-094`** — Port readiness: if `dev.port` is known, poll TCP connect every 500ms up to 60s. If unreachable, print warning but do not fail.
+
+---
+
+## `nexus dev down` — `CLI-095`–`CLI-097`
+
+**`CLI-095`** — Use: `down` (no positional args). Flags: `--force` (skip confirmation), `--json`.
+
+**`CLI-096`** — Behaviour: find dev workspace by label `dev=true` → run `dev.down` if defined → stop all Spotlight forwards → stop workspace.
+
+**`CLI-097`** — Exit code 1 if no active dev session found for the current project.
+
+---
+
+## `nexus dev status` — `CLI-098`
+
+**`CLI-098`** — Use: `status` (no positional args). Prints app name, workspace ID, running `dev.up` command, active forwards, and declared deploy domains.
+
+---
+
+## `nexus config validate` — `CLI-100`–`CLI-101`
+
+**`CLI-100`** — Use: `validate` (no positional args). Flags: `--json`.
+
+**`CLI-101`** — Validates Nexusfile in current directory (or auto-detects conventions if file missing). Performs full pipeline: parse → legacy detection → auto-detect → semantic validation. Prints validation errors or success message.
+
+---
+
+## `nexus config migrate` — `CLI-102`–`CLI-103`
+
+**`CLI-102`** — Use: `migrate` (no positional args). Performs one-shot rewrite of legacy Nexusfile to new format.
+
+**`CLI-103`** — Writes migrated content to `Nexusfile` in place. Backs up original to `Nexusfile.backup`. Prints migration summary and prompts user to review `build.image` and `build.init`.
+
+---
+
+## `nexus deploy plan` — `CLI-110` [STUB]
+
+**`CLI-110`** — Reserved for future deploy pipeline integration. Resolves Nexusfile + platform profile + build outputs into a deploy plan. Not yet implemented.
+
+---
+
+## `nexus deploy apply` — `CLI-111` [STUB]
+
+**`CLI-111`** — Reserved for future deploy pipeline integration. Applies resolved deploy plan. Not yet implemented.

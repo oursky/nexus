@@ -11,64 +11,64 @@
 **`WS-010`** — `created`: Workspace record exists. Runtime has not been started. This is the
 initial state after `workspace.create` or `workspace.fork`.
 
-**`WS-011`** — `running`: Runtime is active and accepting connections (shell sessions, port
+**`WS-011`** — `starting`: Workspace start has been initiated and the runtime is booting in the
+background. The workspace is not yet ready for connections. Transitions to `running` on success or
+`created` on failure/rollback.
+
+**`WS-012`** — `running`: Runtime is active and accepting connections (shell sessions, port
 forwards, etc.).
 
-**`WS-012`** — `paused`: Runtime is suspended. Only applicable to VM backends (libkrun). A paused
+**`WS-013`** — `paused`: Runtime is suspended. Only applicable to VM backends (libkrun). A paused
 workspace's memory is preserved but the VM is not consuming CPU.
 
-**`WS-013`** — `stopped`: Runtime has been shut down cleanly. The workspace record persists and
+**`WS-014`** — `stopped`: Runtime has been shut down cleanly. The workspace record persists and
 the workspace can be started again.
 
-**`WS-014`** — `restored`: Workspace was restored from a snapshot. Semantically equivalent to
+**`WS-015`** — `restored`: Workspace was restored from a snapshot. Semantically equivalent to
 `created` for transition purposes — it can be started or removed.
 
-**`WS-015`** — `removed`: Workspace record is logically deleted. A removed workspace MUST NOT
-appear in `workspace.list` results. Its ID MUST NOT be reused.
-
 **`WS-016`** — At any point in time, a workspace MUST be in exactly one of these states:
-`created`, `running`, `paused`, `stopped`, `restored`, `removed`.
+`created`, `starting`, `running`, `paused`, `stopped`, `restored`, `removed`.
 
 ---
 
 ### Transition diagram
 
-```
-                    ┌──────────┐
-              ───▶  │ created  │ ──────────────────┐
-                    └────┬─────┘                   │
-                         │ start                   │ remove
-                    ┌────▼─────┐                   ▼
-             ┌─────▶│ running  │──stop──▶  ┌──────────┐ ──remove──▶ ┌─────────┐
-             │      └────┬─────┘           │ stopped  │             │ removed │
-             │           │ pause           └────┬─────┘             └─────────┘
-             │      ┌────▼─────┐               │ start
-             │      │  paused  │──resume────────┘
-             │      └──────────┘
-             │
-             │      ┌──────────┐
-             └──────│ restored │ (→ running via start; → removed via remove)
-                    └──────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> created
+    created --> starting : start
+    created --> removed : remove
+    starting --> running : success
+    starting --> created : failure / rollback
+    running --> stopped : stop
+    running --> paused : pause
+    stopped --> starting : start
+    stopped --> removed : remove
+    paused --> running : resume
+    paused --> stopped : stop
+    restored --> running : start
+    restored --> removed : remove
 ```
 
 ---
 
 ### Legal transitions — `WS-017`–`WS-025`
 
-**`WS-017`** — `created → running`: Triggered by `workspace.start`. Pre-condition: state is
-`created`. Post-condition: state is `running`.
+**`WS-017`** — `created → starting`: Triggered by `workspace.start`. Pre-condition: state is
+`created`. Post-condition: state is `starting`.
 
-**`WS-018`** — `running → paused`: Triggered by `workspace.pause` (VM backend only). Pre-condition:
-state is `running` and backend is `libkrun`. Post-condition: state is `paused`.
+**`WS-018`** — `starting → running`: Triggered by successful background startup completion.
+Pre-condition: state is `starting`. Post-condition: state is `running`.
 
-**`WS-019`** — `paused → running`: Triggered by `workspace.resume` (VM backend only). Pre-condition:
-state is `paused`. Post-condition: state is `running`.
+**`WS-019`** — `starting → created`: Triggered by background startup failure or rollback.
+Pre-condition: state is `starting`. Post-condition: state is `created`.
 
 **`WS-020`** — `running → stopped`: Triggered by `workspace.stop`. Pre-condition: state is
 `running`. Post-condition: state is `stopped`.
 
-**`WS-021`** — `stopped → running`: Triggered by `workspace.start`. Pre-condition: state is
-`stopped`. Post-condition: state is `running`.
+**`WS-021`** — `stopped → starting`: Triggered by `workspace.start`. Pre-condition: state is
+`stopped`. Post-condition: state is `starting`.
 
 **`WS-022`** — `created → removed`: Triggered by `workspace.remove`. Pre-condition: state is
 `created`. Post-condition: state is `removed`.
@@ -86,14 +86,14 @@ state is `paused`. Post-condition: state is `running`.
 
 ### Illegal transitions — `WS-026`–`WS-029`
 
-**`WS-026`** — Calling `workspace.start` on a workspace already in state `running` MUST return an
-error (`ERR-011`). The workspace state MUST NOT change.
+**`WS-026`** — Calling `workspace.start` on a workspace already in state `running` or `starting`
+MUST return an error (`ERR-011`). The workspace state MUST NOT change.
 
 **`WS-027`** — Calling `workspace.stop` on a workspace NOT in state `running` MUST return an error
 (`ERR-012`). The workspace state MUST NOT change.
 
-**`WS-028`** — Calling `workspace.remove` on a workspace in state `running` MUST return an error
-(`ERR-013`). The workspace state MUST NOT change.
+**`WS-028`** — Calling `workspace.remove` on a workspace in state `running` or `starting` MUST
+return an error (`ERR-013`). The workspace state MUST NOT change.
 
 **`WS-029`** — Any state transition not listed in `WS-017`–`WS-025` is illegal and MUST return
 `ERR-011`.

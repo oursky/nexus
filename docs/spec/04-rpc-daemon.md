@@ -11,12 +11,20 @@
 **`DAEMON-021`** — Response:
 ```json
 {
-  "version":      "string",
-  "capabilities": ["string", "..."]
+  "node": {
+    "name": "string",
+    "tags": ["string", "..."]
+  },
+  "capabilities": [
+    {
+      "name":      "string",
+      "available": "bool"
+    }
+  ]
 }
 ```
 
-**`DAEMON-022`** — `capabilities` always includes `"runtime.process"`.
+**`DAEMON-022`** — `capabilities` always includes at least one entry (e.g. `"runtime.process"`).
 
 **`DAEMON-023`** — `capabilities` includes `"runtime.libkrun"` when the daemon was started
 with the libkrun driver (i.e., without `--sandbox` on Linux).
@@ -26,4 +34,27 @@ daemon socket is bound and RPC handlers are registered, even before all backgrou
 fully initialized.
 
 **`DAEMON-025`** — Clients SHOULD call `node.info` after establishing a connection to verify
-daemon version and available capabilities before calling capability-specific methods.
+node identity and available capabilities before calling capability-specific methods.
+
+---
+
+## `daemon.log.tail` — `DAEMON-026`–`DAEMON-028`
+
+**`DAEMON-026`** — Request:
+```json
+{
+  "lines": "int (optional, default 200)"
+}
+```
+
+**`DAEMON-027`** — Response:
+```json
+{
+  "lines": ["string", "..."],
+  "path":  "string"
+}
+```
+
+**`DAEMON-028`** — Returns up to `lines` trailing log lines from the daemon log file. If the log
+file does not exist or is empty, `lines` is an empty array and `path` is the expected log file path
+(or empty if no log path is configured).

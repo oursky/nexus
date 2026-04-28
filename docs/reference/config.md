@@ -11,26 +11,77 @@ This document lists every configuration file used by Nexus, with their locations
 | | |
 |---|---|
 | **Location** | `<projectRoot>/Nexusfile` |
-| **Format** | TOML (legacy JSON accepted for backward compatibility) |
-| **Purpose** | User-facing project configuration |
-| **Required** | No — missing file falls back to defaults |
+| **Format** | TOML |
+| **Purpose** | Intent-first app declaration (services, domains, resources, local dev lifecycle) |
+| **Required** | No — standard projects auto-detect configuration from `package.json`, `Procfile`, etc. |
 
-**Supported fields:**
+**Canonical shape:**
 
 ```toml
-[vm]
-profile = "default"   # "minimal" or "default"
-image = ""            # reserved for future prebuilt image selection
+name = "acme"
+
+[build]
+image = "node:20-alpine"           # base image or well-known shorthand
+init = ["npm ci"]                  # one-time setup commands
+
+[dev]
+up = "npm run dev"                 # local dev start command
+down = "pkill -f next"             # local dev stop command (optional)
+port = 3000                        # primary port for auto-forwarding
+
+[[services]]
+name = "web"
+source = "."
+start = "npm start"
+port = 3000
+
+[[domains]]
+host = "app.example.com"
+service = "web"
+path = "/"
+
+[[resources]]
+name = "db"
+type = "postgres"
+mode = "managed"
+bind = ["web"]
+as = "DATABASE_URL"
+
+[release]
+command = "npm run migrate"
 ```
 
-- `vm.profile` controls in-guest tool installation behavior.
-  - `"minimal"` — minimal tooling
-  - `"default"` — standard tooling (default when omitted)
-- `vm.image` is reserved for future use.
+**Field summary:**
+
+| Section | Key | Description |
+|---------|-----|-------------|
+| top | `name` | App identifier. Auto-detected from `package.json` / `go.mod` / directory name if omitted. |
+| `[build]` | `image` | Base image reference or well-known name (`node`, `go`, `python`, `rust`, `ruby`). Mutually exclusive with `dockerfile`. |
+| `[build]` | `dockerfile` | Path to Dockerfile. Mutually exclusive with `image`. |
+| `[build]` | `init` | One-time commands run during base-layer build. Changing this invalidates the base image cache. |
+| `[dev]` | `up` | Local dev start command. Auto-detected if omitted. |
+| `[dev]` | `down` | Local dev stop command. Optional. |
+| `[dev]` | `port` | Primary local port for auto-forwarding. Auto-detected if omitted. |
+| `services[]` | `name` | Unique service key. |
+| `services[]` | `source` | Working directory relative to project root (default: `.`). |
+| `services[]` | `start` | Process command. Auto-detected from `Procfile` or `package.json` if omitted. |
+| `services[]` | `port` | Listening port. Required if targeted by a domain. |
+| `domains[]` | `host` | Public domain intent. |
+| `domains[]` | `service` | Target service name. |
+| `domains[]` | `path` | Route path prefix (default: `/`). |
+| `resources[]` | `name` | Unique resource key. |
+| `resources[]` | `type` | Resource type. `postgres` is the only supported type in v1. |
+| `resources[]` | `mode` | `managed` (platform-provisioned) or `local` (dev-only). |
+| `resources[]` | `bind` | Services that receive the resource connection. |
+| `resources[]` | `as` | Env var name for the connection string. |
+| `[release]` | `command` | One-off command run before traffic cutover (e.g. migrations). |
+
+**Legacy format:** The old `vm.profile`, `vm.image`, `dev.init`, `dev.volumes`, and `manifest` fields are no longer accepted. Run `nexus config migrate` to update legacy Nexusfiles.
 
 **Loaded by:**
-- `internal/infra/config.LoadNexusfile`
-- Consumed by the libkrun VM driver at workspace spawn time
+- `internal/infra/config.LoadNexusfile` — parses TOML
+- `internal/infra/config.ResolveNexusfile` — parses + auto-detects missing fields + validates
+- Consumed by workspace spawn (base image selection) and deploy plan resolution
 
 ---
 
