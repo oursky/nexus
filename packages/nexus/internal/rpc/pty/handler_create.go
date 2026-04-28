@@ -240,7 +240,6 @@ func (h *Handler) streamVMSession(s *appty.Session, dec *json.Decoder) {
 			}
 			return
 		}
-		log.Printf("pty: streamVMSession: received type=%q id=%q", env.Type, env.ID)
 		n := s.GetNotifier()
 		switch env.Type {
 		case "chunk":

@@ -111,7 +111,7 @@ func runStreamed(ctx context.Context, env []string, prefix, name string, args ..
 // re-running on every workspace start — packages only install once per rootfs.
 func ensureGuestBasePackages() error {
 	start := time.Now()
-	const stampFile = "/var/lib/nexus-tools-base-v7"
+	const stampFile = "/var/lib/nexus-tools-base-v14"
 	if _, err := os.Stat(stampFile); err == nil {
 		emitDiagnostic("agent base packages: already installed (stamp found)")
 		return nil
@@ -162,11 +162,7 @@ func ensureGuestBasePackages() error {
 		"docker.io",
 		"containerd",
 		"build-essential",
-		"nodejs",
-		"npm",
 		"docker-compose-v2",
-		"python3",
-		"python3-pip",
 		// busybox-static provides udhcpc (DHCP client) used by the agent's
 		// setupNetwork to acquire an IP from passt at VM boot time.
 		"busybox-static",
@@ -219,6 +215,9 @@ func ensureGuestBasePackages() error {
 	_ = os.MkdirAll("/var/lib", 0o755)
 	_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
 	// Legacy stamp cleanup (best-effort).
+	_ = os.Remove("/var/lib/nexus-tools-base-v9")
+	_ = os.Remove("/var/lib/nexus-tools-base-v8")
+	_ = os.Remove("/var/lib/nexus-tools-base-v7")
 	_ = os.Remove("/var/lib/nexus-tools-base-v6")
 	_ = os.Remove("/var/lib/nexus-tools-base-v5")
 	_ = os.Remove("/var/lib/nexus-tools-optional-v5")
@@ -275,86 +274,87 @@ func ensureGuestCLITools() error {
 		{binary: "claude", pkg: "@anthropic-ai/claude-code@latest"},
 	}
 
-	npmPath, err := lookPathInEnv("npm", os.Environ())
-	if err != nil || strings.TrimSpace(npmPath) == "" {
-		return fmt.Errorf("npm not found: %w", err)
+	// Keep bake minimal: install Node runtime via mise and run tools on-demand
+	// through npx wrappers instead of global npm installs.
+	misePath, err := ensureMiseInstalled()
+	if err != nil {
+		return fmt.Errorf("install mise: %w", err)
+	}
+	if err := ensureMiseNodeAvailable(misePath); err != nil {
+		return fmt.Errorf("install node via mise: %w", err)
 	}
 
-	env := ensurePathInEnv(os.Environ())
-
-	missing := make([]cliSpec, 0, len(tools))
+	emitDiagnostic("agent cli tools: installing lightweight npx wrappers (on-demand package fetch)")
+	if err := installNpxBinaryWrapper(misePath); err != nil {
+		return fmt.Errorf("install npx wrapper: %w", err)
+	}
 	for _, tool := range tools {
-		if _, err := lookPathInEnv(tool.binary, env); err == nil {
-			emitDiagnostic("agent cli tools: %s already installed", tool.binary)
-			continue
+		if err := installNpxWrapper(tool.binary, tool.pkg, misePath); err != nil {
+			return fmt.Errorf("install wrapper for %s: %w", tool.binary, err)
 		}
-		missing = append(missing, tool)
-	}
-	if len(missing) == 0 {
-		emitDiagnostic("agent cli tools: all tools present")
-		return nil
+		emitDiagnostic("agent cli tools: installed wrapper %s", tool.binary)
 	}
 
-	var packages []string
-	for _, tool := range missing {
-		packages = append(packages, tool.pkg)
-		emitDiagnostic("agent cli tools: will install %s (%s)", tool.binary, tool.pkg)
-	}
-
-	// Nuke the entire global node_modules tree and recreate it.  Previous
-	// partial installs leave behind temp directories (.package-*) that cause
-	// npm's atomic rename to fail with ENOTEMPTY.  rm -rf is the only reliable
-	// fix inside the VM.
-	npmGlobalDir := "/usr/local/lib/node_modules"
-	_ = os.RemoveAll(npmGlobalDir)
-	_ = os.MkdirAll(npmGlobalDir, 0o755)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
-	defer cancel()
-
-	args := append([]string{"install", "-g", "--force"}, packages...)
-	emitDiagnostic("agent cli tools: running npm install -g %s...", strings.Join(packages, " "))
-	if err := runNPMWithRetry(ctx, env, npmPath, args...); err != nil {
-		return fmt.Errorf("npm install global tools: %w", err)
-	}
-
-	// Verify each binary is now resolvable.
-	envAfter := ensurePathInEnv(os.Environ())
-	for _, tool := range missing {
-		if _, err := lookPathInEnv(tool.binary, envAfter); err != nil {
-			return fmt.Errorf("%s not found after install: %w", tool.binary, err)
-		} else {
-			emitDiagnostic("agent cli tools: %s installed OK", tool.binary)
-		}
-	}
 	emitDiagnostic("agent cli tools: installed successfully (total %v)", time.Since(start).Round(time.Second))
 	return nil
 }
 
-func runNPMWithRetry(ctx context.Context, env []string, npmPath string, args ...string) error {
-	const maxAttempts = 3
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if attempt > 1 {
-			emitDiagnostic("agent cli tools: retrying npm install (%d/%d)", attempt, maxAttempts)
-		}
-		if err := runStreamed(ctx, env, "npm install", npmPath, args...); err == nil {
-			return nil
-		} else {
-			lastErr = err
-		}
-		if ctx.Err() != nil {
-			break
-		}
-		if attempt < maxAttempts {
-			time.Sleep(time.Duration(attempt*3) * time.Second)
-		}
+func ensureMiseInstalled() (string, error) {
+	if path, err := lookPathInEnv("mise", os.Environ()); err == nil && strings.TrimSpace(path) != "" {
+		return path, nil
 	}
-	return lastErr
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	install := exec.CommandContext(ctx, "sh", "-lc", "curl -fsSL https://mise.run | sh")
+	install.Env = ensurePathInEnv(os.Environ())
+	if out, err := install.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("installer failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if path, err := lookPathInEnv("mise", os.Environ()); err == nil && strings.TrimSpace(path) != "" {
+		return path, nil
+	}
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home == "" {
+		home = "/root"
+	}
+	candidate := filepath.Join(home, ".local", "bin", "mise")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate, nil
+	}
+	return "", errors.New("mise binary not found after install")
+}
+
+func ensureMiseNodeAvailable(misePath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, misePath, "x", "node@20", "--", "node", "--version")
+	cmd.Env = ensurePathInEnv(os.Environ())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("node@20 unavailable: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func installNpxWrapper(binary, npmPackage, misePath string) error {
+	content := fmt.Sprintf("#!/usr/bin/env sh\nexec %s x node@20 -- npx -y %s \"$@\"\n", misePath, npmPackage)
+	target := filepath.Join("/usr/local/bin", binary)
+	if err := os.WriteFile(target, []byte(content), 0o755); err != nil {
+		return err
+	}
+	return nil
+}
+
+func installNpxBinaryWrapper(misePath string) error {
+	content := fmt.Sprintf("#!/usr/bin/env sh\nexec %s x node@20 -- npx \"$@\"\n", misePath)
+	if err := os.WriteFile("/usr/local/bin/npx", []byte(content), 0o755); err != nil {
+		return err
+	}
+	// workspace exec shells may not include /usr/local/bin in PATH; mirror into /usr/bin.
+	return os.WriteFile("/usr/bin/npx", []byte(content), 0o755)
 }
 
 func toolchainPresentInPATH(env []string) bool {
-	required := []string{"docker", "dockerd", "node", "npm", "opencode", "codex", "claude"}
+	required := []string{"docker", "dockerd", "opencode", "codex", "claude"}
 	for _, bin := range required {
 		if _, err := lookPathInEnv(bin, env); err != nil {
 			return false
@@ -447,20 +447,21 @@ func ensureDockerDaemon() error {
 		}
 	}
 
-	// Probe NAT table support before enabling Docker's iptables integration.
-	// Some libkrun guest kernels do not expose the required netfilter modules;
-	// in that case dockerd must run without bridge/NAT management.
+	// Probe NAT+RAW table support before enabling Docker's iptables integration.
+	// Docker's bridge path installs rules in raw and nat; if either table is
+	// unavailable we must disable iptables integration.
 	iptablesFlag := "--iptables=false"
 	if legacyPath, err := exec.LookPath("iptables-legacy"); err == nil {
-		probe := exec.Command(legacyPath, "-w", "-t", "nat", "-L", "-n")
-		if err := probe.Run(); err == nil {
+		natProbe := exec.Command(legacyPath, "-w", "-t", "nat", "-L", "-n")
+		rawProbe := exec.Command(legacyPath, "-w", "-t", "raw", "-L", "-n")
+		if err := natProbe.Run(); err == nil && rawProbe.Run() == nil {
 			_ = exec.Command("update-alternatives", "--set", "iptables", legacyPath).Run()
 			if legacy6Path, err := exec.LookPath("ip6tables-legacy"); err == nil {
 				_ = exec.Command("update-alternatives", "--set", "ip6tables", legacy6Path).Run()
 			}
 			iptablesFlag = "--iptables=true"
 		} else {
-			emitDiagnostic("agent docker daemon: iptables nat unavailable; disabling Docker iptables integration")
+			emitDiagnostic("agent docker daemon: iptables nat/raw unavailable; disabling Docker iptables integration")
 		}
 	}
 
@@ -505,6 +506,7 @@ func ensureDockerDaemon() error {
 				_ = os.Remove("/var/run/docker.sock")
 				_ = os.Symlink(socketPath, "/var/run/docker.sock")
 			}
+			_ = os.Setenv("DOCKER_HOST", dockerHost)
 			emitDiagnostic("agent docker daemon ready")
 			return nil
 		}

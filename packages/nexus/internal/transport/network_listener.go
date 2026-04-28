@@ -265,7 +265,9 @@ func (nl *NetworkListener) serveWSConn(ctx context.Context, conn *websocket.Conn
 			return
 		}
 		writeMu.Lock()
+		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		err = conn.WriteMessage(websocket.TextMessage, out)
+		_ = conn.SetWriteDeadline(time.Time{})
 		writeMu.Unlock()
 		if err != nil {
 			log.Printf("transport: ws write: %v", err)
@@ -292,9 +294,11 @@ func (n wsConnNotifier) Notify(method string, params any) {
 	}
 	n.writeMu.Lock()
 	defer n.writeMu.Unlock()
+	_ = n.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	if err := n.conn.WriteMessage(websocket.TextMessage, out); err != nil {
 		log.Printf("transport: ws notifier write: %v", err)
 	}
+	_ = n.conn.SetWriteDeadline(time.Time{})
 }
 
 func (nl *NetworkListener) handle(ctx context.Context, raw []byte) rpcResponse {

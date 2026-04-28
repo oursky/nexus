@@ -250,12 +250,24 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 				lastHeartbeat = time.Now()
 			}
 
-			// Check hvc0 log for the kernel halt line.
+			// Check hvc0 log for explicit bake success marker.
 			data, _ := os.ReadFile(hvc0Path)
 			hvc0 := string(data)
-			if strings.Contains(hvc0, "reboot: System halted") ||
-				strings.Contains(hvc0, "agent bake: all tools installed") {
-				log.Printf("[libkrun] bake VM: guest halted (%v elapsed) — waiting for libkrun to flush block device",
+			if strings.Contains(hvc0, "agent bake: FAILED") {
+				_ = childCmd.Process.Kill()
+				if passtProc != nil {
+					_ = passtProc.Kill()
+				}
+				lines := strings.Split(hvc0, "\n")
+				if len(lines) > 100 {
+					lines = lines[len(lines)-100:]
+				}
+				log.Printf("[libkrun] bake VM: fail-fast marker observed (%v elapsed) — serial log tail:\n%s",
+					elapsed.Round(time.Second), strings.Join(lines, "\n"))
+				return "", fmt.Errorf("bake VM failed inside guest: agent reported failure")
+			}
+			if strings.Contains(hvc0, "agent bake: all tools installed") {
+				log.Printf("[libkrun] bake VM: success marker observed (%v elapsed) — waiting for libkrun to flush block device",
 					elapsed.Round(time.Second))
 				// Do NOT kill immediately. libkrun flushes its virtio-blk
 				// write buffers asynchronously after the guest poweroff; killing

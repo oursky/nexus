@@ -47,7 +47,7 @@ func injectFileIntoExt4(imagePath string, data []byte, destPath string, mode os.
 // write-back didn't flush before the process was force-killed.
 func writeStampIntoRootfs(rootfsPath string) error {
 	// The agent checks for this stamp to skip package installation on subsequent boots.
-	const stampInsideRootfs = "/var/lib/nexus-tools-base-v7"
+	const stampInsideRootfs = "/var/lib/nexus-tools-base-v14"
 
 	// Write a temporary host-side file with the stamp content, then inject it
 	// into the ext4 image using debugfs. debugfs operates on the raw image
@@ -81,10 +81,8 @@ func writeStampIntoRootfs(rootfsPath string) error {
 	return nil
 }
 
-// ensureNPMBinSymlinksInRootfs creates the global bin symlinks for npm
-// CLI packages directly inside the ext4 image using debugfs.  This repairs
-// symlinks that libkrun's virtio-blk write-back may have lost when the VMM
-// process was force-killed before flushing metadata.
+// ensureNPMBinSymlinksInRootfs is retained for backward compatibility with
+// legacy images that used npm global installs. New images use wrapper binaries.
 func ensureNPMBinSymlinksInRootfs(rootfsPath string) error {
 	symlinks := []struct {
 		link   string

@@ -40,6 +40,7 @@ func handleExec(req execRequest) execResponse {
 			if err := setupWorkspaceMountRequiredFunc(); err != nil {
 				return execResponse{ID: req.ID, ExitCode: 1, Stderr: fmt.Sprintf("workspace mount ensure failed: %v", err)}
 			}
+			maybeTrustMiseWorkspace(req.WorkDir, env)
 		}
 		cmd.Dir = req.WorkDir
 	}
@@ -114,6 +115,7 @@ func handleExecStreaming(req execRequest, encoder *json.Encoder) execResponse {
 			if err := setupWorkspaceMountRequiredFunc(); err != nil {
 				return execResponse{ID: req.ID, Type: "result", ExitCode: 1, Stderr: fmt.Sprintf("workspace mount ensure failed: %v", err)}
 			}
+			maybeTrustMiseWorkspace(req.WorkDir, env)
 		}
 		cmd.Dir = req.WorkDir
 	}
@@ -171,17 +173,23 @@ func agentExecTimeout() time.Duration {
 }
 
 func ensurePathInEnv(env []string) []string {
+	defaultPath := "/root/.local/share/mise/shims:/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	for i, entry := range env {
 		if !strings.HasPrefix(entry, "PATH=") {
 			continue
 		}
-		if strings.TrimSpace(strings.TrimPrefix(entry, "PATH=")) == "" {
-			env[i] = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+		pathValue := strings.TrimSpace(strings.TrimPrefix(entry, "PATH="))
+		if pathValue == "" {
+			env[i] = "PATH=" + defaultPath
+			return env
+		}
+		if !strings.Contains(pathValue, "/root/.local/share/mise/shims") {
+			env[i] = "PATH=/root/.local/share/mise/shims:/root/.local/bin:" + pathValue
 		}
 		return env
 	}
 
-	return append(env, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	return append(env, "PATH="+defaultPath)
 }
 
 func ensureSSHAuthSockEnv(env []string) []string {
@@ -252,4 +260,16 @@ func lookPathInEnv(command string, env []string) (string, error) {
 	}
 
 	return "", exec.ErrNotFound
+}
+
+func maybeTrustMiseWorkspace(workDir string, env []string) {
+	misePath, err := lookPathInEnv("mise", env)
+	if err != nil {
+		return
+	}
+	// Non-interactive shells skip untrusted configs; trust project configs up-front.
+	cmd := exec.Command(misePath, "trust", "-a")
+	cmd.Dir = workDir
+	cmd.Env = env
+	_ = cmd.Run()
 }

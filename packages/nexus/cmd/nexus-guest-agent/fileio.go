@@ -98,6 +98,11 @@ func applyHostConfigDrive() error {
 	// collected from the daemon host's environment.
 	profileLines := "\nexport SSH_AUTH_SOCK=/tmp/ssh-agent.sock\n"
 	profileLines += "[ -f /run/nexus-host/.nexus-env ] && . /run/nexus-host/.nexus-env\n"
+	profileLines += "export PATH=\"$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH\"\n"
+	profileLines += "if [ -x \"$HOME/.local/bin/mise\" ]; then\n"
+	profileLines += "  eval \"$($HOME/.local/bin/mise activate bash)\"\n"
+	profileLines += "  if [ -d /workspace ]; then (cd /workspace && $HOME/.local/bin/mise trust -a >/dev/null 2>&1 || true); fi\n"
+	profileLines += "fi\n"
 	f, err := os.OpenFile("/root/.profile", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err == nil {
 		_, _ = f.WriteString(profileLines)

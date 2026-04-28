@@ -24,6 +24,8 @@ func stopCommand() *cobra.Command {
 		Use:   "stop",
 		Short: "Stop the running Nexus daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cleanupDaemonResidue()
+
 			pids := make(map[int]struct{})
 			for _, pid := range append(
 				pidsFromLsof("lsof", "-t", "--", socketPath),
@@ -64,6 +66,7 @@ func stopCommand() *cobra.Command {
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Stopped %d daemon process(es)\n", len(pids))
+			cleanupDaemonResidue()
 			return nil
 		},
 	}

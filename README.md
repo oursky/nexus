@@ -23,10 +23,10 @@ Workspace images are multi-GB sparse files. For fast, space-efficient Copy-on-Wr
 ```bash
 # Example: create a 200 GB XFS loop file
 sudo mkdir -p /data/nexus
-sudo dd if=/dev/zero of=/data/nexus.img bs=1M count=204800
-sudo mkfs.xfs -m reflink=1 /data/nexus.img
+sudo truncate -s 200G /data/nexus.img
+sudo mkfs.xfs -f -m reflink=1 /data/nexus.img
 sudo mount -o loop /data/nexus.img /data/nexus
-sudo chown $(whoami) /data/nexus
+sudo chown "$(whoami)" /data/nexus
 
 # Make it permanent in /etc/fstab
 # /data/nexus.img /data/nexus xfs loop,defaults 0 0
