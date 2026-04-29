@@ -96,10 +96,16 @@ func startPasstProcess(ctx context.Context, workDir string, hostSide *os.File, s
 	// In unprivileged containers, passt can't self-sandbox because it lacks
 	// CAP_SYS_ADMIN for namespace operations. Wrap it in a user namespace so
 	// it gains the capability while still operating on the host network stack.
+	//
+	// We use -r (--map-root-user) so passt sees UID 0 inside the namespace.
+	// Without -r, passt still somehow hits its "drop to nobody" path and
+	// fails on setgid(65534) because the GID isn't mapped. With -r, passt
+	// sees root, skips the nobody drop (because ns_is_init() is false in a
+	// user namespace), and stays as UID 0 / GID 0, which is always valid.
 	cmdBin := passtBin
 	cmdArgs := args
 	if unshareUserNSAvailable() {
-		cmdArgs = append([]string{"-U", "--", passtBin}, args...)
+		cmdArgs = append([]string{"-Ur", "--", passtBin}, args...)
 		cmdBin = "unshare"
 	}
 
