@@ -294,7 +294,7 @@ struct DaemonCheckResultSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceMd) {
             HStack {
                 Image(systemName: result.passed ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                     .foregroundColor(result.passed ? Theme.green : Theme.orange)
@@ -316,7 +316,7 @@ struct DaemonCheckResultSheet: View {
             }
             .frame(maxHeight: 400)
         }
-        .padding(16)
+        .padding(Theme.spaceLg)
         .frame(width: 520)
         .background(Theme.bgContent)
     }
@@ -338,7 +338,7 @@ struct ConnectionLogSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceMd) {
             HStack {
                 Image(systemName: "doc.text")
                     .foregroundColor(Theme.labelSecondary)
@@ -359,7 +359,7 @@ struct ConnectionLogSheet: View {
                 } label: {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.bordered)
                 .font(.system(size: 12))
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
@@ -401,10 +401,14 @@ struct ConnectionLogSheet: View {
                 }
             }
             .frame(maxHeight: 480)
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.6))
+            .background(Theme.bgElevated)
             .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Theme.separator)
+            )
         }
-        .padding(16)
+        .padding(Theme.spaceLg)
         .frame(
             minWidth: 520,
             idealWidth: 640,
@@ -413,7 +417,7 @@ struct ConnectionLogSheet: View {
             idealHeight: 520,
             maxHeight: 760
         )
-        .background(Theme.bgContent)
+        .background(Theme.bgElevated)
         .onAppear {
             // Avoid opening partially off-screen when the previous sheet geometry
             // was persisted outside the current visible frame.

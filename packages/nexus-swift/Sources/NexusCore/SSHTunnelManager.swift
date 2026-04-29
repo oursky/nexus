@@ -347,7 +347,6 @@ public actor SSHTunnelManager {
         activeScopedPaths = resolved
         return resolved
     }
-
     private func existingSSHConfigPath() -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let candidates = [

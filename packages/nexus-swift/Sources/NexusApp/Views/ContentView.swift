@@ -36,7 +36,7 @@ struct ContentView: View {
                     WorkspaceDetailView(workspace: ws)
                         .inspector(isPresented: $appState.showInspector) {
                             InspectorView(workspace: ws)
-                                .inspectorColumnWidth(min: 340, ideal: 420, max: 520)
+                                .inspectorColumnWidth(min: 260, ideal: 300, max: 360)
                         }
                 } else {
                     EmptyStateView(error: appState.error)

@@ -277,13 +277,17 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c    = try decoder.container(keyedBy: CodingKeys.self)
+        let raw  = try decoder.container(keyedBy: AnyCodingKey.self)
         id           = try c.decode(String.self, forKey: .id)
         workspaceName = try c.decodeIfPresent(String.self, forKey: .workspaceName) ?? ""
         repo         = try c.decodeIfPresent(String.self, forKey: .repo) ?? ""
         ref          = try c.decodeIfPresent(String.self, forKey: .ref) ?? "main"
-        targetBranch = try c.decodeIfPresent(String.self, forKey: .targetBranch)
-        currentRef   = try c.decodeIfPresent(String.self, forKey: .currentRef)
-        currentCommit = try c.decodeIfPresent(String.self, forKey: .currentCommit)
+        let decodedTargetBranch = try c.decodeIfPresent(String.self, forKey: .targetBranch)
+        targetBranch = Workspace.decodeString(raw, keys: ["targetBranch", "target_branch"]) ?? decodedTargetBranch
+        let decodedCurrentRef = try c.decodeIfPresent(String.self, forKey: .currentRef)
+        currentRef = Workspace.decodeString(raw, keys: ["currentRef", "current_ref"]) ?? decodedCurrentRef
+        let decodedCurrentCommit = try c.decodeIfPresent(String.self, forKey: .currentCommit)
+        currentCommit = Workspace.decodeString(raw, keys: ["currentCommit", "current_commit"]) ?? decodedCurrentCommit
         parentWorkspaceId = try c.decodeIfPresent(String.self, forKey: .parentWorkspaceId)
         lineageRootId = try c.decodeIfPresent(String.self, forKey: .lineageRootId)
         state        = try c.decodeIfPresent(WorkspaceStatus.self, forKey: .state) ?? .stopped
@@ -345,6 +349,27 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         self.guestIp      = guestIp
         self.ports        = ports
         self.hasActiveTunnels = hasActiveTunnels
+    }
+}
+
+private struct AnyCodingKey: CodingKey {
+    var stringValue: String
+    var intValue: Int? { nil }
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}
+
+private extension Workspace {
+    static func decodeString(_ c: KeyedDecodingContainer<AnyCodingKey>, keys: [String]) -> String? {
+        for key in keys {
+            guard let k = AnyCodingKey(stringValue: key) else { continue }
+            guard c.contains(k) else { continue }
+            if let value = try? c.decodeIfPresent(String.self, forKey: k) {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+        }
+        return nil
     }
 }
 

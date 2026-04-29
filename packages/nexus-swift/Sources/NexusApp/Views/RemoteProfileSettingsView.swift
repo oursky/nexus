@@ -31,7 +31,7 @@ private struct ProfileRow: View {
                 HStack(spacing: 4) {
                     Text(profile.name)
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.primary)
+                        .foregroundColor(Theme.label)
                     if profile.isDefault {
                         Text("default")
                             .font(.system(size: 10))
@@ -44,7 +44,7 @@ private struct ProfileRow: View {
                 if let sshTarget = profile.sshTarget, !sshTarget.isEmpty {
                     Text("\(profile.name) · \(sshTarget)")
                         .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Theme.labelSecondary)
                 }
             }
             Spacer()
@@ -96,7 +96,7 @@ private struct ProfileEditSheet: View {
     @State private var validationMessage: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceMd) {
             Text(isNew ? "Add Remote Profile" : "Edit Profile")
                 .font(.headline)
 
@@ -142,7 +142,7 @@ private struct ProfileEditSheet: View {
 
             // Test Connection
             LabeledField("") {
-                HStack(spacing: 8) {
+                HStack(spacing: Theme.spaceSm) {
                     Button {
                         testConnection()
                     } label: {
@@ -173,7 +173,7 @@ private struct ProfileEditSheet: View {
 
             Text("Token is fetched automatically from the remote host via SSH tunnel.")
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundColor(Theme.labelSecondary)
 
             if let validationMessage {
                 Text(validationMessage)
@@ -213,8 +213,9 @@ private struct ProfileEditSheet: View {
                 .disabled(profile.name.isEmpty || sshTargetText.isEmpty)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceXl)
         .frame(minWidth: 380)
+        .background(Theme.bgElevated)
         .onAppear {
             sshTargetText = profile.sshTarget ?? ""
             sshPortText = profile.sshPort.map { String($0) } ?? ""
@@ -323,10 +324,10 @@ private struct LabeledField<Content: View>: View {
         self.content = content
     }
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: Theme.spaceSm) {
             Text(label)
                 .font(.system(size: 12))
-                .foregroundColor(.secondary)
+                .foregroundColor(Theme.labelSecondary)
                 .frame(width: 64, alignment: .trailing)
             content()
         }
@@ -348,11 +349,11 @@ public struct RemoteProfileSettingsView: View {
     public init() {}
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Theme.spaceSm) {
             HStack {
                 Text("Daemon Profiles")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Theme.labelSecondary)
                 Spacer()
                 Button {
                     editingProfile = DaemonProfile(name: "")
@@ -368,7 +369,7 @@ public struct RemoteProfileSettingsView: View {
             if profiles.isEmpty {
                 Text("No profiles configured.")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Theme.labelSecondary)
             } else {
                 ForEach(profiles) { profile in
                     ProfileRow(

@@ -5,6 +5,7 @@ import SwiftUI
 
 struct BottomPanelView: View {
     let workspace: Workspace
+    @EnvironmentObject var appState: AppState
     @State private var selectedTab: InspectorTab = .ports
 
     enum InspectorTab: String, CaseIterable {
@@ -16,6 +17,17 @@ struct BottomPanelView: View {
         VStack(spacing: 0) {
             // Tab bar
             HStack(spacing: 0) {
+                Button {
+                    appState.showInspector = false
+                } label: {
+                    Image(systemName: "sidebar.trailing")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.labelSecondary)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .help("Collapse Inspector")
+
                 ForEach(InspectorTab.allCases, id: \.self) { tab in
                     Button {
                         selectedTab = tab
@@ -211,13 +223,13 @@ private struct VMLogPane: View {
     }
 }
 
-// MARK: - Ports column metrics (header + rows stay aligned; flex goes to Process)
+// MARK: - Ports column metrics
 
 private enum PortsColumn {
-    static let local: CGFloat   = 52   // port numbers are ≤5 digits
-    static let state: CGFloat   = 44   // "On"/"Off" + dot
-    static let actions: CGFloat = 96   // "Add  Open ↗"
-    // Process column gets remaining flex space; always at least ~80pt at min inspector width
+    static let local: CGFloat = 58
+    static let processMin: CGFloat = 110
+    static let state: CGFloat = 42
+    static let open: CGFloat = 14
 }
 
 // MARK: - Ports
@@ -247,7 +259,6 @@ private struct PortsPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Fixed vertical envelope + stable primary action width so “Start/Stop” and title changes do not resize the header.
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .center, spacing: 10) {
                     Text(tunnelsTitle)
@@ -260,12 +271,6 @@ private struct PortsPane: View {
                         .frame(width: Self.tunnelActionWidth, alignment: .center)
                 }
                 .frame(minHeight: 22)
-
-                Text("Only one sandbox can have active tunnels at a time.")
-                    .font(.system(size: 10))
-                    .foregroundColor(Theme.labelTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 12)
             .padding(.top, 10)
@@ -289,16 +294,15 @@ private struct PortsPane: View {
                                 Divider().overlay(Theme.separator).padding(.leading, 12)
                             }
                         } header: {
-                            HStack(alignment: .center, spacing: 6) {
+                            HStack(alignment: .center, spacing: 0) {
                                 Text("Local")
                                     .frame(width: PortsColumn.local, alignment: .leading)
                                 Text("Process")
-                                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                                    .layoutPriority(1)
+                                    .frame(minWidth: PortsColumn.processMin, maxWidth: .infinity, alignment: .leading)
                                 Text("State")
                                     .frame(width: PortsColumn.state, alignment: .leading)
-                        Text("Action")
-                            .frame(width: PortsColumn.actions, alignment: .trailing)
+                                Text("")
+                                    .frame(width: PortsColumn.open, alignment: .center)
                             }
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(Theme.labelSecondary)
@@ -323,57 +327,56 @@ private struct PortRow: View {
     let port: ForwardedPort
     let workspace: Workspace
     @EnvironmentObject var appState: AppState
-    @State private var hover = false
+
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("\(port.port)")
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Text(String(port.port))
                 .frame(width: PortsColumn.local, alignment: .leading)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundColor(Theme.label)
             if let process = port.process, !process.isEmpty {
                 Text(process)
-                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(1)
+                    .frame(minWidth: PortsColumn.processMin, maxWidth: .infinity, alignment: .leading)
                     .font(.system(size: 11))
                     .foregroundColor(Theme.labelSecondary)
-                    .lineLimit(2)
+                    .lineLimit(1)
                     .truncationMode(.tail)
                     .help(process)
             } else {
                 Text("—")
-                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(1)
+                    .frame(minWidth: PortsColumn.processMin, maxWidth: .infinity, alignment: .leading)
                     .font(.system(size: 11))
                     .foregroundColor(Theme.labelTertiary)
             }
-
-            HStack(spacing: 4) {
-                Circle().fill(port.tunneled ? Theme.green : Theme.labelTertiary).frame(width: 5)
-                Text(port.tunneled ? "On" : "Off")
-                    .font(.system(size: 10))
-                    .foregroundColor(port.tunneled ? Theme.green : Theme.labelTertiary)
+            Button {
+                Task {
+                    if port.tunneled || port.preferred {
+                        await appState.removePort(port.port, workspace: workspace)
+                    } else {
+                        await appState.addPort(port.port, workspace: workspace)
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Circle().fill(port.tunneled ? Theme.green : Theme.labelTertiary).frame(width: 5)
+                    Text(port.tunneled ? "On" : "Off")
+                        .font(.system(size: 10))
+                        .foregroundColor(port.tunneled ? Theme.green : Theme.labelTertiary)
+                }
             }
             .frame(width: PortsColumn.state, alignment: .leading)
-
-            HStack(spacing: 8) {
-                if port.tunneled || port.preferred {
-                    Button("Remove") { Task { await appState.removePort(port.port, workspace: workspace) } }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(Theme.labelSecondary)
-                } else {
-                    Button("Add") { Task { await appState.addPort(port.port, workspace: workspace) } }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(Theme.accent)
-                }
-                Button("Open ↗") { NSWorkspace.shared.open(port.localURL) }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(hover ? Theme.accent : Theme.labelSecondary)
-                    .onHover { hover = $0 }
+            .buttonStyle(.plain)
+            .help(port.tunneled ? "Turn off tunnel" : "Turn on tunnel")
+            Button {
+                NSWorkspace.shared.open(port.localURL)
+            } label: {
+                Image(systemName: "arrow.up.forward.square")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.labelSecondary)
+                    .frame(width: PortsColumn.open, alignment: .center)
             }
-            .frame(width: PortsColumn.actions, alignment: .trailing)
+            .buttonStyle(.plain)
+            .help("Open localhost:\(port.port)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)

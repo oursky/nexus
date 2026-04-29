@@ -9,12 +9,15 @@ import AppKit
 enum Theme {
 
     // ── Backgrounds ────────────────────────────────────────────────
-    /// Window / main pane – warm off-white like macOS default window bg
-    static let bgApp     = Color(hex: "#F5F4F2")
-    /// Main content area – pure white (Conductor's center pane is #FFF)
-    static let bgContent = Color(hex: "#FFFFFF")
+    /// Window / main pane.
+    static let bgApp     = Color(nsColor: .windowBackgroundColor)
+    /// Main content area.
+    static let bgContent = Color(nsColor: .textBackgroundColor)
     /// Inset terminal card background
     static let bgTerm    = Color(hex: "#1C1C1C")
+    /// Elevated panels/sheets should follow system window background to avoid
+    /// appearance-specific contrast regressions across different macOS setups.
+    static let bgElevated = Color(nsColor: .windowBackgroundColor)
     /// Sidebar – handled by NSVisualEffectView, no hex needed
 
     // ── Sidebar interaction ────────────────────────────────────────
@@ -23,8 +26,9 @@ enum Theme {
     static let sidebarHover    = Color.black.opacity(0.03)
 
     // ── Borders ────────────────────────────────────────────────────
-    static let separator     = Color.black.opacity(0.08)
-    static let separatorMid  = Color.black.opacity(0.12)
+    static let separator     = Color(nsColor: .separatorColor).opacity(0.65)
+    static let separatorMid  = Color(nsColor: .separatorColor)
+    static let badgeMutedBg  = Color(nsColor: .quaternaryLabelColor).opacity(0.18)
 
     // ── Semantic text (NSColor adapts to vibrancy/appearances) ─────
     static let label          = Color(nsColor: .labelColor)
@@ -32,12 +36,12 @@ enum Theme {
     static let labelTertiary  = Color(nsColor: .tertiaryLabelColor)
 
     // ── Status ─────────────────────────────────────────────────────
-    static let green  = Color(hex: "#28CD41")
-    static let orange = Color(hex: "#FF9500")
-    static let red    = Color(hex: "#FF3B30")
+    static let green  = Color(nsColor: .systemGreen)
+    static let orange = Color(nsColor: .systemOrange)
+    static let red    = Color(nsColor: .systemRed)
 
     // ── Accent – matches Conductor's coral/red brand color ─────────
-    static let accent = Color(hex: "#E84343")
+    static let accent = Color(nsColor: .controlAccentColor)
 
     // ── Terminal syntax ────────────────────────────────────────────
     static let termText   = Color(hex: "#D4D4D4")
@@ -50,6 +54,10 @@ enum Theme {
     static let fontSm   = Font.system(size: 11)
     static let fontBody = Font.system(size: 13)
     static let fontMono = Font.system(size: 12, design: .monospaced)
+    static let spaceSm: CGFloat = 8
+    static let spaceMd: CGFloat = 12
+    static let spaceLg: CGFloat = 16
+    static let spaceXl: CGFloat = 20
 
     // ── Helpers ────────────────────────────────────────────────────
     static func statusColor(_ s: WorkspaceStatus) -> Color {

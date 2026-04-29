@@ -10,9 +10,6 @@ struct WorkspaceDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SessionInfoStrip(workspace: workspace)
-            Divider().overlay(Theme.separator)
-
             TerminalCard(workspace: workspace)
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 .background(Theme.bgApp)
@@ -26,22 +23,26 @@ struct WorkspaceDetailView: View {
             ToolbarItem(placement: .navigation) {
                 WorkspaceBreadcrumb(workspace: workspace)
             }
-            // Inspector toggle — trailing icon, standard macOS style.
+            ToolbarItem(placement: .primaryAction) {
+                WorkspaceStartStopButton(workspace: workspace)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                RemoteEditorOpenMenu(workspace: workspace)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                WorkspaceOverflowMenu(workspace: workspace)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     appState.showInspector.toggle()
                 } label: {
                     Image(systemName: "sidebar.trailing")
                         .symbolRenderingMode(.hierarchical)
+                        .font(.system(size: 14))
+                        .frame(width: 22, height: 22)
                 }
-                .help("Toggle Inspector")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                RemoteEditorOpenMenu(workspace: workspace)
-            }
-            // Workspace action menu (start/stop/remove) — icon adapts to state.
-            ToolbarItem(placement: .primaryAction) {
-                WorkspaceActionMenu(workspace: workspace)
+                .buttonStyle(.plain)
+                .help(appState.showInspector ? "Hide Inspector" : "Show Inspector")
             }
         }
     }
@@ -119,11 +120,13 @@ private struct RemoteEditorOpenMenu: View {
         } label: {
             if isCheckingSSH {
                 ProgressView()
-                    .scaleEffect(0.65)
-                    .frame(width: 16, height: 16)
+                    .scaleEffect(0.7)
+                    .frame(width: 22, height: 22)
             } else {
                 Image(systemName: "arrow.up.forward.square")
                     .symbolRenderingMode(.hierarchical)
+                    .font(.system(size: 14))
+                    .frame(width: 22, height: 22)
             }
         }
         .menuStyle(.borderlessButton)
@@ -237,8 +240,8 @@ private struct SSHCheckResultSheet: View {
     private var title: String { result.isSuccess ? "SSH Check Passed" : "Cannot Connect to VM" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: Theme.spaceLg) {
+            HStack(spacing: Theme.spaceMd) {
                 Image(systemName: iconName)
                     .font(.system(size: 22))
                     .foregroundColor(iconColor)
@@ -248,14 +251,15 @@ private struct SSHCheckResultSheet: View {
 
             Text(result.summary)
                 .font(.body)
-                .foregroundColor(.primary)
+                .foregroundColor(Theme.label)
                 .textSelection(.enabled)
 
             if !result.guestIP.isEmpty {
                 HStack {
-                    Text("Guest IP:").foregroundColor(.secondary)
+                    Text("Guest IP:").foregroundColor(Theme.labelSecondary)
                     Text(result.guestIP)
                         .font(.system(.body, design: .monospaced))
+                        .foregroundColor(Theme.label)
                         .textSelection(.enabled)
                 }
             }
@@ -265,7 +269,7 @@ private struct SSHCheckResultSheet: View {
                     ScrollView {
                         Text(result.detail)
                             .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(Theme.labelSecondary)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -275,16 +279,16 @@ private struct SSHCheckResultSheet: View {
 
             if !result.isSuccess {
                 GroupBox("Next steps") {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: Theme.spaceSm) {
                         Text("1. Run 'nexus workspace ssh-vm <name> --diagnose' in a terminal to check sshd status inside the VM.")
                         Text("2. Ensure the workspace is running and the VM image has sshd installed.")
                         Text("3. If sshd is missing, rebuild the rootfs:")
                         Text("   nexus daemon implode && sudo nexus daemon start --setup")
                             .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(Theme.labelSecondary)
                     }
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Theme.labelSecondary)
                 }
             }
 
@@ -294,8 +298,9 @@ private struct SSHCheckResultSheet: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceXl)
         .frame(minWidth: 480)
+        .background(Theme.bgElevated)
     }
 }
 private extension String {
@@ -306,52 +311,15 @@ private extension String {
 
 // MARK: - Workspace action menu (toolbar)
 
-private struct WorkspaceActionMenu: View {
+private struct WorkspaceOverflowMenu: View {
     let workspace: Workspace
     @EnvironmentObject var appState: AppState
 
     private var currentOp: WorkspaceOpState? { appState.workspaceOps[workspace.id] }
     private var isBusy: Bool { currentOp != nil }
 
-    private var primaryIcon: String {
-        switch workspace.state {
-        case .running, .restored: "ellipsis.circle"
-        case .starting: "ellipsis.circle"
-        case .paused, .stopped, .created: "play.fill"
-        }
-    }
-
     var body: some View {
         Menu {
-            switch workspace.state {
-            case .stopped, .created:
-                Button { Task { await appState.start(workspace) } } label: {
-                    Label("Start", systemImage: "play.fill")
-                }
-                .disabled(isBusy)
-            case .starting:
-                Button { } label: {
-                    Label("Starting…", systemImage: "ellipsis.circle")
-                }
-                .disabled(true)
-            case .running, .restored:
-                Button { Task { await appState.stop(workspace) } } label: {
-                    Label("Stop", systemImage: "stop.fill")
-                }
-                .disabled(isBusy)
-            case .paused:
-                Button { Task { await appState.start(workspace) } } label: {
-                    Label("Start", systemImage: "play.fill")
-                }
-                .disabled(isBusy)
-                Button { Task { await appState.stop(workspace) } } label: {
-                    Label("Stop", systemImage: "stop.fill")
-                }
-                .disabled(isBusy)
-            }
-
-            Divider()
-
             Button(role: .destructive) {
                 Task { await appState.remove(workspace) }
             } label: {
@@ -359,16 +327,44 @@ private struct WorkspaceActionMenu: View {
             }
             .disabled(isBusy)
         } label: {
-            if isBusy {
-                ProgressView()
-                    .scaleEffect(0.65)
-                    .frame(width: 16, height: 16)
-            } else {
-                Image(systemName: primaryIcon)
-                    .symbolRenderingMode(.hierarchical)
-            }
+            Image(systemName: "ellipsis.circle")
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 14))
+                .frame(width: 22, height: 22)
         }
         .menuStyle(.borderlessButton)
+    }
+}
+
+private struct WorkspaceStartStopButton: View {
+    let workspace: Workspace
+    @EnvironmentObject var appState: AppState
+
+    private var currentOp: WorkspaceOpState? { appState.workspaceOps[workspace.id] }
+    private var isBusy: Bool { currentOp != nil }
+    private var isRunning: Bool { workspace.state == .running || workspace.state == .restored }
+    private var canStart: Bool { workspace.state == .stopped || workspace.state == .created || workspace.state == .paused }
+    private var canStop: Bool { isRunning || workspace.state == .paused }
+
+    var body: some View {
+        Button {
+            Task {
+                if canStart { await appState.start(workspace) }
+                else if canStop { await appState.stop(workspace) }
+            }
+        } label: {
+            if isBusy {
+                ProgressView().scaleEffect(0.7).frame(width: 22, height: 22)
+            } else {
+                Image(systemName: canStart ? "play.fill" : "stop.fill")
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.system(size: 14))
+                    .frame(width: 22, height: 22)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(isBusy || workspace.state == .starting)
+        .help(canStart ? "Start Workspace" : "Stop Workspace")
     }
 }
 
@@ -376,110 +372,35 @@ private struct WorkspaceActionMenu: View {
 
 private struct WorkspaceBreadcrumb: View {
     let workspace: Workspace
+    @State private var liveRef: String = ""
     var body: some View {
         HStack(spacing: 6) {
             Text(workspace.name)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.primary)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(Theme.labelTertiary)
-            Text(workspace.branch)
-                .font(.system(size: 13))
-                .foregroundColor(Theme.labelSecondary)
+                .foregroundColor(Theme.label)
+            if !liveRef.isEmpty {
+                Text("·")
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.labelTertiary)
+                Text(liveRef)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(Theme.labelSecondary)
+                    .lineLimit(1)
+            }
         }
         .padding(.horizontal, 8)
-    }
-}
-
-// MARK: - Session info strip
-
-private struct SessionInfoStrip: View {
-    let workspace: Workspace
-    @EnvironmentObject var appState: AppState
-    @State private var resolvedPath: String = ""
-
-    /// Live directory reported by the shell (OSC 7) takes precedence over the
-    /// static path fetched from the daemon info.
-    private var displayPath: String {
-        if let live = appState.terminalDirectory, !live.isEmpty {
-            return Self.canonicalSandboxPathDisplay(live)
-        }
-        return Self.canonicalSandboxPathDisplay(resolvedPath)
+        .task(id: workspace.id) { await refreshRefLoop() }
     }
 
-    private static func canonicalSandboxPathDisplay(_ raw: String) -> String {
-        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return t.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
-    }
-
-    var body: some View {
-        HStack(spacing: 20) {
-            HStack(spacing: 4) {
-                Image(systemName: "arrow.triangle.branch")
-                    .font(.system(size: 10))
-                    .foregroundColor(Theme.labelTertiary)
-                Text(workspace.branch)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(Theme.labelSecondary)
-            }
-
-            if !workspace.detailRuntimeLine.isEmpty {
-                Divider().frame(height: 12).opacity(0.5)
-                HStack(spacing: 4) {
-                    Image(systemName: "cpu")
-                        .font(.system(size: 10))
-                        .foregroundColor(Theme.labelTertiary)
-                    Text(workspace.detailRuntimeLine)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(Theme.labelSecondary)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                }
-                .accessibilityLabel("Runtime \(workspace.detailRuntimeLine)")
-            }
-
-            // Resolved workspace path — live shell directory takes precedence
-            if !displayPath.isEmpty {
-                Divider().frame(height: 12).opacity(0.5)
-                HStack(spacing: 4) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 10))
-                        .foregroundColor(Theme.labelTertiary)
-                    Text(displayPath)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(Theme.labelSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-
-            let activePorts = workspace.ports.filter { $0.tunneled }
-            if !activePorts.isEmpty {
-                Divider().frame(height: 12).opacity(0.5)
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.left.arrow.right")
-                        .font(.system(size: 10))
-                        .foregroundColor(Theme.labelTertiary)
-                    ForEach(activePorts) { port in
-                        Text("\(port.port)")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(Theme.green)
-                    }
-                }
-            }
-
-            Spacer()
-        }
-        .padding(.horizontal, 16)
-        .frame(height: 34)
-        .background(Theme.bgContent)
-        .task(id: workspace.id) {
-            if let client = appState.client as? WebSocketDaemonClient,
-               let info = try? await client.workspaceInfo(id: workspace.id) {
-                resolvedPath = info.workspacePath
-                    .replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
-            }
+    private func refreshRefLoop() async {
+        while !Task.isCancelled {
+            let next = await Task.detached(priority: .utility) { () -> String in
+                guard let rec = LocalWorkspaceState.record(forWorkspaceID: workspace.id) else { return "" }
+                return (try? GitLogReader.currentRef(repoDirectory: rec.localPath)) ?? ""
+            }.value
+            if Task.isCancelled { return }
+            await MainActor.run { liveRef = next }
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
         }
     }
 }

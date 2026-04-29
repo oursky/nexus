@@ -238,7 +238,7 @@ private struct TabButton: View {
 
     // Tab colours live on a dark (#232323) bar.
     private var labelColor: SwiftUI.Color {
-        tab.isActive ? SwiftUI.Color(hex: "#E8E8E8") : SwiftUI.Color(hex: "#888888")
+        tab.isActive ? SwiftUI.Color(hex: "#E8E8E8") : SwiftUI.Color(hex: "#A8A8A8")
     }
     private var bgColor: SwiftUI.Color {
         if tab.isActive { return SwiftUI.Color(hex: "#1A1A1A") }

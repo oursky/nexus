@@ -93,7 +93,6 @@ struct NexusApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
-                .preferredColorScheme(.light)
                 .onAppear {
                     CrashProbe.checkpoint("NexusApp window appeared")
                 }

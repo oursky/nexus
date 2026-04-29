@@ -33,6 +33,11 @@ When the app crashes before headless RPC is reachable, debug in Xcode with break
    - `NEXUS_APP_FILE_LOG=1`
 3. Load the shared LLDB breakpoint preset:
    - Xcode console: `command source packages/nexus-swift/scripts/lldb/crash-breakpoints.lldb`
+   - (Equivalent manual breakpoints if needed):
+     - Exception Breakpoint: `All Objective-C Exceptions`
+     - Symbolic breakpoint: `swift_willThrow`
+     - Symbolic breakpoint: `_assertionFailure`
+     - Symbolic breakpoint: `_fatalErrorMessage`
 4. Scheme → Run → Diagnostics:
    - Enable `Address Sanitizer`
    - Enable `Zombie Objects`

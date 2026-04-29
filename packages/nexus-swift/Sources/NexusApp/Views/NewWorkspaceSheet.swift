@@ -13,14 +13,11 @@ struct NewWorkspaceSheet: View {
 
     @State private var workspaceName = "main"
     @State private var localPath     = ""
-    @State private var branch        = "main"
     @State private var selectedProjectID = ""
     @State private var createNewProject = false
     @State private var sourceMode: SourceMode = .projectRoot
     @State private var backend: RuntimeBackend = .libkrun
     @State private var selectedSourceWorkspaceID = ""
-    @State private var workspaceNameEdited = false
-    @State private var updatingNameFromBranch = false
     @State private var freshSandbox = false
     @State private var isCreating    = false
     @State private var localError: String?
@@ -139,40 +136,12 @@ struct NewWorkspaceSheet: View {
                 }
 
                 if !createNewProject {
-                    // Sandbox name defaults to branch and can be overridden.
                     FormField(label: "Sandbox name", isRequired: true) {
                         NexusTextField(
                             placeholder: "e.g. feature-auth",
                             text: $workspaceName,
                             accessibilityID: "sandbox_name_field"
                         )
-                            .onChange(of: workspaceName) { old, new in
-                                if old != new && !updatingNameFromBranch {
-                                    workspaceNameEdited = true
-                                }
-                            }
-                    }
-
-                    FormField(
-                        label: "Target branch",
-                        hint: sourceMode == .fresh
-                            ? nil
-                            : "Existing branch or tag, or a new branch name (created from the repo's current HEAD if it doesn't exist yet)."
-                    ) {
-                        NexusTextField(
-                            placeholder: "main",
-                            text: $branch,
-                            accessibilityID: "sandbox_branch_field"
-                        )
-                            .onChange(of: branch) { _, value in
-                                guard !workspaceNameEdited else { return }
-                                let trimmed = value.trimmingCharacters(in: .whitespaces)
-                                updatingNameFromBranch = true
-                                workspaceName = trimmed.isEmpty ? "main" : trimmed
-                                DispatchQueue.main.async {
-                                    updatingNameFromBranch = false
-                                }
-                            }
                     }
 
                     FormField(label: "Fork source") {
@@ -432,8 +401,7 @@ struct NewWorkspaceSheet: View {
         }
 
         let name = workspaceName.trimmingCharacters(in: .whitespaces)
-        let ref = branch.trimmingCharacters(in: .whitespaces).isEmpty ? "main"
-            : branch.trimmingCharacters(in: .whitespaces)
+        let ref = await resolveTargetRef(projectID: projectID)
         let explicitSourceID: String?
         switch sourceMode {
             case .projectRoot:
@@ -475,6 +443,26 @@ struct NewWorkspaceSheet: View {
             localError = appState.error
             appState.error = nil
         }
+    }
+
+    private func resolveTargetRef(projectID: String) async -> String {
+        if sourceMode != .fresh, !selectedSourceWorkspaceID.isEmpty,
+           let rec = LocalWorkspaceState.record(forWorkspaceID: selectedSourceWorkspaceID),
+           let ref = try? GitLogReader.currentRef(repoDirectory: rec.localPath),
+           !ref.isEmpty {
+            return ref
+        }
+
+        if let project = appState.projects.first(where: { $0.id == projectID }) {
+            let projectRepo = project.primaryRepo.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !projectRepo.isEmpty,
+               let ref = try? GitLogReader.currentRef(repoDirectory: projectRepo),
+               !ref.isEmpty {
+                return ref
+            }
+        }
+
+        return "main"
     }
 }
 

@@ -45,16 +45,6 @@ private struct SidebarHeader: View {
 
             Spacer()
 
-            // Collapse sidebar — icon tints accent when sidebar is "locked open"
-            SidebarHeaderBtn(
-                icon: "sidebar.leading",
-                active: appState.sidebarVisible
-            ) {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    appState.sidebarVisible.toggle()
-                }
-            }
-
             SidebarHeaderBtn(icon: "plus") {
                 appState.createIntent = .newProject
                 appState.showNewWorkspace = true
@@ -299,14 +289,23 @@ private struct WorkspaceRow: View {
     private var isRoot: Bool { (workspace.parentWorkspaceId ?? "").isEmpty }
     private var displayName: String { isRoot ? "Base" : workspace.name }
     private var currentOp: WorkspaceOpState? { appState.workspaceOps[workspace.id] }
+    @State private var liveRef: String = ""
 
     var body: some View {
         HStack(spacing: 7) {
             StatusDot(status: workspace.status, opState: currentOp)
-            Text(displayName)
-                .font(.system(size: 13))
-                .foregroundColor(Theme.label)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(displayName)
+                    .font(.system(size: 13))
+                    .foregroundColor(Theme.label)
+                    .lineLimit(1)
+                if !liveRef.isEmpty {
+                    Text(liveRef)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(Theme.labelTertiary)
+                        .lineLimit(1)
+                }
+            }
             if let op = currentOp {
                 Text(op.label)
                     .font(.system(size: 11))
@@ -326,7 +325,13 @@ private struct WorkspaceRow: View {
                 if !workspace.shortRuntimeBadge.isEmpty {
                     Text(workspace.shortRuntimeBadge)
                         .font(.system(size: 9, weight: .medium))
-                        .foregroundColor(Theme.labelTertiary)
+                        .foregroundColor(Theme.labelSecondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Theme.badgeMutedBg)
+                        )
                         .lineLimit(1)
                 }
             }
@@ -343,6 +348,19 @@ private struct WorkspaceRow: View {
         )
         .contentShape(Rectangle())
         .onHover { hover = $0 }
+        .task(id: workspace.id) { await refreshRefLoop() }
+    }
+
+    private func refreshRefLoop() async {
+        while !Task.isCancelled {
+            let next = await Task.detached(priority: .utility) { () -> String in
+                guard let rec = LocalWorkspaceState.record(forWorkspaceID: workspace.id) else { return "" }
+                return (try? GitLogReader.currentRef(repoDirectory: rec.localPath)) ?? ""
+            }.value
+            if Task.isCancelled { return }
+            await MainActor.run { liveRef = next }
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+        }
     }
 }
 
@@ -529,8 +547,8 @@ private struct SidebarFooter: View {
 
 
     private var connectionChipBackground: Color {
-        if showDaemonPanel { return Color.primary.opacity(0.1) }
-        if hoverConnection { return Color.primary.opacity(0.06) }
+        if showDaemonPanel { return Theme.labelSecondary.opacity(0.14) }
+        if hoverConnection { return Theme.labelSecondary.opacity(0.08) }
         return Color.clear
     }
 
