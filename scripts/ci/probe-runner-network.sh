@@ -8,7 +8,7 @@ set -euo pipefail
 # requires). If NAT doesn't work, passt can't forward VM traffic.
 
 # ── Fast path: already baked ────────────────────────────────────────────────
-if sudo test -f /root/.local/state/nexus/rootfs-baked-v7; then
+if sudo test -n "$(find /root/.local/state/nexus -maxdepth 1 -name 'rootfs-baked-v*' -print -quit 2>/dev/null)"; then
   echo "[probe] Baked stamp already present; network probe not needed"
   exit 0
 fi

@@ -5,7 +5,7 @@ if grep -Eq '^\s*profile\s*=\s*"minimal"\s*$' Nexusfile 2>/dev/null; then
   echo "Nexusfile profile is minimal; skipping bake prewarm."
   exit 0
 fi
-if sudo test -f /root/.local/state/nexus/rootfs-baked-v7; then
+if sudo test -n "$(find /root/.local/state/nexus -maxdepth 1 -name 'rootfs-baked-v*' -print -quit 2>/dev/null)"; then
   echo "Baked stamp already present; skipping prewarm."
   exit 0
 fi

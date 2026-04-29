@@ -56,9 +56,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.LIBKRUN_BAKED_CACHE_DIR }}
-          key: libkrun-baked-v3-${{ runner.os }}-${{ hashFiles('Nexusfile', 'schemas/nexusfile.schema.json', 'packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/cmd/nexus-guest-agent/main.go', 'packages/nexus/cmd/nexus/nexus-libkrun-vm', 'packages/nexus/cmd/nexus/rootless_bootstrap_linux.go') }}
+          key: libkrun-baked-v4-${{ runner.os }}-${{ hashFiles('Nexusfile', 'schemas/nexusfile.schema.json', 'packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/internal/infra/runtime/libkrun/bake_version.go', 'packages/nexus/cmd/nexus-guest-agent/main.go', 'packages/nexus/cmd/nexus-guest-agent/sysconfig.go', 'packages/nexus/cmd/nexus/nexus-libkrun-vm', 'packages/nexus/cmd/nexus/rootless_bootstrap_linux.go') }}
           restore-keys: |
-            libkrun-baked-v3-${{ runner.os }}-
+            libkrun-baked-v4-${{ runner.os }}-
 
       - name: Hydrate cached VM assets to host paths
         run: scripts/ci/hydrate-libkrun-cache.sh
@@ -68,26 +68,6 @@ jobs:
 
       - name: Build embedded guest-agent binary
         run: scripts/ci/build-nexus-libkrun.sh
-
-      - name: Provision libkrun host (kernel + rootfs)
-        run: scripts/ci/provision-libkrun-host.sh
-
-      - name: Verify VM assets after provisioning
-        run: scripts/ci/verify-vm-assets.sh required
-
-      - name: Probe runner VM network forwarding
-        id: runner-network-probe
-        continue-on-error: true
-        run: scripts/ci/probe-runner-network.sh
-
-      - name: Prewarm default-profile baked rootfs (best effort, bounded)
-        if: steps.runner-network-probe.outcome == 'success'
-        continue-on-error: true
-        run: scripts/ci/prewarm-default-profile.sh
-
-      - name: Refresh baked VM cache contents
-        if: always()
-        run: scripts/ci/refresh-libkrun-cache.sh
 
       - name: Build patched passt for containerized CI
         run: |
@@ -134,6 +114,29 @@ jobs:
           make CFLAGS="-static -DGLIBC_NO_STATIC_NSS" passt
           chmod +x passt
           cp passt /tmp/passt-patched
+          echo "NEXUS_PASST_PATH=/tmp/passt-patched" >> "$GITHUB_ENV"
+
+      - name: Provision libkrun host (kernel + rootfs)
+        run: scripts/ci/provision-libkrun-host.sh
+
+      - name: Verify VM assets after provisioning
+        run: scripts/ci/verify-vm-assets.sh required
+
+      - name: Probe runner VM network forwarding
+        id: runner-network-probe
+        continue-on-error: true
+        run: scripts/ci/probe-runner-network.sh
+
+      - name: Prewarm default-profile baked rootfs (best effort, bounded)
+        if: steps.runner-network-probe.outcome == 'success'
+        continue-on-error: true
+        run: scripts/ci/prewarm-default-profile.sh
+        env:
+          NEXUS_PASST_PATH: /tmp/passt-patched
+
+      - name: Refresh baked VM cache contents
+        if: always()
+        run: scripts/ci/refresh-libkrun-cache.sh
 
       - name: Run VM e2e tests only
         working-directory: packages/nexus
