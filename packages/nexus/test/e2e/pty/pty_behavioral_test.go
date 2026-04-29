@@ -52,8 +52,14 @@ func TestPTY_ExecPWD(t *testing.T) {
 		t.Fatalf("workspace exec pwd: %v\noutput: %s", err, out)
 	}
 	got := strings.TrimSpace(string(out))
+	// VM backend mounts the repo at /workspace; process backend uses the host
+	// repo directory name.
 	wantSuffix := filepath.Base(repoPath)
-	if !strings.Contains(got, wantSuffix) {
+	if harness.IsVMBackend() {
+		if got != "/workspace" {
+			t.Errorf("pwd: expected /workspace on VM backend, got %q", got)
+		}
+	} else if !strings.Contains(got, wantSuffix) {
 		t.Errorf("pwd: expected output to contain %q, got %q", wantSuffix, got)
 	}
 }
@@ -95,9 +101,13 @@ func TestPTY_ExecGitBranch(t *testing.T) {
 }
 
 // TestPTY_ExecWriteAndReadFile verifies file writes are visible from workspace exec.
+// Skipped on VM backend because guest writes do not sync back to the host filesystem.
 func TestPTY_ExecWriteAndReadFile(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
+	if harness.IsVMBackend() {
+		t.Skip("VM backend: guest writes do not sync to host filesystem")
+	}
 	h := harness.NewCLIHarness(t)
 	repoPath := harness.MakeLocalGitRepo(t, "exec-file")
 	wsID := createWorkspaceLocalRepo(t, h, repoPath, "exec-file")

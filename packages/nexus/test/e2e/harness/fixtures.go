@@ -41,6 +41,14 @@ func SkipIfVMBoot(t *testing.T) {
 	}
 }
 
+// IsVMBackend returns true when the test environment is configured to use the
+// libkrun VM backend (NEXUS_VM_KERNEL and NEXUS_VM_ROOTFS are set).
+func IsVMBackend() bool {
+	kernel := os.Getenv("NEXUS_VM_KERNEL")
+	rootfs := os.Getenv("NEXUS_VM_ROOTFS")
+	return kernel != "" && rootfs != ""
+}
+
 // WaitForWorkspaceReady polls workspace.ready until it returns true or the
 // timeout is reached. It must be called after workspace.start when the test
 // intends to run workspace.exec, because the VM backend needs time to boot.

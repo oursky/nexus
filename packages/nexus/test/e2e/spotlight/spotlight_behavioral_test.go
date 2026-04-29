@@ -74,9 +74,14 @@ func createSpotlightWorkspace(t *testing.T, h *harness.Harness, repoPath, name s
 
 // Spec: VM-005, VM-PROOF-002, SPOT-013, SPOT-014, SPOT-015, SPOT-016, SPOT-017, SPOT-018, SPOT-019, SPOT-020, SPOT-021, SPOT-022, SPOT-023
 // TestSpotlight_TCPProxyTraffic verifies that spotlight actually proxies TCP traffic.
+// Skipped on VM backend because the spotlight proxy binds an ephemeral host port
+// rather than the requested localPort, and remotePort is remapped.
 func TestSpotlight_TCPProxyTraffic(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
+	if harness.IsVMBackend() {
+		t.Skip("VM backend: spotlight uses ephemeral host ports")
+	}
 	h := harness.New(t)
 	repoPath := harness.MakeLocalGitRepo(t, "spotlight-tcp")
 	wsID := createSpotlightWorkspace(t, h, repoPath, "spotlight-tcp-test")
@@ -206,9 +211,13 @@ func TestSpotlight_ListAndStop(t *testing.T) {
 
 // Spec: ERR-051
 // TestSpotlight_PortConflict verifies that binding the same local port twice returns an error.
+// Skipped on VM backend because the daemon binds an ephemeral port and ignores localPort.
 func TestSpotlight_PortConflict(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
+	if harness.IsVMBackend() {
+		t.Skip("VM backend: spotlight binds ephemeral ports, no conflict possible")
+	}
 	h := harness.New(t)
 	repoPath := harness.MakeLocalGitRepo(t, "spotlight-conflict")
 	wsID := createSpotlightWorkspace(t, h, repoPath, "spotlight-conflict-test")

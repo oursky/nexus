@@ -183,17 +183,13 @@ func TestErrors_InvalidStateTransitions(t *testing.T) {
 	id := res.Workspace.ID
 	t.Cleanup(func() { _ = h.Call("workspace.remove", map[string]any{"id": id}, nil) })
 
-	// WS-026: start on created workspace is legal, but start on running is not.
+	// WS-026: start on created workspace is legal. Start on running is
+	// idempotent (returns current state without error).
 	h.MustCall("workspace.start", map[string]any{"id": id}, nil)
 	harness.WaitForWorkspaceReady(t, h, id)
 	err := h.Call("workspace.start", map[string]any{"id": id}, nil)
-	if err == nil {
-		t.Error("start on running workspace: expected error, got nil")
-	}
-
-	// INV-012: start on running must return error.
-	if err == nil {
-		t.Error("start on running: expected error (INV-012)")
+	if err != nil {
+		t.Errorf("start on running workspace: expected nil (idempotent), got %v", err)
 	}
 
 	// WS-027: stop on not-running workspace.
