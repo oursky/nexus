@@ -99,6 +99,10 @@ func handleShellOpen(req execRequest, encoder *json.Encoder) {
 			if err != nil {
 				return
 			}
+			if n == 0 {
+				// PTY slave closed (EOF on master).
+				return
+			}
 		}
 	}()
 
@@ -112,11 +116,11 @@ func handleShellOpen(req execRequest, encoder *json.Encoder) {
 				exitCode = 1
 			}
 		}
-		// Close the PTY master so the read goroutine unblocks and finishes
-		// draining any buffered output. Wait for it before sending the result
-		// so all chunks are forwarded before pty.exit.
-		_ = ptmx.Close()
+		// Wait for the read goroutine to finish draining all output
+		// from the PTY master. The read goroutine exits when the slave
+		// is closed (shell exits) or when EOF is reached.
 		readWg.Wait()
+		_ = ptmx.Close()
 		s.done <- exitCode
 		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: exitCode})
 		shellSessionsMu.Lock()
