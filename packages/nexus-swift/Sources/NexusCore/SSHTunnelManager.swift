@@ -79,18 +79,25 @@ public actor SSHTunnelManager {
 
     private func runSSH(sshTarget: String, command: [String]) throws -> String {
         let sshPort = profile.sshPort ?? 22
+        let configPath = existingSSHConfigPath()
         var args = [
             "-p", "\(sshPort)",
-            "-F", "/dev/null",
             "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "GlobalKnownHostsFile=/dev/null"
         ]
+        if let configPath {
+            args.insert(contentsOf: ["-F", configPath], at: 0)
+        }
         if let identity = profile.sshIdentity, !identity.isEmpty {
             args += ["-i", identity]
         }
         args += [sshTarget] + command
+        AppLifecycleLog.info(
+            "ssh-tunnel",
+            "token-fetch target=\(sshTarget) port=\(sshPort) config=\(configPath ?? "<default>") identity=\(profile.sshIdentity?.isEmpty == false ? "set" : "unset")"
+        )
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -173,10 +180,10 @@ public actor SSHTunnelManager {
         }
         let remotePort = profile.port
         let sshPort = profile.sshPort ?? 22
+        let configPath = existingSSHConfigPath()
 
         var args = [
             "-N",
-            "-F", "/dev/null",
             "-o", "ExitOnForwardFailure=yes",
             "-o", "ServerAliveInterval=10",
             "-o", "StrictHostKeyChecking=no",
@@ -185,10 +192,17 @@ public actor SSHTunnelManager {
             "-L", "\(localPort):127.0.0.1:\(remotePort)",
             "-p", "\(sshPort)"
         ]
+        if let configPath {
+            args.insert(contentsOf: ["-F", configPath], at: 0)
+        }
         if let identity = profile.sshIdentity, !identity.isEmpty {
             args += ["-i", identity]
         }
         args.append(sshTarget)
+        AppLifecycleLog.info(
+            "ssh-tunnel",
+            "launch target=\(sshTarget) sshPort=\(sshPort) localPort=\(localPort) remotePort=\(remotePort) config=\(configPath ?? "<default>") identity=\(profile.sshIdentity?.isEmpty == false ? "set" : "unset")"
+        )
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -286,6 +300,20 @@ public actor SSHTunnelManager {
         stderrPipe = nil
         try launchSSH(localPort: localPort)
         _state = .connected
+    }
+
+    private func existingSSHConfigPath() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "\(home)/.config/nexus/ssh/nexus.ssh.config",
+            "\(home)/.ssh/config",
+        ]
+        if let matched = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+            AppLifecycleLog.info("ssh-tunnel", "using ssh config path=\(matched)")
+            return matched
+        }
+        AppLifecycleLog.info("ssh-tunnel", "using default ssh config resolution")
+        return nil
     }
 }
 
