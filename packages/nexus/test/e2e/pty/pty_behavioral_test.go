@@ -34,6 +34,7 @@ func createWorkspaceLocalRepo(t *testing.T, h *harness.CLIHarness, repoPath, nam
 		_ = h.Call("workspace.remove", map[string]any{"id": id}, nil)
 	})
 	h.MustCall("workspace.start", map[string]any{"id": id}, nil)
+	harness.WaitForWorkspaceReady(t, h.Harness, id)
 	return id
 }
 
@@ -174,6 +175,7 @@ func TestPTY_ListSession(t *testing.T) {
 	wsID := wsRes.Workspace.ID
 	t.Cleanup(func() { _ = h.Call("workspace.remove", map[string]any{"id": wsID}, nil) })
 	h.MustCall("workspace.start", map[string]any{"id": wsID}, nil)
+	harness.WaitForWorkspaceReady(t, h, wsID)
 
 	var sessRes struct {
 		ID string `json:"id"`

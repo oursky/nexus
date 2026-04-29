@@ -133,6 +133,7 @@ func TestProtocol_WorkflowRoundTrip(t *testing.T) {
 	}
 
 	h.MustCall("workspace.start", map[string]any{"id": id}, nil)
+	harness.WaitForWorkspaceReady(t, h, id)
 	h.MustCall("workspace.stop", map[string]any{"id": id}, nil)
 
 	var removeRes struct{ Removed bool `json:"removed"` }

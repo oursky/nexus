@@ -72,7 +72,9 @@ func TestWorkspaceLifecycle(t *testing.T) {
 		t.Fatal("start: got empty workspace state in response")
 	}
 
-	// 4. Verify state is running
+	// 4. Wait for the workspace to be ready (VM backend boots asynchronously),
+	// then verify state is running.
+	harness.WaitForWorkspaceReady(t, h, id)
 	var getRes struct {
 		Workspace struct {
 			ID    string `json:"id"`

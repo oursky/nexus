@@ -51,7 +51,8 @@ func TestWorkspaceRestore(t *testing.T) {
 	}
 	h.MustCall("workspace.start", map[string]any{"id": id}, &startRes)
 
-	// 3. Verify running
+	// 3. Wait for ready, then verify running
+	harness.WaitForWorkspaceReady(t, h, id)
 	var infoRes struct {
 		Workspace struct {
 			ID    string `json:"id"`

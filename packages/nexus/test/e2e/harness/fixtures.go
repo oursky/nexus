@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 // RequireVM skips the test when the libkrun VM backend is not available.
@@ -38,6 +39,22 @@ func SkipIfVMBoot(t *testing.T) {
 	if testing.Short() {
 		t.Skip("slow: VM boot — run without -short to include")
 	}
+}
+
+// WaitForWorkspaceReady polls workspace.ready until it returns true or the
+// timeout is reached. It must be called after workspace.start when the test
+// intends to run workspace.exec, because the VM backend needs time to boot.
+func WaitForWorkspaceReady(t *testing.T, h *Harness, workspaceID string) {
+	t.Helper()
+	var readyRes struct{ Ready bool `json:"ready"` }
+	for attempts := 0; attempts < 120; attempts++ {
+		h.MustCall("workspace.ready", map[string]any{"id": workspaceID}, &readyRes)
+		if readyRes.Ready {
+			return
+		}
+		time.Sleep(1 * time.Second)
+	}
+	t.Fatalf("workspace %s did not become ready within 120s", workspaceID)
 }
 
 func TempDB(t *testing.T) string {

@@ -68,6 +68,7 @@ func createSpotlightWorkspace(t *testing.T, h *harness.Harness, repoPath, name s
 		_ = h.Call("workspace.remove", map[string]any{"id": wsID}, nil)
 	})
 	h.MustCall("workspace.start", map[string]any{"id": wsID}, nil)
+	harness.WaitForWorkspaceReady(t, h, wsID)
 	return wsID
 }
 

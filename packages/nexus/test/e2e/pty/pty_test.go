@@ -39,6 +39,10 @@ func TestPTY(t *testing.T) {
 		_ = h.Call("workspace.remove", map[string]any{"id": wsID}, nil)
 	})
 
+	// Start the workspace and wait for it to be ready before creating a PTY.
+	h.MustCall("workspace.start", map[string]any{"id": wsID}, nil)
+	harness.WaitForWorkspaceReady(t, h, wsID)
+
 	// Create a PTY session.
 	var sessionRes struct {
 		ID   string `json:"id"`
@@ -114,6 +118,7 @@ func TestPTY_Operations(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = h.Call("workspace.remove", map[string]any{"id": wsID}, nil) })
 	h.MustCall("workspace.start", map[string]any{"id": wsID}, nil)
+	harness.WaitForWorkspaceReady(t, h, wsID)
 
 	var sessRes struct {
 		ID string `json:"id"`
@@ -208,6 +213,7 @@ func TestPTY_SessionNotPersisted(t *testing.T) {
 	wsID := wsRes.Workspace.ID
 	t.Cleanup(func() { _ = h.Call("workspace.remove", map[string]any{"id": wsID}, nil) })
 	h.MustCall("workspace.start", map[string]any{"id": wsID}, nil)
+	harness.WaitForWorkspaceReady(t, h, wsID)
 
 	var sessRes struct {
 		ID string `json:"id"`

@@ -197,6 +197,7 @@ func TestFork_ContentVerification(t *testing.T) {
 	parentID := parentRes.Workspace.ID
 	t.Cleanup(func() { _ = h.Call("workspace.remove", map[string]any{"id": parentID}, nil) })
 	h.MustCall("workspace.start", map[string]any{"id": parentID}, nil)
+	harness.WaitForWorkspaceReady(t, h.Harness, parentID)
 
 	var forkRes struct {
 		Forked    bool `json:"forked"`
@@ -268,6 +269,7 @@ func TestFork_WorktreeSync(t *testing.T) {
 	childID := forkRes.Workspace.ID
 	t.Cleanup(func() { _ = h.Call("workspace.remove", map[string]any{"id": childID}, nil) })
 	h.MustCall("workspace.start", map[string]any{"id": childID}, nil)
+	harness.WaitForWorkspaceReady(t, h.Harness, childID)
 
 	out, err := h.Run(t, repoPath, "workspace", "exec", childID, "--", "cat", "sync_marker.txt")
 	if err != nil {

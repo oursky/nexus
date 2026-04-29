@@ -49,6 +49,7 @@ func TestCLI_WorkspaceShellPTY(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workspace start: %v", err)
 	}
+	harness.WaitForWorkspaceReady(t, h.Harness, wsID)
 
 	cmd := exec.Command(h.BinPath(), "workspace", "shell", "pty-interactive", "--workdir", "/workspace")
 	cmd.Dir = clientRepo

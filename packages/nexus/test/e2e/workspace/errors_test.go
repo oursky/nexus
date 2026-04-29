@@ -185,6 +185,7 @@ func TestErrors_InvalidStateTransitions(t *testing.T) {
 
 	// WS-026: start on created workspace is legal, but start on running is not.
 	h.MustCall("workspace.start", map[string]any{"id": id}, nil)
+	harness.WaitForWorkspaceReady(t, h, id)
 	err := h.Call("workspace.start", map[string]any{"id": id}, nil)
 	if err == nil {
 		t.Error("start on running workspace: expected error, got nil")
@@ -204,6 +205,7 @@ func TestErrors_InvalidStateTransitions(t *testing.T) {
 
 	// WS-028: remove on running workspace.
 	h.MustCall("workspace.start", map[string]any{"id": id}, nil)
+	harness.WaitForWorkspaceReady(t, h, id)
 	err = h.Call("workspace.remove", map[string]any{"id": id}, nil)
 	if err == nil {
 		t.Error("remove on running workspace: expected error, got nil")

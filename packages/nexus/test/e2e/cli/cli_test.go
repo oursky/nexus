@@ -110,6 +110,7 @@ func TestCLI_WorkspaceShellAndExec(t *testing.T) {
 	if !strings.Contains(string(out), "started workspace") {
 		t.Fatalf("workspace start: unexpected output: %s", out)
 	}
+	harness.WaitForWorkspaceReady(t, h.Harness, wsID)
 
 	shellOut, err := h.RunWithStdin(t, clientRepo, "pwd\nexit\n", "workspace", "shell", "cli-shell", "--workdir", "/workspace")
 	if err != nil {

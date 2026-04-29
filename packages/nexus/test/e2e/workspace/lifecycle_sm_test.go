@@ -66,6 +66,7 @@ func TestLifecycle_StartAndStop(t *testing.T) {
 	id := createWorkspaceForSM(t, h, "sm-start-stop")
 
 	h.MustCall("workspace.start", map[string]any{"id": id}, nil)
+	harness.WaitForWorkspaceReady(t, h, id)
 
 	var infoRes struct {
 		Workspace struct{ State string `json:"state"` } `json:"workspace"`
@@ -102,6 +103,7 @@ func TestLifecycle_ReadyState(t *testing.T) {
 	}
 
 	h.MustCall("workspace.start", map[string]any{"id": id}, nil)
+	harness.WaitForWorkspaceReady(t, h, id)
 
 	h.MustCall("workspace.ready", map[string]any{"id": id}, &readyRes)
 	if !readyRes.Ready {
@@ -118,6 +120,7 @@ func TestLifecycle_RestoreFromStopped(t *testing.T) {
 	id := createWorkspaceForSM(t, h, "sm-restore")
 
 	h.MustCall("workspace.start", map[string]any{"id": id}, nil)
+	harness.WaitForWorkspaceReady(t, h, id)
 	h.MustCall("workspace.stop", map[string]any{"id": id}, nil)
 
 	var restoreRes struct {
