@@ -1,5 +1,6 @@
 import NexusCore
 import SwiftUI
+import AppKit
 
 // MARK: - Status dot helper
 
@@ -79,6 +80,7 @@ private struct ProfileEditSheet: View {
     @State private var sshTargetText: String = ""
     @State private var sshPortText: String = ""
     @State private var sshIdentityText: String = ""
+    @State private var sshIdentityBookmark: Data?
 
     private enum TestState: Equatable {
         case idle, running, ok, failed(String)
@@ -125,8 +127,17 @@ private struct ProfileEditSheet: View {
             }
 
             LabeledField("Identity") {
-                TextField("~/.ssh/id_ed25519 (optional)", text: $sshIdentityText)
-                    .textFieldStyle(.roundedBorder)
+                HStack(spacing: 6) {
+                    TextField("~/.ssh/id_ed25519 (optional)", text: $sshIdentityText)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Browse…") { chooseSSHIdentityFile() }
+                    if !sshIdentityText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Button("Clear") {
+                            sshIdentityText = ""
+                            sshIdentityBookmark = nil
+                        }
+                    }
+                }
             }
 
             // Test Connection
@@ -184,9 +195,16 @@ private struct ProfileEditSheet: View {
                         return
                     }
                     var p = profile
+                    let trimmedIdentity = sshIdentityText.trimmingCharacters(in: .whitespacesAndNewlines)
                     p.sshTarget = sshTargetText.trimmingCharacters(in: .whitespacesAndNewlines)
                     p.sshPort = Int(sshPortText)
-                    p.sshIdentity = sshIdentityText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : sshIdentityText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    p.sshIdentity = trimmedIdentity.isEmpty ? nil : trimmedIdentity
+                    let identityChanged = trimmedIdentity != (profile.sshIdentity ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if identityChanged, sshIdentityBookmark == profile.sshIdentityBookmark {
+                        p.sshIdentityBookmark = nil
+                    } else {
+                        p.sshIdentityBookmark = sshIdentityBookmark
+                    }
                     validationMessage = nil
                     onSave(p)
                 }
@@ -201,6 +219,7 @@ private struct ProfileEditSheet: View {
             sshTargetText = profile.sshTarget ?? ""
             sshPortText = profile.sshPort.map { String($0) } ?? ""
             sshIdentityText = profile.sshIdentity ?? ""
+            sshIdentityBookmark = profile.sshIdentityBookmark
         }
         .onChange(of: sshTargetText) { _ in testState = .idle }
         .onChange(of: sshPortText) { _ in testState = .idle }
@@ -236,7 +255,8 @@ private struct ProfileEditSheet: View {
             port: profile.port,
             sshTarget: sshTargetText.isEmpty ? nil : sshTargetText,
             sshPort: Int(sshPortText),
-            sshIdentity: sshIdentityText.isEmpty ? nil : sshIdentityText
+            sshIdentity: sshIdentityText.isEmpty ? nil : sshIdentityText,
+            sshIdentityBookmark: sshIdentityBookmark
         )
         Task {
             let mgr = SSHTunnelManager(profile: testProfile)
@@ -249,6 +269,42 @@ private struct ProfileEditSheet: View {
                 await mgr.stop()
                 await MainActor.run { testState = .failed(error.localizedDescription) }
             }
+        }
+    }
+
+    private func chooseSSHIdentityFile() {
+        let panel = NSOpenPanel()
+        panel.message = "Select SSH private key"
+        panel.prompt = "Select"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.showsHiddenFiles = true
+        panel.directoryURL = URL(fileURLWithPath: (NSHomeDirectory() as NSString).appendingPathComponent(".ssh"))
+
+        if panel.runModal() == .OK, let url = panel.url {
+            captureBookmark(from: url, targetPath: &sshIdentityText, targetBookmark: &sshIdentityBookmark)
+            testState = .idle
+        }
+    }
+
+    private func captureBookmark(from url: URL, targetPath: inout String, targetBookmark: inout Data?) {
+        let started = url.startAccessingSecurityScopedResource()
+        defer {
+            if started { url.stopAccessingSecurityScopedResource() }
+        }
+        do {
+            let bookmark = try url.bookmarkData(
+                options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            targetPath = url.path
+            targetBookmark = bookmark
+            validationMessage = nil
+        } catch {
+            validationMessage = "Failed to store file permission: \(error.localizedDescription)"
         }
     }
 }

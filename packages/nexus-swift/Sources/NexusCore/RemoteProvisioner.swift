@@ -30,6 +30,7 @@ public actor RemoteProvisioner {
 
     private let profile: DaemonProfile
     private let logger = Logger(subsystem: "com.nexus.NexusApp", category: "RemoteProvisioner")
+    private var sshScopedPaths: SSHSecurityScopedPaths = .empty
 
     /// Minimum daemon version we require on the remote.
     static let minimumVersion = "0.0.1"
@@ -49,6 +50,11 @@ public actor RemoteProvisioner {
         }
         guard let binaryURL = bundledLinuxBinary() else {
             throw ProvisionError.bundledBinaryMissing
+        }
+        sshScopedPaths = SSHSecurityScope.resolve(profile: profile, category: "provision")
+        defer {
+            SSHSecurityScope.stop(sshScopedPaths)
+            sshScopedPaths = .empty
         }
 
         await progress?(.checkingHost)
@@ -421,16 +427,24 @@ public actor RemoteProvisioner {
         let sshPort = profile.sshPort ?? 22
         var args = [
             "-p", "\(sshPort)",
-            "-F", "/dev/null",
             "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "GlobalKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=10",
         ]
-        if let identity = profile.sshIdentity, !identity.isEmpty {
+        let configPath = sshScopedPaths.configPath ?? existingSSHConfigPath()
+        if let configPath {
+            args.insert(contentsOf: ["-F", configPath], at: 0)
+        }
+        let identityPath = sshScopedPaths.identityPath ?? profile.sshIdentity
+        if let identity = identityPath, !identity.isEmpty {
             args += ["-i", identity]
         }
+        AppLifecycleLog.info(
+            "provision",
+            "ssh args target=\(sshTarget) config=\(configPath ?? "<default>") identity=\(identityPath?.isEmpty == false ? "set" : "unset")"
+        )
         return args
     }
 
@@ -452,6 +466,15 @@ public actor RemoteProvisioner {
         }
         let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         return out
+    }
+
+    private func existingSSHConfigPath() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "\(home)/.config/nexus/ssh/nexus.ssh.config",
+            "\(home)/.ssh/config",
+        ]
+        return candidates.first(where: { FileManager.default.fileExists(atPath: $0) })
     }
 }
 

@@ -15,6 +15,7 @@ public actor SSHTunnelManager {
     private var _localPort: Int?
     private var restartTask: Task<Void, Never>?
     private var stderrPipe: Pipe?
+    private var activeScopedPaths: SSHSecurityScopedPaths = .empty
     private let logger = Logger(subsystem: "com.nexus.NexusApp", category: "SSHTunnel")
 
     public init(profile: DaemonProfile) {
@@ -34,13 +35,15 @@ public actor SSHTunnelManager {
             do {
                 let port = try allocateLocalPort()
                 _localPort = port
-                let configPath = existingSSHConfigPath()
+                let resolvedPaths = resolveScopedPaths()
+                let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
+                let identityPath = resolvedPaths.identityPath
                 let configModes: [String?] = configPath == nil ? [nil] : [configPath, nil]
                 var connected = false
 
                 for mode in configModes {
                     do {
-                        try launchSSH(localPort: port, configPath: mode)
+                        try launchSSH(localPort: port, configPath: mode, identityPath: identityPath)
                         try await waitForHealthz(localPort: port)
                         _state = .connected
                         AppLifecycleLog.info("ssh-tunnel", "start success localPort=\(port)")
@@ -92,14 +95,20 @@ public actor SSHTunnelManager {
         }
 
         let remoteBin = "/home/newman/.local/bin/nexus"
-        let token = try runSSH(sshTarget: sshTarget, command: [remoteBin, "daemon", "token"])
+        let resolvedPaths = resolveScopedPaths()
+        let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
+        let token = try runSSH(
+            sshTarget: sshTarget,
+            command: [remoteBin, "daemon", "token"],
+            configPath: configPath,
+            identityPath: resolvedPaths.identityPath
+        )
         if token.isEmpty { throw TunnelError.tokenFetchFailed }
         return token
     }
 
-    private func runSSH(sshTarget: String, command: [String]) throws -> String {
+    private func runSSH(sshTarget: String, command: [String], configPath: String?, identityPath: String?) throws -> String {
         let sshPort = profile.sshPort ?? 22
-        let configPath = existingSSHConfigPath()
         var args = [
             "-p", "\(sshPort)",
             "-o", "BatchMode=yes",
@@ -110,13 +119,13 @@ public actor SSHTunnelManager {
         if let configPath {
             args.insert(contentsOf: ["-F", configPath], at: 0)
         }
-        if let identity = profile.sshIdentity, !identity.isEmpty {
+        if let identity = identityPath, !identity.isEmpty {
             args += ["-i", identity]
         }
         args += [sshTarget] + command
         AppLifecycleLog.info(
             "ssh-tunnel",
-            "token-fetch target=\(sshTarget) port=\(sshPort) config=\(configPath ?? "<default>") identity=\(profile.sshIdentity?.isEmpty == false ? "set" : "unset")"
+            "token-fetch target=\(sshTarget) port=\(sshPort) config=\(configPath ?? "<default>") identity=\(identityPath?.isEmpty == false ? "set" : "unset")"
         )
 
         let proc = Process()
@@ -148,6 +157,8 @@ public actor SSHTunnelManager {
         process?.terminate()
         process = nil
         stderrPipe = nil
+        SSHSecurityScope.stop(activeScopedPaths)
+        activeScopedPaths = .empty
         _state = .idle
     }
 
@@ -194,7 +205,7 @@ public actor SSHTunnelManager {
         return Int(addr.sin_port.bigEndian)
     }
 
-    private func launchSSH(localPort: Int, configPath: String?) throws {
+    private func launchSSH(localPort: Int, configPath: String?, identityPath: String?) throws {
         guard let sshTarget = profile.sshTarget, !sshTarget.isEmpty else {
             throw TunnelError.noTarget
         }
@@ -214,13 +225,13 @@ public actor SSHTunnelManager {
         if let configPath {
             args.insert(contentsOf: ["-F", configPath], at: 0)
         }
-        if let identity = profile.sshIdentity, !identity.isEmpty {
+        if let identity = identityPath, !identity.isEmpty {
             args += ["-i", identity]
         }
         args.append(sshTarget)
         AppLifecycleLog.info(
             "ssh-tunnel",
-            "launch target=\(sshTarget) sshPort=\(sshPort) localPort=\(localPort) remotePort=\(remotePort) config=\(configPath ?? "<default>") identity=\(profile.sshIdentity?.isEmpty == false ? "set" : "unset")"
+            "launch target=\(sshTarget) sshPort=\(sshPort) localPort=\(localPort) remotePort=\(remotePort) config=\(configPath ?? "<default>") identity=\(identityPath?.isEmpty == false ? "set" : "unset")"
         )
 
         let proc = Process()
@@ -317,8 +328,17 @@ public actor SSHTunnelManager {
         process?.terminate()
         process = nil
         stderrPipe = nil
-        try launchSSH(localPort: localPort, configPath: existingSSHConfigPath())
+        let resolvedPaths = resolveScopedPaths()
+        let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
+        try launchSSH(localPort: localPort, configPath: configPath, identityPath: resolvedPaths.identityPath)
         _state = .connected
+    }
+
+    private func resolveScopedPaths() -> SSHSecurityScopedPaths {
+        SSHSecurityScope.stop(activeScopedPaths)
+        let resolved = SSHSecurityScope.resolve(profile: profile, category: "ssh-tunnel")
+        activeScopedPaths = resolved
+        return resolved
     }
 
     private func existingSSHConfigPath() -> String? {
