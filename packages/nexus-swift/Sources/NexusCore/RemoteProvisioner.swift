@@ -56,6 +56,10 @@ public actor RemoteProvisioner {
             SSHSecurityScope.stop(sshScopedPaths)
             sshScopedPaths = .empty
         }
+        let identityPath = sshScopedPaths.identityPath ?? profile.sshIdentity
+        guard let identityPath, !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ProvisionError.sshIdentityRequired
+        }
 
         await progress?(.checkingHost)
 
@@ -482,6 +486,7 @@ public actor RemoteProvisioner {
 
 public enum ProvisionError: Error, LocalizedError, Sendable {
     case noSSHTarget
+    case sshIdentityRequired
     case bundledBinaryMissing
     case uploadFailed(message: String)
     case daemonStartFailed(message: String)
@@ -492,6 +497,8 @@ public enum ProvisionError: Error, LocalizedError, Sendable {
         switch self {
         case .noSSHTarget:
             return "No SSH target configured."
+        case .sshIdentityRequired:
+            return "SSH identity key is required for sandboxed app connection."
         case .bundledBinaryMissing:
             return "Nexus Linux binary not found in app bundle. Please reinstall the app."
         case .uploadFailed(let msg):

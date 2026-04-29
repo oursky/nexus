@@ -38,6 +38,9 @@ public actor SSHTunnelManager {
                 let resolvedPaths = resolveScopedPaths()
                 let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
                 let identityPath = resolvedPaths.identityPath
+                guard let identityPath, !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw TunnelError.identityRequired
+                }
                 let configModes: [String?] = configPath == nil ? [nil] : [configPath, nil]
                 var connected = false
 
@@ -97,11 +100,15 @@ public actor SSHTunnelManager {
         let remoteBin = "/home/newman/.local/bin/nexus"
         let resolvedPaths = resolveScopedPaths()
         let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
+        guard let identityPath = resolvedPaths.identityPath,
+              !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw TunnelError.identityRequired
+        }
         let token = try runSSH(
             sshTarget: sshTarget,
             command: [remoteBin, "daemon", "token"],
             configPath: configPath,
-            identityPath: resolvedPaths.identityPath
+            identityPath: identityPath
         )
         if token.isEmpty { throw TunnelError.tokenFetchFailed }
         return token
@@ -359,6 +366,7 @@ public actor SSHTunnelManager {
 public enum TunnelError: Error, LocalizedError {
     case portAllocation(operation: String, errnoCode: Int32?)
     case noTarget
+    case identityRequired
     case processDied
     case timeout
     case tokenFetchFailed
@@ -375,6 +383,7 @@ public enum TunnelError: Error, LocalizedError {
             }
             return "Failed to allocate local port"
         case .noTarget: return "No SSH target configured"
+        case .identityRequired: return "SSH identity key is required for sandboxed app connection"
         case .processDied: return "SSH process exited unexpectedly"
         case .timeout: return "Tunnel did not become ready within 15 seconds"
         case .tokenFetchFailed: return "Could not fetch daemon token from remote host"
