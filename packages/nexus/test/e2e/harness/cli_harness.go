@@ -149,13 +149,22 @@ func NewCLIHarness(t *testing.T) *CLIHarness {
 		_ = client.Close()
 	})
 
-	return &CLIHarness{
+	cli := &CLIHarness{
 		Harness:    h,
 		wsURL:      wsURL,
 		token:      token,
 		binPath:    binPath,
 		daemonPort: port,
 	}
+	// Eagerly create the remote-profile config home using the parent test's
+	// t.TempDir() so it survives subtest cleanup. Without this, lazy creation
+	// inside a t.Run subtest ties the directory to that subtest's lifecycle;
+	// when the subtest finishes Go deletes the temp dir and subsequent subtests
+	// fail with "no daemon profile configured".
+	if E2EUseRemoteProfile() {
+		_ = cli.ConfigHomeForCLI(t)
+	}
+	return cli
 }
 
 // Run executes the nexus CLI with args, with cwd dir and env wired for this harness.
