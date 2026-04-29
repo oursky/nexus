@@ -96,7 +96,11 @@ jobs:
           source ../../scripts/ci/e2e-ssh-bootstrap.sh
           # Run only VM-related e2e tests for fast feedback.
           # -p 1 -parallel 1 prevents concurrent VM boots which exhaust host resources.
-          go test -tags e2e -count=1 -timeout=30m -v -p 1 -parallel 1 ./test/e2e/vmproof/...
+          #
+          # Run as root via sudo because passt's latest static build requires
+          # CAP_SYS_ADMIN to create isolating namespaces for self-sandboxing.
+          # In containerized CI the unprivileged runner user lacks this capability.
+          sudo -E env "PATH=$PATH" "HOME=$HOME" go test -tags e2e -count=1 -timeout=30m -v -p 1 -parallel 1 ./test/e2e/vmproof/...
         env:
           CI: true
           NEXUS_LIBKRUN_SKIP_BAKE: "1"
@@ -106,6 +110,10 @@ jobs:
           NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
           NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
           NEXUS_LIBKRUN_MEM_MIB: "256"
+
+      - name: Clean up root-owned test temp dirs
+        if: always()
+        run: sudo rm -rf /data/nexus/libkrun-vms-e2e/nexus-e2e-workdir-* /tmp/nexus-e2e-*
 
       - name: Upload test results on failure
         if: failure()
