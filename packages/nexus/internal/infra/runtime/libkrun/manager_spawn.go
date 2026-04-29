@@ -337,13 +337,17 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	// Reap passt in the background to prevent zombie accumulation when it exits.
 	if passtProc != nil {
-		go func(wsID string, p *os.Process) {
+		go func(wsID string, p *os.Process, wd string) {
 			if _, err := p.Wait(); err != nil {
 				log.Printf("[libkrun] workspace %s: passt exited: %v", wsID, err)
 			} else {
 				log.Printf("[libkrun] workspace %s: passt exited", wsID)
 			}
-		}(spec.WorkspaceID, passtProc)
+			// Dump passt log on unexpected exit to aid diagnostics.
+			if logData, err := os.ReadFile(filepath.Join(wd, "passt.log")); err == nil && len(logData) > 0 {
+				log.Printf("[libkrun] workspace %s: passt log:\n%s", wsID, string(logData))
+			}
+		}(spec.WorkspaceID, passtProc, workDir)
 	}
 
 	// Reap the VM/passt processes in the background so unexpected exits are
