@@ -1,0 +1,5 @@
+breakpoint set --name swift_willThrow
+breakpoint set --name _assertionFailure
+breakpoint set --name _fatalErrorMessage
+breakpoint set --name swift_unexpectedError
+breakpoint set --name objc_exception_throw

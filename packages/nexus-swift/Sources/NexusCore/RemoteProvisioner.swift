@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import os
+import Darwin
 
 /// Provisions the Nexus daemon on a remote Linux host before the tunnel connects.
 ///
@@ -29,6 +30,7 @@ public actor RemoteProvisioner {
 
     private let profile: DaemonProfile
     private let logger = Logger(subsystem: "com.nexus.NexusApp", category: "RemoteProvisioner")
+    private var sshScopedPaths: SSHSecurityScopedPaths = .empty
 
     /// Minimum daemon version we require on the remote.
     static let minimumVersion = "0.0.1"
@@ -48,6 +50,15 @@ public actor RemoteProvisioner {
         }
         guard let binaryURL = bundledLinuxBinary() else {
             throw ProvisionError.bundledBinaryMissing
+        }
+        sshScopedPaths = SSHSecurityScope.resolve(profile: profile, category: "provision")
+        defer {
+            SSHSecurityScope.stop(sshScopedPaths)
+            sshScopedPaths = .empty
+        }
+        let identityPath = sshScopedPaths.identityPath ?? profile.sshIdentity
+        guard let identityPath, !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ProvisionError.sshIdentityRequired
         }
 
         await progress?(.checkingHost)
@@ -175,14 +186,22 @@ public actor RemoteProvisioner {
 
         let fileHandle = try FileHandle(forReadingFrom: binaryURL)
         defer { try? fileHandle.close() }
+        let inputFD = inputPipe.fileHandleForWriting.fileDescriptor
 
         let chunkSize = 65536
         var bytesWritten: Int64 = 0
+        var pipeWriteFailed = false
 
         while true {
             let chunk = fileHandle.readData(ofLength: chunkSize)
             if chunk.isEmpty { break }
-            inputPipe.fileHandleForWriting.write(chunk)
+            do {
+                try Self.writeAll(chunk, to: inputFD)
+            } catch {
+                pipeWriteFailed = true
+                logger.error("provision: upload pipe write failed: \(error.localizedDescription, privacy: .public)")
+                break
+            }
             bytesWritten += Int64(chunk.count)
             if totalBytes > 0 {
                 let pct = Double(bytesWritten) / Double(totalBytes)
@@ -195,14 +214,34 @@ public actor RemoteProvisioner {
         let out = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        guard proc.terminationStatus == 0, out.contains("installed") else {
+        guard !pipeWriteFailed, proc.terminationStatus == 0, out.contains("installed") else {
             let errOut = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
             logger.error("provision: upload failed status=\(proc.terminationStatus, privacy: .public) stderr=\(errOut, privacy: .public)")
-            throw ProvisionError.uploadFailed(message: errOut.isEmpty ? "exit \(proc.terminationStatus)" : errOut)
+            let fallback = pipeWriteFailed ? "upload stream closed by remote (broken pipe)" : "exit \(proc.terminationStatus)"
+            throw ProvisionError.uploadFailed(message: errOut.isEmpty ? fallback : errOut)
         }
 
         logger.info("provision: upload complete (\(bytesWritten, privacy: .public) bytes)")
         await progress?(.uploadingBinary(progress: 1.0))
+    }
+
+    private static func writeAll(_ data: Data, to fd: Int32) throws {
+        try data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            var sent = 0
+            while sent < rawBuffer.count {
+                let ptr = base.advanced(by: sent)
+                let written = Darwin.write(fd, ptr, rawBuffer.count - sent)
+                if written > 0 {
+                    sent += written
+                    continue
+                }
+                if written == 0 { break }
+                let code = errno
+                if code == EINTR { continue }
+                throw ProvisionError.uploadFailed(message: "upload write failed errno=\(code)")
+            }
+        }
     }
 
     private func stopDaemonIfRunning(sshTarget: String) async throws {
@@ -392,16 +431,24 @@ public actor RemoteProvisioner {
         let sshPort = profile.sshPort ?? 22
         var args = [
             "-p", "\(sshPort)",
-            "-F", "/dev/null",
             "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "GlobalKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=10",
         ]
-        if let identity = profile.sshIdentity, !identity.isEmpty {
+        let configPath = sshScopedPaths.configPath ?? existingSSHConfigPath()
+        if let configPath {
+            args.insert(contentsOf: ["-F", configPath], at: 0)
+        }
+        let identityPath = sshScopedPaths.identityPath ?? profile.sshIdentity
+        if let identity = identityPath, !identity.isEmpty {
             args += ["-i", identity]
         }
+        AppLifecycleLog.info(
+            "provision",
+            "ssh args target=\(sshTarget) config=\(configPath ?? "<default>") identity=\(identityPath?.isEmpty == false ? "set" : "unset")"
+        )
         return args
     }
 
@@ -424,12 +471,22 @@ public actor RemoteProvisioner {
         let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         return out
     }
+
+    private func existingSSHConfigPath() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "\(home)/.config/nexus/ssh/nexus.ssh.config",
+            "\(home)/.ssh/config",
+        ]
+        return candidates.first(where: { FileManager.default.fileExists(atPath: $0) })
+    }
 }
 
 // MARK: - Errors
 
 public enum ProvisionError: Error, LocalizedError, Sendable {
     case noSSHTarget
+    case sshIdentityRequired
     case bundledBinaryMissing
     case uploadFailed(message: String)
     case daemonStartFailed(message: String)
@@ -440,6 +497,8 @@ public enum ProvisionError: Error, LocalizedError, Sendable {
         switch self {
         case .noSSHTarget:
             return "No SSH target configured."
+        case .sshIdentityRequired:
+            return "SSH identity key is required for sandboxed app connection."
         case .bundledBinaryMissing:
             return "Nexus Linux binary not found in app bundle. Please reinstall the app."
         case .uploadFailed(let msg):

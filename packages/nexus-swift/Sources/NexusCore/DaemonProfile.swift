@@ -19,6 +19,9 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
     public var sshTarget: String?
     public var sshPort: Int?
     public var sshIdentity: String?
+    public var sshConfigPath: String?
+    public var sshConfigBookmark: Data?
+    public var sshIdentityBookmark: Data?
 
     public init(
         profileId: String = UUID().uuidString,
@@ -28,7 +31,10 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         lastKnownStatus: ProfileStatus = .unknown,
         sshTarget: String? = nil,
         sshPort: Int? = nil,
-        sshIdentity: String? = nil
+        sshIdentity: String? = nil,
+        sshConfigPath: String? = nil,
+        sshConfigBookmark: Data? = nil,
+        sshIdentityBookmark: Data? = nil
     ) {
         self.profileId = profileId
         self.name = name
@@ -38,10 +44,14 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         self.sshTarget = sshTarget
         self.sshPort = sshPort
         self.sshIdentity = sshIdentity
+        self.sshConfigPath = sshConfigPath
+        self.sshConfigBookmark = sshConfigBookmark
+        self.sshIdentityBookmark = sshIdentityBookmark
     }
 
     private enum CodingKeys: String, CodingKey {
         case profileId, name, port, isDefault, lastKnownStatus, sshTarget, sshPort, sshIdentity
+        case sshConfigPath, sshConfigBookmark, sshIdentityBookmark
     }
 
     public init(from decoder: Decoder) throws {
@@ -64,6 +74,10 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         }
         let identity = (try container.decodeIfPresent(String.self, forKey: .sshIdentity) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         sshIdentity = identity.isEmpty ? nil : identity
+        let cfgPath = (try container.decodeIfPresent(String.self, forKey: .sshConfigPath) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        sshConfigPath = cfgPath.isEmpty ? nil : cfgPath
+        sshConfigBookmark = try container.decodeIfPresent(Data.self, forKey: .sshConfigBookmark)
+        sshIdentityBookmark = try container.decodeIfPresent(Data.self, forKey: .sshIdentityBookmark)
     }
 
     private static func clampPort(_ value: Int, fallback: Int) -> Int {
