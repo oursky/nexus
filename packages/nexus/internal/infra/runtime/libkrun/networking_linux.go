@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -56,6 +57,18 @@ func createPasstSocketPair() (vmSide *os.File, hostSide *os.File, err error) {
 	return os.NewFile(uintptr(fds[0]), "passt-vm"), os.NewFile(uintptr(fds[1]), "passt-host"), nil
 }
 
+// unshareUserNSAvailable caches whether "unshare -U true" works on this host.
+// In containerized CI runners, unprivileged users lack CAP_SYS_ADMIN needed for
+// passt's self-sandboxing. Running passt inside a user namespace gives it the
+// capability to create isolating namespaces.
+var unshareUserNSAvailable = sync.OnceValue(func() bool {
+	if _, err := exec.LookPath("unshare"); err != nil {
+		return false
+	}
+	cmd := exec.Command("unshare", "-U", "true")
+	return cmd.Run() == nil
+})
+
 func startPasstProcess(ctx context.Context, workDir string, hostSide *os.File, sshHostPort int, guestIPv4 string) (*os.Process, error) {
 	logPath := filepath.Join(workDir, "passt.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
@@ -79,7 +92,18 @@ func startPasstProcess(ctx context.Context, workDir string, hostSide *os.File, s
 	if sshHostPort > 0 {
 		args = append(args, "-t", fmt.Sprintf("127.0.0.1/%d:22", sshHostPort))
 	}
-	cmd := exec.CommandContext(ctx, passtBin, args...)
+
+	// In unprivileged containers, passt can't self-sandbox because it lacks
+	// CAP_SYS_ADMIN for namespace operations. Wrap it in a user namespace so
+	// it gains the capability while still operating on the host network stack.
+	cmdBin := passtBin
+	cmdArgs := args
+	if unshareUserNSAvailable() {
+		cmdArgs = append([]string{"-U", "--", passtBin}, args...)
+		cmdBin = "unshare"
+	}
+
+	cmd := exec.CommandContext(ctx, cmdBin, cmdArgs...)
 	cmd.ExtraFiles = []*os.File{hostSide}
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
