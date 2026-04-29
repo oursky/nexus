@@ -330,7 +330,7 @@ Source spec directory: `../../docs/spec`
 | VM-PROOF-003 | waived | - | Requires deterministic daemon restart harness coverage for VM workspaces; tracked in child PRD 06 TD follow-up. |
 | VM-PROOF-004 | covered | `TestCLI_WorkspaceForkAndRestore` (test/e2e/cli/fork_restore_test.go:14) |  |
 | VM-PROOF-005 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:42) |  |
-| VM-PROOF-006 | covered | `TestVMProof_GuestCLITools` (test/e2e/vmproof/tools_test.go:55) |  |
+| VM-PROOF-006 | covered | `TestVMProof_GuestCLITools` (test/e2e/vmproof/tools_test.go:59) |  |
 | WS-001 | waived | - | Conceptual clause: workspace definition. |
 | WS-002 | waived | - | Conceptual clause: workspace ID uniqueness. |
 | WS-003 | waived | - | Conceptual clause: workspace ID non-reuse. |

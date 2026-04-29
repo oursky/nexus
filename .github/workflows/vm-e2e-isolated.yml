@@ -1,0 +1,118 @@
+name: VM E2E Isolated
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'packages/nexus/internal/infra/runtime/libkrun/**'
+      - 'packages/nexus/cmd/nexus-guest-agent/**'
+      - 'packages/nexus/test/e2e/vmproof/**'
+      - 'scripts/ci/build-nexus-libkrun.sh'
+      - 'scripts/ci/install-host-prereqs.sh'
+      - 'scripts/ci/provision-libkrun-host.sh'
+      - 'scripts/ci/verify-vm-assets.sh'
+      - 'scripts/ci/hydrate-libkrun-cache.sh'
+      - 'scripts/ci/refresh-libkrun-cache.sh'
+      - 'scripts/ci/enable-kvm.sh'
+      - 'scripts/ci/setup-xfs-reflink.sh'
+      - 'scripts/ci/prepare-libkrun-cache-env.sh'
+      - 'scripts/ci/probe-runner-network.sh'
+      - 'scripts/ci/prewarm-default-profile.sh'
+      - 'scripts/ci/e2e-ssh-bootstrap.sh'
+      - '.github/workflows/vm-e2e-isolated.yml'
+
+jobs:
+  vm-e2e:
+    name: VM E2E Tests Only
+    runs-on: [self-hosted, linux, x64, v1]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+
+      - name: Install Task
+        run: go install github.com/go-task/task/v3/cmd/task@v3.42.0
+
+      - name: Enable KVM access
+        run: scripts/ci/enable-kvm.sh
+
+      - name: Install host prerequisites
+        run: scripts/ci/install-host-prereqs.sh
+
+      - name: Set up XFS reflink volume for libkrun workspaces
+        run: scripts/ci/setup-xfs-reflink.sh
+
+      - name: Prepare libkrun bake cache paths
+        run: scripts/ci/prepare-libkrun-cache-env.sh
+
+      - name: Restore pre-baked libkrun VM assets
+        id: libkrun-baked-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LIBKRUN_BAKED_CACHE_DIR }}
+          key: libkrun-baked-v3-${{ runner.os }}-${{ hashFiles('Nexusfile', 'schemas/nexusfile.schema.json', 'packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/cmd/nexus-guest-agent/main.go', 'packages/nexus/cmd/nexus/nexus-libkrun-vm', 'packages/nexus/cmd/nexus/rootless_bootstrap_linux.go') }}
+          restore-keys: |
+            libkrun-baked-v3-${{ runner.os }}-
+
+      - name: Hydrate cached VM assets to host paths
+        run: scripts/ci/hydrate-libkrun-cache.sh
+
+      - name: Verify pre-baked VM assets (cache hint)
+        run: scripts/ci/verify-vm-assets.sh hint
+
+      - name: Build embedded guest-agent binary
+        run: scripts/ci/build-nexus-libkrun.sh
+
+      - name: Provision libkrun host (kernel + rootfs)
+        run: scripts/ci/provision-libkrun-host.sh
+
+      - name: Verify VM assets after provisioning
+        run: scripts/ci/verify-vm-assets.sh required
+
+      - name: Probe runner VM network forwarding
+        id: runner-network-probe
+        continue-on-error: true
+        run: scripts/ci/probe-runner-network.sh
+
+      - name: Prewarm default-profile baked rootfs (best effort, bounded)
+        if: steps.runner-network-probe.outcome == 'success'
+        continue-on-error: true
+        run: scripts/ci/prewarm-default-profile.sh
+
+      - name: Refresh baked VM cache contents
+        if: always()
+        run: scripts/ci/refresh-libkrun-cache.sh
+
+      - name: Run VM e2e tests only
+        working-directory: packages/nexus
+        run: |
+          set -euo pipefail
+          source ../../scripts/ci/e2e-ssh-bootstrap.sh
+          # Run only VM-related e2e tests for fast feedback.
+          # -p 1 -parallel 1 prevents concurrent VM boots which exhaust host resources.
+          go test -tags e2e -count=1 -timeout=30m -v -p 1 -parallel 1 ./test/e2e/vmproof/...
+        env:
+          CI: true
+          NEXUS_LIBKRUN_SKIP_BAKE: "1"
+          NEXUS_LIBKRUN_BAKE_TIMEOUT: "120s"
+          NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "1"
+          NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
+          NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
+          NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
+          NEXUS_LIBKRUN_MEM_MIB: "256"
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-e2e-test-results
+          path: |
+            **/test-results/
+            **/coverage/
+          retention-days: 7
