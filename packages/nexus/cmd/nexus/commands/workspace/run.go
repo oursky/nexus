@@ -125,6 +125,27 @@ func runExecEventLoop(ctx context.Context, conn *rpc.MuxConn, session ptySession
 				continue
 			}
 			if p.SessionID == session.ID {
+				// Drain any pending pty.data notifications that arrived before
+				// pty.exit but haven't been processed yet.
+				drained := false
+				for !drained {
+					select {
+					case raw, ok := <-dataCh:
+						if !ok {
+							drained = true
+							break
+						}
+						var dp ptyDataParams
+						if err := json.Unmarshal(raw, &dp); err != nil {
+							continue
+						}
+						if dp.SessionID == session.ID {
+							_, _ = os.Stdout.WriteString(dp.Data)
+						}
+					default:
+						drained = true
+					}
+				}
 				if p.ExitCode != 0 {
 					os.Exit(p.ExitCode)
 				}

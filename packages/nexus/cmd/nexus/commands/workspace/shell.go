@@ -121,7 +121,7 @@ func runInteractiveShell(ctx context.Context, conn *rpc.MuxConn, wsID, workDir s
 				return nil
 			}
 		case raw, ok := <-exitCh:
-			if done := handleShellExit(raw, ok, session.ID, stdinFd, &oldState); done {
+			if done := handleShellExit(raw, ok, session.ID, stdinFd, &oldState, dataCh); done {
 				return nil
 			}
 		case <-ctx.Done():
@@ -161,7 +161,7 @@ func handleShellData(raw json.RawMessage, ok bool, sessionID string) bool {
 	return false
 }
 
-func handleShellExit(raw json.RawMessage, ok bool, sessionID string, stdinFd int, oldState **term.State) bool {
+func handleShellExit(raw json.RawMessage, ok bool, sessionID string, stdinFd int, oldState **term.State, dataCh <-chan json.RawMessage) bool {
 	if !ok {
 		return true
 	}
@@ -175,6 +175,27 @@ func handleShellExit(raw json.RawMessage, ok bool, sessionID string, stdinFd int
 	if *oldState != nil {
 		_ = term.Restore(stdinFd, *oldState)
 		*oldState = nil
+	}
+	// Drain any pending pty.data notifications that arrived before
+	// pty.exit but haven't been processed yet.
+	drained := false
+	for !drained {
+		select {
+		case raw, ok := <-dataCh:
+			if !ok {
+				drained = true
+				break
+			}
+			var dp ptyDataParams
+			if err := json.Unmarshal(raw, &dp); err != nil {
+				continue
+			}
+			if dp.SessionID == sessionID {
+				_, _ = os.Stdout.WriteString(dp.Data)
+			}
+		default:
+			drained = true
+		}
 	}
 	if p.ExitCode != 0 {
 		os.Exit(p.ExitCode)
@@ -224,6 +245,29 @@ func runShellScript(conn *rpc.MuxConn, ctx context.Context, wsID, workDir string
 				continue
 			}
 			if p.SessionID == session.ID {
+				// Drain any pending pty.data notifications that arrived before
+				// pty.exit but haven't been processed yet.
+				drained := false
+				for !drained {
+					select {
+					case raw, ok := <-dataCh:
+						if !ok {
+							drained = true
+							break
+						}
+						var dp ptyDataParams
+						if err := json.Unmarshal(raw, &dp); err != nil {
+							continue
+						}
+						if dp.SessionID == session.ID {
+							if _, err := os.Stdout.WriteString(dp.Data); err != nil {
+								return err
+							}
+						}
+					default:
+						drained = true
+					}
+				}
 				if p.ExitCode != 0 {
 					os.Exit(p.ExitCode)
 				}
