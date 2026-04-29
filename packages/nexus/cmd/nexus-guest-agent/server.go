@@ -265,6 +265,58 @@ func listenVsock() (net.Listener, error) {
 	return listener, nil
 }
 
+// startGitHookForwarder listens on /tmp/nexus-git-hook.sock (the path the
+// post-checkout git hook writes to via nc -U) and forwards each JSON payload
+// to the host daemon via vsock CID 2, port 10791.
+//
+// The flow is:
+//
+//	git hook → nc -U /tmp/nexus-git-hook.sock
+//	           → this forwarder → vsock host:10791
+//	           → host Unix socket (listen=false libkrun mapping)
+//	           → daemon git hook proxy → wsStore.Update(ref)
+func startGitHookForwarder() {
+	const (
+		sockPath = "/tmp/nexus-git-hook.sock"
+		hostCID  = uint32(2) // VMADDR_CID_HOST
+		hookPort = uint32(10791)
+	)
+
+	_ = os.Remove(sockPath)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		emitDiagnostic("git-hook forwarder: listen %s: %v", sockPath, err)
+		return
+	}
+	if err := os.Chmod(sockPath, 0o666); err != nil {
+		emitDiagnostic("git-hook forwarder: chmod: %v", err)
+	}
+	emitDiagnostic("git-hook forwarder: listening on %s → vsock host port %d", sockPath, hookPort)
+
+	go func() {
+		defer ln.Close()
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				host, err := vsock.Dial(hostCID, hookPort, nil)
+				if err != nil {
+					emitDiagnostic("git-hook forwarder: vsock dial host:%d: %v", hookPort, err)
+					return
+				}
+				defer host.Close()
+				// One-way: guest → host (the hook payload is write-only).
+				if _, err := io.Copy(host, c); err != nil {
+					emitDiagnostic("git-hook forwarder: copy: %v", err)
+				}
+			}(client)
+		}
+	}()
+}
+
 // startSSHAgentProxy creates /tmp/ssh-agent.sock and forwards each connection
 // to the host SSH agent via vsock CID 2 (the hypervisor/host), port 10790.
 // This lets git and ssh inside the VM use the host's SSH agent without any

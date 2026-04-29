@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -45,7 +46,7 @@ func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*works
 
 	now := time.Now().UTC()
 	id := fmt.Sprintf("ws-%d", now.UnixNano())
-	ref := normalizeRef(spec.Ref)
+	ref := normalizeRef(spec.Ref, spec.Repo)
 
 	authBinding := spec.AuthBinding
 	if authBinding == nil {
@@ -158,8 +159,21 @@ func (s *Service) resolveProjectIDForCreate(ctx context.Context, spec workspace.
 	return newProject.ID, nil
 }
 
-func normalizeRef(ref string) string {
-	return strings.TrimSpace(ref)
+func normalizeRef(ref, repoPath string) string {
+	ref = strings.TrimSpace(ref)
+	if ref != "" {
+		return ref
+	}
+	// Auto-detect the current branch from the repo on disk.
+	if repoPath = strings.TrimSpace(repoPath); repoPath != "" {
+		out, err := exec.Command("git", "-C", repoPath, "symbolic-ref", "--short", "HEAD").Output()
+		if err == nil {
+			if branch := strings.TrimSpace(string(out)); branch != "" {
+				return branch
+			}
+		}
+	}
+	return "main"
 }
 
 func deriveRepoID(repo string) string {

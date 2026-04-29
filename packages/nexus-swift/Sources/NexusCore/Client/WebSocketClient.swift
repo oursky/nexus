@@ -310,10 +310,17 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
 
     private let notifLock = NSLock()
     private var daemonLogHandler: (@Sendable ([String: Any]) -> Void)?
+    private var workspaceRefHandler: (@Sendable (String, String) -> Void)?
 
     /// Register a handler for `daemon.log` push messages.
     public func setDaemonLogHandler(_ handler: (@Sendable ([String: Any]) -> Void)?) {
         notifLock.withLock { daemonLogHandler = handler }
+    }
+
+    /// Register a handler for `workspace.ref` push messages.
+    /// The handler receives (workspaceID, ref).
+    public func setWorkspaceRefHandler(_ handler: (@Sendable (String, String) -> Void)?) {
+        notifLock.withLock { workspaceRefHandler = handler }
     }
 
     private func handleNotification(method: String, params: [String: Any]) {
@@ -335,6 +342,11 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         case "daemon.log":
             let h = notifLock.withLock { daemonLogHandler }
             h?(params)
+        case "workspace.ref":
+            guard let wsID = params["workspaceID"] as? String,
+                  let ref  = params["ref"]         as? String else { return }
+            let h = notifLock.withLock { workspaceRefHandler }
+            h?(wsID, ref)
         default:
             break
         }

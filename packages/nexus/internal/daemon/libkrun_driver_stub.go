@@ -9,10 +9,11 @@ import (
 
 	domainruntime "github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/store"
+	"github.com/oursky/nexus/packages/nexus/internal/transport"
 )
 
 // buildLibkrunDriver is a no-op stub on non-Linux platforms.
-func buildLibkrunDriver(_ Config) (libkrunDriverBundle, error) {
+func buildLibkrunDriver(_ Config, _ *store.WorkspaceStore, _ *transport.Hub) (libkrunDriverBundle, error) {
 	return libkrunDriverBundle{}, fmt.Errorf(
 		"libkrun driver not available on this platform",
 	)

@@ -165,6 +165,11 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 			Path:   filepath.Join(workDir, fmt.Sprintf("vsock_%d.sock", DefaultSpotlightVSockPort)),
 			Listen: true, // libkrun creates socket; host dials for spotlight
 		},
+		{
+			Port:   GitHookVSockPort,
+			Path:   gitHookSockPath(workDir),
+			Listen: false, // host listens; guest dials to report branch changes
+		},
 	}
 
 	kernelCmdline := "console=hvc0 root=/dev/vda rw rootfstype=ext4 init=/usr/local/bin/nexus-guest-agent"

@@ -16,6 +16,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/infra/config"
 	lkruntime "github.com/oursky/nexus/packages/nexus/internal/infra/runtime/libkrun"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/store"
+	"github.com/oursky/nexus/packages/nexus/internal/transport"
 )
 
 // LibkrunShareBinDir returns the directory where the nexus-libkrun-vm helper
@@ -80,7 +81,7 @@ func validateReflinkSupport(dir string) error {
 	return nil
 }
 
-func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
+func buildLibkrunDriver(cfg Config, wsStore *store.WorkspaceStore, hub *transport.Hub) (libkrunDriverBundle, error) {
 	nexusBin, _ := os.Executable()
 
 	// VM state (overlays, docker-data images, snapshots) lives under the data dir.
@@ -133,9 +134,29 @@ func buildLibkrunDriver(cfg Config) (libkrunDriverBundle, error) {
 		WorkDirRoot:     workDirRoot,
 		EmbeddedAgentFn: cfg.EmbeddedAgentFn,
 	}
-	driver := lkruntime.NewDriver(lkCfg)
+	driver := lkruntime.NewDriver(lkCfg, lkruntime.WithGitHookCallback(func(workspaceID, ref string) {
+		ctx := context.Background()
+		ws, err := wsStore.Get(ctx, workspaceID)
+		if err != nil {
+			log.Printf("daemon: git hook: workspace %s not found: %v", workspaceID, err)
+			return
+		}
+		ws.Ref = ref
+		if err := wsStore.Update(ctx, ws); err != nil {
+			log.Printf("daemon: git hook: update ref for workspace %s: %v", workspaceID, err)
+			return
+		}
+		log.Printf("daemon: git hook: workspace %s ref updated to %s", workspaceID, ref)
+		if hub != nil {
+			hub.Broadcast("workspace.ref", map[string]string{
+				"workspaceID": workspaceID,
+				"ref":         ref,
+			})
+		}
+	}))
 	adapter := lkruntime.NewAdapter(driver)
 	return libkrunDriverBundle{
+
 		rtDriver: adapter,
 		agent:    adapter,
 		vm:       driver,

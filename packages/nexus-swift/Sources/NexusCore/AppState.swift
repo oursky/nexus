@@ -766,6 +766,26 @@ public final class AppState: ObservableObject {
                 self.daemonLogStream = stream
                 stream.start()
                 Self.logger.info("DaemonLogStream started")
+
+                // Push handler: daemon broadcasts workspace.ref when a git checkout
+                // occurs inside a VM. Patch the matching workspace in-place so the
+                // sidebar and breadcrumb update immediately without a full reload.
+                wsClient.setWorkspaceRefHandler { [weak self] workspaceID, ref in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.repos = self.repos.map { repo in
+                            var r = repo
+                            r.workspaces = r.workspaces.map { ws in
+                                guard ws.id == workspaceID else { return ws }
+                                var updated = ws
+                                updated.ref = ref
+                                return updated
+                            }
+                            return r
+                        }
+                        Self.logger.debug("workspace.ref push: id=\(workspaceID) ref=\(ref)")
+                    }
+                }
             }
             self.updateProfileStatus(profileId: profile.profileId, status: .connected)
         } catch {
@@ -900,7 +920,7 @@ public final class AppState: ObservableObject {
                 )
             }
             workspaceOps[ws.id] = .starting(detail: "Preparing VM…")
-            startWorkspaceCreateMonitor(workspaceID: ws.id, workspaceName: ws.workspaceName)
+            pollUntilStarted(workspaceID: ws.id, workspaceName: ws.workspaceName)
             await load()
             selectedWorkspaceID = ws.id
             AppLifecycleLog.info("workspace", "createSandbox success workspaceID=\(ws.id) projectID=\(project.id)")
@@ -1074,11 +1094,17 @@ public final class AppState: ObservableObject {
     public func remove(_ workspace: Workspace) async {
         if selectedWorkspaceID == workspace.id { selectedWorkspaceID = nil }
         await perform(workspaceID: workspace.id, opState: .removing) {
+            // Daemon refuses to remove a running workspace; stop it first.
+            if workspace.status.isActive {
+                try await self.client.stopWorkspace(id: workspace.id)
+            }
             try await self.client.removeWorkspace(id: workspace.id)
         }
     }
 
     /// Removes a daemon project record and refreshes lists.
+    /// The daemon cascades: stops and removes all associated workspaces (and their VMs)
+    /// before deleting the project record.
     public func removeProject(id: String) async {
         let wsIds = Set(repos.first(where: { $0.id == id })?.workspaces.map(\.id) ?? [])
         if let sel = selectedWorkspaceID, wsIds.contains(sel) {
@@ -1088,6 +1114,7 @@ public final class AppState: ObservableObject {
     }
 
     /// Removes multiple daemon project records by id.
+    /// The daemon cascades workspace cleanup for each project.
     public func removeProjects(ids: [String]) async {
         let targetIDs = Set(ids.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
         guard !targetIDs.isEmpty else {
@@ -1097,9 +1124,8 @@ public final class AppState: ObservableObject {
 
         let wsIds = Set(
             repos
-                .flatMap(\.workspaces)
-                .filter { targetIDs.contains(($0.projectId ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) }
-                .map(\.id)
+                .filter { targetIDs.contains($0.id) }
+                .flatMap { $0.workspaces.map(\.id) }
         )
         if let sel = selectedWorkspaceID, wsIds.contains(sel) {
             selectedWorkspaceID = nil
@@ -1191,7 +1217,13 @@ public final class AppState: ObservableObject {
         }
     }
 
-    private func startWorkspaceCreateMonitor(workspaceID: String, workspaceName: String) {
+    /// Poll `listWorkspaces` until the workspace leaves the `starting` state (running,
+    /// stopped, created, or gone), then clear `workspaceOps` and `workspaceCreateProgress`.
+    ///
+    /// This replaces the old log-scraping monitor.  The daemon documents that callers
+    /// should poll workspace state rather than rely on log content, so we do exactly that.
+    /// The 15-minute ceiling matches the existing `start()` polling ceiling.
+    private func pollUntilStarted(workspaceID: String, workspaceName: String) {
         workspaceCreateMonitorTasks[workspaceID]?.cancel()
         let daemonClient = client
         let startedAt = Date()
@@ -1200,169 +1232,70 @@ public final class AppState: ObservableObject {
             guard let self else { return }
             defer {
                 Task { @MainActor [weak self] in
-                    self?.workspaceCreateMonitorTasks.removeValue(forKey: workspaceID)
+                    guard let self else { return }
+                    self.workspaceCreateMonitorTasks.removeValue(forKey: workspaceID)
+                    // Always clear the op and progress so the sidebar never stays stuck.
+                    self.workspaceOps.removeValue(forKey: workspaceID)
+                    self.workspaceCreateProgress = nil
                 }
             }
 
-            var lastProgress: WorkspaceCreateProgress?
-            for _ in 0..<180 {
+            let deadline = Date().addingTimeInterval(15 * 60)
+            while Date() < deadline {
                 if Task.isCancelled { return }
 
                 do {
-                    let tail = try await daemonClient.daemonLogTail(lines: 500)
-                    let progress = Self.parseWorkspaceCreateProgress(
+                    let workspaces = try await daemonClient.listWorkspaces()
+                    let ws = workspaces.first(where: { $0.id == workspaceID })
+                    let wsState = ws?.state
+                    let elapsed = Date().timeIntervalSince(startedAt)
+
+                    let phaseLabel: String
+                    let done: Bool
+                    switch wsState {
+                    case .running, .restored:
+                        phaseLabel = "Ready"
+                        done = true
+                    case .starting:
+                        phaseLabel = "Starting"
+                        done = false
+                    case .stopped, .created, .none:
+                        // Workspace rolled back or was deleted — treat as done so UI clears.
+                        phaseLabel = "Stopped"
+                        done = true
+                    default:
+                        phaseLabel = wsState?.rawValue.capitalized ?? "Starting"
+                        done = false
+                    }
+
+                    let progress = WorkspaceCreateProgress(
                         workspaceID: workspaceID,
                         workspaceName: workspaceName,
-                        lines: tail.lines,
-                        startedAt: startedAt
-                    )
-                    let workspaces = try await daemonClient.listWorkspaces()
-                    let wsState = workspaces.first(where: { $0.id == workspaceID })?.state
-                    let done = progress.isComplete || wsState == .running || wsState == .restored
-                    let normalized = WorkspaceCreateProgress(
-                        workspaceID: progress.workspaceID,
-                        workspaceName: progress.workspaceName,
-                        elapsedSeconds: progress.elapsedSeconds,
-                        currentPhaseLabel: done ? "Ready" : progress.currentPhaseLabel,
-                        phaseTimings: progress.phaseTimings,
-                        notes: progress.notes,
+                        elapsedSeconds: max(0, elapsed),
+                        currentPhaseLabel: phaseLabel,
+                        phaseTimings: [],
+                        notes: [],
                         isComplete: done
                     )
 
-                    if normalized != lastProgress {
-                        await MainActor.run { [weak self] in
-                            guard let self else { return }
-                            self.workspaceCreateProgress = normalized
-                            if normalized.isComplete {
-                                self.workspaceOps.removeValue(forKey: workspaceID)
-                            } else {
-                                self.workspaceOps[workspaceID] = .starting(detail: normalized.sidebarLabel)
-                            }
+                    await MainActor.run { [weak self] in
+                        guard let self else { return }
+                        self.workspaceCreateProgress = progress
+                        if done {
+                            self.workspaceOps.removeValue(forKey: workspaceID)
+                        } else {
+                            self.workspaceOps[workspaceID] = .starting(detail: "\(phaseLabel) (\(String(format: "%.0f", elapsed))s)")
                         }
-                        lastProgress = normalized
                     }
+
                     if done { return }
                 } catch {
-                    // Keep polling; transient daemon/tunnel errors are expected during startup.
+                    // Transient tunnel/daemon errors are expected during startup — keep polling.
                 }
 
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
-        }
-    }
-
-    private nonisolated static func parseWorkspaceCreateProgress(
-        workspaceID: String,
-        workspaceName: String,
-        lines: [String],
-        startedAt: Date
-    ) -> WorkspaceCreateProgress {
-        var currentPhase = "Queued"
-        var timings: [String: Double] = [:]
-        var notes: [String] = []
-        var sawReflink = false
-        var sawReflinkFallback = false
-        var sawMkfsBaseImage = false
-        var sawVolumeMount = false
-        var sawComplete = false
-
-        for line in lines where line.contains(workspaceID) {
-            if let p = value(after: "phase=", in: line) {
-                currentPhase = phaseLabel(from: p)
-            }
-            if let p = value(after: "phase_done=", in: line) {
-                currentPhase = phaseLabel(from: p)
-            }
-            if line.contains("reflink clone enabled") {
-                sawReflink = true
-            }
-            if line.contains("reflink unavailable, using sparse copy fallback") {
-                sawReflinkFallback = true
-            }
-            if line.contains("base image strategy=mkfs.ext4 -d") ||
-                line.contains("workspace mount strategy=block ext4 image clone") {
-                sawMkfsBaseImage = true
-            }
-            if line.contains("workspace mount strategy=host-volume") {
-                sawVolumeMount = true
-            }
-            if let p = value(after: "phase_done=", in: line), let d = durationSeconds(in: line) {
-                timings[p] = d
-            }
-            if line.contains("runStartAsync: workspace \(workspaceID) is ready") || line.contains("runStartAsync: done workspace=\(workspaceID)") {
-                sawComplete = true
-            }
-        }
-
-        if sawReflink {
-            notes.append("CoW clone: enabled")
-        } else if sawReflinkFallback {
-            notes.append("CoW clone: unavailable on current FS (sparse copy fallback)")
-        }
-        if sawMkfsBaseImage {
-            notes.append("Base image: mkfs.ext4 copy (no host volume mount)")
-        } else if sawVolumeMount {
-            notes.append("Workspace mount: host volume")
-        }
-
-        let phaseOrder = [
-            "ensure_base_image", "create_docker_data", "clone_rootfs",
-            "clone_workspace", "start_passt", "start_vm",
-        ]
-        let phaseTimings = phaseOrder.compactMap { key -> WorkspaceCreatePhaseTiming? in
-            guard let seconds = timings[key] else { return nil }
-            return WorkspaceCreatePhaseTiming(id: key, label: phaseLabel(from: key), durationSeconds: seconds)
-        }.sorted { $0.durationSeconds > $1.durationSeconds }
-
-        let elapsed = Date().timeIntervalSince(startedAt)
-        return WorkspaceCreateProgress(
-            workspaceID: workspaceID,
-            workspaceName: workspaceName,
-            elapsedSeconds: max(0, elapsed),
-            currentPhaseLabel: currentPhase,
-            phaseTimings: phaseTimings,
-            notes: notes,
-            isComplete: sawComplete
-        )
-    }
-
-    private nonisolated static func value(after key: String, in line: String) -> String? {
-        guard let range = line.range(of: key) else { return nil }
-        let tail = line[range.upperBound...]
-        let token = tail.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first
-        guard let token else { return nil }
-        return String(token).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private nonisolated static func durationSeconds(in line: String) -> Double? {
-        guard let open = line.lastIndex(of: "("),
-              let close = line.lastIndex(of: ")"),
-              open < close else { return nil }
-        let raw = line[line.index(after: open)..<close]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        if raw.hasSuffix("ms"), let value = Double(raw.dropLast(2)) {
-            return value / 1000.0
-        }
-        if raw.hasSuffix("s"), let value = Double(raw.dropLast(1)) {
-            return value
-        }
-        return nil
-    }
-
-    private nonisolated static func phaseLabel(from phase: String) -> String {
-        switch phase {
-        case "ensure_base_image": return "Building Base Image"
-        case "create_docker_data": return "Creating Docker Data Image"
-        case "clone_rootfs": return "Cloning RootFS"
-        case "clone_workspace": return "Cloning Workspace Image"
-        case "start_passt": return "Starting Network"
-        case "start_vm": return "Booting VM"
-        case "inject_agent": return "Injecting Agent"
-        case "restore_rootfs": return "Restoring RootFS Snapshot"
-        case "restore_workspace": return "Restoring Workspace Snapshot"
-        case "restore_docker_data": return "Restoring Docker Snapshot"
-        default: return phase.replacingOccurrences(of: "_", with: " ").capitalized
+            // Ceiling reached — defer will clear workspaceOps and progress.
         }
     }
 

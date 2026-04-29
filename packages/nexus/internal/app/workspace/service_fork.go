@@ -28,7 +28,7 @@ func (s *Service) Fork(ctx context.Context, parentID string, spec ForkSpec) (*wo
 		return nil, fmt.Errorf("cannot fork removed workspace: %s", parentID)
 	}
 
-	childRef := normalizeRef(spec.ChildRef)
+	childRef := normalizeRef(spec.ChildRef, "")
 	if childRef == "" {
 		return nil, fmt.Errorf("childRef is required")
 	}
@@ -101,7 +101,7 @@ func (s *Service) Checkout(ctx context.Context, id string, spec CheckoutSpec) (*
 		return nil, fmt.Errorf("cannot checkout removed workspace: %s", id)
 	}
 
-	targetRef := normalizeRef(spec.TargetRef)
+	targetRef := normalizeRef(spec.TargetRef, "")
 	if targetRef == "" {
 		return nil, fmt.Errorf("targetRef is required")
 	}

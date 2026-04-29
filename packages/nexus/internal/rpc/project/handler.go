@@ -15,10 +15,19 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/rpc/registry"
 )
 
+// WorkspaceService is the subset of the workspace application service that the
+// project handler needs for cascade-delete.  Using an interface keeps this
+// package free of a concrete import cycle with appworkspace.
+type WorkspaceService interface {
+	Stop(ctx context.Context, id string) (*workspace.Workspace, error)
+	Remove(ctx context.Context, id string) error
+}
+
 // Handler exposes project.* RPC methods.
 type Handler struct {
 	repo   project.Repository
 	wsRepo workspace.Repository
+	wsSvc  WorkspaceService
 }
 
 // Option configures project RPC handler wiring.
@@ -28,6 +37,13 @@ type Option func(*Handler)
 func WithWorkspaceRepo(wsRepo workspace.Repository) Option {
 	return func(h *Handler) {
 		h.wsRepo = wsRepo
+	}
+}
+
+// WithWorkspaceService enables cascade-delete of workspaces when a project is removed.
+func WithWorkspaceService(svc WorkspaceService) Option {
+	return func(h *Handler) {
+		h.wsSvc = svc
 	}
 }
 
@@ -126,10 +142,14 @@ func (h *Handler) create(ctx context.Context, raw json.RawMessage) (any, error) 
 		return nil, rpce.InvalidParams("project.invalid_params", "repoUrl is required")
 	}
 
-	// Enforce uniqueness by name.
+	// Enforce uniqueness by name — but treat same-name+same-repo as idempotent.
 	if existing, err := h.findProjectByName(ctx, name); err != nil {
 		return nil, mapErr(err)
 	} else if existing != nil {
+		if project.NormalizeRepoURL(existing.RepoURL) == repoURL {
+			// Idempotent: caller is recreating the same project.
+			return &createRes{Project: existing}, nil
+		}
 		return nil, rpce.InvalidParams("project.duplicate_name", fmt.Sprintf("project name %q already exists", name))
 	}
 
@@ -183,6 +203,31 @@ func (h *Handler) remove(ctx context.Context, raw json.RawMessage) (any, error) 
 	if req.ID == "" {
 		return nil, rpce.InvalidParams("project.invalid_params", "id is required")
 	}
+
+	// Cascade: stop and destroy all workspaces belonging to this project before
+	// removing the project record.  The daemon owns all resource knowledge so
+	// this must happen here, not in the client.
+	if h.wsRepo != nil && h.wsSvc != nil {
+		all, err := h.wsRepo.List(ctx)
+		if err != nil {
+			return nil, rpce.Internal("project.internal", fmt.Sprintf("list workspaces: %v", err))
+		}
+		for _, ws := range all {
+			if ws == nil || ws.ProjectID != req.ID {
+				continue
+			}
+			// Stop first if running (Remove refuses running workspaces).
+			if ws.State == workspace.StateRunning || ws.State == workspace.StateRestored {
+				if _, err := h.wsSvc.Stop(ctx, ws.ID); err != nil {
+					return nil, rpce.Internal("project.internal", fmt.Sprintf("stop workspace %s: %v", ws.ID, err))
+				}
+			}
+			if err := h.wsSvc.Remove(ctx, ws.ID); err != nil {
+				return nil, rpce.Internal("project.internal", fmt.Sprintf("remove workspace %s: %v", ws.ID, err))
+			}
+		}
+	}
+
 	if err := h.repo.Delete(ctx, req.ID); err != nil {
 		return nil, mapErr(err)
 	}

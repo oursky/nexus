@@ -117,10 +117,15 @@ func New(cfg Config) (*Daemon, error) {
 	registry.Register(sandboxDriver)
 	log.Printf("daemon: sandbox (process) runtime driver registered")
 
+	// Create broadcast hub for server-initiated WebSocket notifications (e.g. workspace.ref).
+	// The hub is created before the libkrun driver so the driver's git hook callback can
+	// broadcast to all connected clients.
+	broadcastHub := transport.NewHub()
+
 	// Attempt to register libkrun driver on all platforms (stub on non-Linux).
 	var lkBundle libkrunDriverBundle
 	var lkErr error
-	lkBundle, lkErr = buildLibkrunDriver(cfg)
+	lkBundle, lkErr = buildLibkrunDriver(cfg, wsStore, broadcastHub)
 	if lkErr == nil {
 		if err := lkBundle.CleanupStaleInstances(context.Background()); err != nil {
 			log.Printf("daemon: libkrun stale cleanup warning: %v", err)
@@ -192,7 +197,7 @@ func New(cfg Config) (*Daemon, error) {
 	rpcfs.New("/").Register(reg)
 	daemonLogPath := filepath.Join(filepath.Dir(cfg.SocketPath), "daemon.log")
 	rpcdaemon.New(newNodeInfo(cfg, registry), rpcdaemon.WithLogPath(daemonLogPath)).Register(reg)
-	rpcproject.New(projStore, rpcproject.WithWorkspaceRepo(wsStore)).Register(reg)
+	rpcproject.New(projStore, rpcproject.WithWorkspaceRepo(wsStore), rpcproject.WithWorkspaceService(wsSvc)).Register(reg)
 	rpcauth.New(wsStore, broker).Register(reg)
 
 	lst := transport.NewListener(cfg.SocketPath, reg)
@@ -212,7 +217,7 @@ func New(cfg Config) (*Daemon, error) {
 			Token:       cfg.Network.Token,
 			TLSCertFile: cfg.Network.TLSCertFile,
 			TLSKeyFile:  cfg.Network.TLSKeyFile,
-		}, reg)
+		}, reg, broadcastHub)
 		if err != nil {
 			db.Close()
 			return nil, fmt.Errorf("network listener: %w", err)

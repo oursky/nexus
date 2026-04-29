@@ -5,7 +5,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -140,8 +142,25 @@ func setupVirtiofsWorkspace() error {
 		}
 	}
 
+	// Pre-seed .git into the overlay upper layer.
+	// overlayfs triggers copy-up when any file in the lower layer is first
+	// modified.  Copy-up calls FS_IOC_GETFLAGS on the lower file to preserve
+	// filesystem flags, but virtiofs does not implement this ioctl (EOPNOTSUPP /
+	// errno -95).  The kernel logs "overlayfs: failed to retrieve lower fileattr"
+	// and all git write operations fail with EPERM/ENOTSUP.
+	// userxattr alone does not suppress the fileattr copy-up path.
+	// The fix: eagerly copy .git from virtiofs lower → ext4 upper before
+	// mounting overlayfs, so the directory is already in the upper layer and
+	// copy-up is never attempted for it.
+	if err := preseedUpperDir(lowerDir, upperDir, ".git"); err != nil {
+		emitDiagnostic("agent preseed .git warning: %v", err)
+		// Non-fatal: workspace mounts regardless; git ops may still fail.
+	}
+
 	// Mount overlayfs: lower=virtiofs, upper=overlay ext4, merged → /workspace.
-	overlayOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lowerDir, upperDir, workDir)
+	// userxattr: avoids FS_IOC_GETFLAGS ioctls on the lower layer which virtiofs
+	// does not support (EOPNOTSUPP), preventing copy-up failures for .git dirs.
+	overlayOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s,userxattr", lowerDir, upperDir, workDir)
 	if err := workspaceMountFunc("overlay", workspaceMountPoint, "overlay", 0, overlayOpts); err != nil {
 		if !errors.Is(err, unix.EBUSY) {
 			return fmt.Errorf("mount overlayfs → %s: %w", workspaceMountPoint, err)
@@ -366,4 +385,85 @@ func mountCgroupFilesystems() {
 			continue
 		}
 	}
+}
+
+// preseedUpperDir copies srcName (e.g. ".git") from srcRoot into dstRoot so
+// that overlayfs sees it already in the upper layer and never needs to perform
+// a copy-up from the virtiofs lower layer.  Copy-up invokes FS_IOC_GETFLAGS
+// which virtiofs does not implement (EOPNOTSUPP), making all git write
+// operations fail.  Preseeding prevents that inode path entirely.
+//
+// If dstRoot/srcName already exists the function is a no-op (idempotent across
+// VM restarts — the ext4 upper layer persists between boots).
+func preseedUpperDir(srcRoot, dstRoot, srcName string) error {
+	src := filepath.Join(srcRoot, srcName)
+	dst := filepath.Join(dstRoot, srcName)
+
+	if _, err := os.Lstat(src); err != nil {
+		if os.IsNotExist(err) {
+			return nil // nothing to seed
+		}
+		return fmt.Errorf("stat %s: %w", src, err)
+	}
+	if _, err := os.Lstat(dst); err == nil {
+		return nil // already seeded
+	}
+
+	return copyDirRecursive(src, dst)
+}
+
+// copyDirRecursive copies the directory tree rooted at src to dst.
+// Symbolic links are reproduced as symlinks; regular files are byte-copied.
+// File modes are preserved on a best-effort basis.
+func copyDirRecursive(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+
+		// Use Lstat so symlinks are not followed.
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+
+		// Symlink
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		}
+
+		// Directory
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+
+		// Regular file
+		return copyFile(path, target, info.Mode())
+	})
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }

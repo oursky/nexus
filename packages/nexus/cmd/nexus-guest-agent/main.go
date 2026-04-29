@@ -61,6 +61,7 @@ func main() {
 	}
 
 	startSSHAgentProxy()
+	startGitHookForwarder()
 
 	// Toolchain setup: in baked mode verify tools, otherwise run full install.
 	if isBakedMode() {

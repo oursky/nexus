@@ -57,6 +57,7 @@ type NetworkListener struct {
 	tokens     TokenStore
 	dispatcher Dispatcher
 	server     *http.Server
+	hub        *Hub
 }
 
 var wsUpgrader = websocket.Upgrader{
@@ -64,14 +65,19 @@ var wsUpgrader = websocket.Upgrader{
 }
 
 // NewNetworkListener creates a NetworkListener. Returns an error if token is empty.
-func NewNetworkListener(cfg NetworkListenerConfig, dispatcher Dispatcher) (*NetworkListener, error) {
+// hub may be nil; when non-nil it is used to broadcast notifications to all connected clients.
+func NewNetworkListener(cfg NetworkListenerConfig, dispatcher Dispatcher, hub *Hub) (*NetworkListener, error) {
 	if cfg.Token == "" {
 		return nil, fmt.Errorf("network listener: token must not be empty")
+	}
+	if hub == nil {
+		hub = NewHub()
 	}
 	nl := &NetworkListener{
 		cfg:        cfg,
 		tokens:     NewStaticTokenStore(cfg.Token),
 		dispatcher: dispatcher,
+		hub:        hub,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", nl.handleHealthz)
@@ -229,9 +235,16 @@ func (nl *NetworkListener) checkBearer(header string) bool {
 	return nl.tokens.Valid(header[len(prefix):])
 }
 
+// Hub returns the broadcast hub for this listener. Callers may use it to push
+// server-initiated notifications to all connected WebSocket clients.
+func (nl *NetworkListener) Hub() *Hub { return nl.hub }
+
 func (nl *NetworkListener) serveWSConn(ctx context.Context, conn *websocket.Conn) {
 	var writeMu sync.Mutex
-	ctx = WithNotifier(ctx, wsConnNotifier{conn: conn, writeMu: &writeMu})
+	notifier := wsConnNotifier{conn: conn, writeMu: &writeMu}
+	hubID := nl.hub.Add(notifier)
+	defer nl.hub.Remove(hubID)
+	ctx = WithNotifier(ctx, notifier)
 
 	for {
 		msgType, raw, err := conn.ReadMessage()

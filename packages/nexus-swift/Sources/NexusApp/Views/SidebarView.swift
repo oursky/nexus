@@ -299,8 +299,9 @@ private struct WorkspaceRow: View {
                     .font(.system(size: 13))
                     .foregroundColor(Theme.label)
                     .lineLimit(1)
-                if !liveRef.isEmpty {
-                    Text(liveRef)
+                let displayRef = liveRef.isEmpty ? workspace.branch : liveRef
+                if !displayRef.isEmpty {
+                    Text(displayRef)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(Theme.labelTertiary)
                         .lineLimit(1)
@@ -352,13 +353,18 @@ private struct WorkspaceRow: View {
     }
 
     private func refreshRefLoop() async {
+        let wsID = workspace.id
         while !Task.isCancelled {
-            let next = await Task.detached(priority: .utility) { () -> String in
-                guard let rec = LocalWorkspaceState.record(forWorkspaceID: workspace.id) else { return "" }
+            let localRef = await Task.detached(priority: .utility) { () -> String in
+                guard let rec = LocalWorkspaceState.record(forWorkspaceID: wsID) else { return "" }
                 return (try? GitLogReader.currentRef(repoDirectory: rec.localPath)) ?? ""
             }.value
             if Task.isCancelled { return }
-            await MainActor.run { liveRef = next }
+            // For VM workspaces (no local checkout) the daemon pushes workspace.ref
+            // notifications over WebSocket; AppState patches repos in-place so we
+            // just read the current value directly — no full reload needed.
+            let daemonRef = appState.repos.flatMap(\.workspaces).first(where: { $0.id == wsID })?.branch ?? workspace.branch
+            await MainActor.run { liveRef = localRef.isEmpty ? daemonRef : localRef }
             try? await Task.sleep(nanoseconds: 8_000_000_000)
         }
     }

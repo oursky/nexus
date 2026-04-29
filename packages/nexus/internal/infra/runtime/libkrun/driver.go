@@ -22,11 +22,12 @@ import (
 // Driver implements the libkrun runtime driver.
 // It mirrors the historical VM driver layout (workspace-scoped state paths).
 type Driver struct {
-	manager      *Manager
-	projectRoots map[string]string
-	snapshotIDs  map[string]string
-	readyTools   map[string]bool
-	mu           sync.RWMutex
+	manager         *Manager
+	projectRoots    map[string]string
+	snapshotIDs     map[string]string
+	readyTools      map[string]bool
+	gitHookCallback GitHookCallback
+	mu              sync.RWMutex
 }
 
 // NewDriver creates a new libkrun Driver.
@@ -46,6 +47,14 @@ func NewDriver(cfg ManagerConfig, opts ...DriverOption) *Driver {
 
 // DriverOption is a functional option for Driver.
 type DriverOption func(*Driver)
+
+// WithGitHookCallback registers a callback that is invoked whenever a workspace
+// reports a branch change via the git post-checkout hook.
+func WithGitHookCallback(cb GitHookCallback) DriverOption {
+	return func(d *Driver) {
+		d.gitHookCallback = cb
+	}
+}
 
 // Backend returns the driver backend identifier.
 func (d *Driver) Backend() string { return "libkrun" }
@@ -182,6 +191,11 @@ func (d *Driver) Create(_ context.Context, workspaceID, projectRoot string, opti
 		}
 	}
 	d.mu.Unlock()
+
+	// Install the post-checkout git hook so the guest agent can notify the
+	// daemon whenever the user switches branches inside the workspace.
+	installGitHook(projectRoot, workspaceID)
+
 	log.Printf("[libkrun] registered workspace %s (lazy start)", workspaceID)
 	return nil
 }
@@ -244,6 +258,15 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 	d.mu.Lock()
 	delete(d.readyTools, workspaceID)
 	d.mu.Unlock()
+
+	// Start the git hook proxy for this workspace before the VM boots, so the
+	// socket exists when the guest agent comes up and tries to connect.
+	if d.gitHookCallback != nil {
+		workDir := filepath.Join(d.manager.cfg.WorkDirRoot, workspaceID)
+		if err := os.MkdirAll(workDir, 0o755); err == nil {
+			startGitHookProxy(gitHookSockPath(workDir), d.gitHookCallback)
+		}
+	}
 
 	if _, err := d.manager.Spawn(ctx, spec); err != nil {
 		return err

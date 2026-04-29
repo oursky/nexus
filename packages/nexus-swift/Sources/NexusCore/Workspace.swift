@@ -131,7 +131,7 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let workspaceName: String
     public let repo: String
-    public let ref: String
+    public var ref: String
     public let targetBranch: String?
     public let currentRef: String?
     public let currentCommit: String?
@@ -479,11 +479,11 @@ public struct Repo: Identifiable, Sendable {
 
     public static func fromProjects(_ projects: [Project], workspaces: [Workspace]) -> [Repo] {
         guard !projects.isEmpty else { return [] }
-        // Only include projects that have at least one workspace — stale project
-        // records (e.g. after workspace deletion) would otherwise show empty groups.
-        return projects.compactMap { project in
+        // Include all projects, even those with no workspaces. An empty project
+        // remains visible in the sidebar so the user can add sandboxes to it
+        // without losing access to the project entry after deleting the last one.
+        return projects.map { project in
             let wsInProject = workspaces.filter { $0.projectId == project.id }
-            guard !wsInProject.isEmpty else { return nil }
             return Repo(
                 id: project.id,
                 name: project.name,
