@@ -134,6 +134,13 @@ jobs:
         env:
           NEXUS_PASST_PATH: /tmp/passt-patched
 
+      - name: Print prewarm daemon log
+        if: always()
+        run: |
+          echo "=== prewarm daemon log ==="
+          cat /tmp/nexus-prewarm-daemon.log 2>/dev/null || echo "(no prewarm log found)"
+          echo "=========================="
+
       - name: Refresh baked VM cache contents
         if: always()
         run: scripts/ci/refresh-libkrun-cache.sh
@@ -164,6 +171,16 @@ jobs:
           NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
           NEXUS_LIBKRUN_MEM_MIB: "256"
           NEXUS_PASST_PATH: /tmp/passt-patched
+
+      - name: Dump VM serial logs on failure
+        if: failure()
+        run: |
+          echo "=== VM serial logs ==="
+          for log in $(sudo find /data/nexus/libkrun-vms-e2e -name 'libkrun.log' 2>/dev/null | head -20); do
+            echo "--- $log ---"
+            sudo cat "$log" 2>/dev/null | tail -100 || true
+          done
+          echo "======================"
 
       - name: Clean up root-owned test temp dirs
         if: always()

@@ -17,12 +17,9 @@ fi
 if sudo test -f /root/.local/state/nexus/rootfs-agent.sha256; then
   sudo cp /root/.local/state/nexus/rootfs-agent.sha256 "$CACHE_DIR/rootfs-agent.sha256"
 fi
-if sudo test -f /root/.local/state/nexus/rootfs-baked-v7; then
-  sudo cp /root/.local/state/nexus/rootfs-baked-v7 "$CACHE_DIR/rootfs-baked-v7"
-elif sudo test -f /root/.local/state/nexus/rootfs-baked-v6; then
-  sudo cp /root/.local/state/nexus/rootfs-baked-v6 "$CACHE_DIR/rootfs-baked-v7"
-elif sudo test -f /root/.local/state/nexus/rootfs-baked-v5; then
-  sudo cp /root/.local/state/nexus/rootfs-baked-v5 "$CACHE_DIR/rootfs-baked-v7"
-elif sudo test -f /root/.local/state/nexus/rootfs-baked-v4; then
-  sudo cp /root/.local/state/nexus/rootfs-baked-v4 "$CACHE_DIR/rootfs-baked-v7"
-fi
+# Copy any baked stamp files to cache (handles current and legacy versions).
+for stamp in /root/.local/state/nexus/rootfs-baked-v*; do
+  if sudo test -f "$stamp"; then
+    sudo cp "$stamp" "$CACHE_DIR/$(basename "$stamp")"
+  fi
+done
