@@ -35,6 +35,9 @@ func pickFreePort() (int, error) {
 }
 
 func resolvePasstPath() string {
+	if envPath := os.Getenv("NEXUS_PASST_PATH"); envPath != "" {
+		return envPath
+	}
 	home, _ := os.UserHomeDir()
 	if home != "" {
 		p := filepath.Join(home, ".local", "bin", "passt")
