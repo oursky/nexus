@@ -111,7 +111,7 @@ func runStreamed(ctx context.Context, env []string, prefix, name string, args ..
 // re-running on every workspace start — packages only install once per rootfs.
 func ensureGuestBasePackages() error {
 	start := time.Now()
-	const stampFile = "/var/lib/nexus-tools-base-v14"
+	const stampFile = "/var/lib/nexus-tools-base-v15"
 	if _, err := os.Stat(stampFile); err == nil {
 		emitDiagnostic("agent base packages: already installed (stamp found)")
 		return nil
@@ -332,6 +332,36 @@ func ensureMiseNodeAvailable(misePath string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("node@20 unavailable: %w: %s", err, strings.TrimSpace(string(out)))
 	}
+	if err := ensureMiseNodeGlobalDefault(misePath); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureMiseNodeGlobalDefault sets node@20 as the mise global default if it
+// hasn't been configured yet. This is idempotent and safe to call on every boot.
+// It ensures the `node` shim resolves correctly for non-interactive shells and
+// workspace exec commands.
+func ensureMiseNodeGlobalDefault(misePath string) error {
+	// Check if a global config already exists.
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home == "" {
+		home = "/root"
+	}
+	configPath := filepath.Join(home, ".config", "mise", "config.toml")
+	if _, err := os.Stat(configPath); err == nil {
+		// Config exists — assume global default is already set.
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, misePath, "use", "-g", "node@20")
+	cmd.Env = ensurePathInEnv(os.Environ())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("set global node@20: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	emitDiagnostic("agent cli tools: set node@20 as mise global default")
 	return nil
 }
 
@@ -339,6 +369,11 @@ func installNpxWrapper(binary, npmPackage, misePath string) error {
 	content := fmt.Sprintf("#!/usr/bin/env sh\nexec %s x node@20 -- npx -y %s \"$@\"\n", misePath, npmPackage)
 	target := filepath.Join("/usr/local/bin", binary)
 	if err := os.WriteFile(target, []byte(content), 0o755); err != nil {
+		return err
+	}
+	// workspace exec shells may not include /usr/local/bin in PATH; mirror into /usr/bin.
+	mirror := filepath.Join("/usr/bin", binary)
+	if err := os.WriteFile(mirror, []byte(content), 0o755); err != nil {
 		return err
 	}
 	return nil

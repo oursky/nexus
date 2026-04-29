@@ -86,7 +86,10 @@ func handleShellOpen(req execRequest, encoder *json.Encoder) {
 
 	_ = encoder.Encode(execResponse{ID: req.ID, Type: "ack", ExitCode: 0})
 
+	var readWg sync.WaitGroup
+	readWg.Add(1)
 	go func() {
+		defer readWg.Done()
 		buf := make([]byte, 4096)
 		for {
 			n, err := ptmx.Read(buf)
@@ -109,8 +112,12 @@ func handleShellOpen(req execRequest, encoder *json.Encoder) {
 				exitCode = 1
 			}
 		}
-		s.done <- exitCode
+		// Close the PTY master so the read goroutine unblocks and finishes
+		// draining any buffered output. Wait for it before sending the result
+		// so all chunks are forwarded before pty.exit.
 		_ = ptmx.Close()
+		readWg.Wait()
+		s.done <- exitCode
 		_ = encoder.Encode(execResponse{ID: req.ID, Type: "result", ExitCode: exitCode})
 		shellSessionsMu.Lock()
 		delete(shellSessions, req.ID)

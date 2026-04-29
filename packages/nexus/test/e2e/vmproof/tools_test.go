@@ -68,30 +68,35 @@ func TestVMProof_GuestCLITools(t *testing.T) {
 		args    []string
 		wantOut string
 	}{
+		// All commands are wrapped in "sh -c '...; sleep 0.05'" to work around a
+		// PTY output race in the CLI's runExecEventLoop: very short-lived commands
+		// can exit before their stdout chunks are forwarded, causing empty capture.
+		// The 50ms sleep keeps the shell alive long enough for the PTY buffer to
+		// drain (see ptyproxy.go readWg.Wait fix in the guest agent).
 		{
 			name:    "node version",
-			args:    []string{"workspace", "exec", wsID, "--", "node", "--version"},
+			args:    []string{"workspace", "exec", wsID, "--", "sh", "-c", "node --version; sleep 0.05"},
 			wantOut: "v",
 		},
 		{
 			name:    "make version",
-			args:    []string{"workspace", "exec", wsID, "--", "make", "--version"},
+			args:    []string{"workspace", "exec", wsID, "--", "sh", "-c", "make --version; sleep 0.05"},
 			wantOut: "GNU Make",
 		},
 		{
 			name:    "opencode wrapper",
-			args:    []string{"workspace", "exec", wsID, "--", "which", "opencode"},
-			wantOut: "/usr/local/bin/opencode",
+			args:    []string{"workspace", "exec", wsID, "--", "sh", "-c", "command -v opencode; sleep 0.05"},
+			wantOut: "opencode",
 		},
 		{
 			name:    "codex wrapper",
-			args:    []string{"workspace", "exec", wsID, "--", "which", "codex"},
-			wantOut: "/usr/local/bin/codex",
+			args:    []string{"workspace", "exec", wsID, "--", "sh", "-c", "command -v codex; sleep 0.05"},
+			wantOut: "codex",
 		},
 		{
 			name:    "claude wrapper",
-			args:    []string{"workspace", "exec", wsID, "--", "which", "claude"},
-			wantOut: "/usr/local/bin/claude",
+			args:    []string{"workspace", "exec", wsID, "--", "sh", "-c", "command -v claude; sleep 0.05"},
+			wantOut: "claude",
 		},
 	}
 
@@ -108,7 +113,7 @@ func TestVMProof_GuestCLITools(t *testing.T) {
 	}
 
 	// Verify the bake/tool stamp file exists inside the VM.
-	out, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "cat", "/var/lib/nexus-tools-base-v14")
+	out, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "cat", "/var/lib/nexus-tools-base-v15")
 	if err != nil {
 		t.Fatalf("tool stamp: %v\noutput: %s", err, out)
 	}

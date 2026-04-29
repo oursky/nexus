@@ -47,7 +47,7 @@ func injectFileIntoExt4(imagePath string, data []byte, destPath string, mode os.
 // write-back didn't flush before the process was force-killed.
 func writeStampIntoRootfs(rootfsPath string) error {
 	// The agent checks for this stamp to skip package installation on subsequent boots.
-	const stampInsideRootfs = "/var/lib/nexus-tools-base-v14"
+	const stampInsideRootfs = "/var/lib/nexus-tools-base-v15"
 
 	// Write a temporary host-side file with the stamp content, then inject it
 	// into the ext4 image using debugfs. debugfs operates on the raw image

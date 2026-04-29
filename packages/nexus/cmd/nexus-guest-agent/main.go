@@ -81,6 +81,16 @@ func main() {
 			log.Fatalf("agent base packages: %v", err)
 		}
 	}
+	// Ensure mise global node default is set on every boot, even in baked mode.
+	// This is idempotent and fixes cases where the shim config was lost or never
+	// created (e.g. after rootfs rebakes or stamp mismatches).
+	agentEnv := ensurePathInEnv(os.Environ())
+	if misePath, err := lookPathInEnv("mise", agentEnv); err == nil {
+		if err := ensureMiseNodeGlobalDefault(misePath); err != nil {
+			emitDiagnostic("agent mise global default: %v (non-fatal)", err)
+		}
+	}
+
 	// Docker daemon starts in the background when this is the primary agent.
 	if isPrimaryAgent() {
 		go func() {
