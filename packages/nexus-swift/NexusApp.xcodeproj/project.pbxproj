@@ -26,6 +26,7 @@
 		7E776D62015DFBCF25EEE644 /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6231766FDA3F470858042A87 /* TerminalView.swift */; };
 		80CE1FC1D1DC6ED9FA1B0B3D /* NexusApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 804B2FADD0C5143C198F46DA /* NexusApp.swift */; };
 		8831D4FD2BE4EC9CA00D54D9 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 659564BF098092F19E1351D0 /* AppState.swift */; };
+		A1DE4163502E7966430565F2 /* AppLifecycleLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40E75A35A84B717E5F4571CF /* AppLifecycleLog.swift */; };
 		A512F81B9A51ED222CBECA5F /* WebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BFDE21D93B71D9558A8EB6 /* WebSocketClient.swift */; };
 		A774123997F078D6CD0C11BA /* WorkspaceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E59BFA6CB8B1E9F66EE1247E /* WorkspaceDetailView.swift */; };
 		A9273E20904D087845541518 /* DaemonClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9C948C4674F0FD006FCE84F /* DaemonClient.swift */; };
@@ -75,6 +76,7 @@
 		2E3741BD5102248BC1C00360 /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
 		38E21B28FFABA6F3CC3615AD /* HeadlessRPCServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeadlessRPCServer.swift; sourceTree = "<group>"; };
 		3F4BBF609F635803ECB96420 /* MultiTabTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiTabTerminalView.swift; sourceTree = "<group>"; };
+		40E75A35A84B717E5F4571CF /* AppLifecycleLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLifecycleLog.swift; sourceTree = "<group>"; };
 		4646410F10ECC1921C4F685B /* NexusRPC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusRPC.swift; sourceTree = "<group>"; };
 		4813F94247C8246742DEA82F /* SSHTunnelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTunnelManager.swift; sourceTree = "<group>"; };
 		4F536D8D8113B5D7DEAFEEFC /* RemoteProvisioner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteProvisioner.swift; sourceTree = "<group>"; };
@@ -191,6 +193,7 @@
 		CCA044EB8EA9A754E9F508E3 /* NexusCore */ = {
 			isa = PBXGroup;
 			children = (
+				40E75A35A84B717E5F4571CF /* AppLifecycleLog.swift */,
 				659564BF098092F19E1351D0 /* AppState.swift */,
 				0E4D7D285580F1646BA523C0 /* AsyncDeadline.swift */,
 				5600243E10A19C71DA84256F /* DaemonLogStream.swift */,
@@ -457,6 +460,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A1DE4163502E7966430565F2 /* AppLifecycleLog.swift in Sources */,
 				8831D4FD2BE4EC9CA00D54D9 /* AppState.swift in Sources */,
 				CBD8EF15A85756F63CF36229 /* AsyncDeadline.swift in Sources */,
 				A9273E20904D087845541518 /* DaemonClient.swift in Sources */,

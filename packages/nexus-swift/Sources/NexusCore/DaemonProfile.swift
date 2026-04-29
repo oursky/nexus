@@ -39,6 +39,41 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         self.sshPort = sshPort
         self.sshIdentity = sshIdentity
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case profileId, name, port, isDefault, lastKnownStatus, sshTarget, sshPort, sshIdentity
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        profileId = try container.decodeIfPresent(String.self, forKey: .profileId) ?? UUID().uuidString
+        name = (try container.decodeIfPresent(String.self, forKey: .name) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let decodedPort = try container.decodeIfPresent(Int.self, forKey: .port) ?? 7777
+        port = DaemonProfile.clampPort(decodedPort, fallback: 7777)
+        isDefault = try container.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
+        lastKnownStatus = try container.decodeIfPresent(ProfileStatus.self, forKey: .lastKnownStatus) ?? .unknown
+
+        let target = (try container.decodeIfPresent(String.self, forKey: .sshTarget) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        sshTarget = target.isEmpty ? nil : target
+
+        if let p = try container.decodeIfPresent(Int.self, forKey: .sshPort) {
+            sshPort = DaemonProfile.validPortOrNil(p)
+        } else {
+            sshPort = nil
+        }
+        let identity = (try container.decodeIfPresent(String.self, forKey: .sshIdentity) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        sshIdentity = identity.isEmpty ? nil : identity
+    }
+
+    private static func clampPort(_ value: Int, fallback: Int) -> Int {
+        if (1...65535).contains(value) { return value }
+        return fallback
+    }
+
+    private static func validPortOrNil(_ value: Int) -> Int? {
+        (1...65535).contains(value) ? value : nil
+    }
 }
 
 public final class DaemonProfileStore {
@@ -53,12 +88,23 @@ public final class DaemonProfileStore {
 
     public func load() -> [DaemonProfile] {
         guard let data = defaults.data(forKey: key) else { return [] }
-        return (try? decoder.decode([DaemonProfile].self, from: data)) ?? []
+        do {
+            let profiles = try decoder.decode([DaemonProfile].self, from: data)
+            AppLifecycleLog.info("profile-store", "loaded profiles count=\(profiles.count)")
+            return profiles
+        } catch {
+            AppLifecycleLog.error("profile-store", "decode failed: \(error.localizedDescription)")
+            return []
+        }
     }
 
     public func save(_ profiles: [DaemonProfile]) {
-        guard let data = try? encoder.encode(profiles) else { return }
+        guard let data = try? encoder.encode(profiles) else {
+            AppLifecycleLog.error("profile-store", "encode failed count=\(profiles.count)")
+            return
+        }
         defaults.set(data, forKey: key)
+        AppLifecycleLog.info("profile-store", "saved profiles count=\(profiles.count)")
     }
 
     public func defaultProfile() -> DaemonProfile? {

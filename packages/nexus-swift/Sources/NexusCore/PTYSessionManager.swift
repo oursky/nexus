@@ -97,21 +97,16 @@ public final class PTYSessionManager: ObservableObject {
             let cols = 120
             let rows = 40
 
-            let tOpenPTY = Date()
-            Self.logger.notice("pty.tab.create CALLING-openPTY workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) ms_since_enter=\(Int(Date().timeIntervalSince(startedAt)*1000), privacy: .public)")
-            let sessionId = try await AsyncDeadline.withSeconds(20) {
-                try await self.client.openPTY(
-                    workspaceId: self.workspaceId,
-                    name: tabName,
-                    cols: cols,
-                    rows: rows,
-                    useTmux: true
-                )
-            }
-            let openPTYMs = Int(Date().timeIntervalSince(tOpenPTY) * 1000)
+            let sessionId = try await openPTYWithReadinessRetries(
+                workspaceId: self.workspaceId,
+                tabName: tabName,
+                cols: cols,
+                rows: rows,
+                startedAt: startedAt
+            )
 
             let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
-            Self.logger.notice("pty.tab.create SUCCESS workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) session=\(sessionId, privacy: .public) openPTY_ms=\(openPTYMs, privacy: .public) total_ms=\(elapsedMs, privacy: .public)")
+            Self.logger.notice("pty.tab.create SUCCESS workspace=\(self.workspaceId, privacy: .public) tab=\(tabName, privacy: .public) session=\(sessionId, privacy: .public) total_ms=\(elapsedMs, privacy: .public)")
 
             // Update with real session ID
             await MainActor.run {
@@ -147,6 +142,45 @@ public final class PTYSessionManager: ObservableObject {
                 }
             }
         }
+    }
+
+    private func openPTYWithReadinessRetries(
+        workspaceId: String,
+        tabName: String,
+        cols: Int,
+        rows: Int,
+        startedAt: Date
+    ) async throws -> String {
+        let maxAttempts = 3
+        var lastError: Error?
+        let tOpenPTY = Date()
+
+        for attempt in 1...maxAttempts {
+            Self.logger.notice("pty.tab.create CALLING-openPTY workspace=\(workspaceId, privacy: .public) tab=\(tabName, privacy: .public) attempt=\(attempt, privacy: .public) ms_since_enter=\(Int(Date().timeIntervalSince(startedAt)*1000), privacy: .public)")
+            do {
+                let sessionId = try await AsyncDeadline.withSeconds(20) {
+                    try await self.client.openPTY(
+                        workspaceId: workspaceId,
+                        name: tabName,
+                        cols: cols,
+                        rows: rows,
+                        useTmux: true
+                    )
+                }
+                let openPTYMs = Int(Date().timeIntervalSince(tOpenPTY) * 1000)
+                Self.logger.notice("pty.tab.create OPEN-PTY-OK workspace=\(workspaceId, privacy: .public) tab=\(tabName, privacy: .public) attempt=\(attempt, privacy: .public) openPTY_ms=\(openPTYMs, privacy: .public)")
+                return sessionId
+            } catch {
+                lastError = error
+                let msg = error.localizedDescription.lowercased()
+                let retryable = msg.contains("not ready") || msg.contains("target is busy") || msg.contains("starting")
+                Self.logger.warning("pty.tab.create OPEN-PTY-FAILED workspace=\(workspaceId, privacy: .public) tab=\(tabName, privacy: .public) attempt=\(attempt, privacy: .public) retryable=\(retryable, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                guard retryable, attempt < maxAttempts else { throw error }
+                try? await self.client.markWorkspaceReady(id: workspaceId)
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 500_000_000)
+            }
+        }
+        throw lastError ?? RPCError(message: "openPTY failed")
     }
 
     /// Close a specific tab

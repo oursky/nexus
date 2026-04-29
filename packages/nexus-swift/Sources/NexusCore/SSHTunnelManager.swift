@@ -26,6 +26,7 @@ public actor SSHTunnelManager {
 
     public func start() async throws -> Int {
         _state = .connecting
+        AppLifecycleLog.info("ssh-tunnel", "start target=\(profile.sshTarget ?? "") daemonPort=\(profile.port)")
         let maxAttempts = 5
         var lastError: Error = TunnelError.portAllocation(operation: "start", errnoCode: nil)
 
@@ -36,11 +37,13 @@ public actor SSHTunnelManager {
                 try launchSSH(localPort: port)
                 try await waitForHealthz(localPort: port)
                 _state = .connected
+                AppLifecycleLog.info("ssh-tunnel", "start success localPort=\(port)")
                 startRestartLoop(localPort: port)
                 return port
             } catch {
                 lastError = error
                 logger.error("tunnel start attempt \(attempt, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                AppLifecycleLog.warn("ssh-tunnel", "attempt \(attempt) failed: \(error.localizedDescription)")
                 process?.terminate()
                 process = nil
                 stderrPipe = nil
@@ -56,6 +59,7 @@ public actor SSHTunnelManager {
         }
 
         _state = .failed(lastError)
+        AppLifecycleLog.error("ssh-tunnel", "start failed after retries: \(lastError.localizedDescription)")
         throw lastError
     }
 
@@ -111,6 +115,7 @@ public actor SSHTunnelManager {
     }
 
     public func stop() async {
+        AppLifecycleLog.info("ssh-tunnel", "stop")
         restartTask?.cancel()
         restartTask = nil
         process?.terminate()

@@ -215,7 +215,6 @@ private struct VMLogPane: View {
 
 private enum PortsColumn {
     static let local: CGFloat   = 52   // port numbers are ≤5 digits
-    static let remote: CGFloat  = 52
     static let state: CGFloat   = 44   // "On"/"Off" + dot
     static let actions: CGFloat = 96   // "Add  Open ↗"
     // Process column gets remaining flex space; always at least ~80pt at min inspector width
@@ -293,8 +292,6 @@ private struct PortsPane: View {
                             HStack(alignment: .center, spacing: 6) {
                                 Text("Local")
                                     .frame(width: PortsColumn.local, alignment: .leading)
-                                Text("Remote")
-                                    .frame(width: PortsColumn.remote, alignment: .leading)
                                 Text("Process")
                                     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                                     .layoutPriority(1)
@@ -333,10 +330,6 @@ private struct PortRow: View {
                 .frame(width: PortsColumn.local, alignment: .leading)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundColor(Theme.label)
-            Text("\(port.remotePort)")
-                .frame(width: PortsColumn.remote, alignment: .leading)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(Theme.labelSecondary)
             if let process = port.process, !process.isEmpty {
                 Text(process)
                     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
@@ -363,7 +356,7 @@ private struct PortRow: View {
             .frame(width: PortsColumn.state, alignment: .leading)
 
             HStack(spacing: 8) {
-                if port.preferred {
+                if port.tunneled || port.preferred {
                     Button("Remove") { Task { await appState.removePort(port.port, workspace: workspace) } }
                         .buttonStyle(.plain)
                         .font(.system(size: 10, weight: .medium))

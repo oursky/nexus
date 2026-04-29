@@ -33,7 +33,6 @@ enum NexusMethod {
     static let projectCreate = "project.create"
     static let projectGet = "project.get"
     static let projectRemove = "project.remove"
-    static let projectReconcile = "project.reconcile"
     static let fsReadfile = "fs.readFile"
     static let fsWritefile = "fs.writeFile"
     static let fsExists = "fs.exists"
@@ -406,15 +405,6 @@ struct ProjectRemoveRequest: Codable {
 
 struct ProjectRemoveResponse: Codable {
     let removed: Bool
-}
-
-typealias ProjectReconcileRequest = EmptyRequest
-
-struct ProjectReconcileResponse: Codable {
-    let canonicalProjects: [String]
-    let createdProjects: Int
-    let removedProjects: Int
-    let updatedWorkspaces: Int
 }
 
 struct FSReadFileRequest: Codable {

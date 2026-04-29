@@ -75,10 +75,17 @@ public final class AppState: ObservableObject {
 
 
     public init() {
+        AppLifecycleLog.configure()
+        AppLifecycleLog.info("app", "AppState init start")
         StartupTrace.beginSession()
         StartupTrace.checkpoint("app.init", "before client")
 
         let profile = DaemonProfileStore().defaultProfile()
+        if let profile {
+            AppLifecycleLog.info("app", "default profile loaded id=\(profile.profileId) hasTarget=\(profile.sshTarget != nil)")
+        } else {
+            AppLifecycleLog.warn("app", "no default profile configured")
+        }
         self.cachedProfile = profile
         self.client = NullDaemonClient()
         connectionState = .starting
@@ -272,7 +279,8 @@ public final class AppState: ObservableObject {
             let svc = d["service"] as? String ?? ""
             let src = d["source"] as? String ?? ""
             let label: String
-            if !svc.isEmpty, !src.isEmpty { label = "\(src): \(svc)" }
+            if !svc.isEmpty, src == "compose" { label = svc }
+            else if !svc.isEmpty, !src.isEmpty { label = "\(src): \(svc)" }
             else if !svc.isEmpty { label = svc }
             else if !src.isEmpty { label = src }
             else { label = "discovered" }
@@ -325,6 +333,38 @@ public final class AppState: ObservableObject {
         server.daemonProfileProvider = { [weak self] in
             self?.activeDaemonProfile
         }
+        server.daemonProfilesProvider = {
+            DaemonProfileStore().load()
+        }
+        server.daemonProfilesSaveAction = { [weak self] profile in
+            guard let self else { return (false, "AppState deallocated") }
+            let valid = self.validateProfile(profile)
+            guard valid.0 else { return valid }
+
+            let store = DaemonProfileStore()
+            var profiles = store.load()
+            if profile.isDefault {
+                profiles = profiles.map { p in
+                    var c = p
+                    c.isDefault = false
+                    return c
+                }
+            }
+            profiles.append(profile)
+            store.save(profiles)
+            AppLifecycleLog.info("rpc", "saved profile via headless rpc id=\(profile.profileId)")
+            await self.reconnect()
+            return (true, "saved and reconnected")
+        }
+        server.daemonReconnectAction = { [weak self] in
+            guard let self else { return (false, "AppState deallocated") }
+            await self.reconnect()
+            AppLifecycleLog.info("rpc", "reconnect requested via headless rpc")
+            return (true, "reconnected")
+        }
+        server.appLogTailProvider = { lines in
+            Self.tailFile(path: Self.appLifecycleLogPath(), lines: lines)
+        }
         server.connectionSnapshotProvider = { [weak self] in
             guard let self else { return ["available": false] }
             let stateText: String
@@ -352,6 +392,38 @@ public final class AppState: ObservableObject {
         }
         rpcServer = server
         server.start()
+    }
+
+    private func validateProfile(_ profile: DaemonProfile) -> (Bool, String) {
+        let name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return (false, "Profile name is required") }
+        let target = (profile.sshTarget ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if target.isEmpty { return (false, "SSH target is required") }
+        if !target.contains("@") || target.hasPrefix("@") || target.hasSuffix("@") {
+            return (false, "SSH target must be in form user@host")
+        }
+        if let p = profile.sshPort, !(1...65535).contains(p) {
+            return (false, "sshPort must be 1..65535")
+        }
+        if !(1...65535).contains(profile.port) {
+            return (false, "port must be 1..65535")
+        }
+        return (true, "ok")
+    }
+
+    private static func appLifecycleLogPath() -> String {
+        let configHome = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"]
+            ?? "\(ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory())/.config"
+        return "\(configHome)/nexus/run/nexusapp.log"
+    }
+
+    private static func tailFile(path: String, lines: Int) -> String {
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return ""
+        }
+        let all = content.split(separator: "\n", omittingEmptySubsequences: false)
+        let tail = all.suffix(max(0, lines))
+        return tail.joined(separator: "\n")
     }
 
     // MARK: - Editor open via CLI
@@ -588,16 +660,26 @@ public final class AppState: ObservableObject {
 
     private func connectRemoteAndLoad() async {
         StartupTrace.checkpoint("remote.enter", "cachedProfile=\(cachedProfile != nil ? "yes" : "nil")")
+        AppLifecycleLog.info("remote", "connectRemoteAndLoad enter cachedProfile=\(cachedProfile != nil)")
         guard let profile = cachedProfile else {
             connectionState = .disconnected
             error = "No remote profile configured. Add one in Settings."
             StartupTrace.checkpoint("remote.noProfile")
+            AppLifecycleLog.warn("remote", "connect aborted: no profile")
             return
         }
         guard let sshTarget = profile.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !sshTarget.isEmpty else {
             connectionState = .disconnected
             error = "SSH target is required. This app only connects to a remote Nexus daemon over SSH."
             StartupTrace.checkpoint("remote.noSshTarget")
+            AppLifecycleLog.warn("remote", "connect aborted: empty ssh target profileId=\(profile.profileId)")
+            return
+        }
+        guard Self.isLikelyValidSSHTarget(sshTarget) else {
+            connectionState = .disconnected
+            error = "SSH target must be in the form user@host (no spaces)."
+            StartupTrace.checkpoint("remote.invalidSshTarget", sshTarget)
+            AppLifecycleLog.warn("remote", "connect aborted: invalid ssh target=\(sshTarget)")
             return
         }
         connectionState = .connecting
@@ -658,6 +740,7 @@ public final class AppState: ObservableObject {
             connectionState = .disconnected
             self.error = "SSH tunnel failed: \(error.localizedDescription)"
             StartupTrace.checkpoint("remote.tunnel.failed", error.localizedDescription)
+            AppLifecycleLog.error("remote", "tunnel failed target=\(sshTarget): \(error.localizedDescription)")
             self.daemonLogStream?.stop()
             self.daemonLogStream = nil
             self.tunnelManager = nil
@@ -684,9 +767,18 @@ public final class AppState: ObservableObject {
                 self.error = "Remote daemon unreachable: \(daemonURL.host ?? ""):\(daemonURL.port ?? 0) — \(error.localizedDescription)"
                 StartupTrace.checkpoint("remote.connect.failed", error.localizedDescription)
                 Self.logger.error("connectRemoteAndLoad failed: \(error.localizedDescription, privacy: .public)")
+                AppLifecycleLog.error("remote", "connect failed daemonURL=\(daemonURL.absoluteString) error=\(error.localizedDescription)")
                 self.updateProfileStatus(profileId: profile.profileId, status: .unreachable)
             }
         }
+    }
+
+    private static func isLikelyValidSSHTarget(_ value: String) -> Bool {
+        let s = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.isEmpty { return false }
+        if s.contains(" ") || s.contains("\t") || s.contains("\n") { return false }
+        guard s.contains("@"), !s.hasPrefix("@"), !s.hasSuffix("@") else { return false }
+        return true
     }
 
     /// Persists an updated `lastKnownStatus` for the given profile ID.
@@ -770,10 +862,12 @@ public final class AppState: ObservableObject {
 
     public func createSandbox(request: SandboxCreateRequest) async {
         do {
+            AppLifecycleLog.info("workspace", "createSandbox begin projectID=\(request.projectId) fresh=\(request.fresh)")
             workspaceCreateProgress = nil
             if projects.isEmpty { await load() }
             guard let project = projects.first(where: { $0.id == request.projectId }) else {
                 self.error = "Project not found."
+                AppLifecycleLog.warn("workspace", "createSandbox rejected: project not found id=\(request.projectId)")
                 return
             }
             let ws: Workspace
@@ -802,8 +896,10 @@ public final class AppState: ObservableObject {
             startWorkspaceCreateMonitor(workspaceID: ws.id, workspaceName: ws.workspaceName)
             await load()
             selectedWorkspaceID = ws.id
+            AppLifecycleLog.info("workspace", "createSandbox success workspaceID=\(ws.id) projectID=\(project.id)")
         } catch {
             self.error = error.localizedDescription
+            AppLifecycleLog.error("workspace", "createSandbox failed projectID=\(request.projectId): \(error.localizedDescription)")
         }
     }
 
@@ -874,18 +970,78 @@ public final class AppState: ObservableObject {
     }
 
     public func createProject(repo: String) async -> Project? {
+        let trimmedRepo = repo.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
-            let project = try await client.createProject(repo: repo)
+            AppLifecycleLog.info("project", "createProject begin repo=\(trimmedRepo)")
+            let project = try await client.createProject(repo: trimmedRepo)
             await load()
             guard let rootSandbox = await ensureProjectRootSandbox(projectID: project.id) else {
+                AppLifecycleLog.warn("project", "createProject created but no root sandbox projectID=\(project.id)")
                 return nil
             }
             selectedWorkspaceID = rootSandbox.id
+            AppLifecycleLog.info("project", "createProject success projectID=\(project.id) rootWorkspaceID=\(rootSandbox.id)")
             return project
         } catch {
-            self.error = error.localizedDescription
+            let message = error.localizedDescription
+            if Self.isAlreadyExistsError(message),
+               let recovered = await recoverExistingProject(repo: trimmedRepo) {
+                AppLifecycleLog.warn("project", "createProject upsert recovered existing projectID=\(recovered.id)")
+                await load()
+                if let rootSandbox = await ensureProjectRootSandbox(projectID: recovered.id) {
+                    selectedWorkspaceID = rootSandbox.id
+                } else {
+                    AppLifecycleLog.warn("project", "upsert recovered project but root sandbox missing projectID=\(recovered.id)")
+                }
+                return recovered
+            }
+            self.error = message
+            AppLifecycleLog.error("project", "createProject failed repo=\(trimmedRepo): \(message)")
             return nil
         }
+    }
+
+    private static func isAlreadyExistsError(_ message: String) -> Bool {
+        let m = message.lowercased()
+        return m.contains("already exists") || m.contains("duplicate")
+    }
+
+    private func recoverExistingProject(repo: String) async -> Project? {
+        do {
+            let all = try await client.listProjects()
+            let normalizedRepo = normalizeRepo(repo)
+            let targetName = projectNameFromRepo(repo)
+            if let exact = all.first(where: { normalizeRepo($0.primaryRepo) == normalizedRepo }) {
+                return exact
+            }
+            if let byName = all.first(where: { $0.name.caseInsensitiveCompare(targetName) == .orderedSame }) {
+                return byName
+            }
+            return nil
+        } catch {
+            AppLifecycleLog.error("project", "recoverExistingProject failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func normalizeRepo(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
+    }
+
+    private func projectNameFromRepo(_ repo: String) -> String {
+        var name = repo.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let slash = name.lastIndex(of: "/") {
+            name = String(name[name.index(after: slash)...])
+        }
+        if let colon = name.lastIndex(of: ":") {
+            name = String(name[name.index(after: colon)...])
+        }
+        if name.hasSuffix(".git") {
+            name = String(name.dropLast(4))
+        }
+        return name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     public func start(_ workspace: Workspace) async {

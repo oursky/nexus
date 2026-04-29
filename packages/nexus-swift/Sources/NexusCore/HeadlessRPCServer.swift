@@ -33,8 +33,14 @@ import OSLog
 ///
 /// Daemon provisioning (simulates full fresh-host onboarding):
 ///   GET  /daemon/status
+///   GET  /daemon/profile
+///   POST /daemon/profile/save   { name, sshTarget, port?, sshPort?, sshIdentity?, isDefault? }
+///   POST /daemon/reconnect
 ///   POST /daemon/provision      { sshTarget, port?, sshIdentity? }
 ///   POST /daemon/connect        { sshTarget, port?, sshIdentity? }
+///
+/// Logs:
+///   GET  /logs/app?lines=200
 ///
 /// Linuxbox clean-room (remote state removal for regression testing):
 ///   POST /linuxbox/clean-room   { sshTarget, sshPort? }  — remove ~/.local/{share,state,run}/nexus + binaries
@@ -59,6 +65,10 @@ public final class HeadlessRPCServer {
 
     /// Returns the active daemon profile for provisioning calls.
     public var daemonProfileProvider: (() -> DaemonProfile?)?
+    public var daemonProfilesProvider: (() -> [DaemonProfile])?
+    public var daemonProfilesSaveAction: ((DaemonProfile) async -> (Bool, String))?
+    public var daemonReconnectAction: (() async -> (Bool, String))?
+    public var appLogTailProvider: ((Int) -> String)?
     /// Returns connection diagnostics for the hosting app instance.
     public var connectionSnapshotProvider: (() -> [String: Any])?
 
@@ -235,12 +245,22 @@ public final class HeadlessRPCServer {
         // ── Daemon provisioning ───────────────────────────────────────────────
         case ("GET", "/daemon/status"):
             return await handleDaemonStatus()
+        case ("GET", "/daemon/profile"):
+            return await handleDaemonProfile()
+        case ("POST", "/daemon/profile/save"):
+            return await handleDaemonProfileSave(body: bodyString)
+        case ("POST", "/daemon/reconnect"):
+            return await handleDaemonReconnect()
         case ("POST", "/daemon/provision"):
             return await handleDaemonProvision(body: bodyString)
         case ("POST", "/daemon/connect"):
             return await handleDaemonConnect(body: bodyString)
         case ("POST", "/daemon/check"):
             return await handleDaemonCheck(body: bodyString)
+
+        // ── Local logs ────────────────────────────────────────────────────────
+        case ("GET", "/logs/app"):
+            return await handleAppLogTail(query: query)
 
         // ── Linuxbox clean-room ───────────────────────────────────────────────
         case ("POST", "/linuxbox/clean-room"):
@@ -726,6 +746,92 @@ public final class HeadlessRPCServer {
             }
             return (500, str)
         }
+    }
+
+    private func handleDaemonProfile() async -> (Int, String) {
+        let active = daemonProfileProvider?()
+        let profiles = daemonProfilesProvider?() ?? []
+        let payload: [String: Any] = [
+            "activeProfileId": active?.profileId as Any,
+            "profiles": profiles.map { p in
+                [
+                    "profileId": p.profileId,
+                    "name": p.name,
+                    "port": p.port,
+                    "sshTarget": p.sshTarget as Any,
+                    "sshPort": p.sshPort as Any,
+                    "sshIdentity": p.sshIdentity as Any,
+                    "isDefault": p.isDefault,
+                    "lastKnownStatus": p.lastKnownStatus.rawValue,
+                ]
+            },
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (200, str)
+    }
+
+    private func handleDaemonProfileSave(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body) else {
+            return (400, jsonError("invalid json"))
+        }
+        guard let name = dict["name"] as? String else {
+            return (400, jsonError("missing name"))
+        }
+        guard let sshTarget = dict["sshTarget"] as? String else {
+            return (400, jsonError("missing sshTarget"))
+        }
+        let port = dict["port"] as? Int ?? 7777
+        let sshPort = dict["sshPort"] as? Int
+        let sshIdentity = dict["sshIdentity"] as? String
+        let isDefault = (dict["isDefault"] as? Bool) ?? true
+        let profile = DaemonProfile(
+            name: name,
+            port: port,
+            isDefault: isDefault,
+            lastKnownStatus: .unknown,
+            sshTarget: sshTarget,
+            sshPort: sshPort,
+            sshIdentity: sshIdentity
+        )
+        guard let action = daemonProfilesSaveAction else {
+            return (503, jsonError("profile save action not registered"))
+        }
+        let (ok, detail) = await action(profile)
+        let payload: [String: Any] = ["ok": ok, "detail": detail]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (ok ? 200 : 400, str)
+    }
+
+    private func handleDaemonReconnect() async -> (Int, String) {
+        guard let action = daemonReconnectAction else {
+            return (503, jsonError("daemon reconnect action not registered"))
+        }
+        let (ok, detail) = await action()
+        let payload: [String: Any] = ["ok": ok, "detail": detail]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (ok ? 200 : 500, str)
+    }
+
+    private func handleAppLogTail(query: String) async -> (Int, String) {
+        let params = parseQuery(query)
+        let lines = Int(params["lines"] ?? "200") ?? 200
+        let tailer = appLogTailProvider
+        let output = tailer?(max(1, min(lines, 5000))) ?? ""
+        let payload: [String: Any] = ["ok": true, "lines": lines, "output": output]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (200, str)
     }
 
     private func handleDaemonConnect(body: String) async -> (Int, String) {

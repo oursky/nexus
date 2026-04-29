@@ -1,15 +1,17 @@
 import NexusCore
 import SwiftUI
 import Foundation
+import AppKit
 
 /// Popover shown when the user clicks the connection status pill.
 struct DaemonSettingsPanel: View {
     @EnvironmentObject var appState: AppState
     @State private var isCheckRunning = false
     @State private var checkResult: DaemonCheckResult?
-    @State private var showDaemonLog = false
-    @State private var isDaemonLogLoading = false
+    @State private var isConnectionLogLoading = false
     @State private var daemonLog: DaemonLogTail = DaemonLogTail()
+    @State private var appLifecycleLogLines: [String] = []
+    @State private var startupTraceLogLines: [String] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -21,15 +23,12 @@ struct DaemonSettingsPanel: View {
             Divider().opacity(0.4)
             healthCheckSection
             Divider().opacity(0.4)
-            daemonLogSection
+            connectionLogSection
         }
         .frame(width: 320)
         .background(Theme.bgContent)
         .sheet(item: $checkResult) { result in
             DaemonCheckResultSheet(result: result)
-        }
-        .sheet(isPresented: $showDaemonLog) {
-            DaemonLogSheet(log: daemonLog)
         }
     }
 
@@ -170,47 +169,67 @@ struct DaemonSettingsPanel: View {
               : "Connect to a daemon first to run health checks.")
     }
 
-    // MARK: - Daemon log section
+    // MARK: - Connection log section
 
     @ViewBuilder
-    private var daemonLogSection: some View {
+    private var connectionLogSection: some View {
         HStack {
             Button {
-                Task { await fetchDaemonLog() }
+                Task { await fetchConnectionLogs() }
             } label: {
-                if isDaemonLogLoading {
+                if isConnectionLogLoading {
                     HStack(spacing: 6) {
                         ProgressView().scaleEffect(0.7).frame(width: 14, height: 14)
-                        Text("Loading log…")
+                        Text("Loading logs…")
                     }
                 } else {
-                    Label("View Daemon Log", systemImage: "doc.text.magnifyingglass")
+                    Label("View Connection Logs", systemImage: "doc.text.magnifyingglass")
                 }
             }
             .buttonStyle(.borderless)
             .font(.system(size: 12))
-            .foregroundColor(isDaemonConnected ? Theme.label : Theme.labelTertiary)
-            .disabled(isDaemonLogLoading || !isDaemonConnected)
+            .foregroundColor(Theme.label)
+            .disabled(isConnectionLogLoading)
             Spacer()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .help(isDaemonConnected
-              ? "Show the last 300 lines of the daemon process log for debugging connection and VM issues."
-              : "Connect to a daemon first to view its log.")
+        .help("Show daemon log plus app lifecycle/startup traces for remote connection debugging.")
     }
 
-    private func fetchDaemonLog() async {
-        guard !isDaemonLogLoading, let client = appState.client as? WebSocketDaemonClient else { return }
-        isDaemonLogLoading = true
-        defer { isDaemonLogLoading = false }
-        do {
-            daemonLog = try await client.daemonLogTail(lines: 300)
-            showDaemonLog = true
-        } catch {
-            daemonLog = DaemonLogTail(lines: ["Error fetching daemon log: \(error.localizedDescription)"], path: "")
-            showDaemonLog = true
+    private func fetchConnectionLogs() async {
+        guard !isConnectionLogLoading else { return }
+        isConnectionLogLoading = true
+        defer { isConnectionLogLoading = false }
+
+        if let client = appState.client as? WebSocketDaemonClient {
+            do {
+                daemonLog = try await client.daemonLogTail(lines: 400)
+            } catch {
+                daemonLog = DaemonLogTail(lines: ["Error fetching daemon log: \(error.localizedDescription)"], path: "")
+            }
+        } else {
+            daemonLog = DaemonLogTail(lines: ["Daemon is not connected."], path: "")
         }
+
+        appLifecycleLogLines = tailLocalFile(named: "nexusapp.log", lines: 400)
+        startupTraceLogLines = tailLocalFile(named: "app-startup-trace.log", lines: 400)
+        await MainActor.run {
+            ConnectionLogWindow.present(
+                daemonLog: daemonLog,
+                lifecycleLines: appLifecycleLogLines,
+                startupLines: startupTraceLogLines
+            )
+        }
+    }
+
+    private func tailLocalFile(named filename: String, lines: Int) -> [String] {
+        let path = (NSHomeDirectory() as NSString).appendingPathComponent(".config/nexus/run/\(filename)")
+        guard let data = FileManager.default.contents(atPath: path),
+              let text = String(data: data, encoding: .utf8) else {
+            return ["(no \(filename) at \(path))"]
+        }
+        return Array(text.split(separator: "\n", omittingEmptySubsequences: false).suffix(lines)).map(String.init)
     }
 
     // MARK: - Actions
@@ -303,11 +322,20 @@ struct DaemonCheckResultSheet: View {
     }
 }
 
-// MARK: - Daemon Log Sheet
+// MARK: - Connection Log Sheet
 
-struct DaemonLogSheet: View {
-    let log: DaemonLogTail
+struct ConnectionLogSheet: View {
+    let daemonLog: DaemonLogTail
+    let lifecycleLines: [String]
+    let startupLines: [String]
     @Environment(\.dismiss) private var dismiss
+    @State private var tab: LogTab = .daemon
+
+    enum LogTab: String, CaseIterable {
+        case daemon = "Daemon"
+        case lifecycle = "Lifecycle"
+        case startup = "Startup"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -315,17 +343,17 @@ struct DaemonLogSheet: View {
                 Image(systemName: "doc.text")
                     .foregroundColor(Theme.labelSecondary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Daemon Log")
+                    Text("Connection Logs")
                         .font(.headline)
-                    if !log.path.isEmpty {
-                        Text(log.path)
+                    if !daemonLog.path.isEmpty {
+                        Text(daemonLog.path)
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundColor(Theme.labelTertiary)
                     }
                 }
                 Spacer()
                 Button {
-                    let text = log.lines.joined(separator: "\n")
+                    let text = currentLines().joined(separator: "\n")
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
                 } label: {
@@ -339,16 +367,23 @@ struct DaemonLogSheet: View {
 
             Divider()
 
+            Picker("Log", selection: $tab) {
+                ForEach(LogTab.allCases, id: \.self) { item in
+                    Text(item.rawValue).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        if log.lines.isEmpty {
+                        if currentLines().isEmpty {
                             Text("(log is empty)")
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(Theme.labelTertiary)
                                 .padding(8)
                         } else {
-                            ForEach(Array(log.lines.enumerated()), id: \.offset) { _, line in
+                            ForEach(Array(currentLines().enumerated()), id: \.offset) { _, line in
                                 Text(line.isEmpty ? " " : line)
                                     .font(.system(size: 11, design: .monospaced))
                                     .foregroundColor(Theme.label)
@@ -370,7 +405,120 @@ struct DaemonLogSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .padding(16)
-        .frame(width: 680, height: 560)
+        .frame(
+            minWidth: 520,
+            idealWidth: 640,
+            maxWidth: 820,
+            minHeight: 420,
+            idealHeight: 520,
+            maxHeight: 760
+        )
         .background(Theme.bgContent)
+        .onAppear {
+            // Avoid opening partially off-screen when the previous sheet geometry
+            // was persisted outside the current visible frame.
+            DispatchQueue.main.async {
+                NSApp.keyWindow?.center()
+            }
+        }
+    }
+
+    private func currentLines() -> [String] {
+        switch tab {
+        case .daemon: return daemonLog.lines
+        case .lifecycle: return lifecycleLines
+        case .startup: return startupLines
+        }
+    }
+}
+
+@MainActor
+private enum ConnectionLogWindow {
+    private static var window: NSWindow?
+    private static var windowDelegate: ConnectionLogWindowDelegate?
+
+    static func present(daemonLog: DaemonLogTail, lifecycleLines: [String], startupLines: [String]) {
+        let view = ConnectionLogSheet(
+            daemonLog: daemonLog,
+            lifecycleLines: lifecycleLines,
+            startupLines: startupLines
+        )
+        let host = NSHostingController(rootView: view)
+
+        if let existing = window {
+            existing.contentViewController = host
+            placeOnVisibleScreen(existing)
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let panel = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 620),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "Connection Logs"
+        panel.isReleasedWhenClosed = false
+        panel.contentViewController = host
+        placeOnVisibleScreen(panel)
+        let delegate = ConnectionLogWindowDelegate {
+            window = nil
+            windowDelegate = nil
+        }
+        panel.delegate = delegate
+        windowDelegate = delegate
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window = panel
+    }
+
+    private static func placeOnVisibleScreen(_ window: NSWindow) {
+        let currentFrame = window.frame
+        let targetScreen = window.screen ?? NSScreen.main ?? NSScreen.screens.first
+        guard let visible = targetScreen?.visibleFrame else {
+            window.center()
+            return
+        }
+
+        var nextFrame = currentFrame
+        if nextFrame.width > visible.width {
+            nextFrame.size.width = visible.width
+        }
+        if nextFrame.height > visible.height {
+            nextFrame.size.height = visible.height
+        }
+        if nextFrame.minX < visible.minX {
+            nextFrame.origin.x = visible.minX
+        }
+        if nextFrame.maxX > visible.maxX {
+            nextFrame.origin.x = visible.maxX - nextFrame.width
+        }
+        if nextFrame.minY < visible.minY {
+            nextFrame.origin.y = visible.minY
+        }
+        if nextFrame.maxY > visible.maxY {
+            nextFrame.origin.y = visible.maxY - nextFrame.height
+        }
+
+        if !visible.intersects(currentFrame) {
+            nextFrame.origin.x = visible.midX - (nextFrame.width / 2)
+            nextFrame.origin.y = visible.midY - (nextFrame.height / 2)
+        }
+
+        window.setFrame(nextFrame, display: true)
+    }
+}
+
+private final class ConnectionLogWindowDelegate: NSObject, NSWindowDelegate {
+    private let onClose: () -> Void
+
+    init(onClose: @escaping () -> Void) {
+        self.onClose = onClose
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose()
     }
 }

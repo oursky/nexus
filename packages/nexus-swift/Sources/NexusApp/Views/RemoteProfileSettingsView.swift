@@ -91,6 +91,7 @@ private struct ProfileEditSheet: View {
         }
     }
     @State private var testState: TestState = .idle
+    @State private var validationMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -163,6 +164,12 @@ private struct ProfileEditSheet: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
+            if let validationMessage {
+                Text(validationMessage)
+                    .font(.caption)
+                    .foregroundColor(.red)
+            }
+
             Toggle("Set as Default", isOn: $profile.isDefault)
                 .font(.system(size: 12))
 
@@ -171,10 +178,16 @@ private struct ProfileEditSheet: View {
                 Button("Cancel", action: onCancel)
                     .keyboardShortcut(.escape)
                 Button("Save") {
+                    let validation = validateInputs()
+                    guard validation == nil else {
+                        validationMessage = validation
+                        return
+                    }
                     var p = profile
-                    p.sshTarget = sshTargetText
+                    p.sshTarget = sshTargetText.trimmingCharacters(in: .whitespacesAndNewlines)
                     p.sshPort = Int(sshPortText)
-                    p.sshIdentity = sshIdentityText.isEmpty ? nil : sshIdentityText
+                    p.sshIdentity = sshIdentityText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : sshIdentityText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    validationMessage = nil
                     onSave(p)
                 }
                 .keyboardShortcut(.return)
@@ -192,6 +205,28 @@ private struct ProfileEditSheet: View {
         .onChange(of: sshTargetText) { _ in testState = .idle }
         .onChange(of: sshPortText) { _ in testState = .idle }
         .onChange(of: sshIdentityText) { _ in testState = .idle }
+        .onChange(of: sshTargetText) { _ in validationMessage = nil }
+        .onChange(of: sshPortText) { _ in validationMessage = nil }
+        .onChange(of: sshIdentityText) { _ in validationMessage = nil }
+    }
+
+    private func validateInputs() -> String? {
+        let trimmedName = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedName.isEmpty { return "Profile name is required." }
+
+        let target = sshTargetText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if target.isEmpty { return "SSH host is required." }
+        if !target.contains("@") || target.hasPrefix("@") || target.hasSuffix("@") {
+            return "SSH host must be in the form user@host."
+        }
+
+        let sshPort = sshPortText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !sshPort.isEmpty {
+            guard let port = Int(sshPort), (1...65535).contains(port) else {
+                return "SSH port must be between 1 and 65535."
+            }
+        }
+        return nil
     }
 
     private func testConnection() {
