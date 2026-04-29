@@ -92,7 +92,11 @@ public final class AppState: ObservableObject {
         StartupTrace.checkpoint("app.init", "after client; scheduling load")
         Task { await self.connectRemoteAndLoad() }
         startRefreshLoop()
+        AppLifecycleLog.info("rpc", "startRPCServer begin")
+        StartupTrace.checkpoint("app.init", "before startRPCServer")
         startRPCServer()
+        AppLifecycleLog.info("rpc", "startRPCServer end")
+        StartupTrace.checkpoint("app.init", "after startRPCServer")
     }
 
     // Designated for dependency injection in tests only
@@ -312,6 +316,7 @@ public final class AppState: ObservableObject {
     // MARK: - Background refresh (4 s polling)
 
     private func startRPCServer() {
+        AppLifecycleLog.info("rpc", "startRPCServer constructing HeadlessRPCServer")
         let server = HeadlessRPCServer(clientProvider: { [weak self] in
             self?.client as? WebSocketDaemonClient
         })
@@ -391,7 +396,9 @@ public final class AppState: ObservableObject {
             ]
         }
         rpcServer = server
+        AppLifecycleLog.info("rpc", "headless server configured; calling start()")
         server.start()
+        AppLifecycleLog.info("rpc", "headless server start() returned")
     }
 
     private func validateProfile(_ profile: DaemonProfile) -> (Bool, String) {

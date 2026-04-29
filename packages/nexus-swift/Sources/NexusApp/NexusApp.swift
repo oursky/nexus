@@ -31,6 +31,10 @@ private enum CrashProbe {
 
         NSSetUncaughtExceptionHandler(nexusUncaughtExceptionHandler)
 
+        // Never let SIGPIPE terminate the app; network/socket writes can legitimately
+        // hit EPIPE and should be handled as normal errors by callers.
+        _ = signal(SIGPIPE, SIG_IGN)
+
         // Do not trap SIGPIPE as fatal: macOS frameworks can legitimately emit it.
         for sig in [SIGABRT, SIGILL, SIGSEGV, SIGFPE, SIGBUS, SIGTRAP] {
             signal(sig, nexusCrashSignalHandler)

@@ -34,12 +34,32 @@ public actor SSHTunnelManager {
             do {
                 let port = try allocateLocalPort()
                 _localPort = port
-                try launchSSH(localPort: port)
-                try await waitForHealthz(localPort: port)
-                _state = .connected
-                AppLifecycleLog.info("ssh-tunnel", "start success localPort=\(port)")
-                startRestartLoop(localPort: port)
-                return port
+                let configPath = existingSSHConfigPath()
+                let configModes: [String?] = configPath == nil ? [nil] : [configPath, nil]
+                var connected = false
+
+                for mode in configModes {
+                    do {
+                        try launchSSH(localPort: port, configPath: mode)
+                        try await waitForHealthz(localPort: port)
+                        _state = .connected
+                        AppLifecycleLog.info("ssh-tunnel", "start success localPort=\(port)")
+                        startRestartLoop(localPort: port)
+                        connected = true
+                        break
+                    } catch {
+                        lastError = error
+                        AppLifecycleLog.warn(
+                            "ssh-tunnel",
+                            "launch mode failed config=\(mode ?? "<default>"): \(error.localizedDescription)"
+                        )
+                        process?.terminate()
+                        process = nil
+                        stderrPipe = nil
+                    }
+                }
+                if connected { return port }
+                throw lastError
             } catch {
                 lastError = error
                 logger.error("tunnel start attempt \(attempt, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
@@ -174,13 +194,12 @@ public actor SSHTunnelManager {
         return Int(addr.sin_port.bigEndian)
     }
 
-    private func launchSSH(localPort: Int) throws {
+    private func launchSSH(localPort: Int, configPath: String?) throws {
         guard let sshTarget = profile.sshTarget, !sshTarget.isEmpty else {
             throw TunnelError.noTarget
         }
         let remotePort = profile.port
         let sshPort = profile.sshPort ?? 22
-        let configPath = existingSSHConfigPath()
 
         var args = [
             "-N",
@@ -298,7 +317,7 @@ public actor SSHTunnelManager {
         process?.terminate()
         process = nil
         stderrPipe = nil
-        try launchSSH(localPort: localPort)
+        try launchSSH(localPort: localPort, configPath: existingSSHConfigPath())
         _state = .connected
     }
 
