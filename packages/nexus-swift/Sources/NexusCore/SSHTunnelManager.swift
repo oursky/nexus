@@ -15,6 +15,7 @@ public actor SSHTunnelManager {
     private var _localPort: Int?
     private var restartTask: Task<Void, Never>?
     private var stderrPipe: Pipe?
+    private var stdoutPipe: Pipe?
     private var activeScopedPaths: SSHSecurityScopedPaths = .empty
     private let logger = Logger(subsystem: "com.nexus.NexusApp", category: "SSHTunnel")
 
@@ -61,7 +62,7 @@ public actor SSHTunnelManager {
                         )
                         process?.terminate()
                         process = nil
-                        stderrPipe = nil
+                        clearPipes()
                     }
                 }
                 if connected { return port }
@@ -72,7 +73,7 @@ public actor SSHTunnelManager {
                 AppLifecycleLog.warn("ssh-tunnel", "attempt \(attempt) failed: \(error.localizedDescription)")
                 process?.terminate()
                 process = nil
-                stderrPipe = nil
+                clearPipes()
 
                 if case TunnelError.noTarget = error {
                     break
@@ -168,10 +169,17 @@ public actor SSHTunnelManager {
         restartTask = nil
         process?.terminate()
         process = nil
-        stderrPipe = nil
+        clearPipes()
         SSHSecurityScope.stop(activeScopedPaths)
         activeScopedPaths = .empty
         _state = .idle
+    }
+
+    private func clearPipes() {
+        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        stdoutPipe = nil
+        stderrPipe?.fileHandleForReading.readabilityHandler = nil
+        stderrPipe = nil
     }
 
     private func allocateLocalPort() throws -> Int {
@@ -260,6 +268,7 @@ public actor SSHTunnelManager {
                 if !trimmed.isEmpty { logger.debug("ssh stdout: \(trimmed, privacy: .public)") }
             }
         }
+        self.stdoutPipe = outPipe
 
         let errPipe = Pipe()
         proc.standardError = errPipe
@@ -339,7 +348,7 @@ public actor SSHTunnelManager {
     private func relaunchSSH(localPort: Int) throws {
         process?.terminate()
         process = nil
-        stderrPipe = nil
+        clearPipes()
         let resolvedPaths = resolveScopedPaths()
         let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
         try launchSSH(localPort: localPort, configPath: configPath, identityPath: resolvedPaths.identityPath)
