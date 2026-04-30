@@ -97,6 +97,7 @@ func BakeRootfsIfNeeded(ctx context.Context, cfg ManagerConfig, stampDir string)
 		if attempt > 1 {
 			log.Printf("[libkrun] rootfs bake: retrying bake (attempt %d/%d)...", attempt, maxAttempts)
 		}
+		cleanupStaleBakeArtifacts()
 		bakedRootfsPath, bakeErr = runBakeVM(ctx, cfg)
 		if bakeErr == nil {
 			break
