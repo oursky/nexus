@@ -81,9 +81,22 @@ public struct SSHClientArgs {
         return args
     }
 
-    /// Args for a one-shot remote command: `ssh <base> <target> <command...>`
+    /// Args for a one-shot remote argv: `ssh <base> <target> <command...>`
+    ///
+    /// Use this when passing a pre-tokenised command (e.g. `["nexus", "daemon", "token"]`).
+    /// SSH passes each element as a separate argument to the remote login shell's exec,
+    /// so no shell quoting is needed and the result is not affected by the remote login shell.
     public func commandArgs(remoteCommand: [String]) -> [String] {
         baseArgs + [sshTarget] + remoteCommand
+    }
+
+    /// Args for a one-shot remote shell script: `ssh <base> <target> bash -c '<script>'`
+    ///
+    /// Forces `bash` on the remote side so scripts can rely on bash-specific features
+    /// (`set -euo pipefail`, `[[`, process substitution, etc.) regardless of the user's
+    /// login shell.
+    public func shellArgs(script: String) -> [String] {
+        baseArgs + [sshTarget, "bash", "-c", script]
     }
 
     /// Args for a background port-forward tunnel: `ssh -v -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 -L ...`

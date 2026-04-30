@@ -50,7 +50,7 @@ public actor RemoteProvisioner {
             SSHSecurityScope.stop(sshScopedPaths)
             sshScopedPaths = .empty
         }
-        let result = try runSSH(sshTarget: sshTarget, command: "echo ok")
+        let result = try runSSH(sshTarget: sshTarget, script: "echo ok")
         return result.trimmingCharacters(in: .whitespacesAndNewlines) == "ok"
     }
 
@@ -88,7 +88,7 @@ public actor RemoteProvisioner {
         // ── 0. Probe SSH connectivity — fail fast before any upload attempt ──────
         // A simple `echo ok` will exit 255 with "Permission denied" on auth failure,
         // throwing sshAuthFailed immediately rather than hanging in the upload pipe.
-        _ = try runSSH(sshTarget: sshTarget, command: "echo ok")
+        _ = try runSSH(sshTarget: sshTarget, script: "echo ok")
 
         // ── 1. Check daemon health + binary freshness ───────────────────────────
         let daemonInitiallyHealthy = await isDaemonHealthy(sshTarget: sshTarget)
@@ -127,7 +127,7 @@ public actor RemoteProvisioner {
     // MARK: - Private helpers
 
     private func isDaemonHealthy(sshTarget: String) async -> Bool {
-        let result = try? runSSH(sshTarget: sshTarget, command: """
+        let result = try? runSSH(sshTarget: sshTarget, script: """
             curl -sf --max-time 2 http://127.0.0.1:\(profile.port)/healthz >/dev/null 2>&1 && echo ok || echo no
             """)
         return result?.trimmingCharacters(in: .whitespacesAndNewlines) == "ok"
@@ -157,7 +157,7 @@ public actor RemoteProvisioner {
     }
 
     private func remoteNexusSHA256(sshTarget: String) -> String? {
-        let result = try? runSSH(sshTarget: sshTarget, command: """
+        let result = try? runSSH(sshTarget: sshTarget, script: """
             set -euo pipefail
             BIN="$HOME/.local/bin/nexus"
             if [ ! -x "$BIN" ]; then
@@ -189,8 +189,7 @@ public actor RemoteProvisioner {
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        proc.arguments = makeSSHClient(sshTarget: sshTarget).commandArgs(remoteCommand: [
-            """
+        proc.arguments = makeSSHClient(sshTarget: sshTarget).shellArgs(script: """
             set -euo pipefail
             mkdir -p "$HOME/.local/bin"
             TMPFILE=$(mktemp "$HOME/.local/bin/.nexus-upload.XXXXXX")
@@ -198,8 +197,7 @@ public actor RemoteProvisioner {
             chmod +x "$TMPFILE"
             mv "$TMPFILE" "$HOME/.local/bin/nexus"
             echo installed
-            """,
-        ])
+            """)
 
         let inputPipe = Pipe()
         let outputPipe = Pipe()
@@ -306,7 +304,7 @@ public actor RemoteProvisioner {
     }
 
     private func stopDaemonIfRunning(sshTarget: String) async throws {
-        _ = try runSSH(sshTarget: sshTarget, command: """
+        _ = try runSSH(sshTarget: sshTarget, script: """
             set -euo pipefail
             export PATH="$HOME/.local/bin:$PATH"
             "$HOME/.local/bin/nexus" daemon stop >/dev/null 2>&1 || true
@@ -348,7 +346,7 @@ public actor RemoteProvisioner {
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        proc.arguments = makeSSHClient(sshTarget: sshTarget).commandArgs(remoteCommand: [cmd])
+        proc.arguments = makeSSHClient(sshTarget: sshTarget).shellArgs(script: cmd)
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -496,11 +494,11 @@ public actor RemoteProvisioner {
     }
 
     @discardableResult
-    private func runSSH(sshTarget: String, command: String) throws -> String {
+    private func runSSH(sshTarget: String, script: String) throws -> String {
         let client = makeSSHClient(sshTarget: sshTarget)
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        proc.arguments = client.commandArgs(remoteCommand: [command])
+        proc.arguments = client.shellArgs(script: script)
         let outPipe = Pipe()
         let errPipe = Pipe()
         proc.standardOutput = outPipe
@@ -515,7 +513,7 @@ public actor RemoteProvisioner {
             if proc.terminationStatus == 255 && err.contains("Permission denied") {
                 throw ProvisionError.sshAuthFailed(message: err)
             }
-            throw ProvisionError.sshFailed(command: command, message: err.isEmpty ? "exit \(proc.terminationStatus)" : err)
+            throw ProvisionError.sshFailed(command: script, message: err.isEmpty ? "exit \(proc.terminationStatus)" : err)
         }
         let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         return out

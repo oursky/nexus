@@ -737,6 +737,7 @@ public final class AppState: ObservableObject {
                 await MainActor.run { [weak self] in
                     self?.connectionState = .provisioning(step: msg)
                     self?.provisioningMessage = msg
+                    AppLifecycleLog.info("provision", msg)
                 }
             }
             Self.logger.info("connectRemoteAndLoad: provisioning complete for \(sshTarget, privacy: .public)")
@@ -756,6 +757,7 @@ public final class AppState: ObservableObject {
             // Provisioning failed in a way that tunnel start cannot recover from.
             // Surface the error directly so the user knows what to fix.
             Self.logger.warning("connectRemoteAndLoad: provisioning hard failure, bailing early: \(provErr.localizedDescription, privacy: .public)")
+            AppLifecycleLog.error("provision", "failed: \(provErr.localizedDescription)")
             connectionState = .disconnected
             self.error = provErr.localizedDescription
             needsSetup = true
@@ -764,6 +766,7 @@ public final class AppState: ObservableObject {
             // Transient / unknown provision errors — attempt connection anyway in case
             // the daemon is already running (e.g. provision check itself failed).
             Self.logger.warning("connectRemoteAndLoad: provision step failed (\(error.localizedDescription, privacy: .public)); attempting connection anyway")
+            AppLifecycleLog.warn("provision", "transient failure, attempting connection anyway: \(error.localizedDescription)")
         }
         provisioningMessage = nil
 
@@ -912,6 +915,7 @@ public final class AppState: ObservableObject {
                     await MainActor.run { [weak self] in
                         self?.connectionState = .provisioning(step: msg)
                         self?.provisioningMessage = msg
+                        AppLifecycleLog.info("provision", msg)
                     }
                 }
                 Self.logger.info("installDaemon: provisioning succeeded")
