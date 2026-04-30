@@ -42,7 +42,7 @@ var runComposeCommand = func(ctx context.Context, workspaceRoot string, args ...
 }
 
 func DiscoverPublishedPorts(ctx context.Context, workspaceRoot string) ([]PublishedPort, error) {
-	composeFile, found, err := findComposeFile(workspaceRoot)
+	composeFiles, found, err := findComposeFiles(workspaceRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -50,9 +50,15 @@ func DiscoverPublishedPorts(ctx context.Context, workspaceRoot string) ([]Publis
 		return nil, ErrComposeFileNotFound
 	}
 
-	out, err := runComposeCommand(ctx, workspaceRoot, "-f", composeFile, "config", "--format", "json")
+	// Build "-f file1 -f file2 ..." args followed by the subcommand.
+	var fileArgs []string
+	for _, f := range composeFiles {
+		fileArgs = append(fileArgs, "-f", f)
+	}
+	configArgs := append(fileArgs, "config", "--format", "json")
+	out, err := runComposeCommand(ctx, workspaceRoot, configArgs...)
 	if err != nil {
-		_, _ = runComposeCommand(ctx, workspaceRoot, "-f", composeFile, "config")
+		_, _ = runComposeCommand(ctx, workspaceRoot, append(fileArgs, "config")...)
 		return nil, fmt.Errorf("%w: %v", ErrComposeJSONUnsupported, err)
 	}
 
@@ -79,18 +85,74 @@ func DiscoverPublishedPorts(ctx context.Context, workspaceRoot string) ([]Publis
 	return ports, nil
 }
 
-func findComposeFile(workspaceRoot string) (string, bool, error) {
-	for _, name := range []string{"docker-compose.yml", "docker-compose.yaml"} {
-		path := filepath.Join(workspaceRoot, name)
-		info, err := os.Stat(path)
-		if err == nil && !info.IsDir() {
-			return path, true, nil
+// findComposeFiles returns the ordered list of docker-compose files to pass to
+// "docker compose -f" for the given workspace root. It searches:
+//
+//  1. The workspace root itself (docker-compose.yml / docker-compose.yaml).
+//  2. One level of subdirectories (e.g. backend/docker-compose.yaml).
+//
+// For each primary compose file found it also appends the sibling override
+// file (docker-compose.override.yml / docker-compose.override.yaml) when
+// present. The first directory that contains a primary compose file wins;
+// subdirectory search stops there.
+//
+// Returns (files, found, error). files is nil when not found.
+func findComposeFiles(workspaceRoot string) ([]string, bool, error) {
+	primaryNames := []string{"docker-compose.yml", "docker-compose.yaml"}
+	overrideNames := []string{"docker-compose.override.yml", "docker-compose.override.yaml"}
+
+	findInDir := func(dir string) ([]string, bool, error) {
+		var primary string
+		for _, name := range primaryNames {
+			p := filepath.Join(dir, name)
+			info, err := os.Stat(p)
+			if err == nil && !info.IsDir() {
+				primary = p
+				break
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return nil, false, err
+			}
 		}
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return "", false, err
+		if primary == "" {
+			return nil, false, nil
+		}
+		files := []string{primary}
+		for _, name := range overrideNames {
+			p := filepath.Join(dir, name)
+			info, err := os.Stat(p)
+			if err == nil && !info.IsDir() {
+				files = append(files, p)
+				break
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return nil, false, err
+			}
+		}
+		return files, true, nil
+	}
+
+	// 1. Check workspace root first.
+	if files, found, err := findInDir(workspaceRoot); err != nil || found {
+		return files, found, err
+	}
+
+	// 2. Search one level of subdirectories.
+	entries, err := os.ReadDir(workspaceRoot)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		subdir := filepath.Join(workspaceRoot, e.Name())
+		if files, found, err := findInDir(subdir); err != nil || found {
+			return files, found, err
 		}
 	}
-	return "", false, nil
+
+	return nil, false, nil
 }
 
 func parsePublishedPortsFromConfigJSON(data []byte) ([]PublishedPort, error) {

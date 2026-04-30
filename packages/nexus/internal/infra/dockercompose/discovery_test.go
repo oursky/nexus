@@ -146,3 +146,83 @@ func TestDiscoverPublishedPorts_ReturnsComposeJSONUnsupportedOnNonJSONStdout(t *
 		t.Fatalf("expected non-json hint, got %v", err)
 	}
 }
+
+// TestFindComposeFiles_SubdirSearch verifies that a compose file in a one-level
+// subdirectory is found when the workspace root has none.
+func TestFindComposeFiles_SubdirSearch(t *testing.T) {
+	root := t.TempDir()
+	subdir := filepath.Join(root, "backend")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "docker-compose.yml"), []byte("services:{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, found, err := findComposeFiles(root)
+	if err != nil {
+		t.Fatalf("findComposeFiles: %v", err)
+	}
+	if !found {
+		t.Fatal("expected compose file to be found in subdir")
+	}
+	if len(files) != 1 || filepath.Dir(files[0]) != subdir {
+		t.Fatalf("expected file in %s, got %v", subdir, files)
+	}
+}
+
+// TestFindComposeFiles_OverrideIncluded verifies that the override file is
+// appended after the primary when it exists alongside.
+func TestFindComposeFiles_OverrideIncluded(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "docker-compose.yml"), []byte("services:{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docker-compose.override.yml"), []byte("services:{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, found, err := findComposeFiles(root)
+	if err != nil {
+		t.Fatalf("findComposeFiles: %v", err)
+	}
+	if !found {
+		t.Fatal("expected compose files to be found")
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files (primary + override), got %v", files)
+	}
+	if filepath.Base(files[0]) != "docker-compose.yml" {
+		t.Fatalf("expected primary first, got %s", files[0])
+	}
+	if filepath.Base(files[1]) != "docker-compose.override.yml" {
+		t.Fatalf("expected override second, got %s", files[1])
+	}
+}
+
+// TestFindComposeFiles_RootPreferredOverSubdir verifies that a root compose
+// file wins over a compose file in a subdirectory.
+func TestFindComposeFiles_RootPreferredOverSubdir(t *testing.T) {
+	root := t.TempDir()
+	subdir := filepath.Join(root, "backend")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docker-compose.yml"), []byte("services:{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "docker-compose.yml"), []byte("services:{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, found, err := findComposeFiles(root)
+	if err != nil {
+		t.Fatalf("findComposeFiles: %v", err)
+	}
+	if !found {
+		t.Fatal("expected compose file to be found")
+	}
+	if len(files) < 1 || filepath.Dir(files[0]) != root {
+		t.Fatalf("expected root compose file to be preferred, got %v", files)
+	}
+}
