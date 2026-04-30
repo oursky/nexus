@@ -31,7 +31,9 @@ xcodebuild \
   -derivedDataPath "$DERIVED" \
   -resolvePackageDependencies 2>&1 | tail -3
 
-echo "==> Building NexusApp (Release, ad-hoc signing)..."
+DMG_ENTITLEMENTS="$SWIFT_DIR/Sources/NexusApp/NexusApp-DMG.entitlements"
+
+echo "==> Building NexusApp (Release, ad-hoc signing, no sandbox)..."
 LOG=$(mktemp)
 set +e
 xcodebuild \
@@ -43,6 +45,7 @@ xcodebuild \
   CODE_SIGN_IDENTITY="-" \
   CODE_SIGNING_REQUIRED=YES \
   CODE_SIGN_STYLE=Manual \
+  CODE_SIGN_ENTITLEMENTS="$DMG_ENTITLEMENTS" \
   build >"$LOG" 2>&1
 EXIT=$?
 set -e

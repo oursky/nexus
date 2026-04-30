@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- DMG / direct-distribution build: no App Sandbox.
+	     The App Store build uses NexusApp.entitlements with sandbox enabled.
+	     Without the sandbox the app can spawn SSH subprocesses and read
+	     identity files directly from ~/.ssh without security-scoped bookmarks. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
+</dict>
+</plist>
