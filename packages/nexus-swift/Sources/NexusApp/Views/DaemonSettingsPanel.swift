@@ -27,6 +27,11 @@ struct DaemonSettingsPanel: View {
         }
         .frame(width: 320)
         .background(Theme.bgContent)
+        // Suppress animated popover resize — SwiftUI triggers NSPopover resize animations
+        // when content height changes (e.g. sections expand/collapse). On macOS 26.2 (Tahoe),
+        // NSMoveHelper._doAnimation dereferences a null function pointer, causing a SIGSEGV crash.
+        // Disabling the transaction animation on this view prevents the animated resize path.
+        .transaction { $0.animation = nil }
         .sheet(item: $checkResult) { result in
             DaemonCheckResultSheet(result: result)
         }

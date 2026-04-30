@@ -90,13 +90,13 @@ public struct SSHClientArgs {
         baseArgs + [sshTarget] + remoteCommand
     }
 
-    /// Args for a one-shot remote shell script: `ssh <base> <target> bash -c '<script>'`
+    /// Args for a one-shot remote shell script: `ssh <base> <target> /bin/bash -c '<script>'`
     ///
-    /// Forces `bash` on the remote side so scripts can rely on bash-specific features
-    /// (`set -euo pipefail`, `[[`, process substitution, etc.) regardless of the user's
-    /// login shell.
+    /// Uses the absolute path `/bin/bash` so the script runs under bash regardless of
+    /// the user's login shell (fish, zsh, etc.) and regardless of whether `bash` is on
+    /// PATH in the remote non-interactive SSH environment.
     public func shellArgs(script: String) -> [String] {
-        baseArgs + [sshTarget, "bash", "-c", script]
+        baseArgs + [sshTarget, "/bin/bash", "-c", script]
     }
 
     /// Args for a background port-forward tunnel: `ssh -v -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 -L ...`
