@@ -25,6 +25,7 @@ func (h *Handler) create(ctx context.Context, raw json.RawMessage) (any, error) 
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, rpcerrors.InvalidParams("pty.invalid_params", err.Error())
 	}
+	log.Printf("pty: create: wsID=%q name=%q shell=%q cols=%d rows=%d dialer=%v", p.WorkspaceID, p.Name, p.Shell, p.Cols, p.Rows, h.dialer != nil)
 	if p.WorkspaceID == "" {
 		return nil, rpcerrors.InvalidParams("pty.invalid_params", "workspaceId is required")
 	}
@@ -35,6 +36,7 @@ func (h *Handler) create(ctx context.Context, raw json.RawMessage) (any, error) 
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("pty: create: ws=%v shouldUseVM=%v", ws != nil, h.shouldUseVMSession(ws))
 
 	if h.shouldUseVMSession(ws) {
 		return h.createVMSession(ctx, p, ws, cols, rows)
