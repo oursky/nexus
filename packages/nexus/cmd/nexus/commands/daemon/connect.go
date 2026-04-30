@@ -16,6 +16,7 @@ import (
 func connectCommand() *cobra.Command {
 	var port int
 	var sshPort int
+	var verbose bool
 
 	cmd := &cobra.Command{
 		Use:   "connect <host>",
@@ -24,7 +25,7 @@ func connectCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			host := args[0]
 
-			token, err := fetchRemoteToken(host, sshPort)
+			token, err := fetchRemoteToken(host, sshPort, verbose)
 			if err != nil {
 				return fmt.Errorf("fetch remote token: %w", err)
 			}
@@ -43,7 +44,7 @@ func connectCommand() *cobra.Command {
 				return fmt.Errorf("update local SSH config: %w", err)
 			}
 
-			conn, err := rpc.EnsureDaemon()
+			conn, err := rpc.EnsureDaemonVerbose(verbose)
 			if err != nil {
 				_ = profile.DeleteDefault()
 				return fmt.Errorf("connection test failed: %w", err)
@@ -57,16 +58,21 @@ func connectCommand() *cobra.Command {
 
 	cmd.Flags().IntVar(&port, "port", 7777, "remote daemon port")
 	cmd.Flags().IntVar(&sshPort, "ssh-port", 0, "SSH port (default: 22)")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print SSH commands and enable verbose SSH output")
 	return cmd
 }
 
-func fetchRemoteToken(host string, sshPort int) (string, error) {
+func fetchRemoteToken(host string, sshPort int, verbose bool) (string, error) {
 	// Use `nexus daemon token` on the remote host so the token is read from
 	// Use the full installed path because non-interactive SSH sessions do not
 	// source shell profiles, so ~/.local/bin is not in $PATH.
 	args := []string{host, "$HOME/.local/bin/nexus", "daemon", "token"}
 	if sshPort > 0 && sshPort != 22 {
 		args = append([]string{"-p", fmt.Sprintf("%d", sshPort)}, args...)
+	}
+	if verbose {
+		args = append([]string{"-v"}, args...)
+		fmt.Fprintf(os.Stderr, "[nexus] fetch token: ssh %s\n", strings.Join(args, " "))
 	}
 	out, err := exec.Command("ssh", args...).Output()
 	if err != nil {

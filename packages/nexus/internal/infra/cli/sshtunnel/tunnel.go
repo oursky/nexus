@@ -18,6 +18,7 @@ type Manager struct {
 	sshPort    int
 	remotePort int
 	localPort  int
+	verbose    bool
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -35,6 +36,13 @@ func New(host string, remotePort, sshPort int) *Manager {
 		sshPort:    sshPort,
 		remotePort: remotePort,
 	}
+}
+
+// NewVerbose creates a tunnel manager that prints the SSH command and passes -v.
+func NewVerbose(host string, remotePort, sshPort int) *Manager {
+	m := New(host, remotePort, sshPort)
+	m.verbose = true
+	return m
 }
 
 // NewWithTarget creates a tunnel manager that forwards to a specific remote host:port.
@@ -88,6 +96,9 @@ func (m *Manager) EnsureWithLocalPort(localPort int) (int, error) {
 			"-o", "BatchMode=yes",
 		)
 	}
+	if m.verbose {
+		args = append(args, "-v")
+	}
 	args = append(args, "-fNL",
 		fmt.Sprintf("localhost:%d:%s:%d", m.localPort, m.remoteHost, m.remotePort),
 		"-o", "ServerAliveInterval=30",
@@ -101,8 +112,14 @@ func (m *Manager) EnsureWithLocalPort(localPort int) (int, error) {
 
 	cmd := exec.Command("ssh", args...)
 	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	if m.verbose {
+		fmt.Fprintf(os.Stderr, "[nexus] ssh tunnel: ssh %s\n", strings.Join(args, " "))
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+	} else {
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+	}
 
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("ssh tunnel start: %w", err)

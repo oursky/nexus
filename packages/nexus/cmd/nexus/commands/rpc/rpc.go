@@ -48,6 +48,10 @@ var tunnelCache struct {
 const envE2EDaemonWebSocket = "NEXUS_E2E_DAEMON_WEBSOCKET"
 
 func EnsureDaemon() (*websocket.Conn, error) {
+	return EnsureDaemonVerbose(false)
+}
+
+func EnsureDaemonVerbose(verbose bool) (*websocket.Conn, error) {
 	if ws := strings.TrimSpace(os.Getenv(envE2EDaemonWebSocket)); ws != "" {
 		return dialDaemonWebSocket(ws)
 	}
@@ -58,7 +62,12 @@ func EnsureDaemon() (*websocket.Conn, error) {
 	}
 
 	tunnelCache.Do(func() {
-		tm := sshtunnel.New(p.Host, p.Port, p.SSHPort)
+		var tm *sshtunnel.Manager
+		if verbose {
+			tm = sshtunnel.NewVerbose(p.Host, p.Port, p.SSHPort)
+		} else {
+			tm = sshtunnel.New(p.Host, p.Port, p.SSHPort)
+		}
 		localPort, err := tm.Ensure()
 		if err != nil {
 			tm.Close()
@@ -75,6 +84,9 @@ func EnsureDaemon() (*websocket.Conn, error) {
 	url := fmt.Sprintf("ws://localhost:%d/", tunnelCache.port)
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+p.Token)
+	if verbose {
+		fmt.Fprintf(os.Stderr, "[nexus] connecting to daemon: %s\n", url)
+	}
 	conn, _, err := websocket.DefaultDialer.Dial(url, header)
 	if err != nil {
 		return nil, fmt.Errorf("connect to daemon: %w", err)
