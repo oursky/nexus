@@ -278,14 +278,13 @@ private struct ProfileEditSheet: View {
             sshIdentityBookmark: sshIdentityBookmark
         )
         Task {
-            let mgr = SSHTunnelManager(profile: testProfile)
+            // Test Connection only verifies SSH auth — not daemon connectivity.
+            // The daemon may not exist yet (it gets provisioned after Save).
+            // Running a full tunnel here would hang for 30s on hosts with no daemon.
             do {
-                let _ = try await mgr.start()
-                let _ = try await mgr.fetchRemoteToken()
-                await mgr.stop()
-                await MainActor.run { testState = .ok }
+                let result = try await RemoteProvisioner.probeSSH(profile: testProfile)
+                await MainActor.run { testState = result ? .ok : .failed("SSH connected but remote command failed.") }
             } catch {
-                await mgr.stop()
                 await MainActor.run { testState = .failed(error.localizedDescription) }
             }
         }

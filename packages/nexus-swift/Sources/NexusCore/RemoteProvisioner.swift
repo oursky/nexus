@@ -32,6 +32,28 @@ public actor RemoteProvisioner {
     private let logger = Logger(subsystem: "com.nexus.NexusApp", category: "RemoteProvisioner")
     private var sshScopedPaths: SSHSecurityScopedPaths = .empty
 
+    /// Probe SSH connectivity only — no daemon check, no upload, no tunnel.
+    /// Runs `echo ok` over SSH and returns true on success.
+    /// Throws a descriptive error (with raw SSH stderr) if auth fails or host is unreachable.
+    public static func probeSSH(profile: DaemonProfile) async throws -> Bool {
+        let provisioner = RemoteProvisioner(profile: profile)
+        return try await provisioner._probeSSH()
+    }
+
+    private func _probeSSH() throws -> Bool {
+        guard let sshTarget = profile.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sshTarget.isEmpty else {
+            throw ProvisionError.noSSHTarget
+        }
+        sshScopedPaths = SSHSecurityScope.resolve(profile: profile, category: "probe")
+        defer {
+            SSHSecurityScope.stop(sshScopedPaths)
+            sshScopedPaths = .empty
+        }
+        let result = try runSSH(sshTarget: sshTarget, command: "echo ok")
+        return result.trimmingCharacters(in: .whitespacesAndNewlines) == "ok"
+    }
+
     /// Minimum daemon version we require on the remote.
     static let minimumVersion = "0.0.1"
 
