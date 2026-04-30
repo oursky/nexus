@@ -170,6 +170,11 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 			Path:   gitHookSockPath(workDir),
 			Listen: false, // host listens; guest dials to report branch changes
 		},
+		{
+			Port:   DockerCredHelperVSockPort,
+			Path:   dockerCredHelperSockPath(workDir),
+			Listen: false, // host listens; guest dials to proxy docker credential requests
+		},
 	}
 
 	kernelCmdline := "console=hvc0 root=/dev/vda rw rootfstype=ext4 init=/usr/local/bin/nexus-guest-agent"
@@ -336,6 +341,9 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	// Start SSH agent proxy (listens on the vsock_10790.sock the guest will dial).
 	startSSHAgentProxy(sshAgentSockPath(workDir))
+
+	// Start Docker credential helper proxy (listens on vsock_10793.sock the guest will dial).
+	startDockerCredHelperProxy(dockerCredHelperSockPath(workDir))
 
 	log.Printf("[libkrun] started workspace %s (pid=%d ssh=127.0.0.1:%d)",
 		spec.WorkspaceID, childCmd.Process.Pid, sshPort)

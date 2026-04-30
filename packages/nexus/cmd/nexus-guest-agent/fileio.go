@@ -87,6 +87,21 @@ func applyHostConfigDrive() error {
 		_ = os.WriteFile(c.dst, data, c.mode)
 	}
 
+	// Write Docker daemon auth config routing all credential requests through
+	// the host-side credential helper proxy via vsock. docker-credential-nexus
+	// is the guest-side shim (embedded in the guest agent binary).
+	_ = os.MkdirAll("/root/.docker", 0o700)
+	_ = os.WriteFile("/root/.docker/config.json", []byte(`{"credsStore":"nexus"}`+"\n"), 0o600)
+
+	// Install docker-credential-nexus as a symlink to the guest agent binary,
+	// which handles the credential helper protocol when invoked as that name.
+	agentBin := "/usr/local/bin/nexus-guest-agent"
+	credHelperBin := "/usr/local/bin/docker-credential-nexus"
+	_ = os.Remove(credHelperBin)
+	if err := os.Symlink(agentBin, credHelperBin); err != nil {
+		emitDiagnostic("docker cred helper: symlink %s → %s: %v", credHelperBin, agentBin, err)
+	}
+
 	// Ensure git safe.directory for the workspace.
 	_ = exec.Command("git", "config", "--global", "--add", "safe.directory", "/workspace").Run()
 	_ = exec.Command("git", "config", "--global", "--add", "safe.directory", "*").Run()

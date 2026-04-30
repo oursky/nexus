@@ -18,11 +18,19 @@ const (
 	defaultAgentVSockPort     uint32 = 10789
 	defaultSpotlightVSockPort uint32 = 10792
 	vendingVSockPort          uint32 = 10790
+	dockerCredHelperVSockPort uint32 = 10793
 )
 
 const defaultAgentPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 func main() {
+	// When invoked as docker-credential-nexus, act as the Docker credential
+	// helper shim (proxies to the host via vsock).
+	if strings.HasSuffix(os.Args[0], "docker-credential-nexus") {
+		runDockerCredentialHelper()
+		return
+	}
+
 	pid := os.Getpid()
 	emitDiagnostic("agent boot pid=%d", pid)
 
@@ -62,6 +70,7 @@ func main() {
 
 	startSSHAgentProxy()
 	startGitHookForwarder()
+	startDockerCredHelperListener()
 
 	// Toolchain setup: in baked mode verify tools, otherwise run full install.
 	if isBakedMode() {

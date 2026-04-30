@@ -22,6 +22,10 @@ const DefaultAgentVSockPort uint32 = 10789
 // DefaultSpotlightVSockPort is the vsock port for spotlight port-forwarding.
 const DefaultSpotlightVSockPort uint32 = 10792
 
+// DockerCredHelperVSockPort is the vsock port for the Docker credential helper proxy.
+// The host listens; the guest dials to forward docker-credential requests.
+const DockerCredHelperVSockPort uint32 = 10793
+
 // ManagerConfig holds configuration for the libkrun VM manager.
 type ManagerConfig struct {
 	// LibkrunVMBin is the path to the nexus-libkrun-vm helper binary.
