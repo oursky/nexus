@@ -26,6 +26,16 @@ public actor SSHTunnelManager {
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             process.terminate()
         }
+
+        /// Drain any remaining stderr after the process has exited.
+        /// The readabilityHandler may not have fired for the last bytes; read synchronously.
+        func drainStderr() -> String {
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            return String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
     }
 
     // MARK: - State stream
@@ -98,7 +108,7 @@ public actor SSHTunnelManager {
                 if case TunnelError.noTarget = error { break }
                 // SSH process died immediately — auth failure or host rejected connection.
                 // Retrying won't help and spawns multiple SSH subprocesses, burning CPU.
-                if case TunnelError.processDied = error { break }
+                if let te = error as? TunnelError, case TunnelError.processDied = te { break }
                 if attempt < maxAttempts {
                     let delay = UInt64(attempt) * 300_000_000
                     try? await Task.sleep(nanoseconds: delay)
@@ -207,6 +217,7 @@ public actor SSHTunnelManager {
     private func runSSH(client: SSHClientArgs, command: [String]) throws -> String {
         let args = client.commandArgs(remoteCommand: command)
         AppLifecycleLog.info("ssh-tunnel", "token-fetch \(client.logDescription)")
+        AppLifecycleLog.info("ssh-tunnel", "token-fetch full-args: ssh \(args.joined(separator: " "))")
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -289,6 +300,7 @@ public actor SSHTunnelManager {
             "ssh-tunnel",
             "launch \(client.logDescription) localPort=\(localPort) remotePort=\(remotePort)"
         )
+        AppLifecycleLog.info("ssh-tunnel", "launch full-args: ssh \(args.joined(separator: " "))")
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -375,8 +387,11 @@ public actor SSHTunnelManager {
         var attempt = 0
         while Date() < deadline {
             if let tunnel = controlTunnel, !tunnel.process.isRunning {
-                logger.error("ssh process died on attempt \(attempt, privacy: .public)")
-                throw TunnelError.processDied
+                let exitCode = tunnel.process.terminationStatus
+                let stderr = tunnel.drainStderr()
+                logger.error("ssh process died on attempt \(attempt, privacy: .public) exitCode=\(exitCode, privacy: .public) stderr=\(stderr, privacy: .public)")
+                AppLifecycleLog.error("ssh-tunnel", "ssh process died exitCode=\(exitCode) stderr=\(stderr)")
+                throw TunnelError.processDied(exitCode: exitCode, stderr: stderr)
             }
             attempt += 1
             var statusCode = "error"
@@ -407,7 +422,7 @@ public actor SSHTunnelManager {
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     continue
                 }
-                await self.setState(.failed(TunnelError.processDied))
+                await self.setState(.failed(TunnelError.processDied(exitCode: 0, stderr: "")))
                 try? await Task.sleep(nanoseconds: backoff)
                 backoff = min(backoff * 2, 30_000_000_000)
                 if Task.isCancelled { return }
@@ -455,7 +470,7 @@ public enum TunnelError: Error, LocalizedError {
     case portAllocation(operation: String, errnoCode: Int32?)
     case noTarget
     case identityRequired
-    case processDied
+    case processDied(exitCode: Int32, stderr: String)
     case timeout
     case tokenFetchFailed
 
@@ -472,9 +487,15 @@ public enum TunnelError: Error, LocalizedError {
             return "Failed to allocate local port"
         case .noTarget: return "No SSH target configured"
         case .identityRequired: return "SSH identity key is required for sandboxed app connection"
-        case .processDied: return "SSH process exited unexpectedly"
-        case .timeout: return "Tunnel did not become ready within 15 seconds"
+        case let .processDied(exitCode, stderr):
+            return TunnelError.describeProcessDied(exitCode: exitCode, stderr: stderr)
+        case .timeout: return "Tunnel did not become ready within 30 seconds"
         case .tokenFetchFailed: return "Could not fetch daemon token from remote host"
         }
+    }
+
+    private static func describeProcessDied(exitCode: Int32, stderr: String) -> String {
+        let detail = stderr.isEmpty ? "exit \(exitCode)" : "exit \(exitCode): \(stderr)"
+        return "SSH tunnel failed — \(detail)"
     }
 }
