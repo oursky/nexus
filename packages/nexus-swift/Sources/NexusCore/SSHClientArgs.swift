@@ -86,9 +86,10 @@ public struct SSHClientArgs {
         baseArgs + [sshTarget] + remoteCommand
     }
 
-    /// Args for a background port-forward tunnel: `ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 -L ...`
+    /// Args for a background port-forward tunnel: `ssh -v -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 -L ...`
     public func tunnelArgs(localPort: Int, remotePort: Int) -> [String] {
         baseArgs + [
+            "-v",
             "-N",
             "-o", "ExitOnForwardFailure=yes",
             "-o", "ServerAliveInterval=10",
