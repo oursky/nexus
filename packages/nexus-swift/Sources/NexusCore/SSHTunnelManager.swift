@@ -77,6 +77,11 @@ public actor SSHTunnelManager {
                 if case TunnelError.noTarget = error {
                     break
                 }
+                // SSH process died immediately — auth failure or host rejected connection.
+                // Retrying won't help and spawns multiple SSH subprocesses, burning CPU.
+                if case TunnelError.processDied = error {
+                    break
+                }
                 if attempt < maxAttempts {
                     let delay = UInt64(attempt) * 300_000_000
                     try? await Task.sleep(nanoseconds: delay)
