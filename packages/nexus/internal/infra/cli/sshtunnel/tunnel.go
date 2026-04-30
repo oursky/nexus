@@ -13,12 +13,13 @@ import (
 
 // Manager manages an SSH port-forward tunnel.
 type Manager struct {
-	host       string
-	remoteHost string
-	sshPort    int
-	remotePort int
-	localPort  int
-	verbose    bool
+	host         string
+	remoteHost   string
+	sshPort      int
+	remotePort   int
+	localPort    int
+	verbose      bool
+	identityFile string
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -42,6 +43,19 @@ func New(host string, remotePort, sshPort int) *Manager {
 func NewVerbose(host string, remotePort, sshPort int) *Manager {
 	m := New(host, remotePort, sshPort)
 	m.verbose = true
+	return m
+}
+
+// NewWithOptions creates a tunnel manager with full options.
+type Options struct {
+	Verbose      bool
+	IdentityFile string
+}
+
+func NewWithOptions(host string, remotePort, sshPort int, opts Options) *Manager {
+	m := New(host, remotePort, sshPort)
+	m.verbose = opts.Verbose
+	m.identityFile = opts.IdentityFile
 	return m
 }
 
@@ -86,8 +100,17 @@ func (m *Manager) EnsureWithLocalPort(localPort int) (int, error) {
 	}
 
 	var args []string
-	if id := strings.TrimSpace(os.Getenv("NEXUS_E2E_SSH_IDENTITY")); id != "" {
-		args = append(args, "-i", id)
+	if m.identityFile != "" {
+		// -F /dev/null prevents ~/.ssh/config from injecting additional keys.
+		// IdentitiesOnly=yes + IdentityAgent=none ensure only the specified key is used.
+		args = append(args,
+			"-F", "/dev/null",
+			"-i", m.identityFile,
+			"-o", "IdentitiesOnly=yes",
+			"-o", "IdentityAgent=none",
+		)
+	} else if id := strings.TrimSpace(os.Getenv("NEXUS_E2E_SSH_IDENTITY")); id != "" {
+		args = append(args, "-i", id, "-o", "IdentitiesOnly=yes")
 	}
 	if os.Getenv("CI") != "" {
 		args = append(args,

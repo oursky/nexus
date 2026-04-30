@@ -13,11 +13,12 @@ import (
 // Token is intentionally omitted from JSON — it is stored separately in the
 // OS keychain (macOS Keychain / Linux SecretService / headless file store).
 type Profile struct {
-	Name    string `json:"name"`
-	Host    string `json:"host"`              // SSH target, e.g. "newman@linuxbox"
-	Port    int    `json:"port"`              // Remote daemon port, e.g. 7777
-	Token   string `json:"-"`                 // never written to JSON; use Load/SaveToken
-	SSHPort int    `json:"sshPort,omitempty"` // SSH port override (default: 22)
+	Name            string `json:"name"`
+	Host            string `json:"host"`                      // SSH target, e.g. "newman@linuxbox"
+	Port            int    `json:"port"`                      // Remote daemon port, e.g. 7777
+	Token           string `json:"-"`                         // never written to JSON; use Load/SaveToken
+	SSHPort         int    `json:"sshPort,omitempty"`         // SSH port override (default: 22)
+	SSHIdentityFile string `json:"sshIdentityFile,omitempty"` // SSH identity file (private key path)
 }
 
 // ProfilesDir returns the directory where profiles are stored.

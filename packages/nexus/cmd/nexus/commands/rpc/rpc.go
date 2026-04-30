@@ -48,7 +48,7 @@ var tunnelCache struct {
 const envE2EDaemonWebSocket = "NEXUS_E2E_DAEMON_WEBSOCKET"
 
 func EnsureDaemon() (*websocket.Conn, error) {
-	return EnsureDaemonVerbose(false)
+	return EnsureDaemonVerbose(true)
 }
 
 func EnsureDaemonVerbose(verbose bool) (*websocket.Conn, error) {
@@ -62,12 +62,10 @@ func EnsureDaemonVerbose(verbose bool) (*websocket.Conn, error) {
 	}
 
 	tunnelCache.Do(func() {
-		var tm *sshtunnel.Manager
-		if verbose {
-			tm = sshtunnel.NewVerbose(p.Host, p.Port, p.SSHPort)
-		} else {
-			tm = sshtunnel.New(p.Host, p.Port, p.SSHPort)
-		}
+		tm := sshtunnel.NewWithOptions(p.Host, p.Port, p.SSHPort, sshtunnel.Options{
+			Verbose:      verbose,
+			IdentityFile: p.SSHIdentityFile,
+		})
 		localPort, err := tm.Ensure()
 		if err != nil {
 			tm.Close()
