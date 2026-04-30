@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,8 +24,6 @@ import (
 func cleanupStaleBakeArtifacts() {
 	// Kill orphan passt processes that were started by a previous bake VM.
 	// Pattern matches the args nexus always passes: "passt --fd <n> --foreground".
-	// We intentionally use a broad match so we don't leave stray processes even
-	// if the port/FD numbers differ between runs.
 	out, err := exec.Command("pgrep", "-f", "passt --fd").Output()
 	if err == nil {
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -32,11 +31,14 @@ func cleanupStaleBakeArtifacts() {
 			if line == "" {
 				continue
 			}
-			// pgrep -f returns PIDs, one per line.
-			proc, err := os.FindProcess(atoi(line))
+			pid, err := strconv.Atoi(line)
+			if err != nil || pid <= 0 {
+				continue
+			}
+			proc, err := os.FindProcess(pid)
 			if err == nil {
 				if killErr := proc.Kill(); killErr == nil {
-					log.Printf("[libkrun] bake cleanup: killed orphan passt pid=%s", line)
+					log.Printf("[libkrun] bake cleanup: killed orphan passt pid=%d", pid)
 				}
 			}
 		}
@@ -54,18 +56,6 @@ func cleanupStaleBakeArtifacts() {
 			log.Printf("[libkrun] bake cleanup: removed stale bake dir %s", dir)
 		}
 	}
-}
-
-// atoi converts a decimal string to int, returning 0 on error.
-func atoi(s string) int {
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n
 }
 
 // runBakeVM boots a temporary libkrun VM with nexus.bake=1 in the kernel
