@@ -298,6 +298,11 @@ jobs:
           echo "DEVELOPER_DIR=$XCODE_DIR" >> "$GITHUB_ENV"
           echo "Selected Xcode: $XCODE_DIR"
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+
       - name: Stage macOS nexus binary
         run: |
           set -euo pipefail

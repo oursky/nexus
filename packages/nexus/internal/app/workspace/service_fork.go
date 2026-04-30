@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
@@ -28,10 +29,10 @@ func (s *Service) Fork(ctx context.Context, parentID string, spec ForkSpec) (*wo
 		return nil, fmt.Errorf("cannot fork removed workspace: %s", parentID)
 	}
 
-	childRef := normalizeRef(spec.ChildRef, "")
-	if childRef == "" {
+	if strings.TrimSpace(spec.ChildRef) == "" {
 		return nil, fmt.Errorf("childRef is required")
 	}
+	childRef := normalizeRef(spec.ChildRef, "")
 
 	childName := spec.ChildWorkspaceName
 	if childName == "" {
@@ -101,10 +102,10 @@ func (s *Service) Checkout(ctx context.Context, id string, spec CheckoutSpec) (*
 		return nil, fmt.Errorf("cannot checkout removed workspace: %s", id)
 	}
 
-	targetRef := normalizeRef(spec.TargetRef, "")
-	if targetRef == "" {
+	if strings.TrimSpace(spec.TargetRef) == "" {
 		return nil, fmt.Errorf("targetRef is required")
 	}
+	targetRef := normalizeRef(spec.TargetRef, "")
 
 	ws.Ref = targetRef
 	ws.UpdatedAt = time.Now().UTC()

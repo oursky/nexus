@@ -47,7 +47,7 @@ func startTestListener(t *testing.T, token string) string {
 		TLSMode:     "off",
 		Token:       token,
 	}
-	nl, err := NewNetworkListener(cfg, &stubDispatcher{})
+	nl, err := NewNetworkListener(cfg, &stubDispatcher{}, nil)
 	if err != nil {
 		t.Fatalf("NewNetworkListener: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestNetworkListener_NewRejectsEmptyToken(t *testing.T) {
 		Port:        9999,
 		TLSMode:     "off",
 		Token:       "",
-	}, &stubDispatcher{})
+	}, &stubDispatcher{}, nil)
 	if err == nil {
 		t.Fatal("expected error for empty token, got nil")
 	}
