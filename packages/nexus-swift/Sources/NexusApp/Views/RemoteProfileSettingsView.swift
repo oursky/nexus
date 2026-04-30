@@ -161,14 +161,28 @@ private struct ProfileEditSheet: View {
                             .foregroundColor(.green)
                             .font(.system(size: 11))
                     case .failed(let msg):
-                        Label(msg, systemImage: "xmark.circle.fill")
+                        Label("Failed", systemImage: "xmark.circle.fill")
                             .foregroundColor(.red)
                             .font(.system(size: 11))
-                            .lineLimit(2)
                     default:
                         EmptyView()
                     }
                 }
+            }
+
+            if case .failed(let msg) = testState {
+                ScrollView {
+                    Text(msg)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.red)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(6)
+                }
+                .frame(maxHeight: 80)
+                .background(Color(NSColor.textBackgroundColor))
+                .cornerRadius(4)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.red.opacity(0.4), lineWidth: 1))
             }
 
             Text("Token is fetched automatically from the remote host via SSH tunnel.")
