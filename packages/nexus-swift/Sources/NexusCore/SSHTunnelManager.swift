@@ -199,7 +199,7 @@ public actor SSHTunnelManager {
             throw TunnelError.noTarget
         }
 
-        let remoteBin = "/home/newman/.local/bin/nexus"
+        let remoteBin = "~/.local/bin/nexus"
         let resolvedPaths = resolveScopedPaths()
         guard let identityPath = resolvedPaths.identityPath,
               !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

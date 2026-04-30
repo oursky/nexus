@@ -745,19 +745,24 @@ public final class AppState: ObservableObject {
             case .sshAuthFailed: return true
             case .uploadFailed(let msg) where msg.contains("Permission denied"): return true
             case .sshFailed(_, let msg) where msg.contains("Permission denied"): return true
+            // Hard failures — daemon can't start, retrying the tunnel won't help.
+            case .daemonStartFailed: return true
+            case .daemonReadyTimeout: return true
+            case .bundledBinaryMissing: return true
+            case .sshIdentityRequired: return true
             default: return false
             }
         }() {
-            // SSH authentication failed during provisioning — wrong key or key not accepted.
-            // Do NOT proceed to tunnel start; it will fail the same way and burn CPU.
-            Self.logger.warning("connectRemoteAndLoad: SSH auth failure during provisioning, bailing early: \(provErr.localizedDescription, privacy: .public)")
+            // Provisioning failed in a way that tunnel start cannot recover from.
+            // Surface the error directly so the user knows what to fix.
+            Self.logger.warning("connectRemoteAndLoad: provisioning hard failure, bailing early: \(provErr.localizedDescription, privacy: .public)")
             connectionState = .disconnected
             self.error = provErr.localizedDescription
             needsSetup = true
             return
         } catch {
-            // If daemon is already running (provisioning skipped), this succeeds silently.
-            // Only surface provision errors if they actually prevent connection.
+            // Transient / unknown provision errors — attempt connection anyway in case
+            // the daemon is already running (e.g. provision check itself failed).
             Self.logger.warning("connectRemoteAndLoad: provision step failed (\(error.localizedDescription, privacy: .public)); attempting connection anyway")
         }
         provisioningMessage = nil
