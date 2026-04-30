@@ -241,6 +241,19 @@ func resolveDockerCredential(verb string, payload []byte) (helperName string, in
 		}
 	}
 
+	// No credentials found. For "get", return empty credentials so Docker can
+	// attempt an anonymous pull rather than failing outright. This matches the
+	// behaviour of docker-credential-pass and other helpers when there is no
+	// stored entry for a registry.
+	if verb == "get" {
+		emptyResp, _ := json.Marshal(map[string]string{
+			"ServerURL": strings.TrimSpace(string(payload)),
+			"Username":  "",
+			"Secret":    "",
+		})
+		return "", emptyResp, nil
+	}
+
 	return "", nil, fmt.Errorf("no credentials found for %q", registry)
 }
 
