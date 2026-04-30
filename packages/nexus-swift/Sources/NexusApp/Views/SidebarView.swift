@@ -485,10 +485,7 @@ private struct SidebarFooter: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            FooterMenuBtn(showDaemonPanel: $showDaemonPanel)
-            Spacer()
-
-            // Clickable pill → opens DaemonSettingsPanel.
+            // Clickable pill → opens DaemonSettingsPanel (moved to left side).
             Button {
                 showDaemonPanel.toggle()
             } label: {
@@ -515,7 +512,9 @@ private struct SidebarFooter: View {
             }
             .accessibilityIdentifier("connection_status")
             .accessibilityLabel(connectionLabel)
-            .padding(.trailing, 4)
+            .padding(.leading, 4)
+
+            Spacer()
 
             // PTY state accessibility markers — placed in the sidebar footer so they
             // stay reachable (the NavigationSplitView detail column is not accessible
@@ -573,40 +572,4 @@ private struct SidebarFooter: View {
     }
 }
 
-private struct FooterMenuBtn: View {
-    @EnvironmentObject var appState: AppState
-    @Binding var showDaemonPanel: Bool
-    @State private var hover = false
 
-    var body: some View {
-        Menu {
-            Button("New Project…") {
-                appState.createIntent = .newProject
-                appState.showNewWorkspace = true
-            }
-
-            Divider()
-
-            Button("Connect to Daemon…") {
-                showDaemonPanel = true
-            }
-
-            Button("Install / Update Daemon…") {
-                appState.installDaemon()
-            }
-
-            Divider()
-
-            Button("Quit Nexus") { NSApp.terminate(nil) }
-        } label: {
-            Image(systemName: "gearshape")
-                .font(.system(size: 13))
-                .foregroundColor(hover ? Theme.labelSecondary : Theme.labelTertiary)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .frame(width: 28, height: 28)
-        .onHover { hover = $0 }
-    }
-}

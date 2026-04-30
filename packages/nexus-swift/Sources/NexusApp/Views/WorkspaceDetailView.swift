@@ -32,16 +32,18 @@ struct WorkspaceDetailView: View {
             ToolbarItem(placement: .primaryAction) {
                 WorkspaceOverflowMenu(workspace: workspace)
             }
+            // Flexible space pushes the inspector toggle to the far-right edge,
+            // so it sits directly adjacent to the right sidebar panel.
+            ToolbarItem(placement: .primaryAction) {
+                Spacer()
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     appState.showInspector.toggle()
                 } label: {
-                    Image(systemName: "sidebar.trailing")
-                        .symbolRenderingMode(.hierarchical)
-                        .font(.system(size: 14))
-                        .frame(width: 22, height: 22)
+                    Label(appState.showInspector ? "Hide Inspector" : "Show Inspector", systemImage: "sidebar.trailing")
+                        .labelStyle(.iconOnly)
                 }
-                .buttonStyle(.plain)
                 .help(appState.showInspector ? "Hide Inspector" : "Show Inspector")
             }
         }
@@ -120,16 +122,11 @@ private struct RemoteEditorOpenMenu: View {
         } label: {
             if isCheckingSSH {
                 ProgressView()
-                    .scaleEffect(0.7)
-                    .frame(width: 22, height: 22)
             } else {
-                Image(systemName: "arrow.up.forward.square")
-                    .symbolRenderingMode(.hierarchical)
-                    .font(.system(size: 14))
-                    .frame(width: 22, height: 22)
+                Label("Open in Editor", systemImage: "arrow.up.forward.square")
+                    .labelStyle(.iconOnly)
             }
         }
-        .menuStyle(.borderlessButton)
         .disabled(!canOpen || isCheckingSSH)
         .help(help)
         .sheet(item: $sshCheckResult) { result in
@@ -327,12 +324,9 @@ private struct WorkspaceOverflowMenu: View {
             }
             .disabled(isBusy)
         } label: {
-            Image(systemName: "ellipsis.circle")
-                .symbolRenderingMode(.hierarchical)
-                .font(.system(size: 14))
-                .frame(width: 22, height: 22)
+            Label("More", systemImage: "ellipsis")
+                .labelStyle(.iconOnly)
         }
-        .menuStyle(.borderlessButton)
     }
 }
 
@@ -354,15 +348,14 @@ private struct WorkspaceStartStopButton: View {
             }
         } label: {
             if isBusy {
-                ProgressView().scaleEffect(0.7).frame(width: 22, height: 22)
+                ProgressView()
+                    .scaleEffect(0.6)
+                    .frame(width: 16, height: 16)
             } else {
-                Image(systemName: canStart ? "play.fill" : "stop.fill")
-                    .symbolRenderingMode(.hierarchical)
-                    .font(.system(size: 14))
-                    .frame(width: 22, height: 22)
+                Label(canStart ? "Start" : "Stop", systemImage: canStart ? "play.fill" : "stop.fill")
+                    .labelStyle(.iconOnly)
             }
         }
-        .buttonStyle(.plain)
         .disabled(isBusy || workspace.state == .starting)
         .help(canStart ? "Start Workspace" : "Stop Workspace")
     }
