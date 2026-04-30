@@ -49,40 +49,56 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Setup required (shown when SSH identity key is missing or no profile configured)
+// MARK: - Setup required (shown when tunnel fails — config error or transient host unreachable)
 
 private struct SetupRequiredView: View {
     @EnvironmentObject var appState: AppState
     @State private var showSettings = false
+    @State private var isReconnecting = false
 
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: "key.fill")
+            Image(systemName: "antenna.radiowaves.left.and.right.slash")
                 .font(.system(size: 36, weight: .ultraLight))
                 .foregroundColor(Theme.labelTertiary)
 
-            Text("Setup Required")
+            Text("Connection Failed")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundColor(Theme.label)
 
-            VStack(spacing: 6) {
-                if let msg = appState.error {
-                    Text(msg)
-                        .font(Theme.fontSm)
-                        .foregroundColor(Theme.labelTertiary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 48)
-                }
-                Text("Open Settings to configure your SSH host and identity key.")
+            if let msg = appState.error {
+                Text(msg)
                     .font(Theme.fontSm)
                     .foregroundColor(Theme.labelTertiary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 48)
             }
 
-            Button("Open Settings") { showSettings = true }
+            HStack(spacing: 12) {
+                Button {
+                    isReconnecting = true
+                    Task {
+                        await appState.reconnect()
+                        isReconnecting = false
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        if isReconnecting {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                                .frame(width: 12, height: 12)
+                        }
+                        Text(isReconnecting ? "Connecting…" : "Reconnect")
+                    }
+                }
                 .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("setup_open_settings_button")
+                .disabled(isReconnecting)
+                .accessibilityIdentifier("setup_reconnect_button")
+
+                Button("Settings…") { showSettings = true }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("setup_open_settings_button")
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bgApp)
