@@ -74,35 +74,20 @@ public actor SSHTunnelManager {
                 let port = try allocateLocalPort()
                 _localPort = port
                 let resolvedPaths = resolveScopedPaths()
-                let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
                 let identityPath = resolvedPaths.identityPath
                 guard let identityPath, !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     throw TunnelError.identityRequired
                 }
-                let configModes: [String?] = configPath == nil ? [nil] : [configPath, nil]
-                var connected = false
-
-                for mode in configModes {
-                    do {
-                        try launchControlTunnel(localPort: port, configPath: mode, identityPath: identityPath)
-                        try await waitForHealthz(localPort: port)
-                        setState(.connected)
-                        AppLifecycleLog.info("ssh-tunnel", "start success localPort=\(port)")
-                        startRestartLoop(localPort: port)
-                        connected = true
-                        break
-                    } catch {
-                        lastError = error
-                        AppLifecycleLog.warn(
-                            "ssh-tunnel",
-                            "launch mode failed config=\(mode ?? "<default>"): \(error.localizedDescription)"
-                        )
-                        controlTunnel?.terminate()
-                        controlTunnel = nil
-                    }
-                }
-                if connected { return port }
-                throw lastError
+                // When an explicit identity is provided, always use strict-key mode
+                // (SSHClientArgs passes -F /dev/null so ~/.ssh/config is bypassed).
+                // Never fall back to a config-based mode — that would allow the agent
+                // or config to inject the real key and mask a wrong-key error.
+                try launchControlTunnel(localPort: port, configPath: nil, identityPath: identityPath)
+                try await waitForHealthz(localPort: port)
+                setState(.connected)
+                AppLifecycleLog.info("ssh-tunnel", "start success localPort=\(port)")
+                startRestartLoop(localPort: port)
+                return port
             } catch {
                 lastError = error
                 logger.error("tunnel start attempt \(attempt, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
