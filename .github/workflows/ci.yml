@@ -303,6 +303,9 @@ jobs:
         with:
           go-version: '1.24.x'
 
+      - name: Download Metal Toolchain (if missing)
+        run: xcodebuild -downloadComponent MetalToolchain 2>&1 | tail -5 || true
+
       - name: Stage macOS nexus binary
         run: |
           set -euo pipefail

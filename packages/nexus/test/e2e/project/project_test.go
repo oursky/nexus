@@ -97,21 +97,25 @@ func TestProject(t *testing.T) {
 func TestProject_DuplicateName(t *testing.T) {
 	t.Parallel()
 	h := harness.New(t)
-	repo := harness.MakeLocalGitRepo(t, "proj-dup")
+	repo1 := harness.MakeLocalGitRepo(t, "proj-dup-1")
+	repo2 := harness.MakeLocalGitRepo(t, "proj-dup-2")
 
 	var res struct {
-		Project struct{ ID string `json:"id"` } `json:"project"`
+		Project struct {
+			ID string `json:"id"`
+		} `json:"project"`
 	}
 	h.MustCall("project.create", map[string]any{
 		"name":    "dup-proj-name",
-		"repoUrl": repo,
+		"repoUrl": repo1,
 	}, &res)
 	id := res.Project.ID
 	t.Cleanup(func() { _ = h.Call("project.remove", map[string]any{"id": id}, nil) })
 
+	// Same name but different repo — must be rejected.
 	err := h.Call("project.create", map[string]any{
 		"name":    "dup-proj-name",
-		"repoUrl": repo,
+		"repoUrl": repo2,
 	}, nil)
 	if err == nil {
 		t.Fatal("create duplicate project name: expected error, got nil")
