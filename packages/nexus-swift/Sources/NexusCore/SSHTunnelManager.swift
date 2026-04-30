@@ -27,11 +27,10 @@ public actor SSHTunnelManager {
             process.terminate()
         }
 
-        /// Drain any remaining stderr after the process has exited.
-        /// The readabilityHandler may not have fired for the last bytes; read synchronously.
+        /// Drain stderr after the process has exited.
+        /// No readabilityHandler is set on the control tunnel's errPipe, so this
+        /// gets the complete output in one synchronous read.
         func drainStderr() -> String {
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            stderrPipe.fileHandleForReading.readabilityHandler = nil
             let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
             return String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -319,14 +318,8 @@ public actor SSHTunnelManager {
 
         let errPipe = Pipe()
         proc.standardError = errPipe
-        errPipe.fileHandleForReading.readabilityHandler = { [logger] handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
-            for line in str.components(separatedBy: .newlines) {
-                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { logger.warning("ssh stderr: \(trimmed, privacy: .public)") }
-            }
-        }
+        // No readabilityHandler — we drain stderr synchronously after the process
+        // exits so drainStderr() gets the complete output without a race.
 
         try proc.run()
         controlTunnel = SSHTunnelProcess(process: proc, stdoutPipe: outPipe, stderrPipe: errPipe)
