@@ -78,6 +78,18 @@ if [[ -f "$EMBED_DIR/nexus-libkrun-vm" ]]; then
   LIBKRUNFW_REAL=$(find "$LIBS_TMP" -maxdepth 1 -name 'libkrunfw.so.*.*' | sort | tail -1)
   cp "$LIBKRUNFW_REAL" "$EMBED_DIR/libkrunfw-embed.so"
 
+  # Stage passt binary for embedding (we are building for linux/amd64, so download the x86_64 static build).
+  PASST_EMBED="$EMBED_DIR/passt-embed"
+  if [[ ! -f "$NEXUS_PKG/tmp/passt-embed" ]]; then
+    echo "  Downloading passt for embed (x86_64 static build)..."
+    curl -fsSL --retry 3 -o "$NEXUS_PKG/tmp/passt-embed" "https://passt.top/builds/latest/x86_64/passt"
+    chmod +x "$NEXUS_PKG/tmp/passt-embed"
+    echo "  → downloaded passt for embed ($(du -sh "$NEXUS_PKG/tmp/passt-embed" | cut -f1))"
+  else
+    echo "  Using cached passt for embed ($(du -sh "$NEXUS_PKG/tmp/passt-embed" | cut -f1))"
+  fi
+  cp "$NEXUS_PKG/tmp/passt-embed" "$PASST_EMBED"
+
   BUILD_TAGS="-tags libkrun"
   echo "Building nexus for linux/amd64 with libkrun (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
 else
@@ -94,7 +106,7 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
   ./cmd/nexus
 
 # Clean up staged embed files so they don't clutter the working tree.
-rm -f "$EMBED_DIR/libkrun-embed.so" "$EMBED_DIR/libkrunfw-embed.so" "$EMBED_DIR/agent-linux-amd64"
+rm -f "$EMBED_DIR/libkrun-embed.so" "$EMBED_DIR/libkrunfw-embed.so" "$EMBED_DIR/passt-embed" "$EMBED_DIR/agent-linux-amd64"
 
 # Keep the Mac app's embedded linux binary in sync so provision never
 # re-uploads a stale version over a freshly deployed remote daemon.
