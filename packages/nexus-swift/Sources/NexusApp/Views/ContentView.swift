@@ -13,7 +13,9 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if appState.connectionState == .starting && appState.repos.isEmpty {
+            if appState.needsSetup {
+                SetupRequiredView()
+            } else if appState.connectionState == .starting && appState.repos.isEmpty {
                 StartupView()
             } else {
                 mainContent
@@ -43,6 +45,52 @@ struct ContentView: View {
                 }
             }
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+        }
+    }
+}
+
+// MARK: - Setup required (shown when SSH identity key is missing or no profile configured)
+
+private struct SetupRequiredView: View {
+    @EnvironmentObject var appState: AppState
+    @State private var showSettings = false
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "key.fill")
+                .font(.system(size: 36, weight: .ultraLight))
+                .foregroundColor(Theme.labelTertiary)
+
+            Text("Setup Required")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(Theme.label)
+
+            VStack(spacing: 6) {
+                if let msg = appState.error {
+                    Text(msg)
+                        .font(Theme.fontSm)
+                        .foregroundColor(Theme.labelTertiary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 48)
+                }
+                Text("Open Settings to configure your SSH host and identity key.")
+                    .font(Theme.fontSm)
+                    .foregroundColor(Theme.labelTertiary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 48)
+            }
+
+            Button("Open Settings") { showSettings = true }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("setup_open_settings_button")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.bgApp)
+        .accessibilityIdentifier("setup_required_view")
+        .sheet(isPresented: $showSettings) {
+            DaemonSettingsPanel()
+                .environmentObject(appState)
+                .frame(minWidth: 480, minHeight: 360)
         }
     }
 }

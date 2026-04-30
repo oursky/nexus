@@ -70,6 +70,11 @@ public final class AppState: ObservableObject {
     private var daemonLogStream: DaemonLogStream?
     private var workspaceCreateMonitorTasks: [String: Task<Void, Never>] = [:]
 
+    /// Set when the last connection attempt failed for a configuration reason that
+    /// cannot be resolved by retrying (e.g. missing SSH identity key on a sandboxed build).
+    /// The auto-reconnect loop skips retries while this is true.  Cleared on reconnect().
+    @Published public private(set) var needsSetup: Bool = false
+
     /// Headless HTTP RPC server for terminal automation (active when NEXUS_HEADLESS_RPC=1).
     public private(set) var rpcServer: HeadlessRPCServer?
 
@@ -633,9 +638,12 @@ public final class AppState: ObservableObject {
                 // Auto-heal transient tunnel/bootstrap failures. If we are disconnected
                 // and still on a null client, re-run full remote connect flow instead
                 // of repeatedly polling load() against a known-disconnected client.
+                // Skip retries when the failure is a configuration error that the user
+                // must fix manually (e.g. missing SSH identity key in the sandboxed app).
                 if self.connectionState == .disconnected,
                    self.client is NullDaemonClient,
-                   self.tunnelManager == nil {
+                   self.tunnelManager == nil,
+                   !self.needsSetup {
                     StartupTrace.checkpoint("remote.autoReconnect.tick")
                     await self.connectRemoteAndLoad()
                     continue
@@ -671,6 +679,7 @@ public final class AppState: ObservableObject {
         guard let profile = cachedProfile else {
             connectionState = .disconnected
             error = "No remote profile configured. Add one in Settings."
+            needsSetup = true
             StartupTrace.checkpoint("remote.noProfile")
             AppLifecycleLog.warn("remote", "connect aborted: no profile")
             return
@@ -678,6 +687,7 @@ public final class AppState: ObservableObject {
         guard let sshTarget = profile.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !sshTarget.isEmpty else {
             connectionState = .disconnected
             error = "SSH target is required. This app only connects to a remote Nexus daemon over SSH."
+            needsSetup = true
             StartupTrace.checkpoint("remote.noSshTarget")
             AppLifecycleLog.warn("remote", "connect aborted: empty ssh target profileId=\(profile.profileId)")
             return
@@ -685,6 +695,7 @@ public final class AppState: ObservableObject {
         guard Self.isLikelyValidSSHTarget(sshTarget) else {
             connectionState = .disconnected
             error = "SSH target must be in the form user@host (no spaces)."
+            needsSetup = true
             StartupTrace.checkpoint("remote.invalidSshTarget", sshTarget)
             AppLifecycleLog.warn("remote", "connect aborted: invalid ssh target=\(sshTarget)")
             return
@@ -751,6 +762,10 @@ public final class AppState: ObservableObject {
             self.daemonLogStream?.stop()
             self.daemonLogStream = nil
             self.tunnelManager = nil
+            // Any tunnel failure requires user action (wrong key, bad host, daemon not running).
+            // Stop the auto-reconnect loop entirely — hammering SSH with a bad key burns CPU
+            // and produces no useful outcome. The user must fix the profile and trigger reconnect().
+            needsSetup = true
             return
         }
 
@@ -824,6 +839,8 @@ public final class AppState: ObservableObject {
 
     /// Re-reads the default profile and reconnects (e.g. after the user changes the active profile).
     public func reconnect() async {
+        // Clear any config error that was blocking the auto-reconnect loop.
+        needsSetup = false
         daemonLogStream?.stop()
         daemonLogStream = nil
         await tunnelManager?.stop()
