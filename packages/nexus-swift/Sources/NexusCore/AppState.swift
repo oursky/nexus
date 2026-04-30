@@ -730,6 +730,17 @@ public final class AppState: ObservableObject {
                 }
             }
             Self.logger.info("connectRemoteAndLoad: provisioning complete for \(sshTarget, privacy: .public)")
+        } catch let provErr as ProvisionError where {
+            if case .sshAuthFailed = provErr { return true }
+            return false
+        }() {
+            // SSH authentication failed during provisioning — wrong key or key not accepted.
+            // Do NOT proceed to tunnel start; it will fail the same way and burn CPU.
+            Self.logger.warning("connectRemoteAndLoad: SSH auth failure during provisioning, bailing early: \(provErr.localizedDescription, privacy: .public)")
+            connectionState = .disconnected
+            self.error = provErr.localizedDescription
+            needsSetup = true
+            return
         } catch {
             // If daemon is already running (provisioning skipped), this succeeds silently.
             // Only surface provision errors if they actually prevent connection.

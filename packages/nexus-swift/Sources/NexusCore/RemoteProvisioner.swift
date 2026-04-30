@@ -466,6 +466,11 @@ public actor RemoteProvisioner {
         guard proc.terminationStatus == 0 else {
             let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            // SSH exit 255 with "Permission denied" indicates authentication failure.
+            // Distinguish this from other failures so callers can bail immediately.
+            if proc.terminationStatus == 255 && err.contains("Permission denied") {
+                throw ProvisionError.sshAuthFailed(message: err)
+            }
             throw ProvisionError.sshFailed(command: command, message: err.isEmpty ? "exit \(proc.terminationStatus)" : err)
         }
         let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -492,6 +497,8 @@ public enum ProvisionError: Error, LocalizedError, Sendable {
     case daemonStartFailed(message: String)
     case daemonReadyTimeout(seconds: TimeInterval)
     case sshFailed(command: String, message: String)
+    /// SSH authentication failed (wrong key, key not accepted). User must fix profile.
+    case sshAuthFailed(message: String)
 
     public var errorDescription: String? {
         switch self {
@@ -509,6 +516,8 @@ public enum ProvisionError: Error, LocalizedError, Sendable {
             return "Nexus daemon did not become ready within \(Int(secs)) seconds."
         case .sshFailed(_, let msg):
             return "SSH command failed: \(msg)"
+        case .sshAuthFailed(let msg):
+            return "SSH authentication failed — check your SSH key in Settings. \(msg)"
         }
     }
 }
