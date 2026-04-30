@@ -63,6 +63,11 @@ public actor RemoteProvisioner {
 
         await progress?(.checkingHost)
 
+        // ── 0. Probe SSH connectivity — fail fast before any upload attempt ──────
+        // A simple `echo ok` will exit 255 with "Permission denied" on auth failure,
+        // throwing sshAuthFailed immediately rather than hanging in the upload pipe.
+        _ = try runSSH(sshTarget: sshTarget, command: "echo ok")
+
         // ── 1. Check daemon health + binary freshness ───────────────────────────
         let daemonInitiallyHealthy = await isDaemonHealthy(sshTarget: sshTarget)
 
@@ -184,15 +189,37 @@ public actor RemoteProvisioner {
 
         try proc.run()
 
+        // Monitor stderr on a background thread so we can detect auth failures
+        // immediately and terminate the process — without this, a bad SSH key causes
+        // the write loop below to block forever trying to pipe 17 MB into a dead SSH.
+        let stderrCollected = OSAllocatedUnfairLock(initialState: "")
+        errPipe.fileHandleForReading.readabilityHandler = { fh in
+            let chunk = String(data: fh.availableData, encoding: .utf8) ?? ""
+            stderrCollected.withLock { $0 += chunk }
+            // SSH exits with status 255 on auth failure; stderr contains "Permission denied".
+            // Kill the process immediately so the write loop unblocks.
+            if chunk.contains("Permission denied") {
+                proc.terminate()
+            }
+        }
+
         let fileHandle = try FileHandle(forReadingFrom: binaryURL)
         defer { try? fileHandle.close() }
         let inputFD = inputPipe.fileHandleForWriting.fileDescriptor
+
+        // Ignore SIGPIPE so Darwin.write() returns EPIPE (-1/errno=32) instead of
+        // killing this process when SSH exits early (e.g. auth failure).
+        // The write loop catches the error and breaks, then waitUntilExit() + stderr
+        // inspection tells us whether it was an auth failure or something else.
+        signal(SIGPIPE, SIG_IGN)
 
         let chunkSize = 65536
         var bytesWritten: Int64 = 0
         var pipeWriteFailed = false
 
         while true {
+            // Stop writing if the process has already exited (e.g. auth rejected).
+            if !proc.isRunning { break }
             let chunk = fileHandle.readData(ofLength: chunkSize)
             if chunk.isEmpty { break }
             do {
@@ -209,13 +236,26 @@ public actor RemoteProvisioner {
             }
         }
         inputPipe.fileHandleForWriting.closeFile()
+        errPipe.fileHandleForReading.readabilityHandler = nil
+        // Synchronously drain any stderr that arrived after the last handler fire
+        // but before the process fully exited. Without this, "Permission denied"
+        // can be missed and errOut ends up empty, preventing sshAuthFailed detection.
+        let remainingStderr = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        stderrCollected.withLock { $0 += remainingStderr }
 
         proc.waitUntilExit()
+        let errOut = stderrCollected.withLock { $0 }.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Auth failure: SSH exits 255 with "Permission denied" in stderr.
+        if proc.terminationStatus == 255 && errOut.contains("Permission denied") {
+            logger.error("provision: SSH auth failure during upload: \(errOut, privacy: .public)")
+            throw ProvisionError.sshAuthFailed(message: errOut)
+        }
+
         let out = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         guard !pipeWriteFailed, proc.terminationStatus == 0, out.contains("installed") else {
-            let errOut = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
             logger.error("provision: upload failed status=\(proc.terminationStatus, privacy: .public) stderr=\(errOut, privacy: .public)")
             let fallback = pipeWriteFailed ? "upload stream closed by remote (broken pipe)" : "exit \(proc.terminationStatus)"
             throw ProvisionError.uploadFailed(message: errOut.isEmpty ? fallback : errOut)
