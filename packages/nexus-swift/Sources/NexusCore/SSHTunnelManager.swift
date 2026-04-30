@@ -9,25 +9,62 @@ public actor SSHTunnelManager {
         case failed(any Error)
     }
 
+    // MARK: - SSHTunnelProcess
+
+    /// A private struct that owns an SSH subprocess and its I/O pipes.
+    /// Always call `terminate()` before releasing an instance to prevent
+    /// fd_monitoring CPU leaks from dangling readabilityHandlers.
+    private struct SSHTunnelProcess {
+        var process: Process
+        var stdoutPipe: Pipe
+        var stderrPipe: Pipe
+
+        /// Deterministically clears both readabilityHandlers before terminating
+        /// the process. Safe to call multiple times.
+        mutating func terminate() {
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            process.terminate()
+        }
+    }
+
+    // MARK: - State stream
+
+    public let stateStream: AsyncStream<State>
+    private let stateContinuation: AsyncStream<State>.Continuation
+
+    // MARK: - Properties
+
     private let profile: DaemonProfile
-    private var process: Process?
+    private var controlTunnel: SSHTunnelProcess?
+    private var spotlightTunnels: [Int: SSHTunnelProcess] = [:]   // keyed by remotePort
     private var _state: State = .idle
     private var _localPort: Int?
     private var restartTask: Task<Void, Never>?
-    private var stderrPipe: Pipe?
-    private var stdoutPipe: Pipe?
     private var activeScopedPaths: SSHSecurityScopedPaths = .empty
     private let logger = Logger(subsystem: "com.nexus.NexusApp", category: "SSHTunnel")
 
     public init(profile: DaemonProfile) {
         self.profile = profile
+        var cont: AsyncStream<State>.Continuation!
+        self.stateStream = AsyncStream { cont = $0 }
+        self.stateContinuation = cont
     }
 
     public var state: State { _state }
     public var localPort: Int? { _localPort }
 
+    // MARK: - setState helper
+
+    private func setState(_ newState: State) {
+        _state = newState
+        stateContinuation.yield(newState)
+    }
+
+    // MARK: - Control tunnel
+
     public func start() async throws -> Int {
-        _state = .connecting
+        setState(.connecting)
         AppLifecycleLog.info("ssh-tunnel", "start target=\(profile.sshTarget ?? "") daemonPort=\(profile.port)")
         let maxAttempts = 5
         var lastError: Error = TunnelError.portAllocation(operation: "start", errnoCode: nil)
@@ -47,9 +84,9 @@ public actor SSHTunnelManager {
 
                 for mode in configModes {
                     do {
-                        try launchSSH(localPort: port, configPath: mode, identityPath: identityPath)
+                        try launchControlTunnel(localPort: port, configPath: mode, identityPath: identityPath)
                         try await waitForHealthz(localPort: port)
-                        _state = .connected
+                        setState(.connected)
                         AppLifecycleLog.info("ssh-tunnel", "start success localPort=\(port)")
                         startRestartLoop(localPort: port)
                         connected = true
@@ -60,9 +97,8 @@ public actor SSHTunnelManager {
                             "ssh-tunnel",
                             "launch mode failed config=\(mode ?? "<default>"): \(error.localizedDescription)"
                         )
-                        process?.terminate()
-                        process = nil
-                        clearPipes()
+                        controlTunnel?.terminate()
+                        controlTunnel = nil
                     }
                 }
                 if connected { return port }
@@ -71,18 +107,13 @@ public actor SSHTunnelManager {
                 lastError = error
                 logger.error("tunnel start attempt \(attempt, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 AppLifecycleLog.warn("ssh-tunnel", "attempt \(attempt) failed: \(error.localizedDescription)")
-                process?.terminate()
-                process = nil
-                clearPipes()
+                controlTunnel?.terminate()
+                controlTunnel = nil
 
-                if case TunnelError.noTarget = error {
-                    break
-                }
+                if case TunnelError.noTarget = error { break }
                 // SSH process died immediately — auth failure or host rejected connection.
                 // Retrying won't help and spawns multiple SSH subprocesses, burning CPU.
-                if case TunnelError.processDied = error {
-                    break
-                }
+                if case TunnelError.processDied = error { break }
                 if attempt < maxAttempts {
                     let delay = UInt64(attempt) * 300_000_000
                     try? await Task.sleep(nanoseconds: delay)
@@ -90,14 +121,85 @@ public actor SSHTunnelManager {
             }
         }
 
-        _state = .failed(lastError)
+        setState(.failed(lastError))
         AppLifecycleLog.error("ssh-tunnel", "start failed after retries: \(lastError.localizedDescription)")
         throw lastError
     }
 
+    public func stop() async {
+        AppLifecycleLog.info("ssh-tunnel", "stop")
+        restartTask?.cancel()
+        restartTask = nil
+        controlTunnel?.terminate()
+        controlTunnel = nil
+        stopAllSpotlightTunnels()
+        SSHSecurityScope.stop(activeScopedPaths)
+        activeScopedPaths = .empty
+        setState(.idle)
+    }
+
+    // MARK: - Spotlight tunnels
+
+    /// Opens an SSH port-forward from a dynamically-allocated localhost port
+    /// to `remotePort` on the SSH target. Returns the local port.
+    /// If a tunnel for `remotePort` already exists, returns its local port.
+    public func openSpotlightTunnel(remotePort: Int) async throws -> Int {
+        if let existing = spotlightTunnels[remotePort] {
+            if existing.process.isRunning {
+                // Extract the local port from the existing forward.
+                // We encode it in the process arguments: "-L localPort:127.0.0.1:remotePort"
+                if let arg = existing.process.arguments?.first(where: { $0.contains(":\(remotePort)") }),
+                   let localPortStr = arg.split(separator: ":").first,
+                   let localPort = Int(localPortStr) {
+                    return localPort
+                }
+            }
+            // Stale — clean it up
+            var stale = spotlightTunnels.removeValue(forKey: remotePort)
+            stale?.terminate()
+        }
+
+        guard let sshTarget = profile.sshTarget, !sshTarget.isEmpty else {
+            throw TunnelError.noTarget
+        }
+        let resolvedPaths = resolveScopedPaths()
+        let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
+        guard let identityPath = resolvedPaths.identityPath,
+              !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw TunnelError.identityRequired
+        }
+
+        let localPort = try allocateLocalPort()
+        let tunnel = try launchSpotlightTunnel(
+            localPort: localPort,
+            remotePort: remotePort,
+            sshTarget: sshTarget,
+            configPath: configPath,
+            identityPath: identityPath
+        )
+        spotlightTunnels[remotePort] = tunnel
+        AppLifecycleLog.info("ssh-tunnel", "spotlight opened remotePort=\(remotePort) localPort=\(localPort)")
+        return localPort
+    }
+
+    /// Terminates the spotlight tunnel for `remotePort`, if it exists.
+    public func closeSpotlightTunnel(remotePort: Int) async {
+        guard var tunnel = spotlightTunnels.removeValue(forKey: remotePort) else { return }
+        tunnel.terminate()
+        AppLifecycleLog.info("ssh-tunnel", "spotlight closed remotePort=\(remotePort)")
+    }
+
+    private func stopAllSpotlightTunnels() {
+        for (remotePort, var tunnel) in spotlightTunnels {
+            tunnel.terminate()
+            AppLifecycleLog.info("ssh-tunnel", "spotlight stopped remotePort=\(remotePort)")
+        }
+        spotlightTunnels.removeAll()
+    }
+
+    // MARK: - Token fetch
+
     /// Fetches the daemon token from the remote host via SSH.
-    /// Calls `<remoteBin> daemon token` on the remote — the running daemon is the
-    /// single source of truth for the auth token.
     public func fetchRemoteToken() async throws -> String {
         guard let sshTarget = profile.sshTarget, !sshTarget.isEmpty else {
             throw TunnelError.noTarget
@@ -119,6 +221,8 @@ public actor SSHTunnelManager {
         if token.isEmpty { throw TunnelError.tokenFetchFailed }
         return token
     }
+
+    // MARK: - Private helpers
 
     private func runSSH(sshTarget: String, command: [String], configPath: String?, identityPath: String?) throws -> String {
         let sshPort = profile.sshPort ?? 22
@@ -161,25 +265,6 @@ public actor SSHTunnelManager {
         let output = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return output
-    }
-
-    public func stop() async {
-        AppLifecycleLog.info("ssh-tunnel", "stop")
-        restartTask?.cancel()
-        restartTask = nil
-        process?.terminate()
-        process = nil
-        clearPipes()
-        SSHSecurityScope.stop(activeScopedPaths)
-        activeScopedPaths = .empty
-        _state = .idle
-    }
-
-    private func clearPipes() {
-        stdoutPipe?.fileHandleForReading.readabilityHandler = nil
-        stdoutPipe = nil
-        stderrPipe?.fileHandleForReading.readabilityHandler = nil
-        stderrPipe = nil
     }
 
     private func allocateLocalPort() throws -> Int {
@@ -225,7 +310,7 @@ public actor SSHTunnelManager {
         return Int(addr.sin_port.bigEndian)
     }
 
-    private func launchSSH(localPort: Int, configPath: String?, identityPath: String?) throws {
+    private func launchControlTunnel(localPort: Int, configPath: String?, identityPath: String?) throws {
         guard let sshTarget = profile.sshTarget, !sshTarget.isEmpty else {
             throw TunnelError.noTarget
         }
@@ -268,7 +353,6 @@ public actor SSHTunnelManager {
                 if !trimmed.isEmpty { logger.debug("ssh stdout: \(trimmed, privacy: .public)") }
             }
         }
-        self.stdoutPipe = outPipe
 
         let errPipe = Pipe()
         proc.standardError = errPipe
@@ -280,10 +364,66 @@ public actor SSHTunnelManager {
                 if !trimmed.isEmpty { logger.warning("ssh stderr: \(trimmed, privacy: .public)") }
             }
         }
-        self.stderrPipe = errPipe
 
         try proc.run()
-        self.process = proc
+        controlTunnel = SSHTunnelProcess(process: proc, stdoutPipe: outPipe, stderrPipe: errPipe)
+    }
+
+    private func launchSpotlightTunnel(
+        localPort: Int,
+        remotePort: Int,
+        sshTarget: String,
+        configPath: String?,
+        identityPath: String
+    ) throws -> SSHTunnelProcess {
+        let sshPort = profile.sshPort ?? 22
+
+        var args = [
+            "-N",
+            "-o", "ExitOnForwardFailure=yes",
+            "-o", "ServerAliveInterval=10",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-L", "\(localPort):127.0.0.1:\(remotePort)",
+            "-p", "\(sshPort)"
+        ]
+        if let configPath {
+            args.insert(contentsOf: ["-F", configPath], at: 0)
+        }
+        if !identityPath.isEmpty {
+            args += ["-i", identityPath]
+        }
+        args.append(sshTarget)
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        proc.arguments = args
+
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        outPipe.fileHandleForReading.readabilityHandler = { [logger] handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
+            for line in str.components(separatedBy: .newlines) {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { logger.debug("spotlight ssh stdout: \(trimmed, privacy: .public)") }
+            }
+        }
+
+        let errPipe = Pipe()
+        proc.standardError = errPipe
+        errPipe.fileHandleForReading.readabilityHandler = { [logger] handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
+            for line in str.components(separatedBy: .newlines) {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { logger.warning("spotlight ssh stderr: \(trimmed, privacy: .public)") }
+            }
+        }
+
+        try proc.run()
+        return SSHTunnelProcess(process: proc, stdoutPipe: outPipe, stderrPipe: errPipe)
     }
 
     private func waitForHealthz(localPort: Int) async throws {
@@ -295,7 +435,7 @@ public actor SSHTunnelManager {
         let session = URLSession(configuration: config)
         var attempt = 0
         while Date() < deadline {
-            if let proc = process, !proc.isRunning {
+            if let tunnel = controlTunnel, !tunnel.process.isRunning {
                 logger.error("ssh process died on attempt \(attempt, privacy: .public)")
                 throw TunnelError.processDied
             }
@@ -323,17 +463,17 @@ public actor SSHTunnelManager {
             var backoff: UInt64 = 1_000_000_000
             while !Task.isCancelled {
                 guard let self = self else { return }
-                let proc = await self.process
-                if let proc, proc.isRunning {
+                let isRunning = await self.controlTunnel?.process.isRunning ?? false
+                if isRunning {
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     continue
                 }
-                await self.setStateFailed()
+                await self.setState(.failed(TunnelError.processDied))
                 try? await Task.sleep(nanoseconds: backoff)
                 backoff = min(backoff * 2, 30_000_000_000)
                 if Task.isCancelled { return }
                 do {
-                    try await self.relaunchSSH(localPort: localPort)
+                    try await self.relaunchControlTunnel(localPort: localPort)
                 } catch {
                     continue
                 }
@@ -341,18 +481,13 @@ public actor SSHTunnelManager {
         }
     }
 
-    private func setStateFailed() {
-        _state = .failed(TunnelError.processDied)
-    }
-
-    private func relaunchSSH(localPort: Int) throws {
-        process?.terminate()
-        process = nil
-        clearPipes()
+    private func relaunchControlTunnel(localPort: Int) throws {
+        controlTunnel?.terminate()
+        controlTunnel = nil
         let resolvedPaths = resolveScopedPaths()
         let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
-        try launchSSH(localPort: localPort, configPath: configPath, identityPath: resolvedPaths.identityPath)
-        _state = .connected
+        try launchControlTunnel(localPort: localPort, configPath: configPath, identityPath: resolvedPaths.identityPath)
+        setState(.connected)
     }
 
     private func resolveScopedPaths() -> SSHSecurityScopedPaths {
@@ -361,6 +496,7 @@ public actor SSHTunnelManager {
         activeScopedPaths = resolved
         return resolved
     }
+
     private func existingSSHConfigPath() -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let candidates = [

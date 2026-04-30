@@ -64,6 +64,7 @@ public final class AppState: ObservableObject {
     private var daemonToken: String?
 
     private var refreshTask: Task<Void, Never>?
+    private var tunnelStateTask: Task<Void, Never>?
     private var isLoadInProgress = false
     private var cachedProfile: DaemonProfile?
     private var tunnelManager: SSHTunnelManager?
@@ -624,8 +625,26 @@ public final class AppState: ObservableObject {
         return devPaths.first { FileManager.default.isExecutableFile(atPath: $0) } ?? devPaths[0]
     }
 
-    private func startRefreshLoop() {
-        refreshTask?.cancel()
+    private func startTunnelStateObserver(_ mgr: SSHTunnelManager) {
+        tunnelStateTask?.cancel()
+        tunnelStateTask = Task { [weak self] in
+            for await state in await mgr.stateStream {
+                guard !Task.isCancelled, let self else { break }
+                if case .failed(let err) = state {
+                    Self.logger.warning("tunnelStateObserver: tunnel failed — \(err.localizedDescription, privacy: .public)")
+                    self.connectionState = .disconnected
+                    if self.error == nil {
+                        self.error = "SSH tunnel failed: \(err.localizedDescription)"
+                    }
+                    // Do not set needsSetup here — the restart loop inside SSHTunnelManager
+                    // will attempt to recover. needsSetup is only set when start() itself
+                    // fails (i.e. initial connection rejected), which is handled in connectRemoteAndLoad.
+                }
+            }
+        }
+    }
+
+    private func startRefreshLoop() {        refreshTask?.cancel()
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(4))
@@ -731,8 +750,12 @@ public final class AppState: ObservableObject {
             }
             Self.logger.info("connectRemoteAndLoad: provisioning complete for \(sshTarget, privacy: .public)")
         } catch let provErr as ProvisionError where {
-            if case .sshAuthFailed = provErr { return true }
-            return false
+            switch provErr {
+            case .sshAuthFailed: return true
+            case .uploadFailed(let msg) where msg.contains("Permission denied"): return true
+            case .sshFailed(_, let msg) where msg.contains("Permission denied"): return true
+            default: return false
+            }
         }() {
             // SSH authentication failed during provisioning — wrong key or key not accepted.
             // Do NOT proceed to tunnel start; it will fail the same way and burn CPU.
@@ -750,6 +773,7 @@ public final class AppState: ObservableObject {
 
         let mgr = SSHTunnelManager(profile: profile)
         self.tunnelManager = mgr
+        startTunnelStateObserver(mgr)
         let daemonURL: URL
         let resolvedToken: String
         do {
@@ -772,6 +796,8 @@ public final class AppState: ObservableObject {
             AppLifecycleLog.error("remote", "tunnel failed target=\(sshTarget): \(error.localizedDescription)")
             self.daemonLogStream?.stop()
             self.daemonLogStream = nil
+            self.tunnelStateTask?.cancel()
+            self.tunnelStateTask = nil
             self.tunnelManager = nil
             // Any tunnel failure requires user action (wrong key, bad host, daemon not running).
             // Stop the auto-reconnect loop entirely — hammering SSH with a bad key burns CPU
