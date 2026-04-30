@@ -124,7 +124,10 @@ func (m *Manager) buildSSHArgs() []string {
 		"-L", fmt.Sprintf("%d:127.0.0.1:%d", lport, cfg.RemotePort),
 	}
 	if cfg.SSHIdentity != "" {
-		args = append(args, "-i", cfg.SSHIdentity)
+		// -F /dev/null: skip ~/.ssh/config so it cannot inject additional keys.
+		// IdentitiesOnly=yes + IdentityAgent=none: only the specified key is used.
+		args = append([]string{"-F", "/dev/null"}, args...)
+		args = append(args, "-i", cfg.SSHIdentity, "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none")
 	}
 	args = append(args, cfg.SSHTarget)
 	return args

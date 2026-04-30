@@ -561,26 +561,17 @@ public final class AppState: ObservableObject {
                 if let d = driver, !d.isEmpty { remoteCmd += " --driver \(d)" }
                 log.info("daemon check ssh target=\(sshTarget, privacy: .public) cmd=\(remoteCmd, privacy: .public)")
 
-                // Build ssh arguments.
-                let sshBin = "/usr/bin/ssh"
-                var sshArgs: [String] = [
-                    "-o", "BatchMode=yes",
-                    "-o", "ConnectTimeout=15",
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "UserKnownHostsFile=/dev/null",
-                    "-o", "GlobalKnownHostsFile=/dev/null",
-                    "-o", "LogLevel=ERROR",
-                ]
-                if let port = profile.sshPort, port != 22 {
-                    sshArgs += ["-p", "\(port)"]
-                }
-                if let identity = profile.sshIdentity, !identity.isEmpty {
-                    sshArgs += ["-i", identity]
-                }
-                sshArgs += [sshTarget, remoteCmd]
+                // Build ssh arguments via shared builder (strict-key enforcement included).
+                let client = SSHClientArgs(
+                    sshTarget: sshTarget,
+                    port: profile.sshPort,
+                    identityPath: profile.sshIdentity,
+                    configPath: nil
+                )
+                let sshArgs = client.commandArgs(remoteCommand: [remoteCmd])
 
                 let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: sshBin)
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
                 proc.arguments = sshArgs
 
                 let outPipe = Pipe()

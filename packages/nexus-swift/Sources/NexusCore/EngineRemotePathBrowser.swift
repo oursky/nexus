@@ -139,17 +139,14 @@ public enum EngineRemotePathBrowser {
         var args: [String] = []
         let cfg = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/nexus/ssh/nexus.ssh.config", isDirectory: false).path
-        if FileManager.default.fileExists(atPath: cfg) {
-            args += ["-F", cfg]
-        }
-        args += ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no"]
-        if let port = profile.sshPort, port != 22 {
-            args.insert(contentsOf: ["-p", "\(port)"], at: 0)
-        }
-        if let identity = profile.sshIdentity, !identity.isEmpty {
-            args += ["-i", identity]
-        }
-        args += [target, remoteCmd]
+        let configPath = FileManager.default.fileExists(atPath: cfg) ? cfg : nil
+        let client = SSHClientArgs(
+            sshTarget: target,
+            port: profile.sshPort,
+            identityPath: profile.sshIdentity,
+            configPath: configPath
+        )
+        args = client.commandArgs(remoteCommand: [remoteCmd])
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")

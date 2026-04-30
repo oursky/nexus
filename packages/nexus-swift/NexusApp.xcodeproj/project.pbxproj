@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		440293D0BE7E427B87682B5B /* SSHClientArgs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 968C7ECF02C64C08AAB40878 /* SSHClientArgs.swift */; };
 		0602F286F9E4B1D94A9855F4 /* SSHSecurityScope.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8119AFD4BCAD21CF77FBC6FA /* SSHSecurityScope.swift */; };
 		062DA6B8127FF2AD08CF5D55 /* NexusAppTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1075C8BF288888AA4624C6B0 /* NexusAppTests.swift */; };
 		0C76B45650EA71489DE56713 /* Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E3741BD5102248BC1C00360 /* Workspace.swift */; };
@@ -91,6 +92,7 @@
 		672D7B0442C4E1B8A74B7083 /* RemoteEngineFolderPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteEngineFolderPicker.swift; sourceTree = "<group>"; };
 		72A481E34E338F542786AE6F /* NexusApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NexusApp.entitlements; sourceTree = "<group>"; };
 		804B2FADD0C5143C198F46DA /* NexusApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusApp.swift; sourceTree = "<group>"; };
+		968C7ECF02C64C08AAB40878 /* SSHClientArgs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHClientArgs.swift; sourceTree = "<group>"; };
 		8119AFD4BCAD21CF77FBC6FA /* SSHSecurityScope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHSecurityScope.swift; sourceTree = "<group>"; };
 		85417139225FD79454603276 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		88535B8DEC2991EA5557D322 /* EngineRemotePathBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineRemotePathBrowser.swift; sourceTree = "<group>"; };
@@ -209,6 +211,7 @@
 				BE2B07751BE8ACCB41EBA453 /* PTYSessionManager.swift */,
 				578374C9B41398139FEF60DE /* RemoteEditorURL.swift */,
 				4F536D8D8113B5D7DEAFEEFC /* RemoteProvisioner.swift */,
+			968C7ECF02C64C08AAB40878 /* SSHClientArgs.swift */,
 				8119AFD4BCAD21CF77FBC6FA /* SSHSecurityScope.swift */,
 				4813F94247C8246742DEA82F /* SSHTunnelManager.swift */,
 				CBE87649ADC2236DDDD799E3 /* StartupTrace.swift */,
@@ -479,6 +482,7 @@
 				DCD55CD52BA08D65FF1A4C57 /* PTYSessionManager.swift in Sources */,
 				FDB08C96B9DB1ED11E82C5B5 /* RemoteEditorURL.swift in Sources */,
 				2837D8E1C547498450A97FFE /* RemoteProvisioner.swift in Sources */,
+				440293D0BE7E427B87682B5B /* SSHClientArgs.swift in Sources */,
 				0602F286F9E4B1D94A9855F4 /* SSHSecurityScope.swift in Sources */,
 				C1C7D99C12055E99522AC87F /* SSHTunnelManager.swift in Sources */,
 				5142C089169B296EB634FB67 /* StartupTrace.swift in Sources */,

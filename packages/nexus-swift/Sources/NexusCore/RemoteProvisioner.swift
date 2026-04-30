@@ -167,8 +167,7 @@ public actor RemoteProvisioner {
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        proc.arguments = buildSSHArgs(sshTarget: sshTarget) + [
-            sshTarget,
+        proc.arguments = makeSSHClient(sshTarget: sshTarget).commandArgs(remoteCommand: [
             """
             set -euo pipefail
             mkdir -p "$HOME/.local/bin"
@@ -178,7 +177,7 @@ public actor RemoteProvisioner {
             mv "$TMPFILE" "$HOME/.local/bin/nexus"
             echo installed
             """,
-        ]
+        ])
 
         let inputPipe = Pipe()
         let outputPipe = Pipe()
@@ -327,7 +326,7 @@ public actor RemoteProvisioner {
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        proc.arguments = buildSSHArgs(sshTarget: sshTarget) + [sshTarget, cmd]
+        proc.arguments = makeSSHClient(sshTarget: sshTarget).commandArgs(remoteCommand: [cmd])
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -467,36 +466,19 @@ public actor RemoteProvisioner {
 
     // MARK: - SSH helpers
 
-    private func buildSSHArgs(sshTarget: String) -> [String] {
-        let sshPort = profile.sshPort ?? 22
-        var args = [
-            "-p", "\(sshPort)",
-            "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=10",
-        ]
-        let configPath = sshScopedPaths.configPath ?? existingSSHConfigPath()
-        if let configPath {
-            args.insert(contentsOf: ["-F", configPath], at: 0)
-        }
-        let identityPath = sshScopedPaths.identityPath ?? profile.sshIdentity
-        if let identity = identityPath, !identity.isEmpty {
-            args += ["-i", identity]
-        }
-        AppLifecycleLog.info(
-            "provision",
-            "ssh args target=\(sshTarget) config=\(configPath ?? "<default>") identity=\(identityPath?.isEmpty == false ? "set" : "unset")"
-        )
-        return args
+    private func makeSSHClient(sshTarget: String) -> SSHClientArgs {
+        let client = SSHClientArgs(profile: profile, scopedPaths: sshScopedPaths)
+        AppLifecycleLog.info("provision", "ssh \(client.logDescription)")
+        logger.info("provision: SSH command: ssh \(client.commandArgs(remoteCommand: ["<cmd>"]).joined(separator: " "), privacy: .public)")
+        return client
     }
 
     @discardableResult
     private func runSSH(sshTarget: String, command: String) throws -> String {
+        let client = makeSSHClient(sshTarget: sshTarget)
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        proc.arguments = buildSSHArgs(sshTarget: sshTarget) + [sshTarget, command]
+        proc.arguments = client.commandArgs(remoteCommand: [command])
         let outPipe = Pipe()
         let errPipe = Pipe()
         proc.standardOutput = outPipe
@@ -515,15 +497,6 @@ public actor RemoteProvisioner {
         }
         let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         return out
-    }
-
-    private func existingSSHConfigPath() -> String? {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let candidates = [
-            "\(home)/.config/nexus/ssh/nexus.ssh.config",
-            "\(home)/.ssh/config",
-        ]
-        return candidates.first(where: { FileManager.default.fileExists(atPath: $0) })
     }
 }
 

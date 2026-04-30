@@ -207,43 +207,21 @@ public actor SSHTunnelManager {
 
         let remoteBin = "/home/newman/.local/bin/nexus"
         let resolvedPaths = resolveScopedPaths()
-        let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
         guard let identityPath = resolvedPaths.identityPath,
               !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw TunnelError.identityRequired
         }
-        let token = try runSSH(
-            sshTarget: sshTarget,
-            command: [remoteBin, "daemon", "token"],
-            configPath: configPath,
-            identityPath: identityPath
-        )
+        let client = SSHClientArgs(profile: profile, scopedPaths: resolvedPaths)
+        let token = try runSSH(client: client, command: [remoteBin, "daemon", "token"])
         if token.isEmpty { throw TunnelError.tokenFetchFailed }
         return token
     }
 
     // MARK: - Private helpers
 
-    private func runSSH(sshTarget: String, command: [String], configPath: String?, identityPath: String?) throws -> String {
-        let sshPort = profile.sshPort ?? 22
-        var args = [
-            "-p", "\(sshPort)",
-            "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "GlobalKnownHostsFile=/dev/null"
-        ]
-        if let configPath {
-            args.insert(contentsOf: ["-F", configPath], at: 0)
-        }
-        if let identity = identityPath, !identity.isEmpty {
-            args += ["-i", identity]
-        }
-        args += [sshTarget] + command
-        AppLifecycleLog.info(
-            "ssh-tunnel",
-            "token-fetch target=\(sshTarget) port=\(sshPort) config=\(configPath ?? "<default>") identity=\(identityPath?.isEmpty == false ? "set" : "unset")"
-        )
+    private func runSSH(client: SSHClientArgs, command: [String]) throws -> String {
+        let args = client.commandArgs(remoteCommand: command)
+        AppLifecycleLog.info("ssh-tunnel", "token-fetch \(client.logDescription)")
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -315,28 +293,16 @@ public actor SSHTunnelManager {
             throw TunnelError.noTarget
         }
         let remotePort = profile.port
-        let sshPort = profile.sshPort ?? 22
-
-        var args = [
-            "-N",
-            "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=10",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "GlobalKnownHostsFile=/dev/null",
-            "-L", "\(localPort):127.0.0.1:\(remotePort)",
-            "-p", "\(sshPort)"
-        ]
-        if let configPath {
-            args.insert(contentsOf: ["-F", configPath], at: 0)
-        }
-        if let identity = identityPath, !identity.isEmpty {
-            args += ["-i", identity]
-        }
-        args.append(sshTarget)
+        let client = SSHClientArgs(
+            sshTarget: sshTarget,
+            port: profile.sshPort,
+            identityPath: identityPath,
+            configPath: configPath
+        )
+        let args = client.tunnelArgs(localPort: localPort, remotePort: remotePort)
         AppLifecycleLog.info(
             "ssh-tunnel",
-            "launch target=\(sshTarget) sshPort=\(sshPort) localPort=\(localPort) remotePort=\(remotePort) config=\(configPath ?? "<default>") identity=\(identityPath?.isEmpty == false ? "set" : "unset")"
+            "launch \(client.logDescription) localPort=\(localPort) remotePort=\(remotePort)"
         )
 
         let proc = Process()
@@ -376,25 +342,13 @@ public actor SSHTunnelManager {
         configPath: String?,
         identityPath: String
     ) throws -> SSHTunnelProcess {
-        let sshPort = profile.sshPort ?? 22
-
-        var args = [
-            "-N",
-            "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=10",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "GlobalKnownHostsFile=/dev/null",
-            "-L", "\(localPort):127.0.0.1:\(remotePort)",
-            "-p", "\(sshPort)"
-        ]
-        if let configPath {
-            args.insert(contentsOf: ["-F", configPath], at: 0)
-        }
-        if !identityPath.isEmpty {
-            args += ["-i", identityPath]
-        }
-        args.append(sshTarget)
+        let client = SSHClientArgs(
+            sshTarget: sshTarget,
+            port: profile.sshPort,
+            identityPath: identityPath,
+            configPath: configPath
+        )
+        let args = client.tunnelArgs(localPort: localPort, remotePort: remotePort)
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
