@@ -278,7 +278,9 @@ func (nl *NetworkListener) serveWSConn(ctx context.Context, conn *websocket.Conn
 			return
 		}
 		writeMu.Lock()
-		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		// Use a generous write deadline to accommodate large RPC responses
+		// (e.g. workspace.archive which may produce tens of MB of base64 data).
+		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Minute))
 		err = conn.WriteMessage(websocket.TextMessage, out)
 		_ = conn.SetWriteDeadline(time.Time{})
 		writeMu.Unlock()

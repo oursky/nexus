@@ -52,6 +52,7 @@ func (h *Handler) Register(reg registry.Registry) {
 	reg.Register("workspace.sshcheck", h.wrap(h.handleSSHCheck))
 	reg.Register("workspace.serial-log", h.wrap(h.handleSerialLog))
 	reg.Register("workspace.nexusfile", h.wrap(h.handleNexusfile))
+	reg.Register("workspace.archive", h.wrap(h.handleArchive))
 }
 
 func (h *Handler) wrap(fn func(ctx context.Context, raw json.RawMessage) (any, error)) registry.HandlerFunc {

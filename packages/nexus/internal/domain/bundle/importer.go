@@ -37,8 +37,8 @@ func (imp *Importer) Import(ctx context.Context, bundlePath string, dryRun bool)
 
 	tr := tar.NewReader(gr)
 
-	// Extract manifest.json bytes.
-	manifestBytes, err := extractManifest(tr)
+	// Scan archive: extract manifest bytes and check for workspace payload.
+	manifestBytes, hasWorkspacePayload, err := scanBundle(tr)
 	if err != nil {
 		return err
 	}
@@ -67,7 +67,7 @@ func (imp *Importer) Import(ctx context.Context, bundlePath string, dryRun bool)
 	}
 
 	if dryRun {
-		printCompatibilityReport(manifest)
+		printCompatibilityReport(manifest, hasWorkspacePayload)
 		return nil
 	}
 
@@ -75,6 +75,34 @@ func (imp *Importer) Import(ctx context.Context, bundlePath string, dryRun bool)
 	fmt.Printf("import complete: workspace %q (ref: %s) — provisioning stub, no workspace created\n",
 		manifest.Source.WorkspaceName, manifest.Source.Ref)
 	return nil
+}
+
+// scanBundle reads the tar archive and returns the bytes of manifest.json
+// and whether payload/workspace.tar.gz is present.
+func scanBundle(tr *tar.Reader) (manifestBytes []byte, hasWorkspacePayload bool, err error) {
+	for {
+		hdr, hdrErr := tr.Next()
+		if hdrErr == io.EOF {
+			break
+		}
+		if hdrErr != nil {
+			return nil, false, &InvalidBundle{Reason: fmt.Sprintf("read archive: %v", hdrErr)}
+		}
+		switch hdr.Name {
+		case "manifest.json":
+			data, readErr := io.ReadAll(tr)
+			if readErr != nil {
+				return nil, false, &InvalidBundle{Reason: fmt.Sprintf("read manifest.json: %v", readErr)}
+			}
+			manifestBytes = data
+		case "payload/workspace.tar.gz":
+			hasWorkspacePayload = true
+		}
+	}
+	if manifestBytes == nil {
+		return nil, false, &InvalidBundle{Reason: "manifest.json not found in bundle"}
+	}
+	return manifestBytes, hasWorkspacePayload, nil
 }
 
 // extractManifest reads the tar archive and returns the bytes of manifest.json.
@@ -135,7 +163,7 @@ func checkCompatibility(manifest BundleManifest) error {
 }
 
 // printCompatibilityReport prints a human-readable dry-run report to stdout.
-func printCompatibilityReport(manifest BundleManifest) {
+func printCompatibilityReport(manifest BundleManifest, hasWorkspacePayload bool) {
 	fmt.Printf("dry-run compatibility report\n")
 	fmt.Printf("  workspace:  %s\n", manifest.Source.WorkspaceName)
 	fmt.Printf("  ref:        %s\n", manifest.Source.Ref)
@@ -147,6 +175,11 @@ func printCompatibilityReport(manifest BundleManifest) {
 		digestPreview = digestPreview[:12]
 	}
 	fmt.Printf("  integrity:  %s (%s) OK\n", digestPreview, manifest.Integrity.Algorithm)
+	if hasWorkspacePayload {
+		fmt.Printf("  payload:    workspace.tar.gz present\n")
+	} else {
+		fmt.Printf("  payload:    stub (no workspace files)\n")
+	}
 	fmt.Printf("workspace intent (from Nexusfile):\n")
 	fmt.Printf("  workspace.init: %v\n", manifest.WorkspaceIntent.Init)
 	fmt.Printf("  workspace.up:   %v\n", manifest.WorkspaceIntent.Up)

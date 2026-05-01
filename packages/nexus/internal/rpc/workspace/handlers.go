@@ -1,12 +1,17 @@
 package workspace
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	appws "github.com/oursky/nexus/packages/nexus/internal/app/workspace"
@@ -335,6 +340,114 @@ type nexusfileRes struct {
 	WorkspaceIntent bundle.WorkspaceIntent `json:"workspaceIntent"`
 }
 
+// ── workspace.archive ────────────────────────────────────────────────────────
+
+type archiveReq struct {
+	ID string `json:"id"`
+}
+
+type archiveRes struct {
+	// ArchiveB64 is a base64-encoded tar.gz of the workspace repo directory.
+	ArchiveB64 string `json:"archiveB64"`
+}
+
+// handleArchive creates a tar.gz of the workspace's repo directory and returns it
+// as a base64-encoded string. The caller (CLI exporter) decodes and writes it into
+// the bundle payload as payload/workspace.tar.gz.
+func (h *Handler) handleArchive(ctx context.Context, raw json.RawMessage) (any, error) {
+	req, err := decode[archiveReq](raw)
+	if err != nil {
+		return nil, err
+	}
+	if req.ID == "" {
+		return nil, rpce.InvalidParams("workspace.invalid_params", "id is required")
+	}
+	ws, err := h.svc.Info(ctx, req.ID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	if ws.Repo == "" {
+		return nil, rpce.InvalidParams("workspace.no_repo", "workspace has no repo directory")
+	}
+
+	// Create tar.gz of the repo directory in memory.
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	// archiveSkipDirs are directory names that contain host-specific configuration
+	// or secrets that must not be included in a portable bundle.
+	archiveSkipDirs := map[string]bool{
+		".git":         true, // version-control internals, large
+		"hostconfig":   true, // host-specific volume/config overrides
+		"node_modules": true, // reproducible via init; large
+	}
+
+	// archiveSkipFiles are exact file names that contain host-specific configuration
+	// or secrets and must not be included in a portable bundle.
+	archiveSkipFiles := map[string]bool{
+		".env":                         true, // host secrets / local overrides
+		"docker-compose.override.yml":  true, // host-specific compose overrides
+		"docker-compose.override.yaml": true,
+	}
+
+	baseDir := filepath.Clean(ws.Repo)
+	walkErr := filepath.Walk(baseDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		// Skip host-specific directories.
+		if info.IsDir() && archiveSkipDirs[info.Name()] {
+			return filepath.SkipDir
+		}
+		// Skip host-specific files.
+		if !info.IsDir() && archiveSkipFiles[info.Name()] {
+			return nil
+		}
+
+		rel, relErr := filepath.Rel(baseDir, path)
+		if relErr != nil {
+			return relErr
+		}
+		if rel == "." {
+			return nil
+		}
+
+		hdr, hdrErr := tar.FileInfoHeader(info, "")
+		if hdrErr != nil {
+			return hdrErr
+		}
+		hdr.Name = rel
+		if info.IsDir() {
+			hdr.Name += "/"
+		}
+		if hdrErr := tw.WriteHeader(hdr); hdrErr != nil {
+			return hdrErr
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		f, fErr := os.Open(path)
+		if fErr != nil {
+			return fErr
+		}
+		defer f.Close()
+		_, copyErr := io.Copy(tw, f)
+		return copyErr
+	})
+	if walkErr != nil {
+		return nil, rpce.Internal("workspace.archive_failed", fmt.Sprintf("walk repo dir: %v", walkErr))
+	}
+	if closeErr := tw.Close(); closeErr != nil {
+		return nil, rpce.Internal("workspace.archive_failed", fmt.Sprintf("close tar: %v", closeErr))
+	}
+	if closeErr := gw.Close(); closeErr != nil {
+		return nil, rpce.Internal("workspace.archive_failed", fmt.Sprintf("close gzip: %v", closeErr))
+	}
+
+	return &archiveRes{ArchiveB64: base64.StdEncoding.EncodeToString(buf.Bytes())}, nil
+}
+
 func (h *Handler) handleNexusfile(ctx context.Context, raw json.RawMessage) (any, error) {
 	req, err := decode[nexusfileReq](raw)
 	if err != nil {
@@ -350,7 +463,7 @@ func (h *Handler) handleNexusfile(ctx context.Context, raw json.RawMessage) (any
 	if ws.Repo == "" {
 		return &nexusfileRes{WorkspaceIntent: bundle.WorkspaceIntent{}}, nil
 	}
-	// Read the Nexusfile from the workspace repo directory on this (daemon) host.
+	// Read the Nexusfile from the workspace repo checkout directory on this (daemon) host.
 	// Non-fatal: if missing or unparseable, return empty intent.
 	intent, intentErr := bundle.WorkspaceIntentFromNexusfile(ws.Repo)
 	if intentErr != nil {

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -96,6 +97,18 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (r
 		manifest.WorkspaceIntent = intentResult.WorkspaceIntent
 	}
 
+	// Fetch workspace archive (tar.gz of repo dir, excluding host-specific files).
+	var archiveBytes []byte
+	var archiveResult struct {
+		ArchiveB64 string `json:"archiveB64"`
+	}
+	if archErr := rpc.Do(conn, "workspace.archive", map[string]any{"id": wsID}, &archiveResult); archErr == nil && archiveResult.ArchiveB64 != "" {
+		decoded, decErr := base64.StdEncoding.DecodeString(archiveResult.ArchiveB64)
+		if decErr == nil {
+			archiveBytes = decoded
+		}
+	}
+
 	// Serialise manifest without digest to get the canonical bytes.
 	manifestBytes, marshalErr := MarshalManifest(manifest)
 	if marshalErr != nil {
@@ -115,12 +128,12 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (r
 	}
 
 	// Write bundle as tar.gz using the final bytes (with digest).
-	if tarErr := writeTarGz(outPath, finalBytes); tarErr != nil {
+	if tarErr := writeTarGz(outPath, finalBytes, archiveBytes); tarErr != nil {
 		return "", tarErr
 	}
 
 	// Write standalone runner shell script.
-	if runnerErr := writeRunnerScript(runnerPath, outPath, ws.WorkspaceName, manifest.WorkspaceIntent); runnerErr != nil {
+	if runnerErr := writeRunnerScript(runnerPath, outPath, ws.WorkspaceName, manifest.WorkspaceIntent, len(archiveBytes) > 0); runnerErr != nil {
 		return "", runnerErr
 	}
 
@@ -131,10 +144,35 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (r
 // The runner executes workspace.up/down intent commands directly (CLI-129).
 // workspace.init is executed once per imported runtime instance via a marker file (CLI-131).
 // services[].start is NOT executed — it is deploy/runtime intent only (CLI-130).
-func writeRunnerScript(dst, bundlePath, workspaceName string, intent WorkspaceIntent) error {
+// If hasPayload is true, the runner extracts payload/workspace.tar.gz from the bundle
+// into STATE_DIR/workspace and cds there before running up/init/down commands.
+func writeRunnerScript(dst, bundlePath, workspaceName string, intent WorkspaceIntent, hasPayload bool) error {
 	upBody := shellCommandBody("up", intent.Up)
 	downBody := shellCommandBody("down", intent.Down)
 	initBody := shellCommandBody("init", intent.Init)
+
+	// Payload extraction block — emitted as a do_setup function.
+	// When hasPayload is true, setup extracts payload/workspace.tar.gz from the bundle
+	// into STATE_DIR/workspace and cds there so up/down/init run from the right directory.
+	var setupFn, setupCall string
+	if hasPayload {
+		setupFn = "do_setup() {\n" +
+			"  WORKSPACE_DIR=\"${STATE_DIR}/workspace\"\n" +
+			"  mkdir -p \"${STATE_DIR}\"\n" +
+			"  if [ ! -d \"${WORKSPACE_DIR}\" ]; then\n" +
+			"    echo \"runner: extracting workspace payload…\"\n" +
+			"    mkdir -p \"${WORKSPACE_DIR}\"\n" +
+			"    # Unpack payload/workspace.tar.gz out of the .nxbundle (which is itself a tar.gz).\n" +
+			"    tar -xzf \"" + bundlePath + "\" -O payload/workspace.tar.gz | tar -xz -C \"${WORKSPACE_DIR}\"\n" +
+			"    echo \"runner: workspace extracted to ${WORKSPACE_DIR}\"\n" +
+			"  fi\n" +
+			"  cd \"${WORKSPACE_DIR}\"\n" +
+			"}\n"
+		setupCall = "    do_setup\n"
+	} else {
+		setupFn = "do_setup() { :; }\n"
+		setupCall = ""
+	}
 
 	script := "#!/bin/sh\n" +
 		"# Nexus standalone workspace runner\n" +
@@ -169,6 +207,9 @@ func writeRunnerScript(dst, bundlePath, workspaceName string, intent WorkspaceIn
 		"  echo \"runner: init: completed\"\n" +
 		"}\n" +
 		"\n" +
+		"# do_setup: extract bundle payload (workspace files) and cd into it.\n" +
+		setupFn +
+		"\n" +
 		"usage() {\n" +
 		"  cat <<EOF\n" +
 		"Usage: $PROG <command> [args...]\n" +
@@ -198,10 +239,12 @@ func writeRunnerScript(dst, bundlePath, workspaceName string, intent WorkspaceIn
 		"    exec \"$@\"\n" +
 		"    ;;\n" +
 		"  start)\n" +
+		setupCall +
 		"    do_init\n" +
 		"    do_up\n" +
 		"    ;;\n" +
 		"  stop)\n" +
+		setupCall +
 		"    do_down\n" +
 		"    ;;\n" +
 		"  --help|-h|\"\")\n" +
@@ -258,8 +301,9 @@ func shellSingleQuote(s string) string {
 }
 
 // writeTarGz creates a .nxbundle (tar.gz) at dst containing manifest.json
-// and a stub payload segment.
-func writeTarGz(dst string, manifestBytes []byte) error {
+// and the workspace payload. If archiveBytes is non-nil it is written as
+// payload/workspace.tar.gz; otherwise a stub placeholder is written instead.
+func writeTarGz(dst string, manifestBytes []byte, archiveBytes []byte) error {
 	f, err := os.Create(dst)
 	if err != nil {
 		return fmt.Errorf("bundle: create output file: %w", err)
@@ -277,10 +321,18 @@ func writeTarGz(dst string, manifestBytes []byte) error {
 		return err
 	}
 
-	// Write stub payload segment (empty, signals future disk snapshot support).
-	stub := []byte("# nexus bundle payload stub v1\n")
-	if err := writeTarEntry(tw, "payload/workspace.stub", stub); err != nil {
-		return err
+	// Write workspace payload.
+	if len(archiveBytes) > 0 {
+		// Real archive: repo directory snapshot (excluding host-specific files).
+		if err := writeTarEntry(tw, "payload/workspace.tar.gz", archiveBytes); err != nil {
+			return err
+		}
+	} else {
+		// Stub: signals future disk snapshot support but no files included.
+		stub := []byte("# nexus bundle payload stub v1\n")
+		if err := writeTarEntry(tw, "payload/workspace.stub", stub); err != nil {
+			return err
+		}
 	}
 
 	return nil
