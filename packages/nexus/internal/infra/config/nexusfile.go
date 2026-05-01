@@ -36,10 +36,16 @@ type NexusfileManifest struct {
 	// Future fields: base image version, toolchain pins, etc.
 }
 
-// NexusfileDevSection mirrors smolvm's [dev] table for future init/volume support.
+// NexusfileDevSection mirrors smolvm's [dev] table for lifecycle command support.
 type NexusfileDevSection struct {
 	// Init commands run once when the workspace base layer is built.
 	Init []string `json:"init,omitempty" toml:"init"`
+	// Bake commands run when the shared base image is baked.
+	Bake []string `json:"bake,omitempty" toml:"bake"`
+	// Up commands start the workspace services (e.g. docker compose up).
+	Up []string `json:"up,omitempty" toml:"up"`
+	// Down commands stop workspace services (e.g. docker compose down).
+	Down []string `json:"down,omitempty" toml:"down"`
 	// Volumes declares host→guest mount mappings.
 	Volumes []string `json:"volumes,omitempty" toml:"volumes"`
 }

@@ -20,8 +20,8 @@ Source spec directory: `../../docs/spec`
 | AUTH-018 | covered | `TestAuthRelay` (test/e2e/auth/relay_test.go:12) |  |
 | AUTH-019 | covered | `TestAuthRelay` (test/e2e/auth/relay_test.go:12) |  |
 | CLI-001 | waived | - | General CLI connectivity behavior; covered by existing CLI tests implicitly. |
-| CLI-002 | covered | `TestCLI_DaemonUnreachable` (test/e2e/cli/cli_test.go:151) |  |
-| CLI-003 | covered | `TestCLI_UnknownSubcommand` (test/e2e/cli/cli_test.go:135) |  |
+| CLI-002 | covered | `TestCLI_DaemonUnreachable` (test/e2e/cli/cli_test.go:152) |  |
+| CLI-003 | covered | `TestCLI_UnknownSubcommand` (test/e2e/cli/cli_test.go:136) |  |
 | CLI-004 | waived | - | General CLI output behavior; verified by all CLI tests. |
 | CLI-005 | waived | - | General CLI --json behavior; not all commands support --json in e2e yet. |
 | CLI-006 | waived | - | General CLI workspace argument resolution; verified by existing CLI tests. |
@@ -96,6 +96,18 @@ Source spec directory: `../../docs/spec`
 | CLI-103 | waived | - | nexus config migrate backup behavior. |
 | CLI-110 | waived | - | Deploy stub; not yet implemented. |
 | CLI-111 | waived | - | Deploy stub; not yet implemented. |
+| CLI-120 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
+| CLI-121 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
+| CLI-122 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
+| CLI-123 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
+| CLI-124 | covered | `TestCLI_WorkspaceBundleRunner_MacOSCompatibility` (test/e2e/cli/workspace_bundle_test.go:69) |  |
+| CLI-125 | covered | `TestCLI_WorkspaceBundleRunner_MacOSCompatibility` (test/e2e/cli/workspace_bundle_test.go:69) |  |
+| CLI-126 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
+| CLI-127 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
+| CLI-128 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:120) |  |
+| CLI-129 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:120) |  |
+| CLI-130 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:120) |  |
+| CLI-131 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:120) |  |
 | DAEMON-001 | waived | - | Conceptual clause: daemon is a single long-running process. |
 | DAEMON-002 | waived | - | Conceptual clause: CLI is a client process. |
 | DAEMON-003 | waived | - | Conceptual clause: connectivity modes table. |
@@ -149,10 +161,10 @@ Source spec directory: `../../docs/spec`
 | ERR-004 | covered | `TestErrors_MissingIDParam` (test/e2e/workspace/errors_test.go:70)<br>`TestErrors_SpotlightStopMissingWorkspaceID` (test/e2e/workspace/errors_test.go:96)<br>`TestErrors_MethodNotFound` (test/e2e/workspace/errors_test.go:119) |  |
 | ERR-005 | waived | - | General rule: all application errors use -32000 with data.kind — verified structurally. |
 | ERR-010 | covered | `TestErrors_DuplicateWorkspaceName` (test/e2e/workspace/errors_test.go:146) |  |
-| ERR-011 | covered | `TestErrors_WorkspaceNotFound` (test/e2e/workspace/errors_test.go:13)<br>`TestErrors_PTYCreateMissingWorkspace` (test/e2e/workspace/errors_test.go:130)<br>`TestLifecycle_NotFound` (test/e2e/workspace/lifecycle_sm_test.go:174)<br>`TestLifecycle_StartNotFound` (test/e2e/workspace/lifecycle_sm_test.go:189) |  |
+| ERR-011 | covered | `TestErrors_WorkspaceNotFound` (test/e2e/workspace/errors_test.go:13)<br>`TestErrors_PTYCreateMissingWorkspace` (test/e2e/workspace/errors_test.go:130)<br>`TestLifecycle_NotFound` (test/e2e/workspace/lifecycle_sm_test.go:177)<br>`TestLifecycle_StartNotFound` (test/e2e/workspace/lifecycle_sm_test.go:192) |  |
 | ERR-012 | waived | - | workspace.invalid_state — partially covered by invalid transition tests but exact error code mapping requires deeper assertion. |
 | ERR-013 | covered | `TestErrors_CreateMissingRequiredFields` (test/e2e/workspace/errors_test.go:47) |  |
-| ERR-014 | covered | `TestLifecycle_ForkRequiresChildRef` (test/e2e/workspace/lifecycle_sm_test.go:204) |  |
+| ERR-014 | covered | `TestLifecycle_ForkRequiresChildRef` (test/e2e/workspace/lifecycle_sm_test.go:207) |  |
 | ERR-015 | waived | - | workspace.no_snapshot — requires a workspace with no snapshot on restore; edge case. |
 | ERR-022 | waived | - | workspace.fork_missing_ref — covered by TestLifecycle_ForkRequiresChildRef but error code mapping is not explicitly asserted. |
 | ERR-023 | waived | - | workspace.restore no snapshot — same as ERR-015. |
@@ -162,10 +174,10 @@ Source spec directory: `../../docs/spec`
 | ERR-042 | waived | - | project.not_found — partially covered by TestProject but exact error code not asserted in e2e. |
 | ERR-045 | waived | - | Project error not explicitly triggered in e2e. |
 | ERR-050 | covered | `TestSpotlight_WorkspaceNotFound` (test/e2e/spotlight/spotlight_test.go:120) |  |
-| ERR-051 | covered | `TestSpotlight_PortConflict` (test/e2e/spotlight/spotlight_behavioral_test.go:208) |  |
+| ERR-051 | covered | `TestSpotlight_PortConflict` (test/e2e/spotlight/spotlight_behavioral_test.go:215) |  |
 | ERR-052 | waived | - | spotlight.not_found — requires removing an already-removed forward. |
 | ERR-055 | waived | - | Spotlight error not explicitly triggered in e2e. |
-| ERR-060 | covered | `TestPTY_SessionNotFound` (test/e2e/pty/pty_test.go:168) |  |
+| ERR-060 | covered | `TestPTY_SessionNotFound` (test/e2e/pty/pty_test.go:173) |  |
 | ERR-061 | waived | - | pty.not_found — covered by TestPTY_SessionNotFound but exact error code mapping not asserted. |
 | ERR-065 | waived | - | PTY error not explicitly triggered in e2e. |
 | ERR-070 | covered | `TestAuthRelay` (test/e2e/auth/relay_test.go:12) |  |
@@ -173,8 +185,8 @@ Source spec directory: `../../docs/spec`
 | ERR-072 | waived | - | auth.expired — requires time manipulation or waiting for TTL expiry. |
 | ERR-075 | waived | - | Auth error not explicitly triggered in e2e. |
 | ERR-080 | waived | - | General rule: exit code 0 definition. |
-| ERR-081 | covered | `TestCLI_DaemonUnreachable` (test/e2e/cli/cli_test.go:151) |  |
-| ERR-082 | covered | `TestCLI_UnknownSubcommand` (test/e2e/cli/cli_test.go:135) |  |
+| ERR-081 | covered | `TestCLI_DaemonUnreachable` (test/e2e/cli/cli_test.go:152) |  |
+| ERR-082 | covered | `TestCLI_UnknownSubcommand` (test/e2e/cli/cli_test.go:136) |  |
 | INV-001 | waived | - | Workspace ID uniqueness is guaranteed by UUID generation; not testable in e2e. |
 | INV-002 | covered | `TestErrors_DuplicateWorkspaceName` (test/e2e/workspace/errors_test.go:146) |  |
 | INV-003 | covered | `TestProject` (test/e2e/project/project_test.go:12)<br>`TestProjectRepoDedup` (test/e2e/workspace/idempotency_test.go:83) |  |
@@ -183,14 +195,14 @@ Source spec directory: `../../docs/spec`
 | INV-006 | waived | - | workspace.list no duplicates — guaranteed by database primary key; not testable in e2e. |
 | INV-007 | covered | `TestIntegration_CreateAndGetLifecycle` (internal/app/workspace/integration_test.go:29)<br>`TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:62)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
 | INV-008 | covered | `TestIntegration_CreateAndGetLifecycle` (internal/app/workspace/integration_test.go:29)<br>`TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:62)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
-| INV-009 | covered | `TestIntegration_CreateAndGetLifecycle` (internal/app/workspace/integration_test.go:29)<br>`TestLifecycle_RemoveNotInList` (test/e2e/workspace/lifecycle_sm_test.go:143)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
+| INV-009 | covered | `TestIntegration_CreateAndGetLifecycle` (internal/app/workspace/integration_test.go:29)<br>`TestLifecycle_RemoveNotInList` (test/e2e/workspace/lifecycle_sm_test.go:146)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
 | INV-010 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
 | INV-011 | covered | `TestIntegration_CreateAndGetLifecycle` (internal/app/workspace/integration_test.go:29)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
 | INV-012 | covered | `TestErrors_InvalidStateTransitions` (test/e2e/workspace/errors_test.go:171) |  |
 | INV-013 | covered | `TestErrors_InvalidStateTransitions` (test/e2e/workspace/errors_test.go:171) |  |
-| INV-014 | covered | `TestErrors_RemoveAlreadyRemoved` (test/e2e/workspace/errors_test.go:215) |  |
+| INV-014 | covered | `TestErrors_RemoveAlreadyRemoved` (test/e2e/workspace/errors_test.go:213) |  |
 | INV-015 | covered | `TestProject` (test/e2e/project/project_test.go:12) |  |
-| INV-016 | covered | `TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:146)<br>`TestErrors_SpotlightStopUnknownWorkspace` (test/e2e/workspace/errors_test.go:108) |  |
+| INV-016 | covered | `TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:152)<br>`TestErrors_SpotlightStopUnknownWorkspace` (test/e2e/workspace/errors_test.go:108) |  |
 | INV-017 | waived | - | workspace.ports.remove unknown forward — requires racing removal or specific edge case. |
 | INV-018 | covered | `TestErrors_DuplicateWorkspaceName` (test/e2e/workspace/errors_test.go:146) |  |
 | INV-019 | waived | - | Concurrent start serialization requires racing requests; tested at unit level. |
@@ -199,7 +211,7 @@ Source spec directory: `../../docs/spec`
 | INV-022 | waived | - | spotlight.stop listener closure is an internal implementation detail. |
 | INV-023 | waived | - | Daemon shutdown spotlight closure is an internal implementation detail. |
 | INV-024 | waived | - | Daemon shutdown socket removal is an internal implementation detail. |
-| INV-025 | covered | `TestPTY_SessionNotPersisted` (test/e2e/pty/pty_test.go:194) |  |
+| INV-025 | covered | `TestPTY_SessionNotPersisted` (test/e2e/pty/pty_test.go:199) |  |
 | INV-026 | waived | - | PTY exit notification delivery is best tested at unit level with mock processes. |
 | INV-027 | waived | - | Removed workspace cleanup is an internal implementation detail. |
 | PRJ-001 | waived | - | Conceptual clause: definition of a project. |
@@ -220,15 +232,15 @@ Source spec directory: `../../docs/spec`
 | PRJ-019 | covered | `TestProject` (test/e2e/project/project_test.go:12) |  |
 | PRJ-020 | covered | `TestProject` (test/e2e/project/project_test.go:12) |  |
 | PRJ-030 | covered | `TestProject` (test/e2e/project/project_test.go:12)<br>`TestProjectRepoDedup` (test/e2e/workspace/idempotency_test.go:83) |  |
-| PTY-001 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:42)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:62)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:141) |  |
-| PTY-002 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:42)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:62)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:141) |  |
-| PTY-003 | covered | `TestPTY_SessionNotPersisted` (test/e2e/pty/pty_test.go:194) |  |
+| PTY-001 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:43)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:69)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:152) |  |
+| PTY-002 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:43)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:69)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:152) |  |
+| PTY-003 | covered | `TestPTY_SessionNotPersisted` (test/e2e/pty/pty_test.go:199) |  |
 | PTY-004 | waived | - | Internal implementation: pty.create pre-condition for running workspace is covered by error tests but the exact spec clause is an implementation detail. |
-| PTY-005 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:42)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:62)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:141) |  |
-| PTY-006 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:42)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:62)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:141) |  |
-| PTY-007 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:42)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:62)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:141) |  |
+| PTY-005 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:43)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:69)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:152) |  |
+| PTY-006 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:43)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:69)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:152) |  |
+| PTY-007 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:43)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:69)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:152) |  |
 | PTY-008 | waived | - | Internal implementation: vsock agent connection protocol. |
-| PTY-009 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:42)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:62)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:141) |  |
+| PTY-009 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:43)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:69)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:152) |  |
 | PTY-010 | covered | `TestPTY` (test/e2e/pty/pty_test.go:12) |  |
 | PTY-011 | covered | `TestPTY` (test/e2e/pty/pty_test.go:12) |  |
 | PTY-012 | covered | `TestPTY` (test/e2e/pty/pty_test.go:12) |  |
@@ -236,18 +248,18 @@ Source spec directory: `../../docs/spec`
 | PTY-014 | covered | `TestPTY` (test/e2e/pty/pty_test.go:12) |  |
 | PTY-015 | waived | - | Internal implementation: libkrun guest PTY creation via agent. |
 | PTY-016 | covered | `TestPTY` (test/e2e/pty/pty_test.go:12) |  |
-| PTY-017 | covered | `TestPTY_ListSession` (test/e2e/pty/pty_behavioral_test.go:159)<br>`TestPTY` (test/e2e/pty/pty_test.go:12) |  |
-| PTY-018 | covered | `TestPTY_ListSession` (test/e2e/pty/pty_behavioral_test.go:159)<br>`TestPTY` (test/e2e/pty/pty_test.go:12) |  |
-| PTY-019 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:91) |  |
-| PTY-020 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:91) |  |
-| PTY-021 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:91) |  |
-| PTY-022 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:91) |  |
-| PTY-023 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:91) |  |
-| PTY-024 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:91) |  |
-| PTY-025 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:91) |  |
-| PTY-026 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:91) |  |
-| PTY-027 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:91) |  |
-| PTY-028 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:91) |  |
+| PTY-017 | covered | `TestPTY_ListSession` (test/e2e/pty/pty_behavioral_test.go:170)<br>`TestPTY` (test/e2e/pty/pty_test.go:12) |  |
+| PTY-018 | covered | `TestPTY_ListSession` (test/e2e/pty/pty_behavioral_test.go:170)<br>`TestPTY` (test/e2e/pty/pty_test.go:12) |  |
+| PTY-019 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:95) |  |
+| PTY-020 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:95) |  |
+| PTY-021 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:95) |  |
+| PTY-022 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:95) |  |
+| PTY-023 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:95) |  |
+| PTY-024 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:95) |  |
+| PTY-025 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:95) |  |
+| PTY-026 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:95) |  |
+| PTY-027 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:95) |  |
+| PTY-028 | covered | `TestPTY_Operations` (test/e2e/pty/pty_test.go:95) |  |
 | PTY-029 | waived | - | Internal implementation: pty.reattach request shape; requires WebSocket/mux for push notifications. |
 | PTY-030 | waived | - | Internal implementation: pty.reattach notification redirection; requires WebSocket/mux. |
 | PTY-031 | waived | - | Internal implementation: pty.reattach scrollback replay; requires WebSocket/mux. |
@@ -291,20 +303,20 @@ Source spec directory: `../../docs/spec`
 | SPOT-007 | waived | - | Conceptual clause: forward state enum. |
 | SPOT-008 | waived | - | Conceptual clause: spotlight.stop atomicity description. |
 | SPOT-009 | waived | - | Conceptual clause: client persistence behavior. |
-| SPOT-010 | covered | `TestSpotlight_WorkspacePortsAlias` (test/e2e/spotlight/spotlight_behavioral_test.go:246) |  |
-| SPOT-011 | covered | `TestSpotlight_WorkspacePortsAlias` (test/e2e/spotlight/spotlight_behavioral_test.go:246) |  |
-| SPOT-012 | covered | `TestSpotlight_WorkspacePortsAlias` (test/e2e/spotlight/spotlight_behavioral_test.go:246) |  |
-| SPOT-013 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:76) |  |
-| SPOT-014 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:76) |  |
-| SPOT-015 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:76) |  |
-| SPOT-016 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:76) |  |
-| SPOT-017 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:76)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:146) |  |
-| SPOT-018 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:76)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:146) |  |
-| SPOT-019 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:76)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:146) |  |
-| SPOT-020 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:76)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:146) |  |
-| SPOT-021 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:76)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:146) |  |
-| SPOT-022 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:76)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:146) |  |
-| SPOT-023 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:76)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:146) |  |
+| SPOT-010 | covered | `TestSpotlight_WorkspacePortsAlias` (test/e2e/spotlight/spotlight_behavioral_test.go:256) |  |
+| SPOT-011 | covered | `TestSpotlight_WorkspacePortsAlias` (test/e2e/spotlight/spotlight_behavioral_test.go:256) |  |
+| SPOT-012 | covered | `TestSpotlight_WorkspacePortsAlias` (test/e2e/spotlight/spotlight_behavioral_test.go:256) |  |
+| SPOT-013 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79) |  |
+| SPOT-014 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79) |  |
+| SPOT-015 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79) |  |
+| SPOT-016 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79) |  |
+| SPOT-017 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:152) |  |
+| SPOT-018 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:152) |  |
+| SPOT-019 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:152) |  |
+| SPOT-020 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:152) |  |
+| SPOT-021 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:152) |  |
+| SPOT-022 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:152) |  |
+| SPOT-023 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79)<br>`TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:152) |  |
 | SPOT-024 | covered | `TestSpotlight` (test/e2e/spotlight/spotlight_test.go:12) |  |
 | SPOT-025 | covered | `TestSpotlight` (test/e2e/spotlight/spotlight_test.go:12) |  |
 | SPOT-026 | covered | `TestSpotlight` (test/e2e/spotlight/spotlight_test.go:12) |  |
@@ -317,20 +329,28 @@ Source spec directory: `../../docs/spec`
 | SPOT-033 | covered | `TestSpotlight` (test/e2e/spotlight/spotlight_test.go:12) |  |
 | SPOT-034 | covered | `TestSpotlight` (test/e2e/spotlight/spotlight_test.go:12) |  |
 | SPOT-035 | covered | `TestSpotlight` (test/e2e/spotlight/spotlight_test.go:12) |  |
-| VM-001 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:62)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:141) |  |
-| VM-002 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:42) |  |
-| VM-003 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:42) |  |
+| VM-001 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:69)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:152) |  |
+| VM-002 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:43) |  |
+| VM-003 | covered | `TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:43) |  |
 | VM-004 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62) |  |
-| VM-005 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestCLI_WorkspaceForkAndRestore` (test/e2e/cli/fork_restore_test.go:14)<br>`TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:76)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
+| VM-005 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestCLI_WorkspaceForkAndRestore` (test/e2e/cli/fork_restore_test.go:14)<br>`TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
 | VM-006 | waived | - | Internal implementation: daemon restart state recovery. |
 | VM-007 | waived | - | Internal implementation: workspace-local tooling bootstrap path. |
 | VM-008 | waived | - | Internal implementation: workspace-local tool installability. |
-| VM-PROOF-001 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:62)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:141) |  |
-| VM-PROOF-002 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:76)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
+| VM-009 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
+| VM-010 | covered | `TestCLI_WorkspaceBundleRunner_MacOSCompatibility` (test/e2e/cli/workspace_bundle_test.go:69) |  |
+| VM-011 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
+| VM-012 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:120) |  |
+| VM-PROOF-001 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:69)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:152) |  |
+| VM-PROOF-002 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
 | VM-PROOF-003 | waived | - | Requires deterministic daemon restart harness coverage for VM workspaces; tracked in child PRD 06 TD follow-up. |
 | VM-PROOF-004 | covered | `TestCLI_WorkspaceForkAndRestore` (test/e2e/cli/fork_restore_test.go:14) |  |
-| VM-PROOF-005 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:42) |  |
+| VM-PROOF-005 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:43) |  |
 | VM-PROOF-006 | covered | `TestVMProof_GuestCLITools` (test/e2e/vmproof/tools_test.go:59) |  |
+| VM-PROOF-007 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
+| VM-PROOF-008 | covered | `TestCLI_WorkspaceBundleRunner_MacOSCompatibility` (test/e2e/cli/workspace_bundle_test.go:69) |  |
+| VM-PROOF-009 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
+| VM-PROOF-010 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:120) |  |
 | WS-001 | waived | - | Conceptual clause: workspace definition. |
 | WS-002 | waived | - | Conceptual clause: workspace ID uniqueness. |
 | WS-003 | waived | - | Conceptual clause: workspace ID non-reuse. |
@@ -351,9 +371,9 @@ Source spec directory: `../../docs/spec`
 | WS-018 | covered | `TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:62) |  |
 | WS-019 | waived | - | starting -> created failure transition is an internal implementation detail. |
 | WS-020 | covered | `TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:62) |  |
-| WS-021 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:114) |  |
-| WS-022 | covered | `TestLifecycle_RemoveNotInList` (test/e2e/workspace/lifecycle_sm_test.go:143) |  |
-| WS-023 | covered | `TestLifecycle_RemoveNotInList` (test/e2e/workspace/lifecycle_sm_test.go:143) |  |
+| WS-021 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:116) |  |
+| WS-022 | covered | `TestLifecycle_RemoveNotInList` (test/e2e/workspace/lifecycle_sm_test.go:146) |  |
+| WS-023 | covered | `TestLifecycle_RemoveNotInList` (test/e2e/workspace/lifecycle_sm_test.go:146) |  |
 | WS-024 | waived | - | restored -> running transition requires restored state setup. |
 | WS-025 | waived | - | restored -> removed transition requires restored state setup. |
 | WS-026 | covered | `TestErrors_InvalidStateTransitions` (test/e2e/workspace/errors_test.go:171) |  |
@@ -364,15 +384,15 @@ Source spec directory: `../../docs/spec`
 | WS-031 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
 | WS-032 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
 | WS-033 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
-| WS-034 | covered | `TestLifecycle_ForkRequiresChildRef` (test/e2e/workspace/lifecycle_sm_test.go:204) |  |
+| WS-034 | covered | `TestLifecycle_ForkRequiresChildRef` (test/e2e/workspace/lifecycle_sm_test.go:207) |  |
 | WS-040 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12)<br>`TestProtocol_WorkflowRoundTrip` (test/e2e/workspace/protocol_test.go:108) |  |
 | WS-041 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
 | WS-042 | waived | - | workspace.create unique name pre-condition is covered by TestErrors_DuplicateWorkspaceName but the exact spec clause mapping is implicit. |
 | WS-043 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12)<br>`TestProtocol_WorkflowRoundTrip` (test/e2e/workspace/protocol_test.go:108) |  |
 | WS-044 | covered | `TestErrors_CreateMissingRequiredFields` (test/e2e/workspace/errors_test.go:47) |  |
 | WS-045 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
-| WS-046 | covered | `TestLifecycle_NotFound` (test/e2e/workspace/lifecycle_sm_test.go:174) |  |
-| WS-047 | covered | `TestLifecycle_NotFound` (test/e2e/workspace/lifecycle_sm_test.go:174) |  |
+| WS-046 | covered | `TestLifecycle_NotFound` (test/e2e/workspace/lifecycle_sm_test.go:177) |  |
+| WS-047 | covered | `TestLifecycle_NotFound` (test/e2e/workspace/lifecycle_sm_test.go:177) |  |
 | WS-048 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12)<br>`TestProtocol_WorkflowRoundTrip` (test/e2e/workspace/protocol_test.go:108) |  |
 | WS-049 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12)<br>`TestProtocol_WorkflowRoundTrip` (test/e2e/workspace/protocol_test.go:108) |  |
 | WS-050 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12)<br>`TestProtocol_WorkflowRoundTrip` (test/e2e/workspace/protocol_test.go:108) |  |
@@ -388,12 +408,12 @@ Source spec directory: `../../docs/spec`
 | WS-060 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
 | WS-061 | waived | - | workspace.fork auto-generated name. |
 | WS-062 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
-| WS-063 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:114)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
-| WS-064 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:114)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
-| WS-065 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:114)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
-| WS-066 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:114)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
-| WS-067 | covered | `TestLifecycle_ReadyState` (test/e2e/workspace/lifecycle_sm_test.go:92) |  |
-| WS-068 | covered | `TestLifecycle_ReadyState` (test/e2e/workspace/lifecycle_sm_test.go:92) |  |
+| WS-063 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:116)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
+| WS-064 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:116)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
+| WS-065 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:116)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
+| WS-066 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:116)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
+| WS-067 | covered | `TestLifecycle_ReadyState` (test/e2e/workspace/lifecycle_sm_test.go:93) |  |
+| WS-068 | covered | `TestLifecycle_ReadyState` (test/e2e/workspace/lifecycle_sm_test.go:93) |  |
 | WS-069 | waived | - | workspace.discover-ports request shape. |
 | WS-070 | waived | - | workspace.discover-ports response shape. |
 | WS-071 | waived | - | DiscoveredPort object shape. |

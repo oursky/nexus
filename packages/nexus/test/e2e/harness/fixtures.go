@@ -7,28 +7,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 )
 
-// RequireVM skips the test when the libkrun VM backend is not available.
-//
-//   - macOS/darwin: libkrun VM is not supported on macOS — always skip.
-//   - Linux: skip when NEXUS_VM_KERNEL or NEXUS_VM_ROOTFS are unset.
+// RequireVM gates the test on a passing preflight check for the VM backend.
+// It uses RunPreflight with the real environment reader and enforces the A1
+// preflight policy:
+//   - UNSUPPORTED_HOST → t.Skip (e.g. macOS/darwin, no /dev/kvm)
+//   - MISCONFIGURED    → t.Fatalf with actionable diagnostics
+//   - BOOTSTRAP_FAILED → t.Fatalf with actionable diagnostics
 //
 // Call this at the top of every test that needs a real VM backend.
 // Tests that work with the sandbox backend should NOT call this.
 func RequireVM(t *testing.T) {
 	t.Helper()
-	if runtime.GOOS == "darwin" {
-		t.Skip("VM backend is not supported on macOS; skipping VM-specific test")
-	}
-	kernel := os.Getenv("NEXUS_VM_KERNEL")
-	rootfs := os.Getenv("NEXUS_VM_ROOTFS")
-	if kernel == "" || rootfs == "" {
-		t.Skip("VM not configured (NEXUS_VM_KERNEL/ROOTFS not set); skipping VM-specific test")
-	}
+	r := RunPreflight(RealEnvReader{})
+	EnforcePreflightPolicy(t, r)
 }
 
 // SkipIfVMBoot skips the test when running in short mode (-short flag).
@@ -54,7 +49,9 @@ func IsVMBackend() bool {
 // intends to run workspace.exec, because the VM backend needs time to boot.
 func WaitForWorkspaceReady(t *testing.T, h *Harness, workspaceID string) {
 	t.Helper()
-	var readyRes struct{ Ready bool `json:"ready"` }
+	var readyRes struct {
+		Ready bool `json:"ready"`
+	}
 	for attempts := 0; attempts < 120; attempts++ {
 		h.MustCall("workspace.ready", map[string]any{"id": workspaceID}, &readyRes)
 		if readyRes.Ready {

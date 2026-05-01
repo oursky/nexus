@@ -11,7 +11,7 @@ before a backend change can be accepted.
 
 ---
 
-## Equivalence Invariants — `VM-001`–`VM-008`
+## Equivalence Invariants — `VM-001`–`VM-012`
 
 **`VM-001`** — For VM backends, interactive shell sessions MUST execute inside the guest VM, not on
 the daemon host.
@@ -36,9 +36,26 @@ daemon restart; required runtime state must be recoverable from persisted worksp
 **`VM-008`** — Node/npm and required agent CLIs (`codex`, `opencode`) MUST be installable and
 invokable via workspace-local path, independent of host mise shim PATH.
 
+**`VM-009`** — A portable workspace artifact format (`.nxbundle`) MUST declare host compatibility
+(`os/arch` and virtualization capability) and guest platform metadata. Import/run MUST fail fast
+with a deterministic compatibility error when host requirements are not met.
+
+**`VM-010`** — A standalone runner generated from a workspace export MUST support macOS execution
+when all of the following hold: matching host architecture, Hypervisor.framework availability, and
+runner binary code-signing/entitlements required by the virtualization path.
+
+**`VM-011`** — Workspace portability semantics are split by design:
+1. fork/restore snapshots are lineage-local and daemon-internal
+2. `.nxbundle` artifacts are distributable and importable across hosts that satisfy compatibility
+   constraints
+
+**`VM-012`** — Portable export/import and standalone execution MUST preserve Nexusfile workspace
+intent semantics (`workspace.bake`, `workspace.init`, `workspace.up`, `workspace.down`) with no
+implicit remapping to deploy-only service intent fields.
+
 ---
 
-## Formal Verification Obligations — `VM-PROOF-001`–`VM-PROOF-006`
+## Formal Verification Obligations — `VM-PROOF-001`–`VM-PROOF-010`
 
 All obligations are required for merge.
 
@@ -61,6 +78,25 @@ create -> start -> open shell -> fork -> restore -> open shell.
 
 - `/workspace/.nexus/tools/bin/codex --version`
 - `/workspace/.nexus/tools/bin/opencode --version`
+
+**`VM-PROOF-007 (Compatibility Gate, E2E)`** — Export/import user journey MUST prove compatibility
+gating with deterministic outcomes:
+- compatible host tuple imports/runs successfully
+- incompatible host tuple fails before guest boot with a stable machine-readable reason
+
+**`VM-PROOF-008 (macOS Runner, E2E)`** — On macOS supported architecture, standalone runner flow
+(`start`/`exec`/`stop`) MUST pass and preserve `/workspace` semantics. Evidence MUST include explicit
+host capability detection and Hypervisor.framework entitlement checks.
+
+**`VM-PROOF-009 (Semantic Separation, E2E)`** — Tests MUST demonstrate that daemon snapshot/fork
+lineage and portable `.nxbundle` distribution are distinct mechanisms (i.e., artifact import does not
+depend on snapshot lineage IDs from source daemon state).
+
+**`VM-PROOF-010 (Intent Preservation, E2E)`** — Tests MUST demonstrate standalone/exported behavior
+preserves Nexusfile workspace intent contract:
+- `workspace.up`/`workspace.down` drive local runner lifecycle behavior
+- `workspace.init` remains one-time per imported runtime instance
+- deploy-only `services[].start` is not auto-executed as local-start fallback
 
 ---
 
