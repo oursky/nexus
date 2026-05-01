@@ -413,7 +413,11 @@ func (h *Handler) handleArchive(ctx context.Context, raw json.RawMessage) (any, 
 			return nil
 		}
 
-		hdr, hdrErr := tar.FileInfoHeader(info, "")
+		linkTarget := ""
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, _ = os.Readlink(path)
+		}
+		hdr, hdrErr := tar.FileInfoHeader(info, linkTarget)
 		if hdrErr != nil {
 			return hdrErr
 		}

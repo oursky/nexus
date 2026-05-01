@@ -9,8 +9,8 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/infra/config"
 )
 
-const SchemaVersion = "1"
-const BundleVersion = "1.0.0"
+const SchemaVersion = "2"
+const BundleVersion = "2.0.0"
 
 // BundleManifest is the top-level manifest stored in manifest.json inside a .nxbundle.
 type BundleManifest struct {
@@ -22,6 +22,41 @@ type BundleManifest struct {
 	WorkspaceIntent WorkspaceIntent   `json:"workspaceIntent"`
 	Payload         PayloadIndex      `json:"payload"`
 	Integrity       IntegrityMetadata `json:"integrity"`
+	// Runtime describes the VM/container configuration (SchemaVersion "2" only).
+	Runtime *RuntimeConfig `json:"runtime,omitempty"`
+	// Assets is the inventory of all files inside the bundle (SchemaVersion "2" only).
+	Assets *AssetInventory `json:"assets,omitempty"`
+}
+
+// RuntimeConfig describes the VM or container runtime configuration for the bundle.
+type RuntimeConfig struct {
+	Mode   string `json:"mode"`   // "vm"
+	Image  string `json:"image"`  // OCI image ref
+	Digest string `json:"digest"` // sha256:...
+	CPUs   uint8  `json:"cpus"`
+	MemMiB uint32 `json:"memMiB"`
+}
+
+// AssetInventory is the inventory of all files packed inside an NXPACK bundle.
+type AssetInventory struct {
+	Libraries   []AssetEntry `json:"libraries"`
+	AgentRootfs *AssetEntry  `json:"agentRootfs,omitempty"`
+	Layers      []LayerEntry `json:"layers"`
+	Workspace   *AssetEntry  `json:"workspace,omitempty"`
+}
+
+// AssetEntry describes a single file inside the bundle assets blob.
+type AssetEntry struct {
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
+// LayerEntry describes an OCI layer packed inside the bundle assets blob.
+type LayerEntry struct {
+	Digest string `json:"digest"`
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
 }
 
 // SourceMetadata describes the origin of the exported workspace.
