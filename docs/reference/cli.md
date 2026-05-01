@@ -70,6 +70,8 @@ Full workspace lifecycle management.
 | `nexus workspace shell <id>` | Open an interactive shell |
 | `nexus workspace sshcheck <id>` | Check SSH connectivity to workspace guest |
 | `nexus workspace serial-log <id>` | Show workspace serial log |
+| `nexus workspace export <id> --out <path>` | Export workspace to a `.nxbundle` archive and standalone runner script |
+| `nexus workspace import --from <path>` | Inspect a `.nxbundle` and verify host compatibility (use `--dry-run` to preview) |
 
 ---
 
@@ -143,6 +145,7 @@ The daemon exposes JSON-RPC 2.0 over WebSocket. These methods are called by the 
 | `workspace.discover-ports` | Discover Docker Compose published ports |
 | `workspace.sshcheck` | Check SSH connectivity to workspace guest |
 | `workspace.serial-log` | Read workspace serial log |
+| `workspace.nexusfile` | Read Nexusfile intent from the workspace's repo directory on the daemon host |
 
 ### Spotlight
 
