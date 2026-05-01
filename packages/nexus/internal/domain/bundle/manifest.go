@@ -3,6 +3,7 @@ package bundle
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/oursky/nexus/packages/nexus/internal/infra/config"
@@ -67,11 +68,11 @@ type IntegrityMetadata struct {
 // WorkspaceIntentFromNexusfile reads a Nexusfile at the given path and maps
 // bake/init/up/down fields into a WorkspaceIntent. Missing file is not an error.
 func WorkspaceIntentFromNexusfile(path string) (WorkspaceIntent, error) {
-	dir := filepath.Dir(path)
-	name := filepath.Base(path)
-	if name == "." || name == "" {
-		// path is a directory — look for Nexusfile inside
-		dir = path
+	// If path points to a directory, look for Nexusfile inside it.
+	// If path ends with "Nexusfile", use its directory.
+	dir := path
+	if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
+		dir = filepath.Dir(path)
 	}
 
 	cfg, found, err := config.LoadNexusfile(dir)

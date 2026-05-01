@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	appws "github.com/oursky/nexus/packages/nexus/internal/app/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/bundle"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 	rpce "github.com/oursky/nexus/packages/nexus/internal/rpc/errors"
 )
@@ -322,4 +323,38 @@ func tailLines(path string, maxLines int) ([]string, error) {
 		lines = lines[len(lines)-maxLines:]
 	}
 	return lines, nil
+}
+
+// ── workspace.nexusfile ──────────────────────────────────────────────────────
+
+type nexusfileReq struct {
+	ID string `json:"id"`
+}
+
+type nexusfileRes struct {
+	WorkspaceIntent bundle.WorkspaceIntent `json:"workspaceIntent"`
+}
+
+func (h *Handler) handleNexusfile(ctx context.Context, raw json.RawMessage) (any, error) {
+	req, err := decode[nexusfileReq](raw)
+	if err != nil {
+		return nil, err
+	}
+	if req.ID == "" {
+		return nil, rpce.InvalidParams("workspace.invalid_params", "id is required")
+	}
+	ws, err := h.svc.Info(ctx, req.ID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	if ws.Repo == "" {
+		return &nexusfileRes{WorkspaceIntent: bundle.WorkspaceIntent{}}, nil
+	}
+	// Read the Nexusfile from the workspace repo directory on this (daemon) host.
+	// Non-fatal: if missing or unparseable, return empty intent.
+	intent, intentErr := bundle.WorkspaceIntentFromNexusfile(ws.Repo)
+	if intentErr != nil {
+		return &nexusfileRes{WorkspaceIntent: bundle.WorkspaceIntent{}}, nil
+	}
+	return &nexusfileRes{WorkspaceIntent: intent}, nil
 }

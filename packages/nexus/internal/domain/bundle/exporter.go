@@ -88,12 +88,12 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (r
 		},
 	}
 
-	// Attempt to populate WorkspaceIntent from project Nexusfile.
-	if ws.RootPath != "" {
-		intent, intentErr := WorkspaceIntentFromNexusfile(ws.RootPath)
-		if intentErr == nil {
-			manifest.WorkspaceIntent = intent
-		}
+	// Attempt to populate WorkspaceIntent from the daemon-side Nexusfile.
+	var intentResult struct {
+		WorkspaceIntent WorkspaceIntent `json:"workspaceIntent"`
+	}
+	if intentErr := rpc.Do(conn, "workspace.nexusfile", map[string]any{"id": wsID}, &intentResult); intentErr == nil {
+		manifest.WorkspaceIntent = intentResult.WorkspaceIntent
 	}
 
 	// Serialise manifest without digest to get the canonical bytes.
