@@ -70,6 +70,54 @@ profile = "default"
 	}
 }
 
+// ── WorkspaceIntent resources ────────────────────────────────────────────────
+
+func TestWorkspaceIntentFromNexusfile_DevOnly(t *testing.T) {
+	dir := t.TempDir()
+	writeNexusfile(t, dir, `
+[dev]
+up = ["make up"]
+`)
+
+	intent, err := WorkspaceIntentFromNexusfile(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertSlice(t, "Up", intent.Up, []string{"make up"})
+	if intent.CPUs != 0 {
+		t.Errorf("cpus: got %d, want 0", intent.CPUs)
+	}
+	if intent.MemMiB != 0 {
+		t.Errorf("mem: got %d, want 0", intent.MemMiB)
+	}
+}
+
+func TestWorkspaceIntentFromNexusfile_WithResources(t *testing.T) {
+	dir := t.TempDir()
+	writeNexusfile(t, dir, `
+[vm]
+cpus = 4
+mem = 4096
+
+[dev]
+bake = ["apt-get update"]
+up = ["./start.sh"]
+`)
+
+	intent, err := WorkspaceIntentFromNexusfile(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertSlice(t, "Bake", intent.Bake, []string{"apt-get update"})
+	assertSlice(t, "Up", intent.Up, []string{"./start.sh"})
+	if intent.CPUs != 4 {
+		t.Errorf("cpus: got %d, want 4", intent.CPUs)
+	}
+	if intent.MemMiB != 4096 {
+		t.Errorf("mem: got %d, want 4096", intent.MemMiB)
+	}
+}
+
 // ── MarshalManifest / ParseManifest roundtrip ────────────────────────────────
 
 func TestMarshalParseManifest_Roundtrip(t *testing.T) {

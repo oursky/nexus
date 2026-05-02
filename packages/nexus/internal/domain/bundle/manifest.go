@@ -73,13 +73,20 @@ type CompatibilityMeta struct {
 	OsFamily []string `json:"osFamily"`
 }
 
-// WorkspaceIntent captures the lifecycle commands associated with the workspace.
+// WorkspaceIntent captures the lifecycle commands and VM resource configuration
+// associated with the workspace.
 type WorkspaceIntent struct {
 	Bake     []string `json:"bake"`
 	Init     []string `json:"init"`
 	Up       []string `json:"up"`
 	Down     []string `json:"down"`
 	InitMode string   `json:"initMode"`
+	// CPUs sets the number of virtual CPUs for the bundle VM.
+	// Zero means "use exporter default".
+	CPUs uint8 `json:"cpus,omitempty"`
+	// MemMiB sets the VM memory size in MiB.
+	// Zero means "use exporter default".
+	MemMiB uint32 `json:"memMiB,omitempty"`
 }
 
 // PayloadEntry references a single file/segment inside the bundle archive.
@@ -101,7 +108,8 @@ type IntegrityMetadata struct {
 }
 
 // WorkspaceIntentFromNexusfile reads a Nexusfile at the given path and maps
-// bake/init/up/down fields into a WorkspaceIntent. Missing file is not an error.
+// bake/init/up/down and vm resource fields into a WorkspaceIntent.
+// Missing file is not an error.
 func WorkspaceIntentFromNexusfile(path string) (WorkspaceIntent, error) {
 	// If path points to a directory, look for Nexusfile inside it.
 	// If path ends with "Nexusfile", use its directory.
@@ -119,10 +127,12 @@ func WorkspaceIntentFromNexusfile(path string) (WorkspaceIntent, error) {
 	}
 
 	intent := WorkspaceIntent{
-		Bake: cfg.Dev.Bake,
-		Init: cfg.Dev.Init,
-		Up:   cfg.Dev.Up,
-		Down: cfg.Dev.Down,
+		Bake:   cfg.Dev.Bake,
+		Init:   cfg.Dev.Init,
+		Up:     cfg.Dev.Up,
+		Down:   cfg.Dev.Down,
+		CPUs:   cfg.VM.CPUs,
+		MemMiB: cfg.VM.MemMiB,
 	}
 	return intent, nil
 }

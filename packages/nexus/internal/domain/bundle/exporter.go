@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
+	"github.com/oursky/nexus/packages/nexus/internal/vm/libkrun"
 )
 
 // Exporter creates .nxbundle archives from a running workspace.
@@ -60,13 +62,21 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 	}
 	ws := wsResult.Workspace
 
-	// Attempt to populate WorkspaceIntent from the daemon-side Nexusfile.
+	// Attempt to populate WorkspaceIntent (including VM resources) from the daemon-side Nexusfile.
 	var intentResult struct {
 		WorkspaceIntent WorkspaceIntent `json:"workspaceIntent"`
 	}
 	var workspaceIntent WorkspaceIntent
+	var vmCPUs uint8 = 2
+	var vmMemMiB uint32 = 2048
 	if intentErr := rpc.Do(conn, "workspace.nexusfile", map[string]any{"id": wsID}, &intentResult); intentErr == nil {
 		workspaceIntent = intentResult.WorkspaceIntent
+		if intentResult.WorkspaceIntent.CPUs > 0 {
+			vmCPUs = intentResult.WorkspaceIntent.CPUs
+		}
+		if intentResult.WorkspaceIntent.MemMiB > 0 {
+			vmMemMiB = intentResult.WorkspaceIntent.MemMiB
+		}
 	}
 
 	// Fetch workspace archive (tar.gz of repo dir, excluding host-specific files).
@@ -93,10 +103,18 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 		return "", fmt.Errorf("bundle: fetch OCI layers for %q: %w", imageRef, layerErr)
 	}
 
+	libPaths, libErr := resolvePortableLibkrunAssets(ctx)
+	if libErr != nil {
+		return "", libErr
+	}
+
 	// Build the assets tar (uncompressed) and collect asset inventory.
-	assetsTar, inventory, buildErr := buildAssetsTar(archiveBytes, ociLayers)
+	assetsTar, inventory, buildErr := buildAssetsTar(archiveBytes, ociLayers, libPaths)
 	if buildErr != nil {
 		return "", fmt.Errorf("bundle: build assets tar: %w", buildErr)
+	}
+	if len(inventory.Libraries) == 0 {
+		return "", fmt.Errorf("bundle: missing required libkrun runtime libraries in bundle assets (run Nexus bootstrap/install to provision runtime libs before export)")
 	}
 
 	// Compress the assets tar with zstd.
@@ -128,8 +146,8 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 		},
 		Runtime: &RuntimeConfig{
 			Mode:   "vm",
-			CPUs:   2,
-			MemMiB: 1024,
+			CPUs:   vmCPUs,
+			MemMiB: vmMemMiB,
 		},
 		Assets: inventory,
 	}
@@ -159,7 +177,7 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 
 // BuildAssetsTar is the exported version of buildAssetsTar for use by the CLI.
 func BuildAssetsTar(archiveBytes []byte, ociLayers []OCILayer) ([]byte, *AssetInventory, error) {
-	return buildAssetsTar(archiveBytes, ociLayers)
+	return buildAssetsTar(archiveBytes, ociLayers, nil)
 }
 
 // WriteNXPackBundle is the exported version of writeNXPackBundle for use by the CLI.
@@ -195,7 +213,7 @@ func WriteNXPackBundleWithBinary(dst string, assetsBlob, manifestJSON, nexusBin 
 //   - payload/layers/<hex>.tar  (for each OCI layer)
 //
 // It returns the tar bytes and the asset inventory for the manifest.
-func buildAssetsTar(archiveBytes []byte, ociLayers []OCILayer) ([]byte, *AssetInventory, error) {
+func buildAssetsTar(archiveBytes []byte, ociLayers []OCILayer, libPaths []string) ([]byte, *AssetInventory, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 
@@ -230,10 +248,117 @@ func buildAssetsTar(archiveBytes []byte, ociLayers []OCILayer) ([]byte, *AssetIn
 		})
 	}
 
+	if len(libPaths) == 0 {
+		// Preserve direct BuildAssetsTar behavior for tests/tooling: only try local discovery.
+		var libErr error
+		libPaths, libErr = discoverLibkrunAssets()
+		if libErr != nil {
+			return nil, nil, libErr
+		}
+	}
+	for _, p := range libPaths {
+		data, readErr := os.ReadFile(p)
+		if readErr != nil {
+			return nil, nil, fmt.Errorf("bundle: read lib asset %s: %w", p, readErr)
+		}
+		name := "lib/" + filepath.Base(p)
+		if err := writeTarEntry(tw, name, data); err != nil {
+			return nil, nil, err
+		}
+		inventory.Libraries = append(inventory.Libraries, AssetEntry{
+			Path:   name,
+			Size:   int64(len(data)),
+			SHA256: sha256Hex(data),
+		})
+	}
+
 	if err := tw.Close(); err != nil {
 		return nil, nil, fmt.Errorf("bundle: close assets tar: %w", err)
 	}
 	return buf.Bytes(), inventory, nil
+}
+
+func defaultLibkrunShareDir() (string, error) {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "nexus", "lib"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("bundle: resolve home dir: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "nexus", "lib"), nil
+}
+
+func resolveLibkrunSearchDirs() ([]string, error) {
+	dirs := make([]string, 0, 8)
+	seen := map[string]struct{}{}
+	add := func(dir string) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			return
+		}
+		clean := filepath.Clean(dir)
+		if _, ok := seen[clean]; ok {
+			return
+		}
+		seen[clean] = struct{}{}
+		dirs = append(dirs, clean)
+	}
+
+	add(os.Getenv("NEXUS_LIBKRUN_DIR"))
+
+	libDir, err := defaultLibkrunShareDir()
+	if err != nil {
+		return nil, err
+	}
+	add(libDir)
+
+	exe, err := os.Executable()
+	if err == nil {
+		real := exe
+		if eval, evalErr := filepath.EvalSymlinks(exe); evalErr == nil {
+			real = eval
+		}
+		exeDir := filepath.Dir(real)
+		add(filepath.Join(exeDir, "lib"))
+		add(filepath.Join(exeDir, "..", "lib"))
+		add(exeDir)
+	}
+
+	if runtime.GOOS == "darwin" {
+		add("/opt/homebrew/lib")
+		add("/usr/local/lib")
+	}
+
+	return dirs, nil
+}
+
+func discoverLibkrunAssets() ([]string, error) {
+	searchDirs, err := resolveLibkrunSearchDirs()
+	if err != nil {
+		return nil, err
+	}
+	for _, dir := range searchDirs {
+		libkrunPath, libkrunfwPath := libkrun.LibPaths(dir)
+		paths := []string{libkrunPath, libkrunfwPath}
+		allPresent := true
+		for _, p := range paths {
+			if _, statErr := os.Stat(p); statErr != nil {
+				if os.IsNotExist(statErr) {
+					allPresent = false
+					break
+				}
+				return nil, fmt.Errorf("bundle: stat lib asset %s: %w", p, statErr)
+			}
+		}
+		if allPresent {
+			return paths, nil
+		}
+	}
+	// Allow export helper usage in environments without local libkrun assets
+	// (e.g. unit tests and hosts that only consume bundles). Export() enforces
+	// a strict runtime-library requirement before writing a bundle file.
+	return nil, nil
 }
 
 // writeNXPackBundle writes a self-executing NXPACK bundle to dst.
@@ -313,9 +438,19 @@ func nxpackShellStub(nexusSize int) []byte {
 		"set -e\n" +
 		"_NEXUS_OFFSET=" + placeholder + "\n" +
 		"_NEXUS_SIZE=" + placeholder + "\n" +
+		"# On macOS, prefer the installed nexus binary to preserve code-signing entitlements\n" +
+		"# (required for Hypervisor.framework). Falls back to embedded binary extraction.\n" +
+		"if command -v nexus >/dev/null 2>&1; then\n" +
+		"  exec nexus bundle run \"$0\" \"$@\"\n" +
+		"fi\n" +
 		"_TMP=$(mktemp /tmp/.nexus-runner-XXXXXX)\n" +
 		"dd if=\"$0\" bs=1 skip=\"$_NEXUS_OFFSET\" count=\"$_NEXUS_SIZE\" of=\"$_TMP\" 2>/dev/null\n" +
 		"chmod +x \"$_TMP\"\n" +
+		"# macOS: re-sign extracted binary so it can execute (best-effort; may lack\n" +
+		"# hypervisor entitlement if the host nexus binary is not in PATH).\n" +
+		"if [ \"$(uname -s)\" = \"Darwin\" ] && command -v codesign >/dev/null 2>&1; then\n" +
+		"  codesign --sign - --force \"$_TMP\" >/dev/null 2>&1 || true\n" +
+		"fi\n" +
 		"exec \"$_TMP\" bundle run \"$0\" \"$@\"\n" +
 		": <<'NXPACK_DATA_FOLLOWS'\n"
 
