@@ -424,12 +424,20 @@ func buildExtractedBundle(cacheDir string, manifest bundle.BundleManifest) Extra
 
 	// Collect layer dirs from manifest in order.
 	if manifest.Assets != nil {
+		currentArch := runtime.GOARCH
 		for _, layer := range manifest.Assets.Layers {
-			// layer.Path is like "payload/layers/abc123def456.tar"
-			// Extract the hex prefix as the layer dir name.
+			if layer.Platform != "" && layer.Platform != currentArch {
+				continue
+			}
 			base := filepath.Base(layer.Path)
 			name := strings.TrimSuffix(base, ".tar")
-			eb.LayerDirs = append(eb.LayerDirs, filepath.Join(cacheDir, "layers", name))
+			dir := filepath.Dir(layer.Path)
+			layersDir := filepath.Dir(dir)
+			if filepath.Base(layersDir) == "layers" && filepath.Base(dir) != "layers" {
+				eb.LayerDirs = append(eb.LayerDirs, filepath.Join(cacheDir, "layers", filepath.Base(dir), name))
+			} else {
+				eb.LayerDirs = append(eb.LayerDirs, filepath.Join(cacheDir, "layers", name))
+			}
 		}
 	}
 	return eb
@@ -443,7 +451,15 @@ func buildExtractedBundle(cacheDir string, manifest bundle.BundleManifest) Extra
 //   - payload/workspace.tar.gz → extracted into destDir/workspace/
 //   - payload/layers/<hex>.tar → extracted into destDir/layers/<hex>/
 //   - lib/*                    → destDir/lib/<filename>
-func extractTar(r io.Reader, destDir string, _ bundle.BundleManifest) error {
+func extractTar(r io.Reader, destDir string, manifest bundle.BundleManifest) error {
+	currentArch := runtime.GOARCH
+	layerPlatforms := map[string]string{}
+	if manifest.Assets != nil {
+		for _, l := range manifest.Assets.Layers {
+			layerPlatforms[l.Path] = l.Platform
+		}
+	}
+
 	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
@@ -456,6 +472,10 @@ func extractTar(r io.Reader, destDir string, _ bundle.BundleManifest) error {
 
 		// Skip directories; we create them on demand.
 		if hdr.Typeflag == tar.TypeDir {
+			continue
+		}
+
+		if plat, ok := layerPlatforms[hdr.Name]; ok && plat != "" && plat != currentArch {
 			continue
 		}
 
@@ -519,9 +539,13 @@ func resolveDestPath(name, destDir string) (dest string, extractInner bool, err 
 		return filepath.Join(destDir, "workspace"), true, nil
 
 	case strings.HasPrefix(name, "payload/layers/") && strings.HasSuffix(name, ".tar"):
-		// e.g. "payload/layers/abc123def456.tar" → layers/abc123def456/
 		base := filepath.Base(name)
 		layerName := strings.TrimSuffix(base, ".tar")
+		dir := filepath.Dir(name)
+		layersDir := filepath.Dir(dir)
+		if filepath.Base(layersDir) == "layers" && filepath.Base(dir) != "layers" {
+			return filepath.Join(destDir, "layers", filepath.Base(dir), layerName), true, nil
+		}
 		return filepath.Join(destDir, "layers", layerName), true, nil
 
 	case strings.HasPrefix(name, "lib/"):
@@ -836,27 +860,27 @@ func ensureNetTools(rootfsDir string) error {
 		return nil // already present
 	}
 
-	// Cache directory for downloaded .deb files.
-	cacheDir := filepath.Join(DefaultCacheDir(), "..", "bundle-layers", "iproute2-deb")
+	arch := "amd64"
+	if runtime.GOARCH == "arm64" {
+		arch = "arm64"
+	}
+
+	cacheDir := filepath.Join(DefaultCacheDir(), "..", "bundle-layers", "iproute2-deb", arch)
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return fmt.Errorf("ensureNetTools: mkdir cache: %w", err)
 	}
 
-	// Ubuntu 24.04 (noble) arm64 packages required for `ip`.
-	packages := []struct {
-		name string
-		path string
-	}{
-		{"iproute2", "pool/main/i/iproute2/iproute2_1.8.10-3ubuntu2_arm64.deb"},
-		{"libbpf1", "pool/main/libb/libbpf/libbpf1_1.3.0-2build2_arm64.deb"},
-		{"libmnl0", "pool/main/libm/libmnl/libmnl0_1.0.5-2build1_arm64.deb"},
-		{"libelf1t64", "pool/main/e/elfutils/libelf1t64_0.190-1.1build4_arm64.deb"},
+	mirror := "http://archive.ubuntu.com/ubuntu"
+	if arch == "arm64" {
+		mirror = "http://ports.ubuntu.com/ubuntu-ports"
 	}
+
+	packages := netToolPackages(arch)
 
 	for _, pkg := range packages {
 		fname := filepath.Join(cacheDir, pkg.name+".deb")
 		if _, err := os.Stat(fname); err != nil {
-			url := "http://ports.ubuntu.com/ubuntu-ports/" + pkg.path
+			url := mirror + "/" + pkg.path
 			if err := downloadFile(url, fname); err != nil {
 				return fmt.Errorf("ensureNetTools: download %s: %w", pkg.name, err)
 			}
@@ -873,6 +897,34 @@ func ensureNetTools(rootfsDir string) error {
 		}
 	}
 	return nil
+}
+
+func netToolPackages(arch string) []struct {
+	name string
+	path string
+} {
+	switch arch {
+	case "amd64":
+		return []struct {
+			name string
+			path string
+		}{
+			{"iproute2", "pool/main/i/iproute2/iproute2_6.1.0-1ubuntu6_amd64.deb"},
+			{"libbpf1", "pool/main/libb/libbpf/libbpf1_1.3.0-2build2_amd64.deb"},
+			{"libmnl0", "pool/main/libm/libmnl/libmnl0_1.0.5-2build1_amd64.deb"},
+			{"libelf1t64", "pool/main/e/elfutils/libelf1t64_0.190-1.1build4_amd64.deb"},
+		}
+	default:
+		return []struct {
+			name string
+			path string
+		}{
+			{"iproute2", "pool/main/i/iproute2/iproute2_6.1.0-1ubuntu6_arm64.deb"},
+			{"libbpf1", "pool/main/libb/libbpf/libbpf1_1.3.0-2build2_arm64.deb"},
+			{"libmnl0", "pool/main/libm/libmnl/libmnl0_1.0.5-2build1_arm64.deb"},
+			{"libelf1t64", "pool/main/e/elfutils/libelf1t64_0.190-1.1build4_arm64.deb"},
+		}
+	}
 }
 
 func downloadFile(url, outPath string) error {

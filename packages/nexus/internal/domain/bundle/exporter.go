@@ -98,9 +98,19 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 	// Always use the default base image — bake commands in the Nexusfile are
 	// shell commands that run inside the VM, not OCI image references.
 	imageRef := DefaultBaseImage
-	ociLayers, layerErr := FetchLayersCached(ctx, imageRef)
-	if layerErr != nil {
-		return "", fmt.Errorf("bundle: fetch OCI layers for %q: %w", imageRef, layerErr)
+
+	arm64Layers, arm64Err := FetchLayersCachedForArch(ctx, imageRef, "arm64")
+	if arm64Err != nil {
+		return "", fmt.Errorf("bundle: fetch OCI layers for %q (arm64): %w", imageRef, arm64Err)
+	}
+	amd64Layers, amd64Err := FetchLayersCachedForArch(ctx, imageRef, "amd64")
+	if amd64Err != nil {
+		return "", fmt.Errorf("bundle: fetch OCI layers for %q (amd64): %w", imageRef, amd64Err)
+	}
+
+	multiArchLayers := map[string][]OCILayer{
+		"arm64": arm64Layers,
+		"amd64": amd64Layers,
 	}
 
 	allPlatformLibs, allErr := resolveAllPlatformLibkrunAssets(ctx)
@@ -108,9 +118,7 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 		return "", allErr
 	}
 
-	// Build the assets tar (uncompressed) and collect asset inventory.
-	// Fat bundle: include libkrun libs for ALL supported platforms.
-	assetsTar, inventory, buildErr := buildAssetsTar(archiveBytes, ociLayers, allPlatformLibs)
+	assetsTar, inventory, buildErr := buildAssetsTar(archiveBytes, multiArchLayers, allPlatformLibs)
 	if buildErr != nil {
 		return "", fmt.Errorf("bundle: build assets tar: %w", buildErr)
 	}
@@ -178,7 +186,7 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 
 // BuildAssetsTar is the exported version of buildAssetsTar for use by the CLI.
 func BuildAssetsTar(archiveBytes []byte, ociLayers []OCILayer) ([]byte, *AssetInventory, error) {
-	return buildAssetsTar(archiveBytes, ociLayers, nil)
+	return buildAssetsTar(archiveBytes, map[string][]OCILayer{"": ociLayers}, nil)
 }
 
 // WriteNXPackBundle is the exported version of writeNXPackBundle for use by the CLI.
@@ -216,7 +224,7 @@ func WriteNXPackBundleWithBinary(dst string, assetsBlob, manifestJSON, nexusBin 
 //
 // platformLibs maps "darwin-arm64" → {libkrun.dylib, libkrunfw.dylib}, etc.
 // If nil, falls back to discoverLibkrunAssets for single-platform behavior.
-func buildAssetsTar(archiveBytes []byte, ociLayers []OCILayer, platformLibs map[string][]string) ([]byte, *AssetInventory, error) {
+func buildAssetsTar(archiveBytes []byte, multiArchLayers map[string][]OCILayer, platformLibs map[string][]string) ([]byte, *AssetInventory, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 
@@ -237,16 +245,19 @@ func buildAssetsTar(archiveBytes []byte, ociLayers []OCILayer, platformLibs map[
 		}
 	}
 
-	for _, layer := range ociLayers {
-		bundlePath := LayerBundlePath(layer.Digest)
-		if err := writeTarEntry(tw, bundlePath, layer.Data); err != nil {
-			return nil, nil, err
+	for arch, layers := range multiArchLayers {
+		for _, layer := range layers {
+			bundlePath := layerBundlePath(layer.Digest, arch)
+			if err := writeTarEntry(tw, bundlePath, layer.Data); err != nil {
+				return nil, nil, err
+			}
+			inventory.Layers = append(inventory.Layers, LayerEntry{
+				Digest:   layer.Digest,
+				Path:     bundlePath,
+				Size:     int64(len(layer.Data)),
+				Platform: arch,
+			})
 		}
-		inventory.Layers = append(inventory.Layers, LayerEntry{
-			Digest: layer.Digest,
-			Path:   bundlePath,
-			Size:   int64(len(layer.Data)),
-		})
 	}
 
 	if platformLibs != nil {
@@ -294,6 +305,20 @@ func buildAssetsTar(archiveBytes []byte, ociLayers []OCILayer, platformLibs map[
 		return nil, nil, fmt.Errorf("bundle: close assets tar: %w", err)
 	}
 	return buf.Bytes(), inventory, nil
+}
+
+func layerBundlePath(digest, arch string) string {
+	hex := digest
+	if idx := strings.Index(digest, ":"); idx >= 0 {
+		hex = digest[idx+1:]
+	}
+	if len(hex) > 12 {
+		hex = hex[:12]
+	}
+	if arch != "" {
+		return "payload/layers/" + arch + "/" + hex + ".tar"
+	}
+	return "payload/layers/" + hex + ".tar"
 }
 
 func defaultLibkrunShareDir() (string, error) {

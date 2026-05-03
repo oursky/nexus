@@ -55,9 +55,10 @@ type AssetEntry struct {
 
 // LayerEntry describes an OCI layer packed inside the bundle assets blob.
 type LayerEntry struct {
-	Digest string `json:"digest"`
-	Path   string `json:"path"`
-	Size   int64  `json:"size"`
+	Digest   string `json:"digest"`
+	Path     string `json:"path"`
+	Size     int64  `json:"size"`
+	Platform string `json:"platform,omitempty"`
 }
 
 // SourceMetadata describes the origin of the exported workspace.

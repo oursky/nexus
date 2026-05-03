@@ -65,7 +65,7 @@ func TestBuildAssetsTar_WithOCILayers(t *testing.T) {
 		{Digest: "sha256:aabbccddeeff001122334455", Data: []byte("layer1")},
 		{Digest: "sha256:112233445566aabbccddeeff", Data: []byte("layer2")},
 	}
-	_, inventory, err := buildAssetsTar(nil, layers, nil)
+	_, inventory, err := buildAssetsTar(nil, map[string][]OCILayer{"": layers}, nil)
 	if err != nil {
 		t.Fatalf("buildAssetsTar: %v", err)
 	}

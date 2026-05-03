@@ -127,6 +127,10 @@ func FetchLayersCached(ctx context.Context, imageRef string) ([]OCILayer, error)
 	return FetchLayersCachedTo(ctx, imageRef, defaultLayerCacheDir())
 }
 
+func FetchLayersCachedForArch(ctx context.Context, imageRef, arch string) ([]OCILayer, error) {
+	return fetchLayersCachedTo(ctx, imageRef, defaultLayerCacheDir(), arch)
+}
+
 // ExtractImageToDir pulls imageRef from the OCI registry and extracts all
 // layers into destDir, applying OCI whiteout semantics. Layers are cached in
 // cacheDir (keyed by DiffID) to avoid re-downloading on subsequent calls.
@@ -310,23 +314,26 @@ func (r *bytesReader) Read(p []byte) (int, error) {
 // FetchLayersCachedTo is like FetchLayersCached but lets the caller specify
 // the cache directory.
 func FetchLayersCachedTo(ctx context.Context, imageRef, cacheDir string) ([]OCILayer, error) {
+	return fetchLayersCachedTo(ctx, imageRef, cacheDir, runtime.GOARCH)
+}
+
+func fetchLayersCachedTo(ctx context.Context, imageRef, cacheDir, arch string) ([]OCILayer, error) {
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create layer cache dir: %w", err)
 	}
 
-	// Resolve the image manifest (fast: only fetches the manifest, not layers).
 	img, err := crane.Pull(imageRef,
 		crane.WithContext(ctx),
 		crane.WithAuthFromKeychain(authn.DefaultKeychain),
-		crane.WithPlatform(&v1.Platform{OS: "linux", Architecture: runtime.GOARCH}),
+		crane.WithPlatform(&v1.Platform{OS: "linux", Architecture: arch}),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("pull %q: %w", imageRef, err)
+		return nil, fmt.Errorf("pull %q for %s: %w", imageRef, arch, err)
 	}
 
 	layers, err := img.Layers()
 	if err != nil {
-		return nil, fmt.Errorf("list layers for %q: %w", imageRef, err)
+		return nil, fmt.Errorf("list layers for %q (%s): %w", imageRef, arch, err)
 	}
 
 	result := make([]OCILayer, 0, len(layers))
