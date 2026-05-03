@@ -374,13 +374,16 @@ func runBundleStart(ctx context.Context, r *runner.Runner, eb runner.ExtractedBu
 
 	if needsInit {
 		fmt.Fprintln(os.Stderr, "bundle run: running init commands...")
-		script := buildInitScript(eb.Meta.Init, initMarker)
+		script := buildInitScript(eb.Meta.Init)
 		scriptPath, err := writeRunScript(eb.WorkspaceDir, []string{script})
 		if err != nil {
 			return err
 		}
 		if err := r.Run(ctx, eb, []string{"/bin/sh", scriptPath}); err != nil {
 			return err
+		}
+		if err := os.WriteFile(initMarker, []byte("ok"), 0o644); err != nil {
+			return fmt.Errorf("bundle run: write init marker: %w", err)
 		}
 	}
 
@@ -409,12 +412,7 @@ func runBundleStop(ctx context.Context, r *runner.Runner, eb runner.ExtractedBun
 	return r.Run(ctx, eb, []string{"/bin/sh", scriptPath})
 }
 
-// buildInitScript returns a shell command that runs init commands and touches the marker.
-func buildInitScript(cmds []string, marker string) string {
-	parts := make([]string, 0, len(cmds)+1)
-	for _, c := range cmds {
-		parts = append(parts, c)
-	}
-	parts = append(parts, "touch "+strconv.Quote(marker))
-	return strings.Join(parts, " && ")
+// buildInitScript returns a shell command that runs init commands.
+func buildInitScript(cmds []string) string {
+	return strings.Join(cmds, " && ")
 }
