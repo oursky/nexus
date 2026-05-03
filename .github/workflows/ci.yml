@@ -18,7 +18,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.x'
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
 
       - name: Verify go tool fix produces no diff
         shell: bash
@@ -31,9 +32,10 @@ jobs:
           fi
 
           tmp_diff="$(mktemp)"
-          go tool fix -go=go1.24 -diff "${go_files[@]}" >"$tmp_diff"
+          go_fix_version="go$(go env GOVERSION | sed 's/^go//')"
+          go tool fix -go="$go_fix_version" -diff "${go_files[@]}" >"$tmp_diff"
           if [ -s "$tmp_diff" ]; then
-            echo "go tool fix reported changes. Please run: go tool fix -go=go1.24 <files>"
+            echo "go tool fix reported changes. Please run: go tool fix -go=$go_fix_version <files>"
             cat "$tmp_diff"
             exit 1
           fi
@@ -49,7 +51,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.x'
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
 
       - name: Install Task
         run: go install github.com/go-task/task/v3/cmd/task@v3.42.0
@@ -94,7 +97,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.x'
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
 
       - name: Install Task
         run: go install github.com/go-task/task/v3/cmd/task@v3.42.0
