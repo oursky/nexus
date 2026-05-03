@@ -42,6 +42,16 @@ type NexusfileManifest struct {
 	// Future fields: base image version, toolchain pins, etc.
 }
 
+// NexusfileDevPort declares a port to forward for the workspace.
+type NexusfileDevPort struct {
+	// Port is the host port to tunnel to.
+	Port int `json:"port" toml:"port"`
+	// Service is an optional human-readable name (e.g. "web", "api").
+	Service string `json:"service,omitempty" toml:"service"`
+	// Protocol is "tcp" or "udp". Defaults to "tcp".
+	Protocol string `json:"protocol,omitempty" toml:"protocol"`
+}
+
 // NexusfileDevSection mirrors smolvm's [dev] table for lifecycle command support.
 type NexusfileDevSection struct {
 	// Init commands run once when the workspace base layer is built.
@@ -54,6 +64,10 @@ type NexusfileDevSection struct {
 	Down []string `json:"down,omitempty" toml:"down"`
 	// Volumes declares host→guest mount mappings.
 	Volumes []string `json:"volumes,omitempty" toml:"volumes"`
+	// Port is the primary local port for auto-forwarding and health checks.
+	Port int `json:"port,omitempty" toml:"port"`
+	// Ports declares additional ports to forward, overriding compose auto-discovery.
+	Ports []NexusfileDevPort `json:"ports,omitempty" toml:"ports"`
 }
 
 // LoadNexusfile loads <projectRoot>/Nexusfile. Missing file is not an error.

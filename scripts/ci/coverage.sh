@@ -11,15 +11,15 @@ fi
 
 cd "$ROOT/packages/nexus"
 
-# Some self-hosted runners have incomplete Go toolchains missing 'covdata'.
-# covdata is only needed for packages without tests; run coverage only on
-# packages that have test files to avoid the tooling error.
-PACKAGES_WITH_TESTS=$(go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./... | tr '\n' ' ')
-
-if [ -n "$PACKAGES_WITH_TESTS" ]; then
-  go test -covermode=atomic -coverprofile=coverage.out $PACKAGES_WITH_TESTS
-  go tool cover -func=coverage.out | tail -n 1
-else
-  echo "No packages with tests found"
+# Verify the Go toolchain is complete before running coverage.
+# Self-hosted runners must have a full Go installation (including covdata).
+if ! go tool covdata --help >/dev/null 2>&1; then
+  echo "ERROR: Go toolchain is incomplete — 'covdata' tool is missing." >&2
+  echo "Install a complete Go distribution on this runner." >&2
+  echo "Current Go version: $(go version)" >&2
+  echo "GOROOT: $(go env GOROOT)" >&2
   exit 1
 fi
+
+go test -covermode=atomic -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out | tail -n 1

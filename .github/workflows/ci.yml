@@ -70,6 +70,8 @@ jobs:
           go build -trimpath -ldflags "-s -w" \
             -o "${GITHUB_WORKSPACE}/packages/nexus-swift/Resources/nexus-darwin-arm64" \
             ./cmd/nexus
+          # Export the directory so findCrossBinary locates the cross-platform binary.
+          echo "NEXUS_CROSS_BINARY_DIR=${GITHUB_WORKSPACE}/packages/nexus-swift/Resources" >> "$GITHUB_ENV"
 
       - name: Run full Go test coverage
         run: scripts/ci/coverage.sh
@@ -150,8 +152,8 @@ jobs:
           go build -trimpath -ldflags "-s -w" \
             -o "${GITHUB_WORKSPACE}/packages/nexus-swift/Resources/nexus-darwin-arm64" \
             ./cmd/nexus
-          # Also place next to the e2e binary so findCrossBinary locates it.
-          cp "${GITHUB_WORKSPACE}/packages/nexus-swift/Resources/nexus-darwin-arm64" /tmp/nexus-darwin-arm64
+          # Export the directory so findCrossBinary locates the cross-platform binary.
+          echo "NEXUS_CROSS_BINARY_DIR=${GITHUB_WORKSPACE}/packages/nexus-swift/Resources" >> "$GITHUB_ENV"
 
       - name: Build patched passt for containerized CI
         run: |
@@ -251,7 +253,12 @@ jobs:
           # Run as root via sudo because the containerized runner lacks unprivileged
           # namespace creation. The patched passt (NEXUS_PASST_PATH) tolerates EPERM
           # from unshare() and prctl(PR_SET_SECCOMP).
-          sudo -E env "PATH=$PATH" "HOME=$HOME" "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" go test -tags e2e -count=1 -timeout=30m -v -p 1 -parallel 1 ./test/e2e/...
+          sudo -E env \
+            "PATH=$PATH" \
+            "HOME=$HOME" \
+            "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
+            "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
+            go test -tags e2e -count=1 -timeout=30m -v -p 1 -parallel 1 ./test/e2e/...
         env:
           CI: true
           NEXUS_LIBKRUN_SKIP_BAKE: "1"

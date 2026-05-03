@@ -28,15 +28,10 @@ func NewExporter() *Exporter {
 }
 
 // Export looks up the named workspace via the daemon and writes a self-executing
-// NXPACK .nxbundle to outPath. The output path receives a ".nxbundle" suffix if
-// not already present. The bundle is chmod 0755 so it can be executed directly.
-// Returns the output path and any error.
+// NXPACK .nxbundle to outPath. The caller is responsible for choosing the final
+// path (e.g. appending ".nxbundle" when appropriate). The bundle is chmod 0755
+// so it can be executed directly. Returns the output path and any error.
 func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (string, error) {
-	// Ensure .nxbundle suffix.
-	if filepath.Ext(outPath) != ".nxbundle" {
-		outPath += ".nxbundle"
-	}
-
 	// Resolve workspace via daemon RPC.
 	conn, connErr := rpc.EnsureDaemon()
 	if connErr != nil {
@@ -401,11 +396,16 @@ func readCrossPlatformBinaries() (darwinBin, linuxBin []byte, err error) {
 
 // findCrossBinary locates a pre-built nexus binary for the given platform.
 // Search order:
-//  1. Adjacent to the current executable (e.g. nexus-linux-amd64 next to nexus)
-//  2. packages/nexus-swift/Resources/nexus-<platform> (repo layout)
-//  3. ~/.local/share/nexus/bin/nexus-<platform>
+//  1. $NEXUS_CROSS_BINARY_DIR/nexus-<platform> (explicit override)
+//  2. Adjacent to the current executable (e.g. nexus-linux-amd64 next to nexus)
+//  3. packages/nexus-swift/Resources/nexus-<platform> (repo layout)
+//  4. ~/.local/share/nexus/bin/nexus-<platform>
 func findCrossBinary(platform string) ([]byte, error) {
 	candidates := []string{}
+
+	if envDir := os.Getenv("NEXUS_CROSS_BINARY_DIR"); envDir != "" {
+		candidates = append(candidates, filepath.Join(envDir, "nexus-"+platform))
+	}
 
 	exe, _ := os.Executable()
 	if exe != "" {

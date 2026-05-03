@@ -50,6 +50,33 @@
           "minimum": 1,
           "maximum": 65535,
           "description": "Primary local port for auto-forwarding and health checks."
+        },
+        "ports": {
+          "type": "array",
+          "description": "Additional ports to forward. These override compose auto-discovery on conflict.",
+          "items": {
+            "type": "object",
+            "required": ["port"],
+            "additionalProperties": false,
+            "properties": {
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535,
+                "description": "Host port to tunnel to."
+              },
+              "service": {
+                "type": "string",
+                "description": "Human-readable service name (e.g. 'web', 'api')."
+              },
+              "protocol": {
+                "type": "string",
+                "enum": ["tcp", "udp"],
+                "default": "tcp",
+                "description": "Transport protocol."
+              }
+            }
+          }
         }
       }
     },

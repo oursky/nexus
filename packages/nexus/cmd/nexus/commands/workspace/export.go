@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/oursky/nexus/packages/nexus/internal/domain/bundle"
 	"github.com/spf13/cobra"
@@ -15,8 +16,13 @@ func exportCommand() *cobra.Command {
 		Short: "Export a workspace to a .nxbundle archive",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			explicitOut := outPath != ""
 			if outPath == "" {
 				outPath = args[0]
+			}
+			// Only append .nxbundle when the user did not supply --out.
+			if !explicitOut && filepath.Ext(outPath) != ".nxbundle" {
+				outPath += ".nxbundle"
 			}
 			exp := bundle.NewExporter()
 			bundlePath, err := exp.Export(cmd.Context(), args[0], outPath)

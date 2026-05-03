@@ -65,6 +65,12 @@ graph LR
 
 The daemon is a long-lived Go process. It listens on both a Unix socket (local CLI) and a TCP port (WebSocket for remote clients). When a user starts a workspace, the daemon spawns a `nexus-libkrun-vm` child process that becomes the VMM. The guest agent inside the VM connects back to the host over vsock to accept exec, PTY, and port-forward commands.
 
+In addition to the core daemon, the repository contains:
+- **`packages/nexus-swift`** — The macOS app (`NexusApp.app`), which connects to a remote Linux daemon via SSH tunnel + WebSocket. It does not run a local daemon in production.
+- **`cmd/nexus-libkrun-vm`** — VMM child process (libkrun wrapper)
+- **`cmd/nexus-guest-agent`** — In-VM agent
+- **`cmd/test-libkrun`**, **`cmd/test-runner`**, **`cmd/make-test-bundle`**, **`cmd/schema`** — Test and build utilities
+
 ---
 
 ## Core Concepts
@@ -139,7 +145,7 @@ graph BT
     rpc["rpc/"]
     transport["transport/"]
     daemon["daemon/"]
-    cmd["cmd/nexus"]
+    cmd["cmd/nexus, cmd/nexus-guest-agent, cmd/nexus-libkrun-vm, ..."]
 
     infra --> domain
     app --> domain
@@ -251,6 +257,8 @@ This is a *conceptual* map, not a file listing. Use symbol search (`grep`, `rg`)
 | libkrun driver | VM lifecycle, baking, image management, networking | `infra/runtime/libkrun.Manager`, `infra/runtime/libkrun.VMSpec` |
 | Sandbox driver | Process-isolation fallback backend (non-VM) | `infra/runtime/sandbox.Driver` |
 | Runtime registry | Selects the correct backend for a workspace | `domain/runtime.Registry` |
+| VM abstraction | VM-agnostic runtime spec and execution | `internal/vm/` |
+| Tunnel manager | SSH tunnel lifecycle for remote daemon access | `internal/tunnel/` |
 
 ### In-VM Services
 
@@ -259,6 +267,7 @@ This is a *conceptual* map, not a file listing. Use symbol search (`grep`, `rg`)
 | Guest agent | In-VM agent: exec, PTY, port-forwards, mounts, sshd/dockerd startup | `cmd/nexus-guest-agent` |
 | PTY sessions | In-process shell registry and management | `app/pty.Registry`, `app/pty.Session` |
 | Spotlight | Port-forward lifecycle orchestration (host → VM) | `app/spotlight.Service` |
+| Bundle export/import | Workspace export to `.nxbundle` (OCI-style layers) and import | `domain/bundle.Exporter`, `domain/bundle.Importer` |
 
 ### Transport & Auth
 
@@ -276,6 +285,7 @@ This is a *conceptual* map, not a file listing. Use symbol search (`grep`, `rg`)
 | Daemon client | Auto-start local daemon, health polling | `infra/cli/daemonclient` |
 | SSH tunnel | Client-side SSH tunnel manager | `infra/cli/sshtunnel` |
 | Connection profile | Daemon connection profiles, token storage integration | `infra/cli/profile` |
+| Mutagen binary | Mutagen sync binary management | `infra/cli/mutagenbin` |
 
 ---
 
