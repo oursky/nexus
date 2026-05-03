@@ -82,10 +82,30 @@ jobs:
             -o ../../dist/nexus-linux-arm64 \
             ./cmd/nexus
 
+      - name: Build nexus (darwin/arm64)
+        working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          # macOS binary for local bundle-run usage.
+          # Ad-hoc signed by users after download (codesign --sign -) or auto-signed
+          # by the fat bundle shell stub on extraction.
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GIT_COMMIT="${GITHUB_SHA::8}"
+          LDFLAGS="-s -w \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ steps.version.outputs.version }}"
+          go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/nexus-darwin-arm64 \
+            ./cmd/nexus
+
       - name: Create checksums
         run: |
           cd dist
-          sha256sum nexus-linux-amd64 nexus-linux-arm64 > sha256sums.txt
+          sha256sum nexus-linux-amd64 nexus-linux-arm64 nexus-darwin-arm64 > sha256sums.txt
           cat sha256sums.txt
 
       - name: Create GitHub Release
@@ -97,11 +117,12 @@ jobs:
           files: |
             dist/nexus-linux-amd64
             dist/nexus-linux-arm64
+            dist/nexus-darwin-arm64
             dist/sha256sums.txt
           body: |
             ## Installation
 
-            Download the binary for your architecture and install it on the remote Linux host:
+            ### Linux (daemon host)
 
             ```bash
             # For x86_64 (amd64):
@@ -120,6 +141,22 @@ jobs:
             ```bash
             nexus daemon start --port 7777
             ```
+
+            ### macOS (local bundle run)
+
+            Download for Apple Silicon (arm64). For VM support, ad-hoc sign after download:
+
+            ```bash
+            curl -fsSL https://github.com/oursky/nexus/releases/download/${{ steps.version.outputs.version }}/nexus-darwin-arm64 \
+              -o ~/.local/bin/nexus
+            chmod +x ~/.local/bin/nexus
+            # Required for Hypervisor.framework:
+            codesign --sign - --force \
+              --entitlements <(echo '<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>') \
+              ~/.local/bin/nexus
+            ```
+
+            > **Note:** The signed macOS app is distributed via TestFlight, not GitHub Releases.
 
             Verify the checksum:
 
