@@ -63,6 +63,14 @@ func TestCLI_WorkspaceExportImport_EndToEnd(t *testing.T) {
 	if !strings.Contains(string(out), "workspace.init") || !strings.Contains(string(out), "workspace.up") || !strings.Contains(string(out), "workspace.down") {
 		t.Fatalf("workspace import --dry-run: expected Nexusfile workspace intent fields in diagnostics, got: %s", out)
 	}
+
+	out, err = h.Run(t, clientRepo, "workspace", "import", "--from", bundlePath)
+	if err != nil {
+		t.Fatalf("workspace import: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "import complete") {
+		t.Fatalf("workspace import: expected completion output, got: %s", out)
+	}
 }
 
 // Spec: VM-010, VM-PROOF-008, CLI-124, CLI-125

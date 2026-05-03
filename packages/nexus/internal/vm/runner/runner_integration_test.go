@@ -119,51 +119,14 @@ func buildMinimalBundle(t *testing.T, libkrunPath, libkrunfwPath string) string 
 
 	layerDigest, layerTar := buildMinimalRootfsLayer(t)
 
-	manifest := bundle.BundleManifest{
-		SchemaVersion: bundle.SchemaVersion,
-		BundleVersion: bundle.BundleVersion,
-		CreatedAt:     "2026-01-01T00:00:00Z",
-		Source: bundle.SourceMetadata{
-			WorkspaceName: "runner-integration-test",
-			Ref:           "main",
-		},
-		Compatibility: bundle.CompatibilityMeta{
-			Arch:     []string{runtime.GOARCH},
-			Backend:  []string{"libkrun"},
-			OsFamily: []string{runtime.GOOS},
-		},
-		Runtime: &bundle.RuntimeConfig{
-			CPUs: 1,
-			// Must be larger than the virtiofs SHM window (512 MiB) that
-			// krun_set_root adds internally.  Use 2048 MiB to be safe.
-			MemMiB: 2048,
-		},
-		WorkspaceIntent: bundle.WorkspaceIntent{
-			Up: []string{"exit 0"},
-		},
-		Assets: &bundle.AssetInventory{
-			Layers: []bundle.LayerEntry{
-				{Path: "payload/layers/" + layerDigest + ".tar", Digest: layerDigest},
-			},
-		},
-		Payload:   bundle.PayloadIndex{Entries: []bundle.PayloadEntry{}},
-		Integrity: bundle.IntegrityMetadata{Algorithm: "sha256"},
+	meta := bundle.BundleMeta{
+		Arch:   []string{runtime.GOARCH},
+		Up:     []string{"exit 0"},
+		CPUs:   1,
+		Memory: 2048,
 	}
 
-	preBytes, err := bundle.MarshalManifest(manifest)
-	if err != nil {
-		t.Fatalf("MarshalManifest (pre): %v", err)
-	}
-	h := sha256.New()
-	h.Write(preBytes)
-	manifest.Integrity.ManifestDigest = hex.EncodeToString(h.Sum(nil))
-
-	finalManifest, err := bundle.MarshalManifest(manifest)
-	if err != nil {
-		t.Fatalf("MarshalManifest (final): %v", err)
-	}
-
-	assetsTar := buildAssetsTar(t, libkrunPath, libkrunfwPath, layerDigest, layerTar, finalManifest)
+	assetsTar := buildTestAssetsTar(t, libkrunPath, libkrunfwPath, layerDigest, layerTar, meta)
 
 	assetsBlob, err := bundle.CompressZstd(assetsTar)
 	if err != nil {
@@ -175,7 +138,7 @@ func buildMinimalBundle(t *testing.T, libkrunPath, libkrunfwPath string) string 
 	if err != nil {
 		t.Fatalf("create bundle file: %v", err)
 	}
-	if err := bundle.WriteNXPack(f, assetsBlob, finalManifest, nxpackShellStub()); err != nil {
+	if err := bundle.WriteNXPack(f, assetsBlob, nxpackShellStub()); err != nil {
 		f.Close()
 		t.Fatalf("WriteNXPack: %v", err)
 	}
@@ -227,28 +190,31 @@ func buildMinimalRootfsLayer(t *testing.T) (digest string, tarBytes []byte) {
 	return digest, raw
 }
 
-// buildAssetsTar constructs the assets tar that the runner extracts.
-func buildAssetsTar(t *testing.T, libkrunPath, libkrunfwPath, layerDigest string, layerTar []byte, manifestJSON []byte) []byte {
+// buildTestAssetsTar constructs the assets tar that the runner extracts.
+func buildTestAssetsTar(t *testing.T, libkrunPath, libkrunfwPath, layerDigest string, layerTar []byte, meta bundle.BundleMeta) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 
-	// manifest.json from the bundle footer (runner reads it from there, but we
-	// include it for completeness).
-	addTarFile(t, tw, "manifest.json", manifestJSON)
+	// meta.json
+	metaBytes, err := bundle.MarshalMeta(meta)
+	if err != nil {
+		t.Fatalf("marshal meta: %v", err)
+	}
+	addTarFile(t, tw, "meta.json", metaBytes)
 
 	// OCI layer tar.
-	addTarFile(t, tw, "payload/layers/"+layerDigest+".tar", layerTar)
+	addTarFile(t, tw, "layers/"+runtime.GOARCH+".tar", layerTar)
 
 	// empty workspace tar.gz.
 	workspaceTarGz := buildEmptyTarGz(t)
-	addTarFile(t, tw, "payload/workspace.tar.gz", workspaceTarGz)
+	addTarFile(t, tw, "workspace.tar.gz", workspaceTarGz)
 
 	// libkrun library.
-	addTarFileFromDisk(t, tw, "lib/"+libkrun.LibFilename(), libkrunPath)
+	addTarFileFromDisk(t, tw, "lib/"+runtime.GOOS+"-"+runtime.GOARCH+"/"+libkrun.LibFilename(), libkrunPath)
 
 	// libkrunfw library.
-	addTarFileFromDisk(t, tw, "lib/"+libkrun.LibFWFilename(), libkrunfwPath)
+	addTarFileFromDisk(t, tw, "lib/"+runtime.GOOS+"-"+runtime.GOARCH+"/"+libkrun.LibFWFilename(), libkrunfwPath)
 
 	if err := tw.Close(); err != nil {
 		t.Fatalf("close assets tar: %v", err)

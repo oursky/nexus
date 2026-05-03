@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and publish nexus binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Build guest agent (linux/amd64)
+        working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GIT_COMMIT="${GITHUB_SHA::8}"
+          LDFLAGS="-s -w \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ steps.version.outputs.version }}"
+          go build -trimpath -ldflags "$LDFLAGS" \
+            -o cmd/nexus/agent-linux-amd64 \
+            ./cmd/nexus-guest-agent
+
+      - name: Build nexus (linux/amd64)
+        working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GIT_COMMIT="${GITHUB_SHA::8}"
+          LDFLAGS="-s -w \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ steps.version.outputs.version }}"
+          go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/nexus-linux-amd64 \
+            ./cmd/nexus
+
+      - name: Build nexus (linux/arm64)
+        working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          # Rebuild agent for arm64 first so it gets embedded correctly.
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GIT_COMMIT="${GITHUB_SHA::8}"
+          LDFLAGS="-s -w \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ steps.version.outputs.version }}"
+          go build -trimpath -ldflags "$LDFLAGS" \
+            -o cmd/nexus/agent-linux-arm64 \
+            ./cmd/nexus-guest-agent
+          go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/nexus-linux-arm64 \
+            ./cmd/nexus
+
+      - name: Create checksums
+        run: |
+          cd dist
+          sha256sum nexus-linux-amd64 nexus-linux-arm64 > sha256sums.txt
+          cat sha256sums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          files: |
+            dist/nexus-linux-amd64
+            dist/nexus-linux-arm64
+            dist/sha256sums.txt
+          body: |
+            ## Installation
+
+            Download the binary for your architecture and install it on the remote Linux host:
+
+            ```bash
+            # For x86_64 (amd64):
+            curl -fsSL https://github.com/oursky/nexus/releases/download/${{ steps.version.outputs.version }}/nexus-linux-amd64 \
+              -o ~/.local/bin/nexus
+            chmod +x ~/.local/bin/nexus
+
+            # For arm64:
+            curl -fsSL https://github.com/oursky/nexus/releases/download/${{ steps.version.outputs.version }}/nexus-linux-arm64 \
+              -o ~/.local/bin/nexus
+            chmod +x ~/.local/bin/nexus
+            ```
+
+            Then start the daemon:
+
+            ```bash
+            nexus daemon start --port 7777
+            ```
+
+            Verify the checksum:
+
+            ```bash
+            sha256sum -c sha256sums.txt
+            ```

@@ -2,8 +2,6 @@ package bundle
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,7 +10,11 @@ import (
 func makeTestNXPackBundle(t *testing.T, workspaceName string) string {
 	t.Helper()
 
-	assetsTar, _, err := buildAssetsTar(nil, nil, nil)
+	meta := BundleMeta{
+		Arch: []string{"amd64", "arm64"},
+		Up:   []string{"echo up"},
+	}
+	assetsTar, err := buildAssetsTar(nil, nil, nil, meta)
 	if err != nil {
 		t.Fatalf("buildAssetsTar: %v", err)
 	}
@@ -21,49 +23,15 @@ func makeTestNXPackBundle(t *testing.T, workspaceName string) string {
 		t.Fatalf("CompressZstd: %v", err)
 	}
 
-	manifest := BundleManifest{
-		SchemaVersion: SchemaVersion,
-		BundleVersion: BundleVersion,
-		CreatedAt:     "2026-01-01T00:00:00Z",
-		Source: SourceMetadata{
-			WorkspaceName: workspaceName,
-			Ref:           "main",
-		},
-		Compatibility: CompatibilityMeta{
-			Arch:     []string{"amd64", "arm64"},
-			Backend:  []string{"process"},
-			OsFamily: []string{"darwin", "linux"},
-		},
-		WorkspaceIntent: WorkspaceIntent{
-			Up: []string{"echo up"},
-		},
-		Payload:   PayloadIndex{Entries: []PayloadEntry{}},
-		Integrity: IntegrityMetadata{Algorithm: "sha256"},
-	}
-
-	// Compute manifest digest before final marshal.
-	preBytes, err := MarshalManifest(manifest)
-	if err != nil {
-		t.Fatalf("MarshalManifest pre: %v", err)
-	}
-	h := sha256.New()
-	h.Write(preBytes)
-	manifest.Integrity.ManifestDigest = hex.EncodeToString(h.Sum(nil))
-
-	finalManifest, err := MarshalManifest(manifest)
-	if err != nil {
-		t.Fatalf("MarshalManifest final: %v", err)
-	}
-
 	bundlePath := filepath.Join(t.TempDir(), workspaceName+".nxbundle")
-	if err := writeNXPackBundle(bundlePath, assetsBlob, finalManifest); err != nil {
+	if err := WriteNXPackBundle(bundlePath, assetsBlob); err != nil {
 		t.Fatalf("writeNXPackBundle: %v", err)
 	}
 	return bundlePath
 }
 
 // TestImporter_NXPACK_DryRun verifies that Import with dryRun=true reads
-// the manifest and prints a compatibility report without provisioning.
+// the meta and prints a compatibility report without provisioning.
 func TestImporter_NXPACK_DryRun(t *testing.T) {
 	bundlePath := makeTestNXPackBundle(t, "dryrun-ws")
 	imp := NewImporter()

@@ -1,0 +1,17 @@
+"$schema" = "./schemas/nexusfile.schema.json"
+
+[dev]
+# Install Docker engine, compose plugin, and Node.js build tools into the VM.
+bake = [
+  "apt-get update -q",
+  "apt-get install -y --no-install-recommends docker.io docker-compose-v2 ca-certificates curl gnupg",
+  "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
+  "apt-get install -y nodejs",
+  "apt-get clean && rm -rf /var/lib/apt/lists/*",
+]
+
+# Build images and start all services (foreground, blocks until Ctrl+C).
+up = ["docker compose build --parallel", "docker compose up"]
+
+# Stop all services.
+down = ["docker compose down"]

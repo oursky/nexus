@@ -22,9 +22,9 @@ const (
 func vmSquashfsURL() string {
 	switch runtime.GOARCH {
 	case "arm64":
-		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64-root.tar.xz"
+		return "https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64-root.tar.xz"
 	default:
-		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64-root.tar.xz"
+		return "https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-amd64-root.tar.xz"
 	}
 }
 

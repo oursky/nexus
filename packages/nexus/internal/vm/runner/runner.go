@@ -35,10 +35,10 @@ type ExtractedBundle struct {
 	WorkspaceDir string
 	// LibDir is the directory containing libkrun and libkrunfw.
 	LibDir string
-	// LayerDirs lists extracted OCI layer directories in manifest order.
+	// LayerDirs lists extracted OCI layer directories.
 	LayerDirs []string
-	// Manifest is the parsed bundle manifest.
-	Manifest bundle.BundleManifest
+	// Meta is the parsed bundle metadata.
+	Meta bundle.BundleMeta
 }
 
 // Runner handles bundle extraction and VM execution.
@@ -46,6 +46,9 @@ type Runner struct {
 	// CacheDir is the base directory for extracted bundles.
 	// Defaults to DefaultCacheDir() if empty.
 	CacheDir string
+	// ForwardPorts is a list of host ports to forward into the VM via gvproxy.
+	// Only used on macOS where gvproxy provides virtio-net.
+	ForwardPorts []int
 }
 
 // DefaultCacheDir returns the default bundle cache directory.
@@ -57,9 +60,9 @@ func DefaultCacheDir() string {
 	return filepath.Join(home, ".cache", "nexus", "bundles")
 }
 
-// ExtractBundle reads a NXPACK bundle file, verifies its integrity, and extracts
-// all assets to a cache directory. If the bundle has already been extracted
-// (marker file present), extraction is skipped.
+// ExtractBundle reads a NXPACK bundle file, extracts all assets to a cache
+// directory. If the bundle has already been extracted (marker file present),
+// extraction is skipped.
 //
 // The cache directory is named by the SHA256 of the bundle file path to keep
 // multiple bundles isolated.
@@ -79,7 +82,7 @@ func (r *Runner) ExtractBundle(bundlePath string) (ExtractedBundle, error) {
 
 	marker := filepath.Join(cacheDir, ".extracted")
 	if _, err := os.Stat(marker); err == nil {
-		// Already extracted — re-parse manifest and return.
+		// Already extracted — re-parse meta and return.
 		return r.loadExtracted(cacheDir)
 	}
 
@@ -105,21 +108,6 @@ func (r *Runner) ExtractBundle(bundlePath string) (ExtractedBundle, error) {
 		return ExtractedBundle{}, fmt.Errorf("runner: read assets blob: %w", err)
 	}
 
-	// Read manifest JSON.
-	if _, err := f.Seek(int64(footer.ManifestOffset), io.SeekStart); err != nil {
-		return ExtractedBundle{}, fmt.Errorf("runner: seek to manifest: %w", err)
-	}
-	manifestJSON := make([]byte, footer.ManifestSize)
-	if _, err := io.ReadFull(f, manifestJSON); err != nil {
-		return ExtractedBundle{}, fmt.Errorf("runner: read manifest: %w", err)
-	}
-
-	// Parse manifest.
-	manifest, err := bundle.ParseManifest(manifestJSON)
-	if err != nil {
-		return ExtractedBundle{}, fmt.Errorf("runner: parse manifest: %w", err)
-	}
-
 	// Decompress assets blob (zstd-compressed tar).
 	assetsTar, err := bundle.DecompressZstd(assetsBlob)
 	if err != nil {
@@ -130,16 +118,18 @@ func (r *Runner) ExtractBundle(bundlePath string) (ExtractedBundle, error) {
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return ExtractedBundle{}, fmt.Errorf("runner: create cache dir: %w", err)
 	}
-	if err := extractTar(bytes.NewReader(assetsTar), cacheDir, manifest); err != nil {
+
+	meta, err := extractAssetsTar(bytes.NewReader(assetsTar), cacheDir)
+	if err != nil {
 		return ExtractedBundle{}, fmt.Errorf("runner: extract assets: %w", err)
 	}
 
-	manifestData, err := bundle.MarshalManifest(manifest)
+	metaBytes, err := bundle.MarshalMeta(meta)
 	if err != nil {
-		return ExtractedBundle{}, fmt.Errorf("runner: marshal manifest: %w", err)
+		return ExtractedBundle{}, fmt.Errorf("runner: marshal meta: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(cacheDir, "manifest.json"), manifestData, 0o644); err != nil {
-		return ExtractedBundle{}, fmt.Errorf("runner: write manifest: %w", err)
+	if err := os.WriteFile(filepath.Join(cacheDir, "meta.json"), metaBytes, 0o644); err != nil {
+		return ExtractedBundle{}, fmt.Errorf("runner: write meta: %w", err)
 	}
 
 	// Write marker.
@@ -147,7 +137,7 @@ func (r *Runner) ExtractBundle(bundlePath string) (ExtractedBundle, error) {
 		return ExtractedBundle{}, fmt.Errorf("runner: write marker: %w", err)
 	}
 
-	return buildExtractedBundle(cacheDir, manifest), nil
+	return buildExtractedBundle(cacheDir, meta), nil
 }
 
 // Run boots a microVM from an extracted bundle and runs cmd inside it.
@@ -188,37 +178,34 @@ func (r *Runner) Run(ctx context.Context, eb ExtractedBundle, cmd []string) erro
 	}
 	defer vmCtx.Free()
 
-	// Configure VM resources from manifest.
+	// Configure VM resources from meta.
 	cpus := uint8(1)
 	memMiB := uint32(512)
-	if eb.Manifest.Runtime != nil {
-		if eb.Manifest.Runtime.CPUs > 0 {
-			cpus = eb.Manifest.Runtime.CPUs
-		}
-		if eb.Manifest.Runtime.MemMiB > 0 {
-			memMiB = eb.Manifest.Runtime.MemMiB
-		}
+	if eb.Meta.CPUs > 0 {
+		cpus = eb.Meta.CPUs
+	}
+	if eb.Meta.Memory > 0 {
+		memMiB = eb.Meta.Memory
 	}
 	if err := vmCtx.SetVMConfig(cpus, memMiB); err != nil {
 		return fmt.Errorf("runner: set VM config: %w", err)
 	}
 
-	// Merge OCI layers into a single rootfs directory and use it as the VM root.
-	// init.krun (bundled in libkrunfw) reads /.krun_config.json for the entrypoint.
-	if len(eb.LayerDirs) == 0 {
-		return fmt.Errorf("runner: bundle contains no OCI layers — cannot boot VM")
-	}
-	mergedDir := filepath.Join(eb.CacheDir, "merged-rootfs")
-	if mergeErr := mergeOCILayers(eb.LayerDirs, mergedDir); mergeErr != nil {
-		return fmt.Errorf("runner: merge OCI layers: %w", mergeErr)
-	}
-	rootfsDir := mergedDir
+	rootfsDir := ""
 	rootfsImage := ""
 	rootfsImageExists := false
 
+	// Use pre-merged OCI layer for the current arch.
+	if len(eb.LayerDirs) == 0 {
+		return fmt.Errorf("runner: bundle contains no OCI layers — cannot boot VM")
+	}
+	rootfsDir = eb.LayerDirs[0]
+
 	// Ensure DNS resolver is configured inside the VM. init.krun does not create
 	// /etc/resolv.conf, and without it DNS resolution fails for apt/curl/docker.
-	if err := writeFile(filepath.Join(rootfsDir, "etc", "resolv.conf"), []byte("nameserver 8.8.8.8\nnameserver 1.1.1.1\noptions use-vc\n"), 0o644); err != nil {
+	// Use the gvproxy gateway (192.168.127.1) as the DNS resolver — it forwards
+	// UDP DNS to the host's configured resolvers.
+	if err := writeFile(filepath.Join(rootfsDir, "etc", "resolv.conf"), []byte("nameserver 192.168.127.1\n"), 0o644); err != nil {
 		return fmt.Errorf("runner: write resolv.conf: %w", err)
 	}
 
@@ -274,40 +261,66 @@ func (r *Runner) Run(ctx context.Context, eb ExtractedBundle, cmd []string) erro
 	}
 
 	// Use a custom kernel with bridge/netfilter support if one is present.
-	// Check the bundle cache first, then fall back to the global kernel dir.
 	customKernelPath := ""
-	bundleKernel := filepath.Join(eb.CacheDir, "Image-custom")
-	globalKernel := filepath.Join(DefaultCacheDir(), "..", "kernels", "Image-custom")
-	if _, err := os.Stat(bundleKernel); err == nil {
-		customKernelPath = bundleKernel
-	} else if _, err := os.Stat(globalKernel); err == nil {
-		customKernelPath = globalKernel
+	cacheDir := eb.CacheDir
+	if cacheDir == "" {
+		cacheDir = DefaultCacheDir()
+	}
+	candidates := []string{
+		filepath.Join(cacheDir, "Image-custom"),
+		filepath.Join(DefaultCacheDir(), "..", "kernels", "Image-custom"),
+		filepath.Join(DefaultCacheDir(), "..", "kernels", "vmlinux-custom"),
+	}
+	// On Linux, also check the daemon-installed kernel path.
+	if runtime.GOOS == "linux" {
+		home, _ := os.UserHomeDir()
+		if home != "" {
+			candidates = append(candidates, filepath.Join(home, ".local", "share", "nexus", "vm", "vmlinux.bin"))
+		}
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			customKernelPath = candidate
+			break
+		}
 	}
 	if customKernelPath != "" {
-		if setErr := vmCtx.SetKernel(customKernelPath, libkrun.KernelFormatRaw, "", ""); setErr != nil {
+		// x86_64 uses ELF (vmlinux), arm64 uses raw Image.
+		var kernelFormat uint32 = libkrun.KernelFormatRaw
+		if runtime.GOARCH == "amd64" {
+			kernelFormat = libkrun.KernelFormatElf
+		}
+		if setErr := vmCtx.SetKernel(customKernelPath, kernelFormat, "", ""); setErr != nil {
 			return fmt.Errorf("runner: set custom kernel: %w", setErr)
 		}
 	}
 
-	// Configure networking. On macOS, use virtio-net via gvproxy for full
-	// Ethernet support (required for Docker bridge networking). On Linux or
-	// if gvproxy is unavailable, fall back to TSI ( Transparent Socket
-	// Impersonation ) which only supports TCP/UDP sockets.
-	var gvproxy *vmnet.GVProxy
+	// Configure networking. On macOS, use virtio-net via gvproxy. On Linux,
+	// use passt for full Ethernet support (required for Docker bridge networking).
+	// Both provide NAT + port forwarding; TSI is not used because it lacks
+	// Ethernet frame support needed for Docker bridge networking.
+	var passtProc *vmnet.Passt
+	var gvproxyProc *vmnet.GVProxy
 	if runtime.GOOS == "darwin" {
 		if gvpPath, err := vmnet.FindGVProxy(true); err == nil {
 			sockPath := filepath.Join(eb.CacheDir, "gvproxy.sock")
 			gvp, err := vmnet.StartGVProxy(gvpPath, sockPath)
 			if err == nil {
-				gvproxy = gvp
+				gvproxyProc = gvp
 				defer func() {
-					if gvproxy != nil {
-						_ = gvproxy.Stop()
+					if gvproxyProc != nil {
+						_ = gvproxyProc.Stop()
 					}
 				}()
 				// libkrun will send the vfkit magic on connect (required by gvproxy).
 				if err := vmCtx.AddNetUnixgram(sockPath, nil, libkrun.CompatNetFeatures, libkrun.NetFlagVFKit); err != nil {
 					return fmt.Errorf("runner: add virtio-net: %w", err)
+				}
+				// Expose VM ports on the host via gvproxy's forwarder API.
+				for _, port := range r.ForwardPorts {
+					if err := gvproxyProc.ExposePort(port); err != nil {
+						return fmt.Errorf("runner: gvproxy expose port %d: %w", port, err)
+					}
 				}
 			} else {
 				return fmt.Errorf("runner: gvproxy failed to start: %w", err)
@@ -315,18 +328,25 @@ func (r *Runner) Run(ctx context.Context, eb ExtractedBundle, cmd []string) erro
 		} else {
 			return fmt.Errorf("runner: gvproxy not found and could not be downloaded: %w", err)
 		}
-	}
-	if gvproxy == nil {
-		// Linux: use TSI (Transparent Socket Impersonation) as fallback.
-		const tsiFeatureHijackINET = 1 << 0
-		if err := vmCtx.DisableImplicitVsock(); err != nil {
-			return fmt.Errorf("runner: disable implicit vsock: %w", err)
-		}
-		if err := vmCtx.AddVsock(tsiFeatureHijackINET); err != nil {
-			return fmt.Errorf("runner: enable TSI vsock features: %w", err)
-		}
-		if err := vmCtx.SetPortMap(nil); err != nil {
-			return fmt.Errorf("runner: set TSI port map: %w", err)
+	} else {
+		// Linux: use passt for virtio-net.
+		if passtPath, err := vmnet.FindPasst(true); err == nil {
+			p, err := vmnet.StartPasst(passtPath, r.ForwardPorts)
+			if err == nil {
+				passtProc = p
+				defer func() {
+					if passtProc != nil {
+						_ = passtProc.Stop()
+					}
+				}()
+				if err := vmCtx.SetPasstFd(passtProc.FD()); err != nil {
+					return fmt.Errorf("runner: set passt fd: %w", err)
+				}
+			} else {
+				return fmt.Errorf("runner: passt failed to start: %w", err)
+			}
+		} else {
+			return fmt.Errorf("runner: passt not found and could not be downloaded: %w", err)
 		}
 	}
 
@@ -359,8 +379,8 @@ func (r *Runner) Run(ctx context.Context, eb ExtractedBundle, cmd []string) erro
 
 	execCmd := cmd
 	if len(execCmd) == 0 {
-		if len(eb.Manifest.WorkspaceIntent.Up) > 0 {
-			execCmd = []string{"/bin/sh", "-c", strings.Join(eb.Manifest.WorkspaceIntent.Up, " && ")}
+		if len(eb.Meta.Up) > 0 {
+			execCmd = []string{"/bin/sh", "-c", strings.Join(eb.Meta.Up, " && ")}
 		} else {
 			execCmd = []string{"/bin/sh"}
 		}
@@ -394,20 +414,20 @@ func (r *Runner) Run(ctx context.Context, eb ExtractedBundle, cmd []string) erro
 
 // loadExtracted re-parses an already-extracted bundle cache directory.
 func (r *Runner) loadExtracted(cacheDir string) (ExtractedBundle, error) {
-	manifestPath := filepath.Join(cacheDir, "manifest.json")
-	data, err := os.ReadFile(manifestPath)
+	metaPath := filepath.Join(cacheDir, "meta.json")
+	data, err := os.ReadFile(metaPath)
 	if err != nil {
-		return ExtractedBundle{}, fmt.Errorf("runner: read cached manifest: %w", err)
+		return ExtractedBundle{}, fmt.Errorf("runner: read cached meta: %w", err)
 	}
-	manifest, err := bundle.ParseManifest(data)
+	meta, err := bundle.ParseMeta(data)
 	if err != nil {
-		return ExtractedBundle{}, fmt.Errorf("runner: parse cached manifest: %w", err)
+		return ExtractedBundle{}, fmt.Errorf("runner: parse cached meta: %w", err)
 	}
-	return buildExtractedBundle(cacheDir, manifest), nil
+	return buildExtractedBundle(cacheDir, meta), nil
 }
 
-// buildExtractedBundle constructs an ExtractedBundle from a cache dir and manifest.
-func buildExtractedBundle(cacheDir string, manifest bundle.BundleManifest) ExtractedBundle {
+// buildExtractedBundle constructs an ExtractedBundle from a cache dir and meta.
+func buildExtractedBundle(cacheDir string, meta bundle.BundleMeta) ExtractedBundle {
 	libDir := filepath.Join(cacheDir, "lib")
 	platformKey := runtime.GOOS + "-" + runtime.GOARCH
 	platformDir := filepath.Join(libDir, platformKey)
@@ -419,46 +439,24 @@ func buildExtractedBundle(cacheDir string, manifest bundle.BundleManifest) Extra
 		CacheDir:     cacheDir,
 		WorkspaceDir: filepath.Join(cacheDir, "workspace"),
 		LibDir:       libDir,
-		Manifest:     manifest,
+		Meta:         meta,
 	}
 
-	// Collect layer dirs from manifest in order.
-	if manifest.Assets != nil {
-		currentArch := runtime.GOARCH
-		for _, layer := range manifest.Assets.Layers {
-			if layer.Platform != "" && layer.Platform != currentArch {
-				continue
-			}
-			base := filepath.Base(layer.Path)
-			name := strings.TrimSuffix(base, ".tar")
-			dir := filepath.Dir(layer.Path)
-			layersDir := filepath.Dir(dir)
-			if filepath.Base(layersDir) == "layers" && filepath.Base(dir) != "layers" {
-				eb.LayerDirs = append(eb.LayerDirs, filepath.Join(cacheDir, "layers", filepath.Base(dir), name))
-			} else {
-				eb.LayerDirs = append(eb.LayerDirs, filepath.Join(cacheDir, "layers", name))
-			}
-		}
+	// Pre-merged layer for current arch (extracted from inner tar).
+	currentArch := runtime.GOARCH
+	layerDir := filepath.Join(cacheDir, "layers", currentArch)
+	if info, err := os.Stat(layerDir); err == nil && info.IsDir() {
+		eb.LayerDirs = append(eb.LayerDirs, layerDir)
 	}
+
 	return eb
 }
 
-// extractTar unpacks the assets tar into destDir, routing entries to their
-// correct subdirectories based on path prefix.
-//
-// Routing rules:
-//   - manifest.json            → destDir/manifest.json
-//   - payload/workspace.tar.gz → extracted into destDir/workspace/
-//   - payload/layers/<hex>.tar → extracted into destDir/layers/<hex>/
-//   - lib/*                    → destDir/lib/<filename>
-func extractTar(r io.Reader, destDir string, manifest bundle.BundleManifest) error {
-	currentArch := runtime.GOARCH
-	layerPlatforms := map[string]string{}
-	if manifest.Assets != nil {
-		for _, l := range manifest.Assets.Layers {
-			layerPlatforms[l.Path] = l.Platform
-		}
-	}
+// extractAssetsTar unpacks the assets tar into destDir using the rigid directory
+// structure. It returns the parsed BundleMeta.
+func extractAssetsTar(r io.Reader, destDir string) (bundle.BundleMeta, error) {
+	var meta bundle.BundleMeta
+	foundMeta := false
 
 	tr := tar.NewReader(r)
 	for {
@@ -467,15 +465,11 @@ func extractTar(r io.Reader, destDir string, manifest bundle.BundleManifest) err
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("reading assets tar: %w", err)
+			return bundle.BundleMeta{}, fmt.Errorf("reading assets tar: %w", err)
 		}
 
 		// Skip directories; we create them on demand.
 		if hdr.Typeflag == tar.TypeDir {
-			continue
-		}
-
-		if plat, ok := layerPlatforms[hdr.Name]; ok && plat != "" && plat != currentArch {
 			continue
 		}
 
@@ -485,67 +479,83 @@ func extractTar(r io.Reader, destDir string, manifest bundle.BundleManifest) err
 			continue
 		}
 
+		if hdr.Name == "meta.json" {
+			data, readErr := io.ReadAll(tr)
+			if readErr != nil {
+				return bundle.BundleMeta{}, fmt.Errorf("read meta.json: %w", readErr)
+			}
+			meta, err = bundle.ParseMeta(data)
+			if err != nil {
+				return bundle.BundleMeta{}, fmt.Errorf("parse meta.json: %w", err)
+			}
+			foundMeta = true
+			if err := os.WriteFile(dest, data, 0o644); err != nil {
+				return bundle.BundleMeta{}, fmt.Errorf("write meta.json: %w", err)
+			}
+			continue
+		}
+
 		if extractInner {
 			// The entry itself is a tar archive — extract its contents into dest.
 			data, readErr := io.ReadAll(tr)
 			if readErr != nil {
-				return fmt.Errorf("read inner tar %s: %w", hdr.Name, readErr)
+				return bundle.BundleMeta{}, fmt.Errorf("read inner tar %s: %w", hdr.Name, readErr)
 			}
 			if mkErr := os.MkdirAll(dest, 0o755); mkErr != nil {
-				return fmt.Errorf("mkdir %s: %w", dest, mkErr)
+				return bundle.BundleMeta{}, fmt.Errorf("mkdir %s: %w", dest, mkErr)
 			}
 			var innerReader io.Reader = bytes.NewReader(data)
 			// Decompress gzip-wrapped tars (e.g. workspace.tar.gz).
 			if strings.HasSuffix(hdr.Name, ".tar.gz") {
 				gr, gzErr := gzip.NewReader(bytes.NewReader(data))
 				if gzErr != nil {
-					return fmt.Errorf("gzip open inner tar %s: %w", hdr.Name, gzErr)
+					return bundle.BundleMeta{}, fmt.Errorf("gzip open inner tar %s: %w", hdr.Name, gzErr)
 				}
 				defer gr.Close()
 				innerReader = gr
 			}
 			if exErr := extractInnerTar(innerReader, dest); exErr != nil {
-				return fmt.Errorf("extract inner tar %s: %w", hdr.Name, exErr)
+				return bundle.BundleMeta{}, fmt.Errorf("extract inner tar %s: %w", hdr.Name, exErr)
 			}
 			continue
 		}
 
 		// Plain file — write to dest.
 		if mkErr := os.MkdirAll(filepath.Dir(dest), 0o755); mkErr != nil {
-			return fmt.Errorf("mkdir for %s: %w", dest, mkErr)
+			return bundle.BundleMeta{}, fmt.Errorf("mkdir for %s: %w", dest, mkErr)
 		}
-		//nolint:gosec // bundle files are trusted (integrity verified before extraction)
+		//nolint:gosec // bundle files are trusted
 		outF, createErr := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)|0o600)
 		if createErr != nil {
-			return fmt.Errorf("create %s: %w", dest, createErr)
+			return bundle.BundleMeta{}, fmt.Errorf("create %s: %w", dest, createErr)
 		}
 		if _, cpErr := io.Copy(outF, tr); cpErr != nil {
 			outF.Close()
-			return fmt.Errorf("write %s: %w", dest, cpErr)
+			return bundle.BundleMeta{}, fmt.Errorf("write %s: %w", dest, cpErr)
 		}
 		outF.Close()
 	}
-	return nil
+
+	if !foundMeta {
+		return bundle.BundleMeta{}, fmt.Errorf("meta.json not found in assets tar")
+	}
+
+	return meta, nil
 }
 
 // resolveDestPath maps a tar entry name to a destination path.
 // extractInner=true means the entry is itself a tar that should be extracted into dest.
 func resolveDestPath(name, destDir string) (dest string, extractInner bool, err error) {
 	switch {
-	case name == "manifest.json":
-		return filepath.Join(destDir, "manifest.json"), false, nil
+	case name == "meta.json":
+		return filepath.Join(destDir, "meta.json"), false, nil
 
-	case name == "payload/workspace.tar.gz":
+	case name == "workspace.tar.gz":
 		return filepath.Join(destDir, "workspace"), true, nil
 
-	case strings.HasPrefix(name, "payload/layers/") && strings.HasSuffix(name, ".tar"):
+	case strings.HasPrefix(name, "layers/") && strings.HasSuffix(name, ".tar"):
 		base := filepath.Base(name)
 		layerName := strings.TrimSuffix(base, ".tar")
-		dir := filepath.Dir(name)
-		layersDir := filepath.Dir(dir)
-		if filepath.Base(layersDir) == "layers" && filepath.Base(dir) != "layers" {
-			return filepath.Join(destDir, "layers", filepath.Base(dir), layerName), true, nil
-		}
 		return filepath.Join(destDir, "layers", layerName), true, nil
 
 	case strings.HasPrefix(name, "lib/"):
@@ -989,22 +999,32 @@ func copyExtractedFiles(srcDir, rootfsDir string) error {
 		if err != nil {
 			return err
 		}
-		// Skip deb metadata and docs to keep the rootfs small.
-		if strings.HasPrefix(rel, "DEBIAN/") || strings.HasPrefix(rel, "usr/share/doc/") || strings.HasPrefix(rel, "usr/share/man/") {
-			return nil
-		}
 		dst := filepath.Join(rootfsDir, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
 		}
+		// Preserve symlinks (e.g. sbin/ip -> /bin/ip in deb packages).
 		if info.Mode()&os.ModeSymlink != 0 {
-			linkTarget, err := os.Readlink(path)
-			if err != nil {
-				return err
+			linkTarget, lerr := os.Readlink(path)
+			if lerr != nil {
+				return lerr
 			}
 			_ = os.Remove(dst)
 			return os.Symlink(linkTarget, dst)
 		}
-		return copyFile(path, dst, info.Mode())
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, in); err != nil {
+			out.Close()
+			return err
+		}
+		return out.Close()
 	})
 }

@@ -10,10 +10,14 @@ import (
 	"strconv"
 	"strings"
 
-	bundlepkg "github.com/oursky/nexus/packages/nexus/internal/domain/bundle"
 	"github.com/oursky/nexus/packages/nexus/internal/vm/runner"
 	"github.com/spf13/cobra"
 )
+
+// ExtractEmbeddedKernel is injected by cmd/nexus (package main) so that the
+// bundle run command can extract the platform-specific embedded kernel before
+// booting the VM. Nil when running outside the full nexus binary (e.g. tests).
+var ExtractEmbeddedKernel func() (string, error)
 
 // runCommand implements `nexus bundle run <bundlepath> [args...]`.
 //
@@ -22,8 +26,8 @@ import (
 //
 // Behaviour:
 //  1. Extract the NXPACK bundle to ~/.cache/nexus/bundles/<hash>/ (idempotent)
-//  2. If workspaceIntent.Bake is non-empty and not yet stamped, run bake inside VM
-//  3. Run workspaceIntent.Up inside the VM (daemonless via libkrun)
+//  2. If meta.Bake is non-empty and not yet stamped, run bake inside VM
+//  3. Run meta.Up inside the VM (daemonless via libkrun)
 func runCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run <bundle.nxbundle> [command [args...]]",
@@ -33,9 +37,9 @@ func runCommand() *cobra.Command {
 The bundle is extracted to ~/.cache/nexus/bundles/<id>/ on first run (idempotent).
 Workspace commands run inside an isolated microVM — no nexus daemon required.
 
-If workspaceIntent.Bake commands are defined and have not yet run for this
+If meta.Bake commands are defined and have not yet run for this
 extracted bundle, they are executed inside the VM first (one-time setup).
-Then workspaceIntent.Up commands are run inside the VM.
+Then meta.Up commands are run inside the VM.
 
 If additional arguments are provided they are executed inside the VM instead
 of the workspace.up intent.
@@ -43,10 +47,37 @@ of the workspace.up intent.
 This command is typically invoked automatically by the bundle's shell stub:
   ./myworkspace.nxbundle [args...]
 `,
-		Args: cobra.MinimumNArgs(1),
+		Args:               cobra.MinimumNArgs(1),
+		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			bundlePath := args[0]
-			runArgs := args[1:]
+			var cpus uint8
+			var mem uint32
+			parsed := make([]string, 0, len(args))
+			for i := 0; i < len(args); i++ {
+				switch args[i] {
+				case "--cpus":
+					if i+1 < len(args) {
+						if v, err := strconv.ParseUint(args[i+1], 10, 8); err == nil {
+							cpus = uint8(v)
+						}
+						i++
+					}
+				case "--memory":
+					if i+1 < len(args) {
+						if v, err := strconv.ParseUint(args[i+1], 10, 32); err == nil {
+							mem = uint32(v)
+						}
+						i++
+					}
+				default:
+					parsed = append(parsed, args[i])
+				}
+			}
+			if len(parsed) == 0 {
+				return fmt.Errorf("bundle run: bundle path is required")
+			}
+			bundlePath := parsed[0]
+			runArgs := parsed[1:]
 
 			// Resolve absolute path early (stub passes $0 which may be relative).
 			abs, err := filepath.Abs(bundlePath)
@@ -54,6 +85,11 @@ This command is typically invoked automatically by the bundle's shell stub:
 				return fmt.Errorf("bundle run: resolve path: %w", err)
 			}
 			bundlePath = abs
+
+			// Ensure embedded kernel is extracted before booting the VM.
+			if ExtractEmbeddedKernel != nil {
+				_, _ = ExtractEmbeddedKernel()
+			}
 
 			r := runner.Runner{}
 
@@ -63,36 +99,34 @@ This command is typically invoked automatically by the bundle's shell stub:
 				return fmt.Errorf("bundle run: extract: %w", err)
 			}
 
-			// Apply CLI overrides to runtime config.
-			if eb.Manifest.Runtime == nil {
-				eb.Manifest.Runtime = &bundlepkg.RuntimeConfig{Mode: "vm"}
+			// Apply CLI overrides to meta.
+			if cpus > 0 {
+				eb.Meta.CPUs = cpus
 			}
-			if flagCPUs, flagErr := cmd.Flags().GetUint8("cpus"); flagErr == nil && flagCPUs > 0 {
-				eb.Manifest.Runtime.CPUs = flagCPUs
-			}
-			if flagMem, flagErr := cmd.Flags().GetUint32("memory"); flagErr == nil && flagMem > 0 {
-				eb.Manifest.Runtime.MemMiB = flagMem
+			if mem > 0 {
+				eb.Meta.Memory = mem
 			}
 
 			ctx := context.Background()
-			normalizedUp := normalizeUpCommands(eb.Manifest.WorkspaceIntent.Up)
+			normalizedUp := normalizeUpCommands(eb.Meta.Up)
 
-			// Discover published ports from docker-compose files and start host→VM
-			// TCP forwarders. These run concurrently with the VM and are cancelled
-			// when the VM exits.
+			// Discover published ports from docker-compose files and forward them
+			// into the VM via gvproxy.
 			forwardPorts := discoverBundlePorts(eb.WorkspaceDir)
-			cancelForwards := startPortForwards(ctx, forwardPorts)
-			defer cancelForwards()
+			if len(forwardPorts) > 0 {
+				fmt.Fprintf(os.Stderr, "bundle run: port forwards active: %v\n", forwardPorts)
+			}
+			r.ForwardPorts = forwardPorts
 
 			stamp := bakeStampPath(eb.WorkspaceDir)
-			if needsBake(eb, eb.Manifest.WorkspaceIntent.Bake, stamp) {
+			if needsBake(eb, eb.Meta.Bake, stamp) {
 				fmt.Fprintln(os.Stderr, "bundle run: running bake commands (first-time setup)...")
-				for _, c := range eb.Manifest.WorkspaceIntent.Bake {
+				for _, c := range eb.Meta.Bake {
 					fmt.Fprintf(os.Stderr, "bundle run: bake: %s\n", c)
 				}
 				if len(runArgs) > 0 {
 					scriptPath, err := writeRunScript(eb.WorkspaceDir, []string{
-						buildBakeScript(eb.Manifest.WorkspaceIntent.Bake, stamp),
+						buildBakeScript(eb.Meta.Bake, stamp),
 						strings.Join(runArgs, " "),
 					})
 					if err != nil {
@@ -108,8 +142,8 @@ This command is typically invoked automatically by the bundle's shell stub:
 					fmt.Fprintln(os.Stderr, "bundle run: no workspace.up commands defined")
 					return nil
 				}
-				cmds := make([]string, 0, len(eb.Manifest.WorkspaceIntent.Bake)+len(normalizedUp)+2)
-				cmds = append(cmds, buildBakeScript(eb.Manifest.WorkspaceIntent.Bake, stamp))
+				cmds := make([]string, 0, len(eb.Meta.Bake)+len(normalizedUp)+2)
+				cmds = append(cmds, buildBakeScript(eb.Meta.Bake, stamp))
 				cmds = append(cmds, ensureDockerDaemonCmd())
 				cmds = append(cmds, normalizedUp...)
 				scriptPath, err := writeRunScript(eb.WorkspaceDir, cmds)
@@ -143,8 +177,6 @@ This command is typically invoked automatically by the bundle's shell stub:
 			return r.Run(ctx, eb, []string{"/bin/sh", scriptPath})
 		},
 	}
-	cmd.Flags().Uint8("cpus", 0, "Override VM CPUs (overrides bundle manifest and Nexusfile)")
-	cmd.Flags().Uint32("memory", 0, "Override VM memory in MiB (overrides bundle manifest and Nexusfile)")
 	return cmd
 }
 
@@ -193,7 +225,9 @@ func buildBakeScript(cmds []string, stamp string) string {
 	// does not support DHCP, so we must configure the network manually using
 	// `ip`. The custom kernel has CONFIG_BRIDGE and CONFIG_IP_NF_IPTABLES but
 	// not CONFIG_NF_TABLES, so we need iptables-legacy (not nft backend).
-	prefix := "export DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC && mkdir -p /etc /tmp && chown root:root /tmp && chmod 1777 /tmp && printf 'nameserver 8.8.8.8\\nnameserver 1.1.1.1\\noptions use-vc\\n' > /etc/resolv.conf && apt-get update -qq && apt-get install -y --no-install-recommends iproute2 iptables && ln -sf /usr/sbin/iptables-legacy /usr/sbin/iptables && ln -sf /usr/sbin/ip6tables-legacy /usr/sbin/ip6tables"
+	// Use the gvproxy gateway (192.168.127.1) as DNS — it forwards UDP DNS to
+	// the host's configured resolvers.
+	prefix := "export DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC && mkdir -p /etc /tmp && chown root:root /tmp && chmod 1777 /tmp && printf 'nameserver 192.168.127.1\\n' > /etc/resolv.conf && apt-get update -qq && apt-get install -y --no-install-recommends iproute2 iptables && ln -sf /usr/sbin/iptables-legacy /usr/sbin/iptables && ln -sf /usr/sbin/ip6tables-legacy /usr/sbin/ip6tables"
 	parts := make([]string, 0, len(cmds)+2)
 	parts = append(parts, prefix)
 	for _, c := range cmds {

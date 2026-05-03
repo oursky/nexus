@@ -24,10 +24,6 @@ func NewImporter() *Importer {
 
 // Import opens a .nxbundle, validates it, and (when dryRun is false) provisions
 // the bundle cache directory so the workspace is ready to run.
-//
-// The function detects the bundle format automatically:
-//   - NXPACK (v2): footer-addressed binary format produced by the current exporter
-//   - Legacy gzip-tar (v1): tar.gz with manifest.json at root (read-only; no provisioning)
 func (imp *Importer) Import(ctx context.Context, bundlePath string, dryRun bool) error {
 	f, err := os.Open(bundlePath)
 	if err != nil {
@@ -46,30 +42,7 @@ func (imp *Importer) Import(ctx context.Context, bundlePath string, dryRun bool)
 }
 
 // importNXPack handles NXPACK v2 bundles.
-func (imp *Importer) importNXPack(ctx context.Context, f *os.File, footer PackFooter, bundlePath string, dryRun bool) error {
-	// Read manifest JSON.
-	if _, err := f.Seek(int64(footer.ManifestOffset), io.SeekStart); err != nil {
-		return fmt.Errorf("bundle: seek to manifest: %w", err)
-	}
-	manifestData := make([]byte, footer.ManifestSize)
-	if _, err := io.ReadFull(f, manifestData); err != nil {
-		return fmt.Errorf("bundle: read manifest: %w", err)
-	}
-
-	manifest, err := ParseManifest(manifestData)
-	if err != nil {
-		return &InvalidBundle{Reason: fmt.Sprintf("cannot parse manifest: %v", err)}
-	}
-	if err := ValidateManifest(manifest); err != nil {
-		return err
-	}
-	if err := verifyIntegrity(manifest, manifestData); err != nil {
-		return err
-	}
-	if err := checkCompatibility(manifest); err != nil {
-		return err
-	}
-
+func (imp *Importer) importNXPack(_ context.Context, f *os.File, footer PackFooter, bundlePath string, dryRun bool) error {
 	// Read assets blob.
 	if _, err := f.Seek(int64(footer.AssetsOffset), io.SeekStart); err != nil {
 		return fmt.Errorf("bundle: seek to assets: %w", err)
@@ -85,10 +58,20 @@ func (imp *Importer) importNXPack(ctx context.Context, f *os.File, footer PackFo
 		return fmt.Errorf("bundle: decompress assets: %w", err)
 	}
 
-	hasWorkspace := hasAssetEntry(assetsTar, "payload/workspace.tar.gz")
+	// Parse meta.json from the assets tar.
+	meta, err := extractMetaFromAssets(assetsTar)
+	if err != nil {
+		return fmt.Errorf("bundle: read meta: %w", err)
+	}
+
+	if err := checkCompatibilityMeta(meta); err != nil {
+		return err
+	}
+
+	hasWorkspace := hasAssetEntry(assetsTar, "workspace.tar.gz")
 
 	if dryRun {
-		printCompatibilityReportNXPack(manifest, hasWorkspace)
+		printCompatibilityReportMeta(meta, hasWorkspace)
 		return nil
 	}
 
@@ -102,12 +85,13 @@ func (imp *Importer) importNXPack(ctx context.Context, f *os.File, footer PackFo
 		return fmt.Errorf("bundle: extract assets: %w", err)
 	}
 
-	fmt.Printf("import complete: workspace %q cached at %s\n", manifest.Source.WorkspaceName, cacheDir)
+	fmt.Printf("import complete: bundle cached at %s\n", cacheDir)
 	return nil
 }
 
 // importLegacyTarGz handles the legacy gzip-tar v1 format (read/validate only).
 func (imp *Importer) importLegacyTarGz(_ context.Context, f *os.File, dryRun bool) error {
+	_ = dryRun
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("bundle: rewind file: %w", err)
 	}
@@ -120,32 +104,12 @@ func (imp *Importer) importLegacyTarGz(_ context.Context, f *os.File, dryRun boo
 	defer gr.Close()
 
 	tr := tar.NewReader(gr)
-	manifestBytes, hasWorkspacePayload, err := scanBundle(tr)
+	_, _, err = scanBundleLegacy(tr)
 	if err != nil {
 		return err
 	}
 
-	manifest, err := ParseManifest(manifestBytes)
-	if err != nil {
-		return &InvalidBundle{Reason: fmt.Sprintf("cannot parse manifest.json: %v", err)}
-	}
-	if err := ValidateManifest(manifest); err != nil {
-		return err
-	}
-	if err := verifyIntegrity(manifest, manifestBytes); err != nil {
-		return err
-	}
-	if err := checkCompatibility(manifest); err != nil {
-		return err
-	}
-
-	if dryRun {
-		printCompatibilityReport(manifest, hasWorkspacePayload)
-		return nil
-	}
-
-	fmt.Printf("import complete: workspace %q (legacy bundle, no VM provisioning)\n", manifest.Source.WorkspaceName)
-	return nil
+	return &InvalidBundle{Reason: "legacy bundle format not supported"}
 }
 
 // ExtractBundle extracts an NXPACK bundle to the default cache location and
@@ -192,7 +156,7 @@ func ExtractBundle(bundlePath string) (string, error) {
 	}
 
 	// Expand workspace snapshot into workspace/ if present.
-	workspaceTarGz := filepath.Join(cacheDir, "payload", "workspace.tar.gz")
+	workspaceTarGz := filepath.Join(cacheDir, "workspace.tar.gz")
 	if _, statErr := os.Stat(workspaceTarGz); statErr == nil {
 		workspaceDir := filepath.Join(cacheDir, "workspace")
 		if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
@@ -203,25 +167,34 @@ func ExtractBundle(bundlePath string) (string, error) {
 		}
 	}
 
-	// Write the manifest to cacheDir/manifest.json so `nexus bundle run` can read it.
-	if _, err := f.Seek(int64(footer.ManifestOffset), io.SeekStart); err != nil {
-		return "", fmt.Errorf("bundle: seek manifest for write: %w", err)
-	}
-	manifestData := make([]byte, footer.ManifestSize)
-	if _, err := io.ReadFull(f, manifestData); err != nil {
-		return "", fmt.Errorf("bundle: read manifest for write: %w", err)
-	}
-	manifestDest := filepath.Join(cacheDir, "manifest.json")
-	if err := os.WriteFile(manifestDest, manifestData, 0o644); err != nil {
-		return "", fmt.Errorf("bundle: write manifest: %w", err)
-	}
-
 	// Write marker.
 	if err := os.WriteFile(marker, []byte("ok"), 0o644); err != nil {
 		return "", fmt.Errorf("bundle: write extraction marker: %w", err)
 	}
 
 	return cacheDir, nil
+}
+
+// extractMetaFromAssets reads meta.json from an uncompressed assets tar.
+func extractMetaFromAssets(tarBytes []byte) (BundleMeta, error) {
+	tr := tar.NewReader(bytes.NewReader(tarBytes))
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return BundleMeta{}, err
+		}
+		if hdr.Name == "meta.json" {
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				return BundleMeta{}, err
+			}
+			return ParseMeta(data)
+		}
+	}
+	return BundleMeta{}, &InvalidBundle{Reason: "meta.json not found in bundle assets"}
 }
 
 // bundleCacheDir returns the cache directory for a given bundle file.
@@ -354,9 +327,9 @@ func hasAssetEntry(tarBytes []byte, name string) bool {
 	}
 }
 
-// scanBundle reads the tar archive and returns the bytes of manifest.json
+// scanBundleLegacy reads the tar archive and returns the bytes of manifest.json
 // and whether payload/workspace.tar.gz is present.
-func scanBundle(tr *tar.Reader) (manifestBytes []byte, hasWorkspacePayload bool, err error) {
+func scanBundleLegacy(tr *tar.Reader) (manifestBytes []byte, hasWorkspacePayload bool, err error) {
 	for {
 		hdr, hdrErr := tr.Next()
 		if hdrErr == io.EOF {
@@ -382,106 +355,32 @@ func scanBundle(tr *tar.Reader) (manifestBytes []byte, hasWorkspacePayload bool,
 	return manifestBytes, hasWorkspacePayload, nil
 }
 
-// verifyIntegrity checks the stored manifestDigest by zeroing the integrity fields,
-// re-serialising, and re-hashing — matching the exporter's canonical-bytes scheme.
-func verifyIntegrity(manifest BundleManifest, _ []byte) error {
-	if manifest.Integrity.Algorithm != "sha256" {
-		return &InvalidBundle{Reason: fmt.Sprintf("unsupported digest algorithm: %s", manifest.Integrity.Algorithm)}
-	}
-	stored := manifest.Integrity.ManifestDigest
-
-	canonical := manifest
-	canonical.Integrity.ManifestDigest = ""
-	canonicalBytes, err := MarshalManifest(canonical)
-	if err != nil {
-		return &InvalidBundle{Reason: fmt.Sprintf("re-serialise for integrity check: %v", err)}
-	}
-
-	h := sha256.New()
-	h.Write(canonicalBytes)
-	got := hex.EncodeToString(h.Sum(nil))
-	if got != stored {
-		return &IntegrityViolation{Expected: stored, Got: got}
-	}
-	return nil
-}
-
-// checkCompatibility returns IncompatibleHost if the current arch is not listed.
-func checkCompatibility(manifest BundleManifest) error {
+// checkCompatibilityMeta returns IncompatibleHost if the current arch is not listed.
+func checkCompatibilityMeta(meta BundleMeta) error {
 	arch := runtime.GOARCH
 	archOK := false
-	for _, a := range manifest.Compatibility.Arch {
+	for _, a := range meta.Arch {
 		if a == arch {
 			archOK = true
 			break
 		}
 	}
-	osOK := false
-	for _, o := range manifest.Compatibility.OsFamily {
-		if o == runtime.GOOS {
-			osOK = true
-			break
-		}
-	}
 	if !archOK {
-		return &IncompatibleHost{Want: manifest.Compatibility.Arch, Got: arch}
-	}
-	if !osOK {
-		return &IncompatibleHost{Want: manifest.Compatibility.OsFamily, Got: runtime.GOOS}
+		return &IncompatibleHost{Want: meta.Arch, Got: arch}
 	}
 	return nil
 }
 
-// printCompatibilityReportNXPack prints a dry-run report for NXPACK bundles.
-func printCompatibilityReportNXPack(manifest BundleManifest, hasWorkspace bool) {
+// printCompatibilityReportMeta prints a dry-run report for NXPACK bundles.
+func printCompatibilityReportMeta(meta BundleMeta, hasWorkspace bool) {
 	fmt.Printf("dry-run compatibility report\n")
-	fmt.Printf("  workspace:  %s\n", manifest.Source.WorkspaceName)
-	fmt.Printf("  ref:        %s\n", manifest.Source.Ref)
-	fmt.Printf("  arch:       %v — compatible\n", manifest.Compatibility.Arch)
-	fmt.Printf("  backend:    %v\n", manifest.Compatibility.Backend)
-	fmt.Printf("  osFamily:   %v\n", manifest.Compatibility.OsFamily)
-	digestPreview := manifest.Integrity.ManifestDigest
-	if len(digestPreview) > 12 {
-		digestPreview = digestPreview[:12]
-	}
-	fmt.Printf("  integrity:  %s (%s) OK\n", digestPreview, manifest.Integrity.Algorithm)
+	fmt.Printf("  arch:       %v — compatible\n", meta.Arch)
 	if hasWorkspace {
 		fmt.Printf("  payload:    workspace.tar.gz present\n")
 	} else {
 		fmt.Printf("  payload:    no workspace snapshot\n")
 	}
-	if manifest.Runtime != nil {
-		fmt.Printf("  runtime:    %s (CPUs: %d, Memory: %dMiB)\n",
-			manifest.Runtime.Mode, manifest.Runtime.CPUs, manifest.Runtime.MemMiB)
-	}
 	fmt.Printf("workspace intent (from Nexusfile):\n")
-	fmt.Printf("  workspace.init: %v\n", manifest.WorkspaceIntent.Init)
-	fmt.Printf("  workspace.up:   %v\n", manifest.WorkspaceIntent.Up)
-	fmt.Printf("  workspace.down: %v\n", manifest.WorkspaceIntent.Down)
-	fmt.Printf("  initMode:       %s\n", manifest.WorkspaceIntent.InitMode)
-}
-
-// printCompatibilityReport prints a human-readable dry-run report (legacy format).
-func printCompatibilityReport(manifest BundleManifest, hasWorkspacePayload bool) {
-	fmt.Printf("dry-run compatibility report\n")
-	fmt.Printf("  workspace:  %s\n", manifest.Source.WorkspaceName)
-	fmt.Printf("  ref:        %s\n", manifest.Source.Ref)
-	fmt.Printf("  arch:       %v — compatible\n", manifest.Compatibility.Arch)
-	fmt.Printf("  backend:    %v\n", manifest.Compatibility.Backend)
-	fmt.Printf("  osFamily:   %v\n", manifest.Compatibility.OsFamily)
-	digestPreview := manifest.Integrity.ManifestDigest
-	if len(digestPreview) > 12 {
-		digestPreview = digestPreview[:12]
-	}
-	fmt.Printf("  integrity:  %s (%s) OK\n", digestPreview, manifest.Integrity.Algorithm)
-	if hasWorkspacePayload {
-		fmt.Printf("  payload:    workspace.tar.gz present\n")
-	} else {
-		fmt.Printf("  payload:    stub (no workspace files)\n")
-	}
-	fmt.Printf("workspace intent (from Nexusfile):\n")
-	fmt.Printf("  workspace.init: %v\n", manifest.WorkspaceIntent.Init)
-	fmt.Printf("  workspace.up:   %v\n", manifest.WorkspaceIntent.Up)
-	fmt.Printf("  workspace.down: %v\n", manifest.WorkspaceIntent.Down)
-	fmt.Printf("  initMode:       %s\n", manifest.WorkspaceIntent.InitMode)
+	fmt.Printf("  workspace.bake: %v\n", meta.Bake)
+	fmt.Printf("  workspace.up:   %v\n", meta.Up)
 }

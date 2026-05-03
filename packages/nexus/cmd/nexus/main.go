@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	bundlecmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/bundle"
 	daemoncmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon"
 	projectcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/project"
 	spotlightcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/spotlight"
@@ -19,6 +20,12 @@ import (
 // init() functions (e.g. the hidden "libkrun-vm" subcommand on Linux+libkrun).
 var extraCommands []*cobra.Command
 
+func init() {
+	// Wire up embedded-kernel extraction so `bundle run` can auto-extract
+	// the platform-specific kernel on first use.
+	bundlecmd.ExtractEmbeddedKernel = extractEmbeddedKernel
+}
+
 func main() {
 	root := &cobra.Command{
 		Use:           "nexus",
@@ -28,6 +35,7 @@ func main() {
 	}
 
 	root.AddCommand(
+		bundlecmd.Command(),
 		daemoncmd.Command(),
 		workspacecmd.Command(),
 		spotlightcmd.Command(),

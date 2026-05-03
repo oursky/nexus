@@ -14,79 +14,52 @@ import (
 )
 
 // TestBuildAssetsTar_NoWorkspace verifies that buildAssetsTar with no workspace
-// archive or OCI layers produces a valid tar with an inventory.
+// archive or OCI layers produces a valid tar with meta.json.
 func TestBuildAssetsTar_NoWorkspace(t *testing.T) {
-	tarBytes, inventory, err := buildAssetsTar(nil, nil, nil)
+	tarBytes, err := buildAssetsTar(nil, nil, nil, BundleMeta{})
 	if err != nil {
 		t.Fatalf("buildAssetsTar: %v", err)
 	}
-	if inventory == nil {
-		t.Fatal("inventory is nil")
+	if !tarHasEntry(t, tarBytes, "meta.json") {
+		t.Error("tar does not contain meta.json")
 	}
-	if inventory.Workspace != nil {
-		t.Errorf("expected no workspace entry, got %+v", inventory.Workspace)
-	}
-	if inventory.AgentRootfs != nil {
-		t.Errorf("expected no agentRootfs entry, got %+v", inventory.AgentRootfs)
-	}
-	if len(inventory.Layers) != 0 {
-		t.Errorf("expected no layers, got %d", len(inventory.Layers))
-	}
-	// Should not contain any agent-rootfs entry.
-	if tarHasEntry(t, tarBytes, "payload/agent-rootfs.tar") {
-		t.Error("tar unexpectedly contains payload/agent-rootfs.tar")
+	if tarHasEntry(t, tarBytes, "workspace.tar.gz") {
+		t.Error("tar unexpectedly contains workspace.tar.gz")
 	}
 }
 
 // TestBuildAssetsTar_WithWorkspace verifies workspace bytes are packed correctly.
 func TestBuildAssetsTar_WithWorkspace(t *testing.T) {
 	fakeArchive := []byte("fake workspace tar.gz data")
-	tarBytes, inventory, err := buildAssetsTar(fakeArchive, nil, nil)
+	tarBytes, err := buildAssetsTar(fakeArchive, nil, nil, BundleMeta{})
 	if err != nil {
 		t.Fatalf("buildAssetsTar: %v", err)
 	}
-	if inventory.Workspace == nil {
-		t.Fatal("expected workspace entry in inventory")
-	}
-	if inventory.Workspace.Path != "payload/workspace.tar.gz" {
-		t.Errorf("unexpected workspace path: %s", inventory.Workspace.Path)
-	}
-	if inventory.Workspace.Size != int64(len(fakeArchive)) {
-		t.Errorf("workspace size mismatch: got %d want %d", inventory.Workspace.Size, len(fakeArchive))
-	}
-	if !tarHasEntry(t, tarBytes, "payload/workspace.tar.gz") {
-		t.Error("tar does not contain payload/workspace.tar.gz")
+	if !tarHasEntry(t, tarBytes, "workspace.tar.gz") {
+		t.Error("tar does not contain workspace.tar.gz")
 	}
 }
 
-// TestBuildAssetsTar_WithOCILayers verifies OCI layers are packed and inventoried.
+// TestBuildAssetsTar_WithOCILayers verifies pre-merged OCI layers are packed.
 func TestBuildAssetsTar_WithOCILayers(t *testing.T) {
-	layers := []OCILayer{
-		{Digest: "sha256:aabbccddeeff001122334455", Data: []byte("layer1")},
-		{Digest: "sha256:112233445566aabbccddeeff", Data: []byte("layer2")},
+	merged := []OCILayer{
+		{Digest: "sha256:merged001122334455", Data: []byte("merged-layer")},
 	}
-	_, inventory, err := buildAssetsTar(nil, map[string][]OCILayer{"": layers}, nil)
+	tarBytes, err := buildAssetsTar(nil, map[string][]OCILayer{"": merged}, nil, BundleMeta{})
 	if err != nil {
 		t.Fatalf("buildAssetsTar: %v", err)
 	}
-	if len(inventory.Layers) != 2 {
-		t.Fatalf("expected 2 layers, got %d", len(inventory.Layers))
-	}
-	for i, l := range inventory.Layers {
-		if l.Digest != layers[i].Digest {
-			t.Errorf("layer %d digest mismatch: got %s want %s", i, l.Digest, layers[i].Digest)
-		}
-		if l.Size != int64(len(layers[i].Data)) {
-			t.Errorf("layer %d size mismatch: got %d want %d", i, l.Size, len(layers[i].Data))
-		}
+	if !tarHasEntry(t, tarBytes, "layers/.tar") {
+		// arch is empty string in this test
+		t.Error("tar does not contain layers")
 	}
 }
 
-// TestWriteNXPackBundle verifies that writeNXPackBundle produces a valid NXPACK
-// file with a shell stub, readable footer, and extractable manifest.
+// TestWriteNXPackBundle verifies that WriteNXPackBundle produces a valid NXPACK
+// file with a shell stub and readable footer.
 func TestWriteNXPackBundle(t *testing.T) {
 	// Build a minimal assets tar.
-	tarBytes, _, err := buildAssetsTar(nil, nil, nil)
+	tarBytes, err := buildAssetsTar(nil, nil, nil, BundleMeta{})
 	if err != nil {
 		t.Fatalf("buildAssetsTar: %v", err)
 	}
@@ -95,16 +68,14 @@ func TestWriteNXPackBundle(t *testing.T) {
 		t.Fatalf("CompressZstd: %v", err)
 	}
 
-	manifestJSON := []byte(`{"schemaVersion":"2","bundleVersion":"2.0.0"}`)
-
 	tmp, err := os.CreateTemp(t.TempDir(), "*.nxbundle")
 	if err != nil {
 		t.Fatal(err)
 	}
 	tmp.Close()
 
-	if err := writeNXPackBundle(tmp.Name(), assetsBlob, manifestJSON); err != nil {
-		t.Fatalf("writeNXPackBundle: %v", err)
+	if err := WriteNXPackBundle(tmp.Name(), assetsBlob); err != nil {
+		t.Fatalf("WriteNXPackBundle: %v", err)
 	}
 
 	// File must be executable.
@@ -130,9 +101,6 @@ func TestWriteNXPackBundle(t *testing.T) {
 	if footer.AssetsSize != uint64(len(assetsBlob)) {
 		t.Errorf("AssetsSize mismatch: got %d want %d", footer.AssetsSize, len(assetsBlob))
 	}
-	if footer.ManifestSize != uint64(len(manifestJSON)) {
-		t.Errorf("ManifestSize mismatch: got %d want %d", footer.ManifestSize, len(manifestJSON))
-	}
 
 	// Verify shell stub is at the start.
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
@@ -144,18 +112,6 @@ func TestWriteNXPackBundle(t *testing.T) {
 	}
 	if string(head) != "#!/" {
 		t.Errorf("expected shebang at start, got %q", head)
-	}
-
-	// ExtractNXPackManifest must round-trip the manifest.
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		t.Fatal(err)
-	}
-	gotManifest, err := ExtractNXPackManifest(f)
-	if err != nil {
-		t.Fatalf("ExtractNXPackManifest: %v", err)
-	}
-	if !bytes.Equal(gotManifest, manifestJSON) {
-		t.Errorf("manifest mismatch:\n got: %s\nwant: %s", gotManifest, manifestJSON)
 	}
 }
 

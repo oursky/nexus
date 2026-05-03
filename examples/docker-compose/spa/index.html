@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nexus Example App</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #222; }
+    header { background: #1a1a2e; color: #fff; padding: 1rem 2rem; }
+    header h1 { font-size: 1.4rem; font-weight: 600; }
+    header p { font-size: 0.85rem; opacity: 0.7; margin-top: 0.25rem; }
+    main { max-width: 680px; margin: 2rem auto; padding: 0 1rem; }
+    .card { background: #fff; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem;
+            box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: #444; }
+    .status { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #ccc; }
+    .dot.ok { background: #22c55e; }
+    .dot.err { background: #ef4444; }
+    form { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+    input[type=text] { flex: 1; padding: 0.5rem 0.75rem; border: 1px solid #ddd;
+                       border-radius: 6px; font-size: 0.9rem; }
+    button { padding: 0.5rem 1rem; border: none; border-radius: 6px; cursor: pointer;
+             font-size: 0.9rem; font-weight: 500; }
+    .btn-add { background: #1a1a2e; color: #fff; }
+    .btn-add:hover { background: #2d2d5e; }
+    ul { list-style: none; }
+    li { display: flex; align-items: center; justify-content: space-between;
+         padding: 0.6rem 0; border-bottom: 1px solid #f0f0f0; font-size: 0.9rem; }
+    li:last-child { border-bottom: none; }
+    .btn-del { background: none; color: #ef4444; font-size: 0.8rem; padding: 0.2rem 0.5rem;
+               border: 1px solid #fca5a5; border-radius: 4px; }
+    .btn-del:hover { background: #fef2f2; }
+    .empty { color: #aaa; font-size: 0.85rem; text-align: center; padding: 1rem 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Nexus Example App</h1>
+    <p>API + PostgreSQL + SPA — running inside a Nexus workspace VM</p>
+  </header>
+  <main>
+    <div class="card">
+      <h2>Service Health</h2>
+      <div class="status" id="health">
+        <div class="dot" id="health-dot"></div>
+        <span id="health-text">checking...</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Items</h2>
+      <form id="add-form">
+        <input type="text" id="item-input" placeholder="New item name" required />
+        <button type="submit" class="btn-add">Add</button>
+      </form>
+      <ul id="items-list"><li class="empty">Loading...</li></ul>
+    </div>
+  </main>
+
+  <script>
+    const API = '/api';
+
+    async function checkHealth() {
+      try {
+        const r = await fetch('/health');
+        const d = await r.json();
+        const ok = d.status === 'ok';
+        document.getElementById('health-dot').className = 'dot ' + (ok ? 'ok' : 'err');
+        document.getElementById('health-text').textContent =
+          ok ? `API ok — DB connected` : `API error: ${d.db}`;
+      } catch (e) {
+        document.getElementById('health-dot').className = 'dot err';
+        document.getElementById('health-text').textContent = 'API unreachable';
+      }
+    }
+
+    async function loadItems() {
+      const r = await fetch(`${API}/items`);
+      const items = await r.json();
+      const ul = document.getElementById('items-list');
+      if (!items.length) {
+        ul.innerHTML = '<li class="empty">No items yet — add one above.</li>';
+        return;
+      }
+      ul.innerHTML = items.map(i => `
+        <li>
+          <span>${escHtml(i.name)}</span>
+          <button class="btn-del" onclick="deleteItem(${i.id})">Delete</button>
+        </li>`).join('');
+    }
+
+    async function addItem(name) {
+      await fetch(`${API}/items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      await loadItems();
+    }
+
+    async function deleteItem(id) {
+      await fetch(`${API}/items/${id}`, { method: 'DELETE' });
+      await loadItems();
+    }
+
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    document.getElementById('add-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const inp = document.getElementById('item-input');
+      await addItem(inp.value.trim());
+      inp.value = '';
+    });
+
+    checkHealth();
+    loadItems();
+  </script>
+</body>
+</html>

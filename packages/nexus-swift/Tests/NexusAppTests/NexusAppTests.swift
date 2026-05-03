@@ -346,6 +346,15 @@ private final class MockDaemonClient: DaemonClient, @unchecked Sendable {
     func updateDaemonSandboxResourceSettings(_ settings: SandboxResourceSettings) async throws -> SandboxResourceSettings {
         settings
     }
+    func checkVMSSH(workspaceId: String) async throws -> VMSSHCheckResult {
+        VMSSHCheckResult(ok: true, guestIP: "", whoami: "", error: "", stderr: "")
+    }
+    func workspaceSerialLog(workspaceId: String, lines: Int) async throws -> WorkspaceSerialLog {
+        WorkspaceSerialLog(lines: [], path: "", available: false)
+    }
+    func daemonLogTail(lines: Int) async throws -> DaemonLogTail {
+        DaemonLogTail(lines: [], path: "")
+    }
 }
 
 // MARK: - Integration tests (require running daemon)

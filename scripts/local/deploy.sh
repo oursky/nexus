@@ -20,5 +20,14 @@ rm -f "$LOCAL_BIN"
 cp "$NEXUS_PKG/tmp/nexus-local" "$LOCAL_BIN"
 chmod +x "$LOCAL_BIN"
 
+if [ "$(uname -s)" = "Darwin" ]; then
+  ENTITLEMENTS="$NEXUS_PKG/nexus.entitlements"
+  if [ -f "$ENTITLEMENTS" ]; then
+    codesign --sign - --force --entitlements "$ENTITLEMENTS" "$LOCAL_BIN" 2>/dev/null && \
+      echo "Codesigned with hypervisor entitlements" || \
+      echo "Warning: codesign failed (hypervisor access may be unavailable)"
+  fi
+fi
+
 echo "Installed $LOCAL_BIN"
 echo "$($LOCAL_BIN daemon version)"

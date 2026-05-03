@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Rebuild the vmlinux kernel on the remote Linux host and copy it back locally.
+# Rebuild the x86_64 vmlinux kernel on the remote Linux host and copy it back locally.
 #
 # The kernel is committed at packages/nexus/cmd/nexus/assets/vmlinux and
 # embedded in the nexus binary via //go:embed. Run this when you need to
@@ -11,7 +11,7 @@ set -euo pipefail
 #   REMOTE_HOST  - user@hostname of the Linux build host
 #
 # Optional env:
-#   KERNEL_VERSION - kernel version to build (default: 6.6.59)
+#   KERNEL_VERSION - kernel version to build (default: 6.12.76)
 #
 # Usage:
 #   REMOTE_HOST=user@host scripts/remote/rebuild-kernel.sh
@@ -24,12 +24,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 REMOTE_HOST="${REMOTE_HOST:?REMOTE_HOST is required}"
-KERNEL_VERSION="${KERNEL_VERSION:-6.6.59}"
+KERNEL_VERSION="${KERNEL_VERSION:-6.12.76}"
 OUTPUT_PATH="$ROOT_DIR/packages/nexus/cmd/nexus/assets/vmlinux"
 REMOTE_SCRIPT_PATH="/tmp/nexus-build-kernel-$$.sh"
 REMOTE_OUTPUT="/tmp/nexus-kernel-build/vmlinux-${KERNEL_VERSION}"
 
-echo "==> Rebuilding kernel ${KERNEL_VERSION} on ${REMOTE_HOST}..."
+echo "==> Rebuilding x86_64 kernel ${KERNEL_VERSION} on ${REMOTE_HOST}..."
 echo ""
 
 # Upload the build script to the remote host
@@ -40,7 +40,7 @@ ssh "${REMOTE_HOST}" \
   "chmod +x ${REMOTE_SCRIPT_PATH} && \
    rm -f ${REMOTE_OUTPUT} && \
    KERNEL_VERSION=${KERNEL_VERSION} BUILD_DIR=/tmp/nexus-kernel-build \
-   bash ${REMOTE_SCRIPT_PATH} ${REMOTE_OUTPUT} && \
+   bash ${REMOTE_SCRIPT_PATH} --arch x86_64 ${REMOTE_OUTPUT} && \
    rm -f ${REMOTE_SCRIPT_PATH}"
 
 echo ""
@@ -61,4 +61,4 @@ echo "Size:   $(du -h "${OUTPUT_PATH}" | cut -f1)"
 echo ""
 echo "Next steps:"
 echo "  git add ${OUTPUT_PATH}"
-echo "  git commit -m 'chore(kernel): rebuild vmlinux ${KERNEL_VERSION}'"
+echo "  git commit -m 'chore(kernel): rebuild vmlinux ${KERNEL_VERSION} x86_64'"

@@ -27,6 +27,12 @@ type NexusfileVMSection struct {
 	Profile string `json:"profile,omitempty" toml:"profile"`
 	// Image is reserved for future prebuilt image/channel resolution.
 	Image string `json:"image,omitempty" toml:"image"`
+	// CPUs sets the number of virtual CPUs for the bundle VM.
+	// Defaults to 2 when omitted or zero.
+	CPUs uint8 `json:"cpus,omitempty" toml:"cpus"`
+	// MemMiB sets the VM memory size in MiB.
+	// Defaults to 2048 when omitted or zero.
+	MemMiB uint32 `json:"mem,omitempty" toml:"mem"`
 }
 
 // NexusfileManifest is an extension point for base-layer cache invalidation.

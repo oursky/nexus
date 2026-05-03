@@ -16,27 +16,23 @@ const PackMagic = "NXPACK\x00\x00"
 const FooterSize = 64
 
 // packFooterVersion is the current footer version.
-const packFooterVersion = 1
+const packFooterVersion = 2
 
 // PackFooter represents the 64-byte fixed footer appended to every NXPACK bundle.
 //
 // Layout (little-endian):
 //
 //	[0..8)   magic            "NXPACK\x00\x00"
-//	[8..12)  version          uint32 = 1
+//	[8..12)  version          uint32 = 2
 //	[12..20) assets_offset    uint64 (absolute from file start)
 //	[20..28) assets_size      uint64
-//	[28..36) manifest_offset  uint64 (absolute from file start)
-//	[36..44) manifest_size    uint64
-//	[44..48) crc32            uint32 (crc32 of assetsBlob + manifestJSON)
-//	[48..64) reserved         zeroes
+//	[28..32) crc32            uint32 (crc32 of assetsBlob)
+//	[32..64) reserved         zeroes
 type PackFooter struct {
-	Version        uint32
-	AssetsOffset   uint64
-	AssetsSize     uint64
-	ManifestOffset uint64
-	ManifestSize   uint64
-	CRC32          uint32
+	Version      uint32
+	AssetsOffset uint64
+	AssetsSize   uint64
+	CRC32        uint32
 }
 
 // ToBytes serialises the footer to the 64-byte wire format.
@@ -46,10 +42,8 @@ func (f PackFooter) ToBytes() []byte {
 	binary.LittleEndian.PutUint32(buf[8:12], f.Version)
 	binary.LittleEndian.PutUint64(buf[12:20], f.AssetsOffset)
 	binary.LittleEndian.PutUint64(buf[20:28], f.AssetsSize)
-	binary.LittleEndian.PutUint64(buf[28:36], f.ManifestOffset)
-	binary.LittleEndian.PutUint64(buf[36:44], f.ManifestSize)
-	binary.LittleEndian.PutUint32(buf[44:48], f.CRC32)
-	// [48..64) reserved — already zeroed
+	binary.LittleEndian.PutUint32(buf[28:32], f.CRC32)
+	// [32..64) reserved — already zeroed
 	return buf
 }
 
@@ -60,12 +54,10 @@ func FromBytes(raw [FooterSize]byte) (PackFooter, error) {
 		return PackFooter{}, &InvalidBundle{Reason: "invalid NXPACK magic"}
 	}
 	return PackFooter{
-		Version:        binary.LittleEndian.Uint32(raw[8:12]),
-		AssetsOffset:   binary.LittleEndian.Uint64(raw[12:20]),
-		AssetsSize:     binary.LittleEndian.Uint64(raw[20:28]),
-		ManifestOffset: binary.LittleEndian.Uint64(raw[28:36]),
-		ManifestSize:   binary.LittleEndian.Uint64(raw[36:44]),
-		CRC32:          binary.LittleEndian.Uint32(raw[44:48]),
+		Version:      binary.LittleEndian.Uint32(raw[8:12]),
+		AssetsOffset: binary.LittleEndian.Uint64(raw[12:20]),
+		AssetsSize:   binary.LittleEndian.Uint64(raw[20:28]),
+		CRC32:        binary.LittleEndian.Uint32(raw[28:32]),
 	}, nil
 }
 
@@ -99,11 +91,10 @@ func DecompressZstd(src []byte) ([]byte, error) {
 //   - stubBytes: optional self-executing stub prepended before the assets blob.
 //     Pass nil for a plain (non-self-executing) bundle.
 //   - assetsBlob: zstd-compressed tar archive containing the bundle assets.
-//   - manifestJSON: raw JSON bytes for the bundle manifest.
 //
-// Layout written: [stub] | assetsBlob | manifestJSON | footer(64 bytes)
+// Layout written: [stub] | assetsBlob | footer(64 bytes)
 // Footer offsets are absolute from the start of the file.
-func WriteNXPack(w io.Writer, assetsBlob []byte, manifestJSON []byte, stubBytes []byte) error {
+func WriteNXPack(w io.Writer, assetsBlob []byte, stubBytes []byte) error {
 	var written uint64
 
 	// Write optional stub.
@@ -124,28 +115,16 @@ func WriteNXPack(w io.Writer, assetsBlob []byte, manifestJSON []byte, stubBytes 
 	}
 	written += uint64(n)
 
-	manifestOffset := written
-
-	// Write manifest JSON.
-	n, err = w.Write(manifestJSON)
-	if err != nil {
-		return fmt.Errorf("bundle: write manifest: %w", err)
-	}
-	written += uint64(n)
-
-	// Compute CRC32 over assetsBlob + manifestJSON.
+	// Compute CRC32 over assetsBlob.
 	h := crc32.NewIEEE()
 	h.Write(assetsBlob)
-	h.Write(manifestJSON)
 	checksum := h.Sum32()
 
 	footer := PackFooter{
-		Version:        packFooterVersion,
-		AssetsOffset:   assetsOffset,
-		AssetsSize:     uint64(len(assetsBlob)),
-		ManifestOffset: manifestOffset,
-		ManifestSize:   uint64(len(manifestJSON)),
-		CRC32:          checksum,
+		Version:      packFooterVersion,
+		AssetsOffset: assetsOffset,
+		AssetsSize:   uint64(len(assetsBlob)),
+		CRC32:        checksum,
 	}
 
 	_, err = w.Write(footer.ToBytes())
@@ -166,20 +145,4 @@ func ReadNXPackFooter(r io.ReadSeeker) (PackFooter, error) {
 		return PackFooter{}, fmt.Errorf("bundle: read footer: %w", err)
 	}
 	return FromBytes(raw)
-}
-
-// ExtractNXPackManifest reads the footer from r, then returns the raw manifest JSON bytes.
-func ExtractNXPackManifest(r io.ReadSeeker) ([]byte, error) {
-	footer, err := ReadNXPackFooter(r)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := r.Seek(int64(footer.ManifestOffset), io.SeekStart); err != nil {
-		return nil, fmt.Errorf("bundle: seek to manifest: %w", err)
-	}
-	data := make([]byte, footer.ManifestSize)
-	if _, err := io.ReadFull(r, data); err != nil {
-		return nil, fmt.Errorf("bundle: read manifest: %w", err)
-	}
-	return data, nil
 }

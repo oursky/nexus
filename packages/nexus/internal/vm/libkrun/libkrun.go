@@ -64,6 +64,7 @@ type libkrunFns struct {
 	SetGPUOptions2       func(ctxID uint32, flags uint32, ramSize uint64) int32 `C:"krun_set_gpu_options2"`
 	AddNetUnixgram       func(ctxID uint32, cPath string, fd int, cMac unsafe.Pointer, features uint32, flags uint32) int32 `C:"krun_add_net_unixgram"`
 	SetKernel            func(ctxID uint32, kernelPath string, kernelFormat uint32, initramfsPath unsafe.Pointer, cmdline unsafe.Pointer) int32 `C:"krun_set_kernel"`
+	SetPasstFd           func(ctxID uint32, fd int32) int32                    `C:"krun_set_passt_fd"`
 }
 
 // Load opens libkrunfw (kernel firmware) and libkrun from the given paths
@@ -407,6 +408,19 @@ func (c *Context) SetKernel(kernelPath string, format uint32, initramfs, cmdline
 	}
 	if ret := c.lib.fns.SetKernel(c.id, kernelPath, format, initramfsPtr, cmdlinePtr); ret != 0 {
 		return fmt.Errorf("krun_set_kernel: %d", ret)
+	}
+	return nil
+}
+
+// SetPasstFd connects a passt socket to the microVM's virtio-net device.
+// fd is the file descriptor of a connected Unix socket to a running passt
+// process. This is the Linux-native alternative to gvproxy on macOS.
+func (c *Context) SetPasstFd(fd int) error {
+	if c.lib.fns.SetPasstFd == nil {
+		return fmt.Errorf("krun_set_passt_fd: symbol not available in loaded library")
+	}
+	if ret := c.lib.fns.SetPasstFd(c.id, int32(fd)); ret != 0 {
+		return fmt.Errorf("krun_set_passt_fd: %d", ret)
 	}
 	return nil
 }

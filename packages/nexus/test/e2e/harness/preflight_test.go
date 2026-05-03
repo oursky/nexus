@@ -260,6 +260,25 @@ func TestPrintPreflightReport_Failing(t *testing.T) {
 	}
 }
 
+// ─── fakeTB ──────────────────────────────────────────────────────────────────
+
+// fakeTB is a test double for preflightTB that records the last call made.
+type fakeTB struct {
+	skipped bool
+	fataled bool
+	msg     string
+}
+
+func (f *fakeTB) Helper() {}
+func (f *fakeTB) Skipf(format string, args ...any) {
+	f.skipped = true
+	f.msg = fmt.Sprintf(format, args...)
+}
+func (f *fakeTB) Fatalf(format string, args ...any) {
+	f.fataled = true
+	f.msg = fmt.Sprintf(format, args...)
+}
+
 // ─── EnforcePreflightPolicy ─────────────────────────────────────────────────
 
 func TestEnforcePreflightPolicy_Ready(t *testing.T) {
@@ -289,6 +308,62 @@ func TestEnforcePreflightPolicy_UnsupportedHost(t *testing.T) {
 		// If we reach here EnforcePreflightPolicy did not skip — fail outer.
 		t.Error("EnforcePreflightPolicy should have called t.Skip for UNSUPPORTED_HOST")
 	})
+}
+
+// TestEnforcePreflightPolicy_Misconfigured verifies that a MISCONFIGURED result
+// causes t.Fatalf to be called (fixable environment issue).
+func TestEnforcePreflightPolicy_Misconfigured(t *testing.T) {
+	r := PreflightResult{
+		Status: PreflightMisconfigured,
+		Checks: []CheckResult{
+			{
+				ID:          "runtime-artifacts",
+				Status:      PreflightMisconfigured,
+				Observed:    `NEXUS_VM_KERNEL="" NEXUS_VM_ROOTFS=""`,
+				Expected:    "both env vars set and paths must exist on disk",
+				Remediation: "export NEXUS_VM_KERNEL=... NEXUS_VM_ROOTFS=...",
+			},
+		},
+	}
+	tb := &fakeTB{}
+	EnforcePreflightPolicy(tb, r)
+	if !tb.fataled {
+		t.Error("EnforcePreflightPolicy should have called Fatalf for MISCONFIGURED")
+	}
+	if tb.skipped {
+		t.Error("EnforcePreflightPolicy must not call Skipf for MISCONFIGURED")
+	}
+	if !strings.Contains(tb.msg, "MISCONFIGURED") {
+		t.Errorf("expected MISCONFIGURED in fatal message, got: %s", tb.msg)
+	}
+}
+
+// TestEnforcePreflightPolicy_BootstrapFailed verifies that a BOOTSTRAP_FAILED result
+// causes t.Fatalf to be called (daemon/profile bootstrap is unhealthy).
+func TestEnforcePreflightPolicy_BootstrapFailed(t *testing.T) {
+	r := PreflightResult{
+		Status: PreflightBootstrapFailed,
+		Checks: []CheckResult{
+			{
+				ID:          "daemon-health",
+				Status:      PreflightBootstrapFailed,
+				Observed:    "daemon did not become healthy within 30s",
+				Expected:    "daemon healthy within 30s",
+				Remediation: "check daemon logs with `nexus logs`",
+			},
+		},
+	}
+	tb := &fakeTB{}
+	EnforcePreflightPolicy(tb, r)
+	if !tb.fataled {
+		t.Error("EnforcePreflightPolicy should have called Fatalf for BOOTSTRAP_FAILED")
+	}
+	if tb.skipped {
+		t.Error("EnforcePreflightPolicy must not call Skipf for BOOTSTRAP_FAILED")
+	}
+	if !strings.Contains(tb.msg, "BOOTSTRAP_FAILED") {
+		t.Errorf("expected BOOTSTRAP_FAILED in fatal message, got: %s", tb.msg)
+	}
 }
 
 // TestEnforcePreflightPolicy_ReportEmittedOnFailure verifies that a non-READY

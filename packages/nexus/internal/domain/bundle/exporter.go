@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -48,20 +49,6 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 		return "", fmt.Errorf("bundle: resolve workspace: %w", wsIDErr)
 	}
 
-	var wsResult struct {
-		Workspace struct {
-			WorkspaceName string `json:"workspaceName"`
-			Ref           string `json:"ref"`
-			Repo          string `json:"repo"`
-			Backend       string `json:"backend"`
-			RootPath      string `json:"rootPath"`
-		} `json:"workspace"`
-	}
-	if infoErr := rpc.Do(conn, "workspace.info", map[string]any{"id": wsID}, &wsResult); infoErr != nil {
-		return "", fmt.Errorf("bundle: fetch workspace info: %w", infoErr)
-	}
-	ws := wsResult.Workspace
-
 	// Attempt to populate WorkspaceIntent (including VM resources) from the daemon-side Nexusfile.
 	var intentResult struct {
 		WorkspaceIntent WorkspaceIntent `json:"workspaceIntent"`
@@ -95,8 +82,6 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 	}
 
 	// Fetch OCI layers for the base VM rootfs.
-	// Always use the default base image — bake commands in the Nexusfile are
-	// shell commands that run inside the VM, not OCI image references.
 	imageRef := DefaultBaseImage
 
 	arm64Layers, arm64Err := FetchLayersCachedForArch(ctx, imageRef, "arm64")
@@ -108,9 +93,19 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 		return "", fmt.Errorf("bundle: fetch OCI layers for %q (amd64): %w", imageRef, amd64Err)
 	}
 
-	multiArchLayers := map[string][]OCILayer{
-		"arm64": arm64Layers,
-		"amd64": amd64Layers,
+	// Pre-merge OCI layers per architecture into a single tar.
+	mergedArm64, mergeArm64Err := mergeOCILayersToTar(arm64Layers)
+	if mergeArm64Err != nil {
+		return "", fmt.Errorf("bundle: merge arm64 layers: %w", mergeArm64Err)
+	}
+	mergedAmd64, mergeAmd64Err := mergeOCILayersToTar(amd64Layers)
+	if mergeAmd64Err != nil {
+		return "", fmt.Errorf("bundle: merge amd64 layers: %w", mergeAmd64Err)
+	}
+
+	mergedLayers := map[string][]OCILayer{
+		"arm64": {{Digest: imageRef + ":merged", Data: mergedArm64}},
+		"amd64": {{Digest: imageRef + ":merged", Data: mergedAmd64}},
 	}
 
 	allPlatformLibs, allErr := resolveAllPlatformLibkrunAssets(ctx)
@@ -118,12 +113,18 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 		return "", allErr
 	}
 
-	assetsTar, inventory, buildErr := buildAssetsTar(archiveBytes, multiArchLayers, allPlatformLibs)
+	meta := BundleMeta{
+		Arch:    []string{"arm64", "amd64"},
+		Bake:    workspaceIntent.Bake,
+		Up:      workspaceIntent.Up,
+		CPUs:    vmCPUs,
+		Memory:  vmMemMiB,
+		Workdir: "/workspace",
+	}
+
+	assetsTar, buildErr := buildAssetsTar(archiveBytes, mergedLayers, allPlatformLibs, meta)
 	if buildErr != nil {
 		return "", fmt.Errorf("bundle: build assets tar: %w", buildErr)
-	}
-	if len(inventory.Libraries) == 0 {
-		return "", fmt.Errorf("bundle: missing required libkrun runtime libraries in bundle assets (run Nexus bootstrap/install to provision runtime libs before export)")
 	}
 
 	// Compress the assets tar with zstd.
@@ -132,73 +133,49 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 		return "", fmt.Errorf("bundle: compress assets: %w", compErr)
 	}
 
-	// Build manifest.
-	now := time.Now().UTC().Format(time.RFC3339)
-	manifest := BundleManifest{
-		SchemaVersion: SchemaVersion,
-		BundleVersion: BundleVersion,
-		CreatedAt:     now,
-		Source: SourceMetadata{
-			WorkspaceName: ws.WorkspaceName,
-			Ref:           ws.Ref,
-			ProjectHint:   ws.Repo,
-		},
-		Compatibility: CompatibilityMeta{
-			Arch:     []string{"arm64", "amd64"},
-			Backend:  []string{ws.Backend},
-			OsFamily: []string{"darwin", "linux"},
-		},
-		WorkspaceIntent: workspaceIntent,
-		Payload:         PayloadIndex{Entries: []PayloadEntry{}},
-		Integrity: IntegrityMetadata{
-			Algorithm: "sha256",
-		},
-		Runtime: &RuntimeConfig{
-			Mode:   "vm",
-			CPUs:   vmCPUs,
-			MemMiB: vmMemMiB,
-		},
-		Assets: inventory,
-	}
-
-	// Serialise manifest without digest to compute the canonical digest.
-	manifestBytes, marshalErr := MarshalManifest(manifest)
-	if marshalErr != nil {
-		return "", marshalErr
-	}
-	h := sha256.New()
-	h.Write(manifestBytes)
-	manifest.Integrity.ManifestDigest = hex.EncodeToString(h.Sum(nil))
-
-	// Re-serialise with digest filled in.
-	finalManifest, finalErr := MarshalManifest(manifest)
-	if finalErr != nil {
-		return "", finalErr
-	}
-
 	// Write the NXPACK bundle.
-	if writeErr := writeNXPackBundle(outPath, assetsBlob, finalManifest); writeErr != nil {
+	if writeErr := WriteNXPackBundle(outPath, assetsBlob); writeErr != nil {
 		return "", writeErr
 	}
 
 	return outPath, nil
 }
 
-// BuildAssetsTar is the exported version of buildAssetsTar for use by the CLI.
-func BuildAssetsTar(archiveBytes []byte, ociLayers []OCILayer) ([]byte, *AssetInventory, error) {
-	return buildAssetsTar(archiveBytes, map[string][]OCILayer{"": ociLayers}, nil)
-}
+// WriteNXPackBundle writes a self-executing NXPACK bundle to dst.
+// The file is created (or truncated) and marked executable (0755).
+func WriteNXPackBundle(dst string, assetsBlob []byte) error {
+	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755) //nolint:gosec
+	if err != nil {
+		return fmt.Errorf("bundle: create output file: %w", err)
+	}
+	defer f.Close()
 
-// WriteNXPackBundle is the exported version of writeNXPackBundle for use by the CLI.
-// It embeds the currently running nexus binary into the bundle.
-func WriteNXPackBundle(dst string, assetsBlob, manifestJSON []byte) error {
-	return writeNXPackBundle(dst, assetsBlob, manifestJSON)
+	darwinBin, linuxBin, binErr := readCrossPlatformBinaries()
+	if binErr != nil {
+		return fmt.Errorf("bundle: read nexus binaries: %w", binErr)
+	}
+
+	stub := nxFatShellStub(len(darwinBin), len(linuxBin))
+
+	preamble := make([]byte, 0, len(stub)+len(darwinBin)+len(linuxBin))
+	preamble = append(preamble, stub...)
+	preamble = append(preamble, darwinBin...)
+	preamble = append(preamble, linuxBin...)
+
+	if err := WriteNXPack(f, assetsBlob, preamble); err != nil {
+		return err
+	}
+
+	if err := f.Chmod(0o755); err != nil { //nolint:gosec
+		return fmt.Errorf("bundle: chmod bundle: %w", err)
+	}
+	return nil
 }
 
 // WriteNXPackBundleWithBinary writes a self-executing NXPACK bundle embedding
 // the provided nexus binary bytes instead of reading os.Executable().
 // Use this when you need to embed a specific binary (e.g. in tests or tooling).
-func WriteNXPackBundleWithBinary(dst string, assetsBlob, manifestJSON, nexusBin []byte) error {
+func WriteNXPackBundleWithBinary(dst string, assetsBlob, nexusBin []byte) error {
 	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755) //nolint:gosec
 	if err != nil {
 		return fmt.Errorf("bundle: create output file: %w", err)
@@ -208,7 +185,7 @@ func WriteNXPackBundleWithBinary(dst string, assetsBlob, manifestJSON, nexusBin 
 	stub := nxpackShellStub(len(nexusBin))
 	preamble := append(stub, nexusBin...) //nolint:gocritic
 
-	if err := WriteNXPack(f, assetsBlob, manifestJSON, preamble); err != nil {
+	if err := WriteNXPack(f, assetsBlob, preamble); err != nil {
 		return err
 	}
 	if err := f.Chmod(0o755); err != nil { //nolint:gosec
@@ -217,46 +194,38 @@ func WriteNXPackBundleWithBinary(dst string, assetsBlob, manifestJSON, nexusBin 
 	return nil
 }
 
-// buildAssetsTar constructs the uncompressed tar archive containing:
-//   - payload/workspace.tar.gz  (if archiveBytes is non-empty)
-//   - payload/layers/<hex>.tar  (for each OCI layer)
-//   - lib/<platform>/<lib>      (for each platform's libkrun libraries)
+// BuildAssetsTar is the exported version of buildAssetsTar for use by the CLI.
+// It builds a single-platform assets tar without meta.json (for legacy use).
+func BuildAssetsTar(archiveBytes []byte, ociLayers []OCILayer) ([]byte, error) {
+	return buildAssetsTar(archiveBytes, map[string][]OCILayer{"": ociLayers}, nil, BundleMeta{})
+}
+
+// buildAssetsTar constructs the uncompressed tar archive with a rigid directory structure:
+//
+//	layers/arm64.tar
+//	layers/amd64.tar
+//	workspace.tar.gz
+//	lib/<platform>/<lib>
+//	meta.json
 //
 // platformLibs maps "darwin-arm64" → {libkrun.dylib, libkrunfw.dylib}, etc.
 // If nil, falls back to discoverLibkrunAssets for single-platform behavior.
-func buildAssetsTar(archiveBytes []byte, multiArchLayers map[string][]OCILayer, platformLibs map[string][]string) ([]byte, *AssetInventory, error) {
+func buildAssetsTar(archiveBytes []byte, multiArchLayers map[string][]OCILayer, platformLibs map[string][]string, meta BundleMeta) ([]byte, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 
-	inventory := &AssetInventory{
-		Libraries: []AssetEntry{},
-		Layers:    []LayerEntry{},
-	}
-
 	if len(archiveBytes) > 0 {
-		if err := writeTarEntry(tw, "payload/workspace.tar.gz", archiveBytes); err != nil {
-			return nil, nil, err
-		}
-		dig := sha256Hex(archiveBytes)
-		inventory.Workspace = &AssetEntry{
-			Path:   "payload/workspace.tar.gz",
-			Size:   int64(len(archiveBytes)),
-			SHA256: dig,
+		if err := writeTarEntry(tw, "workspace.tar.gz", archiveBytes); err != nil {
+			return nil, err
 		}
 	}
 
 	for arch, layers := range multiArchLayers {
 		for _, layer := range layers {
-			bundlePath := layerBundlePath(layer.Digest, arch)
+			bundlePath := "layers/" + arch + ".tar"
 			if err := writeTarEntry(tw, bundlePath, layer.Data); err != nil {
-				return nil, nil, err
+				return nil, err
 			}
-			inventory.Layers = append(inventory.Layers, LayerEntry{
-				Digest:   layer.Digest,
-				Path:     bundlePath,
-				Size:     int64(len(layer.Data)),
-				Platform: arch,
-			})
 		}
 	}
 
@@ -265,60 +234,44 @@ func buildAssetsTar(archiveBytes []byte, multiArchLayers map[string][]OCILayer, 
 			for _, p := range paths {
 				data, readErr := os.ReadFile(p)
 				if readErr != nil {
-					return nil, nil, fmt.Errorf("bundle: read lib asset %s for %s: %w", p, platform, readErr)
+					return nil, fmt.Errorf("bundle: read lib asset %s for %s: %w", p, platform, readErr)
 				}
 				name := "lib/" + platform + "/" + filepath.Base(p)
 				if err := writeTarEntry(tw, name, data); err != nil {
-					return nil, nil, err
+					return nil, err
 				}
-				inventory.Libraries = append(inventory.Libraries, AssetEntry{
-					Path:     name,
-					Size:     int64(len(data)),
-					SHA256:   sha256Hex(data),
-					Platform: platform,
-				})
 			}
 		}
 	} else {
 		libPaths, libErr := discoverLibkrunAssets()
 		if libErr != nil {
-			return nil, nil, libErr
+			return nil, libErr
 		}
 		for _, p := range libPaths {
 			data, readErr := os.ReadFile(p)
 			if readErr != nil {
-				return nil, nil, fmt.Errorf("bundle: read lib asset %s: %w", p, readErr)
+				return nil, fmt.Errorf("bundle: read lib asset %s: %w", p, readErr)
 			}
 			name := "lib/" + filepath.Base(p)
 			if err := writeTarEntry(tw, name, data); err != nil {
-				return nil, nil, err
+				return nil, err
 			}
-			inventory.Libraries = append(inventory.Libraries, AssetEntry{
-				Path:   name,
-				Size:   int64(len(data)),
-				SHA256: sha256Hex(data),
-			})
 		}
 	}
 
-	if err := tw.Close(); err != nil {
-		return nil, nil, fmt.Errorf("bundle: close assets tar: %w", err)
+	// Write meta.json
+	metaBytes, err := MarshalMeta(meta)
+	if err != nil {
+		return nil, fmt.Errorf("bundle: marshal meta: %w", err)
 	}
-	return buf.Bytes(), inventory, nil
-}
+	if err := writeTarEntry(tw, "meta.json", metaBytes); err != nil {
+		return nil, err
+	}
 
-func layerBundlePath(digest, arch string) string {
-	hex := digest
-	if idx := strings.Index(digest, ":"); idx >= 0 {
-		hex = digest[idx+1:]
+	if err := tw.Close(); err != nil {
+		return nil, fmt.Errorf("bundle: close assets tar: %w", err)
 	}
-	if len(hex) > 12 {
-		hex = hex[:12]
-	}
-	if arch != "" {
-		return "payload/layers/" + arch + "/" + hex + ".tar"
-	}
-	return "payload/layers/" + hex + ".tar"
+	return buf.Bytes(), nil
 }
 
 func defaultLibkrunShareDir() (string, error) {
@@ -402,42 +355,6 @@ func discoverLibkrunAssets() ([]string, error) {
 	// (e.g. unit tests and hosts that only consume bundles). Export() enforces
 	// a strict runtime-library requirement before writing a bundle file.
 	return nil, nil
-}
-
-// writeNXPackBundle writes a self-executing NXPACK bundle to dst.
-// The file is created (or truncated) and marked executable (0755).
-//
-// The bundle is fully self-contained: nexus binaries for all supported
-// platforms are embedded after the shell stub. No nexus installation is
-// required on the target machine — the stub detects the host platform and
-// extracts the matching embedded binary.
-func writeNXPackBundle(dst string, assetsBlob, manifestJSON []byte) error {
-	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755) //nolint:gosec
-	if err != nil {
-		return fmt.Errorf("bundle: create output file: %w", err)
-	}
-	defer f.Close()
-
-	darwinBin, linuxBin, binErr := readCrossPlatformBinaries()
-	if binErr != nil {
-		return fmt.Errorf("bundle: read nexus binaries: %w", binErr)
-	}
-
-	stub := nxFatShellStub(len(darwinBin), len(linuxBin))
-
-	preamble := make([]byte, 0, len(stub)+len(darwinBin)+len(linuxBin))
-	preamble = append(preamble, stub...)
-	preamble = append(preamble, darwinBin...)
-	preamble = append(preamble, linuxBin...)
-
-	if err := WriteNXPack(f, assetsBlob, manifestJSON, preamble); err != nil {
-		return err
-	}
-
-	if err := f.Chmod(0o755); err != nil { //nolint:gosec
-		return fmt.Errorf("bundle: chmod bundle: %w", err)
-	}
-	return nil
 }
 
 // readCurrentBinary returns the bytes of the currently running nexus executable.
@@ -542,9 +459,6 @@ func nxFatShellStub(darwinSize, linuxSize int) []byte {
 		"_DARWIN_SIZE=" + placeholder + "\n" +
 		"_LINUX_OFFSET=" + placeholder + "\n" +
 		"_LINUX_SIZE=" + placeholder + "\n" +
-		"if command -v nexus >/dev/null 2>&1; then\n" +
-		"  exec nexus bundle run \"$0\" \"$@\"\n" +
-		"fi\n" +
 		"case \"$(uname -s)-$(uname -m)\" in\n" +
 		"  Darwin-arm64)  _OFFSET=$_DARWIN_OFFSET _SIZE=$_DARWIN_SIZE ;;\n" +
 		"  Linux-x86_64)  _OFFSET=$_LINUX_OFFSET  _SIZE=$_LINUX_SIZE  ;;\n" +
@@ -596,17 +510,8 @@ func nxFatShellStub(darwinSize, linuxSize int) []byte {
 // nxpackShellStub returns a minimal POSIX shell script that, when executed,
 // extracts the embedded nexus binary (which follows the script at a known byte
 // offset) to a temp file and execs it with `bundle run "$0" "$@"`.
-//
-// nexusSize is the byte length of the nexus binary that is appended immediately
-// after this stub. The stub length itself is computed from the script text, so
-// the caller must pass a nexusSize consistent with what will actually be written.
-//
-// The script uses a here-doc sentinel so the shell never tries to parse the
-// binary data that follows.
 func nxpackShellStub(nexusSize int) []byte {
-	// We need to know the stub's own byte length to compute NEXUS_OFFSET.
-	// Build the script with a placeholder, measure, then substitute.
-	const placeholder = "XXXXXXXXXXXXXXXXXX" // 18 chars, wider than any realistic value
+	const placeholder = "XXXXXXXXXXXXXXXXXX"
 
 	scriptTemplate := "#!/bin/sh\n" +
 		"# Nexus self-executing bundle — fully self-contained, no nexus in PATH needed.\n" +
@@ -635,31 +540,20 @@ func nxpackShellStub(nexusSize int) []byte {
 		"exec \"$_TMP\" bundle run \"$0\" \"$@\"\n" +
 		": <<'NXPACK_DATA_FOLLOWS'\n"
 
-	// The stub length with placeholders in place tells us the offset at which
-	// the nexus binary starts. Substituting the real numbers changes the length
-	// by at most a few bytes; we pad with spaces to keep the length stable.
 	templateLen := len(scriptTemplate)
-	// NEXUS_OFFSET = len of final stub = templateLen (we'll pad to templateLen exactly).
 	nexusOffset := templateLen
 
 	offsetStr := fmt.Sprintf("%d", nexusOffset)
 	sizeStr := fmt.Sprintf("%d", nexusSize)
 
-	// Pad each substitution to exactly len(placeholder) chars with trailing spaces.
-	// This keeps the stub length == templateLen == nexusOffset. Trailing spaces
-	// on a shell assignment are harmless (value is the number, rest is whitespace
-	// before the newline — actually shell trims those... use a comment instead).
-	// Simpler: pad with leading zeros for the number, which is also fine in shell.
 	offsetPadded := fmt.Sprintf("%-*s", len(placeholder), offsetStr)
 	sizePadded := fmt.Sprintf("%-*s", len(placeholder), sizeStr)
 
 	script := scriptTemplate
-	// Replace first occurrence (NEXUS_OFFSET line), then second (NEXUS_SIZE line).
 	script = replaceFirst(script, placeholder, offsetPadded)
 	script = replaceFirst(script, placeholder, sizePadded)
 
 	if len(script) != templateLen {
-		// Should never happen — padding ensures equal length.
 		panic(fmt.Sprintf("bundle: stub length changed after substitution: %d → %d", templateLen, len(script)))
 	}
 
@@ -686,6 +580,186 @@ func replaceFirst(s, old, new string) string {
 		return s
 	}
 	return s[:idx] + new + s[idx+len(old):]
+}
+
+// mergeOCILayersToTar merges a slice of OCI layer tars into a single tar archive
+// by applying them in order (later layers overwrite earlier ones, whiteout
+// entries delete files). The resulting tar contains the fully merged rootfs.
+func mergeOCILayersToTar(layers []OCILayer) ([]byte, error) {
+	// Create a temp directory to accumulate merged contents.
+	parentDir, err := os.MkdirTemp("", "nexus-merge-layers-*")
+	if err != nil {
+		return nil, fmt.Errorf("bundle: create merge temp dir: %w", err)
+	}
+	defer os.RemoveAll(parentDir)
+
+	tmpDir := filepath.Join(parentDir, "merged")
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return nil, fmt.Errorf("bundle: create merged dir: %w", err)
+	}
+
+	// Extract each layer in order, applying whiteout semantics.
+	for _, layer := range layers {
+		layerDir := filepath.Join(parentDir, "layer-"+sha256Hex(layer.Data)[:8])
+		if err := os.MkdirAll(layerDir, 0o755); err != nil {
+			return nil, fmt.Errorf("bundle: mkdir layer dir: %w", err)
+		}
+		if err := extractTarBytes(bytes.NewReader(layer.Data), layerDir); err != nil {
+			return nil, fmt.Errorf("bundle: extract layer %s: %w", layer.Digest, err)
+		}
+		if err := applyLayerDir(layerDir, tmpDir); err != nil {
+			return nil, fmt.Errorf("bundle: apply layer %s: %w", layer.Digest, err)
+		}
+	}
+
+	// Re-pack the merged directory into a single tar.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(tmpDir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		linkTarget := ""
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkTarget, _ = os.Readlink(path)
+		}
+		hdr, err := tar.FileInfoHeader(info, linkTarget)
+		if err != nil {
+			return err
+		}
+		hdr.Name = rel
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if _, err := tw.Write(data); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("bundle: walk merged dir: %w", err)
+	}
+	if err := tw.Close(); err != nil {
+		return nil, fmt.Errorf("bundle: close merged tar: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// extractTarBytes extracts a plain tar archive from r into destDir.
+func extractTarBytes(r io.Reader, destDir string) error {
+	tr := tar.NewReader(r)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destDir, filepath.Clean("/"+hdr.Name))
+		if !strings.HasPrefix(target, destDir+string(os.PathSeparator)) && target != destDir {
+			continue
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)|0o600)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				return err
+			}
+			f.Close()
+		case tar.TypeSymlink:
+			_ = os.Symlink(hdr.Linkname, target)
+		}
+	}
+	return nil
+}
+
+// applyLayerDir copies the contents of srcDir into destDir, applying OCI
+// whiteout semantics (same as runner.go but duplicated here to avoid import cycles).
+func applyLayerDir(srcDir, destDir string) error {
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, relErr := filepath.Rel(srcDir, path)
+		if relErr != nil {
+			return relErr
+		}
+		if rel == "." {
+			return nil
+		}
+		base := filepath.Base(rel)
+		destPath := filepath.Join(destDir, rel)
+		if base == ".wh..wh..opq" {
+			parent := filepath.Dir(destPath)
+			entries, rdErr := os.ReadDir(parent)
+			if rdErr == nil {
+				for _, e := range entries {
+					_ = os.RemoveAll(filepath.Join(parent, e.Name()))
+				}
+			}
+			return nil
+		}
+		if strings.HasPrefix(base, ".wh.") {
+			target := filepath.Join(filepath.Dir(destPath), strings.TrimPrefix(base, ".wh."))
+			_ = os.RemoveAll(target)
+			return nil
+		}
+		if info.IsDir() {
+			return os.MkdirAll(destPath, info.Mode())
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, lErr := os.Readlink(path)
+			if lErr != nil {
+				return lErr
+			}
+			_ = os.Remove(destPath)
+			return os.Symlink(link, destPath)
+		}
+		return copyFile(path, destPath, info.Mode())
+	})
+}
+
+// copyFile copies src to dst with the given mode.
+func copyFile(src, dst string, mode os.FileMode) error {
+	if mkErr := os.MkdirAll(filepath.Dir(dst), 0o755); mkErr != nil {
+		return mkErr
+	}
+	in, err := os.Open(src) //nolint:gosec
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode|0o600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }
 
 // sha256Hex returns the lowercase hex-encoded SHA-256 digest of data.

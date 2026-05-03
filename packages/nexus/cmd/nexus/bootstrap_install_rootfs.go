@@ -3,12 +3,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/oursky/nexus/packages/nexus/internal/domain/bundle"
 )
 
 // ── VM rootfs installation ────────────────────────────────────────────────────
@@ -46,12 +49,12 @@ func installVMRootfsRootless(w io.Writer, emitJSON bool) error {
 	return nil
 }
 
-// installRootfsDirForLibkrun downloads the Ubuntu minimal root archive and
-// extracts it directly to rootfs-dir/ — the only rootfs artifact libkrun needs.
+// installRootfsDirForLibkrun pulls the Ubuntu base image from the OCI registry
+// and extracts it directly to rootfs-dir/ — the only rootfs artifact libkrun needs.
 // It deliberately skips building rootfs.ext4, saving 5–10 min of ext4 work.
 //
-// Download format: Ubuntu 24.04 minimal cloud image tar.xz (~30 MB compressed).
-// Served from Ubuntu's CDN (Akamai).
+// Image source: ubuntu:26.04 (Docker Hub, multi-arch).  OCI layers are cached
+// at ~/.cache/nexus/bundle-layers/ so subsequent installs work offline.
 //
 // Legacy upgrade path: if the old ubuntu.squashfs cache file is present it is
 // extracted with unsquashfs so users who already downloaded it don't re-download.
@@ -69,73 +72,49 @@ func installRootfsDirForLibkrun(w io.Writer, emitJSON bool) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// ── Step 1: obtain the archive (tar.xz preferred; squashfs fallback) ──────
-	archivePath := filepath.Join(rootlessVMDir(), "ubuntu.squashfs") // legacy cache path
-	archiveIsSquashfs := false
-
-	if _, err := os.Stat(archivePath); err == nil && vmRootfsIsSquashfs(archivePath) {
-		archiveIsSquashfs = true
-		fmt.Fprintf(w, "  using cached squashfs (legacy) from %s\n", archivePath)
-	} else {
-		// Download the Ubuntu minimal tar.xz — CDN-served, typically ~30 MB.
-		tarxzCache := filepath.Join(rootlessVMDir(), "ubuntu-minimal.tar.xz")
-		if _, err := os.Stat(tarxzCache); err != nil {
-			url := vmSquashfsURL()
-			fmt.Fprintf(w, "  downloading Ubuntu minimal rootfs from %s ...\n", url)
-			emitPhase(w, emitJSON, "asset-install", "start", "downloading Ubuntu minimal rootfs (~30 MB)")
-			data, dlErr := httpDownload(url)
-			if dlErr != nil {
-				return fmt.Errorf("download rootfs tar.xz: %w", dlErr)
-			}
-			if err := atomicWriteFile(tarxzCache, data, 0o644); err != nil {
-				return fmt.Errorf("save rootfs tar.xz: %w", err)
-			}
-		} else {
-			fmt.Fprintf(w, "  using cached tar.xz from %s\n", tarxzCache)
-		}
-		archivePath = tarxzCache
-	}
-
-	// ── Step 2: extract the archive into a temp dir ───────────────────────────
 	extractDir := filepath.Join(tmpDir, "rootfs")
 	if err := os.MkdirAll(extractDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir extract dir: %w", err)
 	}
 
-	fakerootDBPath := filepath.Join(tmpDir, "fakeroot.db")
-	hasFakeroot := func() bool { _, err := exec.LookPath("fakeroot"); return err == nil }()
-	runCmd := func(name string, args ...string) *exec.Cmd {
-		if hasFakeroot {
-			allArgs := append([]string{"-s", fakerootDBPath, "-i", fakerootDBPath, name}, args...)
-			return exec.Command("fakeroot", allArgs...)
+	// ── Legacy path: cached squashfs from old installs ────────────────────────
+	squashfsCache := filepath.Join(rootlessVMDir(), "ubuntu.squashfs")
+	if _, err := os.Stat(squashfsCache); err == nil && vmRootfsIsSquashfs(squashfsCache) {
+		fmt.Fprintf(w, "  using cached squashfs (legacy) from %s\n", squashfsCache)
+
+		fakerootDBPath := filepath.Join(tmpDir, "fakeroot.db")
+		hasFakeroot := func() bool { _, err := exec.LookPath("fakeroot"); return err == nil }()
+		runCmd := func(name string, args ...string) *exec.Cmd {
+			if hasFakeroot {
+				allArgs := append([]string{"-s", fakerootDBPath, "-i", fakerootDBPath, name}, args...)
+				return exec.Command("fakeroot", allArgs...)
+			}
+			return exec.Command(name, args...)
 		}
-		return exec.Command(name, args...)
-	}
 
-	fmt.Fprintf(w, "  extracting rootfs archive...\n")
-	emitPhase(w, emitJSON, "asset-install", "start", "extracting rootfs archive")
-
-	if archiveIsSquashfs {
 		if _, err := exec.LookPath("unsquashfs"); err != nil {
 			return fmt.Errorf("unsquashfs not found — install squashfs-tools")
 		}
-		unsqCmd := runCmd("unsquashfs", "-d", extractDir, archivePath)
+		unsqCmd := runCmd("unsquashfs", "-d", extractDir, squashfsCache)
 		unsqCmd.Stdout = w
 		unsqCmd.Stderr = w
 		if err := unsqCmd.Run(); err != nil {
 			return fmt.Errorf("unsquashfs: %w", err)
 		}
 	} else {
-		// tar.xz: extract directly into extractDir; -J = xz decompression.
-		tarCmd := runCmd("tar", "-xJf", archivePath, "-C", extractDir)
-		tarCmd.Stdout = w
-		tarCmd.Stderr = w
-		if err := tarCmd.Run(); err != nil {
-			return fmt.Errorf("tar -xJf: %w", err)
+		// ── OCI path: pull ubuntu:26.04 from Docker Hub ───────────────────────
+		imageRef := bundle.DefaultBaseImage
+		layerCacheDir := defaultOCILayerCacheDir()
+		fmt.Fprintf(w, "  pulling OCI image %s ...\n", imageRef)
+		emitPhase(w, emitJSON, "asset-install", "start", "pulling OCI image "+imageRef)
+
+		ctx := context.Background()
+		if err := bundle.ExtractImageToDir(ctx, imageRef, extractDir, layerCacheDir); err != nil {
+			return fmt.Errorf("extract OCI image: %w", err)
 		}
 	}
 
-	// ── Step 3: patch and install to permanent location ───────────────────────
+	// ── Patch and install to permanent location ───────────────────────────────
 	fmt.Fprintf(w, "  patching rootfs for root environment...\n")
 	if err := patchRootfsForRoot(extractDir); err != nil {
 		fmt.Fprintf(w, "  warning: rootfs patch incomplete (non-fatal): %v\n", err)
@@ -150,9 +129,7 @@ func installRootfsDirForLibkrun(w io.Writer, emitJSON bool) error {
 		return fmt.Errorf("cp -a to rootfs-dir: %w: %s", cpErr, strings.TrimSpace(string(out)))
 	}
 
-	// ── Step 4: inject the nexus agent into the rootfs directory ─────────────
-	// For libkrun container mode, krun_set_exec runs the agent from inside the
-	// rootfs-dir. Inject the same agent binary that's embedded in the nexus binary.
+	// ── Inject the nexus agent into the rootfs directory ─────────────────────
 	if len(embeddedAgent) > 0 {
 		agentDst := filepath.Join(permDir, "usr", "local", "bin", "nexus-guest-agent")
 		if mkErr := os.MkdirAll(filepath.Dir(agentDst), 0o755); mkErr == nil {
@@ -167,6 +144,15 @@ func installRootfsDirForLibkrun(w io.Writer, emitJSON bool) error {
 	fmt.Fprintf(w, "  rootfs directory ready at %s\n", permDir)
 	emitPhase(w, emitJSON, "asset-install", "ok", "rootfs directory installed")
 	return nil
+}
+
+// defaultOCILayerCacheDir returns the directory used to cache OCI layer tars.
+func defaultOCILayerCacheDir() string {
+	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
+		return filepath.Join(xdg, "nexus", "bundle-layers")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".cache", "nexus", "bundle-layers")
 }
 
 // copyFileRootless copies a file in userspace (no root needed).

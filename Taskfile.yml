@@ -159,8 +159,18 @@ tasks:
     cmds:
       - scripts/local/rebuild-libkrun-vm.sh
 
-  kernel:rebuild:
-    desc: "Rebuild vmlinux kernel on remote Linux host and copy back to assets/vmlinux (commit result after)"
+  kernel:build:arm64:
+    desc: "Build arm64 Image kernel locally (requires aarch64 host or cross-compiler)"
+    cmds:
+      - scripts/nexus/build-kernel.sh --arch arm64 packages/nexus/cmd/nexus/assets/Image
+
+  kernel:build:x86_64:
+    desc: "Build x86_64 vmlinux kernel locally (requires x86_64 host or cross-compiler)"
+    cmds:
+      - scripts/nexus/build-kernel.sh --arch x86_64 packages/nexus/cmd/nexus/assets/vmlinux
+
+  kernel:rebuild:remote:
+    desc: "Rebuild x86_64 vmlinux kernel on remote Linux host and copy back (commit result after)"
     preconditions:
       - sh: '[ -n "{{.REMOTE_HOST}}" ]'
         msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
@@ -168,6 +178,14 @@ tasks:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
     cmds:
       - scripts/remote/rebuild-kernel.sh
+
+  kernel:commit:
+    desc: "Commit rebuilt kernels to the repo"
+    cmds:
+      - |
+        git add packages/nexus/cmd/nexus/assets/vmlinux packages/nexus/cmd/nexus/assets/Image
+        git diff --cached --quiet && { echo "No kernel changes to commit"; exit 0; }
+        git commit -m "chore(kernel): rebuild kernels $(date +%Y-%m-%d)"
 
   dev:swift:
     desc: "dev:cli + stage macOS nexus binary + regenerate Swift SDK + build and open NexusApp"

@@ -135,13 +135,13 @@ func (m *Manager) EnsureWithLocalPort(localPort int) (int, error) {
 
 	cmd := exec.Command("ssh", args...)
 	cmd.Stdin = nil
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		return 0, fmt.Errorf("ssh tunnel open devnull: %w", err)
+	}
+	defer devNull.Close()
 	if m.verbose {
 		fmt.Fprintf(os.Stderr, "[nexus] ssh tunnel: ssh %s\n", strings.Join(args, " "))
-		cmd.Stdout = os.Stderr
-		cmd.Stderr = os.Stderr
-	} else {
-		cmd.Stdout = nil
-		cmd.Stderr = nil
 	}
 
 	if err := cmd.Start(); err != nil {

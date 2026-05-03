@@ -2,14 +2,17 @@
 package net
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -23,6 +26,7 @@ type GVProxy struct {
 	cmd        *exec.Cmd
 	socketPath string
 	logPath    string
+	ctlSocket  string
 }
 
 // FindGVProxy returns the path to the gvproxy binary, searching in order:
@@ -58,8 +62,10 @@ func FindGVProxy(autoDownload bool) (string, error) {
 // The socket is created at socketPath. The caller is responsible for stopping
 // the process with Stop().
 func StartGVProxy(gvproxyPath, socketPath string) (*GVProxy, error) {
-	// Remove any stale socket.
+	// Remove any stale sockets.
 	_ = os.Remove(socketPath)
+	ctlSocket := socketPath + ".ctl"
+	_ = os.Remove(ctlSocket)
 
 	logPath := socketPath + ".log"
 
@@ -71,6 +77,7 @@ func StartGVProxy(gvproxyPath, socketPath string) (*GVProxy, error) {
 		"-mtu", "1500",
 		"-ssh-port", fmt.Sprintf("%d", sshPort),
 		"-listen-vfkit", "unixgram://" + socketPath,
+		"-listen", "unix://" + ctlSocket,
 		"-log-file", logPath,
 	}
 
@@ -82,7 +89,7 @@ func StartGVProxy(gvproxyPath, socketPath string) (*GVProxy, error) {
 		return nil, fmt.Errorf("start gvproxy: %w", err)
 	}
 
-	// Wait a moment for the socket to be created.
+	// Wait a moment for the sockets to be created.
 	for i := 0; i < 50; i++ {
 		if _, err := os.Stat(socketPath); err == nil {
 			break
@@ -94,6 +101,7 @@ func StartGVProxy(gvproxyPath, socketPath string) (*GVProxy, error) {
 		cmd:        cmd,
 		socketPath: socketPath,
 		logPath:    logPath,
+		ctlSocket:  ctlSocket,
 	}
 	return g, nil
 }
@@ -101,6 +109,65 @@ func StartGVProxy(gvproxyPath, socketPath string) (*GVProxy, error) {
 // SocketPath returns the Unix socket path that libkrun should connect to.
 func (g *GVProxy) SocketPath() string {
 	return g.socketPath
+}
+
+// ExposePort asks gvproxy to forward a host port to the same port inside the VM.
+func (g *GVProxy) ExposePort(port int) error {
+	return g.expose("tcp", fmt.Sprintf("127.0.0.1:%d", port), fmt.Sprintf("192.168.127.2:%d", port))
+}
+
+// UnexposePort removes a previously exposed port forward.
+func (g *GVProxy) UnexposePort(port int) error {
+	return g.unexpose("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+}
+
+func (g *GVProxy) ctlClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", g.ctlSocket)
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+}
+
+func (g *GVProxy) expose(protocol, local, remote string) error {
+	payload := fmt.Sprintf(`{"local":"%s","remote":"%s","protocol":"%s"}`, local, remote, protocol)
+	req, err := http.NewRequest("POST", "http://x/services/forwarder/expose", strings.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := g.ctlClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gvproxy expose %s->%s: HTTP %d: %s", local, remote, resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+func (g *GVProxy) unexpose(protocol, local string) error {
+	payload := fmt.Sprintf(`{"local":"%s","protocol":"%s"}`, local, protocol)
+	req, err := http.NewRequest("POST", "http://x/services/forwarder/unexpose", strings.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := g.ctlClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gvproxy unexpose %s: HTTP %d: %s", local, resp.StatusCode, string(body))
+	}
+	return nil
 }
 
 // Stop terminates the gvproxy process.
@@ -111,6 +178,7 @@ func (g *GVProxy) Stop() error {
 	_ = g.cmd.Process.Kill()
 	_ = g.cmd.Wait()
 	_ = os.Remove(g.socketPath)
+	_ = os.Remove(g.ctlSocket)
 	return nil
 }
 

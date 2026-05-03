@@ -7,12 +7,10 @@ import (
 
 func TestPackFooterRoundTrip(t *testing.T) {
 	original := PackFooter{
-		Version:        1,
-		AssetsOffset:   512,
-		AssetsSize:     1024 * 1024,
-		ManifestOffset: 512 + 1024*1024,
-		ManifestSize:   4096,
-		CRC32:          0xDEADBEEF,
+		Version:      2,
+		AssetsOffset: 512,
+		AssetsSize:   1024 * 1024,
+		CRC32:        0xDEADBEEF,
 	}
 
 	raw := original.ToBytes()
@@ -39,12 +37,6 @@ func TestPackFooterRoundTrip(t *testing.T) {
 	if got.AssetsSize != original.AssetsSize {
 		t.Errorf("AssetsSize: got %d, want %d", got.AssetsSize, original.AssetsSize)
 	}
-	if got.ManifestOffset != original.ManifestOffset {
-		t.Errorf("ManifestOffset: got %d, want %d", got.ManifestOffset, original.ManifestOffset)
-	}
-	if got.ManifestSize != original.ManifestSize {
-		t.Errorf("ManifestSize: got %d, want %d", got.ManifestSize, original.ManifestSize)
-	}
 	if got.CRC32 != original.CRC32 {
 		t.Errorf("CRC32: got %08x, want %08x", got.CRC32, original.CRC32)
 	}
@@ -61,15 +53,14 @@ func TestFromBytesInvalidMagic(t *testing.T) {
 
 func TestWriteAndExtractNXPack(t *testing.T) {
 	assetsBlob := []byte("fake-zstd-compressed-tar-data")
-	manifestJSON := []byte(`{"schemaVersion":"2"}`)
 
 	var buf bytes.Buffer
-	if err := WriteNXPack(&buf, assetsBlob, manifestJSON, nil); err != nil {
+	if err := WriteNXPack(&buf, assetsBlob, nil); err != nil {
 		t.Fatalf("WriteNXPack error: %v", err)
 	}
 
 	data := buf.Bytes()
-	expectedLen := len(assetsBlob) + len(manifestJSON) + FooterSize
+	expectedLen := len(assetsBlob) + FooterSize
 	if len(data) != expectedLen {
 		t.Fatalf("output length = %d, want %d", len(data), expectedLen)
 	}
@@ -80,8 +71,8 @@ func TestWriteAndExtractNXPack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadNXPackFooter error: %v", err)
 	}
-	if footer.Version != 1 {
-		t.Errorf("footer.Version = %d, want 1", footer.Version)
+	if footer.Version != 2 {
+		t.Errorf("footer.Version = %d, want 2", footer.Version)
 	}
 	if footer.AssetsOffset != 0 {
 		t.Errorf("footer.AssetsOffset = %d, want 0", footer.AssetsOffset)
@@ -89,30 +80,14 @@ func TestWriteAndExtractNXPack(t *testing.T) {
 	if footer.AssetsSize != uint64(len(assetsBlob)) {
 		t.Errorf("footer.AssetsSize = %d, want %d", footer.AssetsSize, len(assetsBlob))
 	}
-	if footer.ManifestOffset != uint64(len(assetsBlob)) {
-		t.Errorf("footer.ManifestOffset = %d, want %d", footer.ManifestOffset, len(assetsBlob))
-	}
-	if footer.ManifestSize != uint64(len(manifestJSON)) {
-		t.Errorf("footer.ManifestSize = %d, want %d", footer.ManifestSize, len(manifestJSON))
-	}
-
-	r.Seek(0, 0)
-	got, err := ExtractNXPackManifest(r)
-	if err != nil {
-		t.Fatalf("ExtractNXPackManifest error: %v", err)
-	}
-	if !bytes.Equal(got, manifestJSON) {
-		t.Errorf("manifest mismatch: got %q, want %q", got, manifestJSON)
-	}
 }
 
 func TestWriteNXPackWithStub(t *testing.T) {
 	stub := []byte("#!/bin/sh\nexec self\n")
 	assetsBlob := []byte("compressed-assets")
-	manifestJSON := []byte(`{}`)
 
 	var buf bytes.Buffer
-	if err := WriteNXPack(&buf, assetsBlob, manifestJSON, stub); err != nil {
+	if err := WriteNXPack(&buf, assetsBlob, stub); err != nil {
 		t.Fatalf("WriteNXPack with stub error: %v", err)
 	}
 
@@ -124,8 +99,5 @@ func TestWriteNXPackWithStub(t *testing.T) {
 
 	if footer.AssetsOffset != uint64(len(stub)) {
 		t.Errorf("AssetsOffset with stub = %d, want %d", footer.AssetsOffset, len(stub))
-	}
-	if footer.ManifestOffset != uint64(len(stub)+len(assetsBlob)) {
-		t.Errorf("ManifestOffset with stub = %d, want %d", footer.ManifestOffset, len(stub)+len(assetsBlob))
 	}
 }
