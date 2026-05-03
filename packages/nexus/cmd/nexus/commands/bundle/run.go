@@ -366,13 +366,13 @@ func runBundleStart(ctx context.Context, r *runner.Runner, eb runner.ExtractedBu
 	}
 	initMarker := filepath.Join(stateDir, ".init-done")
 
-	needsInit := len(eb.Meta.Init) > 0
+	markerExists := false
 	if _, err := os.Stat(initMarker); err == nil {
-		needsInit = false
+		markerExists = true
 		fmt.Fprintln(os.Stderr, "bundle run: init already completed")
 	}
 
-	if needsInit {
+	if !markerExists && len(eb.Meta.Init) > 0 {
 		fmt.Fprintln(os.Stderr, "bundle run: running init commands...")
 		script := buildInitScript(eb.Meta.Init)
 		scriptPath, err := writeRunScript(eb.WorkspaceDir, []string{script})
@@ -382,6 +382,10 @@ func runBundleStart(ctx context.Context, r *runner.Runner, eb runner.ExtractedBu
 		if err := r.Run(ctx, eb, []string{"/bin/sh", scriptPath}); err != nil {
 			return err
 		}
+	}
+
+	// Write init marker on first start so subsequent starts can skip init.
+	if !markerExists {
 		if err := os.WriteFile(initMarker, []byte("ok"), 0o644); err != nil {
 			return fmt.Errorf("bundle run: write init marker: %w", err)
 		}
