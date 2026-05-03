@@ -58,6 +58,19 @@ jobs:
         working-directory: packages/nexus
         run: go generate ./cmd/nexus/
 
+      # Build cross-platform nexus binary for fat bundle tests.
+      - name: Build cross-platform nexus binary (darwin/arm64)
+        working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/packages/nexus-swift/Resources"
+          go build -trimpath -ldflags "-s -w" \
+            -o "${GITHUB_WORKSPACE}/packages/nexus-swift/Resources/nexus-darwin-arm64" \
+            ./cmd/nexus
+
       - name: Run full Go test coverage
         working-directory: packages/nexus
         run: |
@@ -127,6 +140,20 @@ jobs:
       # This step also builds the kernel ELF (if cache miss) and embeds it.
       - name: Build embedded guest-agent binary
         run: scripts/ci/build-nexus-libkrun.sh
+
+      # Build cross-platform nexus binary for fat bundle tests.
+      # The bundle exporter embeds both linux-amd64 and darwin-arm64 binaries.
+      - name: Build cross-platform nexus binary (darwin/arm64)
+        working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/packages/nexus-swift/Resources"
+          go build -trimpath -ldflags "-s -w" \
+            -o "${GITHUB_WORKSPACE}/packages/nexus-swift/Resources/nexus-darwin-arm64" \
+            ./cmd/nexus
 
       - name: Build patched passt for containerized CI
         run: |
