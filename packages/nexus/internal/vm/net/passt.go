@@ -49,21 +49,36 @@ func FindPasst(autoDownload bool) (string, error) {
 		return cacheBin, nil
 	}
 
+	// 3. Embedded binary (zero-setup fallback)
+	if len(passtAssetData) > 0 {
+		if err := extractEmbeddedPasstIfNeeded(); err == nil {
+			return cacheBin, nil
+		}
+	}
+
 	if !autoDownload {
 		return "", fmt.Errorf("passt not found in PATH or %s", cacheBin)
 	}
 
-	// 3. Download (x86_64 static build)
+	// 4. Download (x86_64 static build)
 	if err := downloadPasst(cacheBin); err != nil {
 		return "", fmt.Errorf("download passt: %w", err)
 	}
 	return cacheBin, nil
 }
 
+// PasstConfig holds network configuration for the passt backend.
+type PasstConfig struct {
+	GuestIP string // e.g. "10.0.2.15"
+	Gateway string // e.g. "10.0.2.2"
+	DNS     string // e.g. "8.8.8.8"
+	Ports   []int  // host TCP ports to forward
+}
+
 // StartPasst starts a passt process connected via a socketpair.
-// ports lists the host TCP ports to forward into the guest.
+// cfg holds the network configuration for the guest.
 // The caller must call Stop() when done.
-func StartPasst(passtPath string, ports []int) (*Passt, error) {
+func StartPasst(passtPath string, cfg PasstConfig) (*Passt, error) {
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("passt is only supported on Linux")
 	}
@@ -75,10 +90,23 @@ func StartPasst(passtPath string, ports []int) (*Passt, error) {
 	}
 
 	// Build passt command line.
-	args := []string{"--fd", "3"} // fd 3 is the first ExtraFiles fd
-	if len(ports) > 0 {
+	args := []string{
+		"--fd", "3",           // fd 3 is the first ExtraFiles fd
+		"--foreground",        // keep in foreground so we can kill it
+		"--stderr",            // log to stderr
+	}
+	if cfg.GuestIP != "" {
+		args = append(args, "--address", cfg.GuestIP+"/24")
+	}
+	if cfg.Gateway != "" {
+		args = append(args, "--gateway", cfg.Gateway)
+	}
+	if cfg.DNS != "" {
+		args = append(args, "--dns", cfg.DNS)
+	}
+	if len(cfg.Ports) > 0 {
 		var portStrs []string
-		for _, p := range ports {
+		for _, p := range cfg.Ports {
 			portStrs = append(portStrs, strconv.Itoa(p))
 		}
 		args = append(args, "--tcp-ports", strings.Join(portStrs, ","))
@@ -102,7 +130,7 @@ func StartPasst(passtPath string, ports []int) (*Passt, error) {
 	return &Passt{
 		cmd:     cmd,
 		fd:      fds[1],
-		ports:   ports,
+		ports:   cfg.Ports,
 		sockFds: fds,
 	}, nil
 }

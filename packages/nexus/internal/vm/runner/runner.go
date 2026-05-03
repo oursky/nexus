@@ -18,9 +18,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/oursky/nexus/packages/nexus/internal/domain/bundle"
 	"github.com/oursky/nexus/packages/nexus/internal/vm/libkrun"
@@ -203,9 +206,13 @@ func (r *Runner) Run(ctx context.Context, eb ExtractedBundle, cmd []string) erro
 
 	// Ensure DNS resolver is configured inside the VM. init.krun does not create
 	// /etc/resolv.conf, and without it DNS resolution fails for apt/curl/docker.
-	// Use the gvproxy gateway (192.168.127.1) as the DNS resolver — it forwards
-	// UDP DNS to the host's configured resolvers.
-	if err := writeFile(filepath.Join(rootfsDir, "etc", "resolv.conf"), []byte("nameserver 192.168.127.1\n"), 0o644); err != nil {
+	// On macOS, gvproxy forwards DNS at 192.168.127.1. On Linux, passt forwards
+	// DNS using the host's resolvers; we use 8.8.8.8 as a reliable fallback.
+	dnsServer := "192.168.127.1"
+	if runtime.GOOS == "linux" {
+		dnsServer = "8.8.8.8"
+	}
+	if err := writeFile(filepath.Join(rootfsDir, "etc", "resolv.conf"), []byte("nameserver "+dnsServer+"\n"), 0o644); err != nil {
 		return fmt.Errorf("runner: write resolv.conf: %w", err)
 	}
 
@@ -331,7 +338,12 @@ func (r *Runner) Run(ctx context.Context, eb ExtractedBundle, cmd []string) erro
 	} else {
 		// Linux: use passt for virtio-net.
 		if passtPath, err := vmnet.FindPasst(true); err == nil {
-			p, err := vmnet.StartPasst(passtPath, r.ForwardPorts)
+			p, err := vmnet.StartPasst(passtPath, vmnet.PasstConfig{
+				GuestIP: "10.0.2.15",
+				Gateway: "10.0.2.2",
+				DNS:     "8.8.8.8",
+				Ports:   r.ForwardPorts,
+			})
 			if err == nil {
 				passtProc = p
 				defer func() {
@@ -405,11 +417,47 @@ func (r *Runner) Run(ctx context.Context, eb ExtractedBundle, cmd []string) erro
 		}
 	}
 
-	// Boot the VM — blocks until exit.
-	if err := vmCtx.StartEnter(); err != nil {
-		return fmt.Errorf("runner: VM exited with error: %w", err)
+	// Boot the VM — blocks until exit. Run in a goroutine so we can handle
+	// signals and context cancellation gracefully.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	startErrCh := make(chan error, 1)
+	go func() {
+		startErrCh <- vmCtx.StartEnter()
+	}()
+
+	select {
+	case err := <-startErrCh:
+		if err != nil {
+			return fmt.Errorf("runner: VM exited with error: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+		fmt.Fprintln(os.Stderr, "runner: context cancelled, shutting down VM...")
+	case sig := <-sigCh:
+		fmt.Fprintf(os.Stderr, "runner: received signal %v, shutting down VM...\n", sig)
 	}
-	return nil
+
+	// Tear down network backends to force the VM to exit.
+	if passtProc != nil {
+		_ = passtProc.Stop()
+	}
+	if gvproxyProc != nil {
+		_ = gvproxyProc.Stop()
+	}
+
+	// Wait for StartEnter to return (with a timeout so we don't hang forever).
+	select {
+	case err := <-startErrCh:
+		if err != nil {
+			return fmt.Errorf("runner: VM exited with error: %w", err)
+		}
+		return nil
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("runner: VM did not exit within 10s of shutdown signal")
+	}
 }
 
 // loadExtracted re-parses an already-extracted bundle cache directory.

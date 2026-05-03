@@ -225,9 +225,12 @@ func buildBakeScript(cmds []string, stamp string) string {
 	// does not support DHCP, so we must configure the network manually using
 	// `ip`. The custom kernel has CONFIG_BRIDGE and CONFIG_IP_NF_IPTABLES but
 	// not CONFIG_NF_TABLES, so we need iptables-legacy (not nft backend).
-	// Use the gvproxy gateway (192.168.127.1) as DNS — it forwards UDP DNS to
-	// the host's configured resolvers.
-	prefix := "export DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC && mkdir -p /etc /tmp && chown root:root /tmp && chmod 1777 /tmp && printf 'nameserver 192.168.127.1\\n' > /etc/resolv.conf && apt-get update -qq && apt-get install -y --no-install-recommends iproute2 iptables && ln -sf /usr/sbin/iptables-legacy /usr/sbin/iptables && ln -sf /usr/sbin/ip6tables-legacy /usr/sbin/ip6tables"
+	// DNS: gvproxy gateway on macOS, passt/DNS forwarder on Linux.
+	dnsServer := "192.168.127.1"
+	if runtime.GOOS == "linux" {
+		dnsServer = "8.8.8.8"
+	}
+	prefix := fmt.Sprintf("export DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC && mkdir -p /etc /tmp && chown root:root /tmp && chmod 1777 /tmp && printf 'nameserver %s\\n' > /etc/resolv.conf && apt-get update -qq && apt-get install -y --no-install-recommends iproute2 iptables && ln -sf /usr/sbin/iptables-legacy /usr/sbin/iptables && ln -sf /usr/sbin/ip6tables-legacy /usr/sbin/ip6tables", dnsServer)
 	parts := make([]string, 0, len(cmds)+2)
 	parts = append(parts, prefix)
 	for _, c := range cmds {
@@ -287,12 +290,18 @@ func writeRunScript(workspaceDir string, cmds []string) (string, error) {
 	// the workspace share so host changes are visible at /workspace.
 	b.WriteString("mkdir -p /workspace && mount -t virtiofs workspace /workspace 2>/dev/null || true\n")
 	// Configure virtio-net eth0 with a static IP. libkrunfw does not support
-	// DHCP (krun_add_net_unixgram with NET_FLAG_DHCPClient returns EINVAL), so
-	// we must bring up the interface manually. gvproxy provides NAT on the
-	// 192.168.127.0/24 subnet with gateway at 192.168.127.1.
-	b.WriteString("ip addr add 192.168.127.2/24 dev eth0 2>/dev/null || true\n")
-	b.WriteString("ip link set eth0 up 2>/dev/null || true\n")
-	b.WriteString("ip route add default via 192.168.127.1 2>/dev/null || true\n")
+	// DHCP, so we must bring up the interface manually.
+	if runtime.GOOS == "darwin" {
+		// macOS: gvproxy provides NAT on 192.168.127.0/24.
+		b.WriteString("ip addr add 192.168.127.2/24 dev eth0 2>/dev/null || true\n")
+		b.WriteString("ip link set eth0 up 2>/dev/null || true\n")
+		b.WriteString("ip route add default via 192.168.127.1 2>/dev/null || true\n")
+	} else {
+		// Linux: passt provides NAT using 10.0.2.0/24 (QEMU user-net model).
+		b.WriteString("ip addr add 10.0.2.15/24 dev eth0 2>/dev/null || true\n")
+		b.WriteString("ip link set eth0 up 2>/dev/null || true\n")
+		b.WriteString("ip route add default via 10.0.2.2 2>/dev/null || true\n")
+	}
 	b.WriteString("echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true\n")
 	// Ensure iptables-legacy is used (the custom kernel has CONFIG_BRIDGE and
 	// CONFIG_IP_NF_IPTABLES but not CONFIG_NF_TABLES, so nft backend fails).
