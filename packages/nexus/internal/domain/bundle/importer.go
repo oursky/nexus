@@ -409,12 +409,27 @@ func verifyIntegrity(manifest BundleManifest, _ []byte) error {
 // checkCompatibility returns IncompatibleHost if the current arch is not listed.
 func checkCompatibility(manifest BundleManifest) error {
 	arch := runtime.GOARCH
+	archOK := false
 	for _, a := range manifest.Compatibility.Arch {
 		if a == arch {
-			return nil
+			archOK = true
+			break
 		}
 	}
-	return &IncompatibleHost{Want: manifest.Compatibility.Arch, Got: arch}
+	osOK := false
+	for _, o := range manifest.Compatibility.OsFamily {
+		if o == runtime.GOOS {
+			osOK = true
+			break
+		}
+	}
+	if !archOK {
+		return &IncompatibleHost{Want: manifest.Compatibility.Arch, Got: arch}
+	}
+	if !osOK {
+		return &IncompatibleHost{Want: manifest.Compatibility.OsFamily, Got: runtime.GOOS}
+	}
+	return nil
 }
 
 // printCompatibilityReportNXPack prints a dry-run report for NXPACK bundles.

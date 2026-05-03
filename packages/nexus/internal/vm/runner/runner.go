@@ -408,10 +408,17 @@ func (r *Runner) loadExtracted(cacheDir string) (ExtractedBundle, error) {
 
 // buildExtractedBundle constructs an ExtractedBundle from a cache dir and manifest.
 func buildExtractedBundle(cacheDir string, manifest bundle.BundleManifest) ExtractedBundle {
+	libDir := filepath.Join(cacheDir, "lib")
+	platformKey := runtime.GOOS + "-" + runtime.GOARCH
+	platformDir := filepath.Join(libDir, platformKey)
+	if info, err := os.Stat(platformDir); err == nil && info.IsDir() {
+		libDir = platformDir
+	}
+
 	eb := ExtractedBundle{
 		CacheDir:     cacheDir,
 		WorkspaceDir: filepath.Join(cacheDir, "workspace"),
-		LibDir:       filepath.Join(cacheDir, "lib"),
+		LibDir:       libDir,
 		Manifest:     manifest,
 	}
 

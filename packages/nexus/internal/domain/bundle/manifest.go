@@ -47,9 +47,10 @@ type AssetInventory struct {
 
 // AssetEntry describes a single file inside the bundle assets blob.
 type AssetEntry struct {
-	Path   string `json:"path"`
-	Size   int64  `json:"size"`
-	SHA256 string `json:"sha256"`
+	Path     string `json:"path"`
+	Size     int64  `json:"size"`
+	SHA256   string `json:"sha256"`
+	Platform string `json:"platform,omitempty"`
 }
 
 // LayerEntry describes an OCI layer packed inside the bundle assets blob.

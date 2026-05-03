@@ -103,13 +103,14 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 		return "", fmt.Errorf("bundle: fetch OCI layers for %q: %w", imageRef, layerErr)
 	}
 
-	libPaths, libErr := resolvePortableLibkrunAssets(ctx)
-	if libErr != nil {
-		return "", libErr
+	allPlatformLibs, allErr := resolveAllPlatformLibkrunAssets(ctx)
+	if allErr != nil {
+		return "", allErr
 	}
 
 	// Build the assets tar (uncompressed) and collect asset inventory.
-	assetsTar, inventory, buildErr := buildAssetsTar(archiveBytes, ociLayers, libPaths)
+	// Fat bundle: include libkrun libs for ALL supported platforms.
+	assetsTar, inventory, buildErr := buildAssetsTar(archiveBytes, ociLayers, allPlatformLibs)
 	if buildErr != nil {
 		return "", fmt.Errorf("bundle: build assets tar: %w", buildErr)
 	}
@@ -135,9 +136,9 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 			ProjectHint:   ws.Repo,
 		},
 		Compatibility: CompatibilityMeta{
-			Arch:     []string{runtime.GOARCH},
+			Arch:     []string{"arm64", "amd64"},
 			Backend:  []string{ws.Backend},
-			OsFamily: []string{runtime.GOOS},
+			OsFamily: []string{"darwin", "linux"},
 		},
 		WorkspaceIntent: workspaceIntent,
 		Payload:         PayloadIndex{Entries: []PayloadEntry{}},
@@ -211,9 +212,11 @@ func WriteNXPackBundleWithBinary(dst string, assetsBlob, manifestJSON, nexusBin 
 // buildAssetsTar constructs the uncompressed tar archive containing:
 //   - payload/workspace.tar.gz  (if archiveBytes is non-empty)
 //   - payload/layers/<hex>.tar  (for each OCI layer)
+//   - lib/<platform>/<lib>      (for each platform's libkrun libraries)
 //
-// It returns the tar bytes and the asset inventory for the manifest.
-func buildAssetsTar(archiveBytes []byte, ociLayers []OCILayer, libPaths []string) ([]byte, *AssetInventory, error) {
+// platformLibs maps "darwin-arm64" → {libkrun.dylib, libkrunfw.dylib}, etc.
+// If nil, falls back to discoverLibkrunAssets for single-platform behavior.
+func buildAssetsTar(archiveBytes []byte, ociLayers []OCILayer, platformLibs map[string][]string) ([]byte, *AssetInventory, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 
@@ -222,7 +225,6 @@ func buildAssetsTar(archiveBytes []byte, ociLayers []OCILayer, libPaths []string
 		Layers:    []LayerEntry{},
 	}
 
-	// Workspace snapshot.
 	if len(archiveBytes) > 0 {
 		if err := writeTarEntry(tw, "payload/workspace.tar.gz", archiveBytes); err != nil {
 			return nil, nil, err
@@ -235,7 +237,6 @@ func buildAssetsTar(archiveBytes []byte, ociLayers []OCILayer, libPaths []string
 		}
 	}
 
-	// OCI layers.
 	for _, layer := range ociLayers {
 		bundlePath := LayerBundlePath(layer.Digest)
 		if err := writeTarEntry(tw, bundlePath, layer.Data); err != nil {
@@ -248,28 +249,45 @@ func buildAssetsTar(archiveBytes []byte, ociLayers []OCILayer, libPaths []string
 		})
 	}
 
-	if len(libPaths) == 0 {
-		// Preserve direct BuildAssetsTar behavior for tests/tooling: only try local discovery.
-		var libErr error
-		libPaths, libErr = discoverLibkrunAssets()
+	if platformLibs != nil {
+		for platform, paths := range platformLibs {
+			for _, p := range paths {
+				data, readErr := os.ReadFile(p)
+				if readErr != nil {
+					return nil, nil, fmt.Errorf("bundle: read lib asset %s for %s: %w", p, platform, readErr)
+				}
+				name := "lib/" + platform + "/" + filepath.Base(p)
+				if err := writeTarEntry(tw, name, data); err != nil {
+					return nil, nil, err
+				}
+				inventory.Libraries = append(inventory.Libraries, AssetEntry{
+					Path:     name,
+					Size:     int64(len(data)),
+					SHA256:   sha256Hex(data),
+					Platform: platform,
+				})
+			}
+		}
+	} else {
+		libPaths, libErr := discoverLibkrunAssets()
 		if libErr != nil {
 			return nil, nil, libErr
 		}
-	}
-	for _, p := range libPaths {
-		data, readErr := os.ReadFile(p)
-		if readErr != nil {
-			return nil, nil, fmt.Errorf("bundle: read lib asset %s: %w", p, readErr)
+		for _, p := range libPaths {
+			data, readErr := os.ReadFile(p)
+			if readErr != nil {
+				return nil, nil, fmt.Errorf("bundle: read lib asset %s: %w", p, readErr)
+			}
+			name := "lib/" + filepath.Base(p)
+			if err := writeTarEntry(tw, name, data); err != nil {
+				return nil, nil, err
+			}
+			inventory.Libraries = append(inventory.Libraries, AssetEntry{
+				Path:   name,
+				Size:   int64(len(data)),
+				SHA256: sha256Hex(data),
+			})
 		}
-		name := "lib/" + filepath.Base(p)
-		if err := writeTarEntry(tw, name, data); err != nil {
-			return nil, nil, err
-		}
-		inventory.Libraries = append(inventory.Libraries, AssetEntry{
-			Path:   name,
-			Size:   int64(len(data)),
-			SHA256: sha256Hex(data),
-		})
 	}
 
 	if err := tw.Close(); err != nil {
@@ -364,9 +382,10 @@ func discoverLibkrunAssets() ([]string, error) {
 // writeNXPackBundle writes a self-executing NXPACK bundle to dst.
 // The file is created (or truncated) and marked executable (0755).
 //
-// The bundle is fully self-contained: the current nexus binary is embedded
-// immediately after the shell stub. No nexus installation is required on the
-// target machine — the stub extracts and execs the embedded binary.
+// The bundle is fully self-contained: nexus binaries for all supported
+// platforms are embedded after the shell stub. No nexus installation is
+// required on the target machine — the stub detects the host platform and
+// extracts the matching embedded binary.
 func writeNXPackBundle(dst string, assetsBlob, manifestJSON []byte) error {
 	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755) //nolint:gosec
 	if err != nil {
@@ -374,25 +393,22 @@ func writeNXPackBundle(dst string, assetsBlob, manifestJSON []byte) error {
 	}
 	defer f.Close()
 
-	// Read the current nexus binary to embed it.
-	nexusBin, err := readCurrentBinary()
-	if err != nil {
-		return fmt.Errorf("bundle: read nexus binary: %w", err)
+	darwinBin, linuxBin, binErr := readCrossPlatformBinaries()
+	if binErr != nil {
+		return fmt.Errorf("bundle: read nexus binaries: %w", binErr)
 	}
 
-	// Generate stub with the nexus binary size baked in so it can dd-extract it.
-	stub := nxpackShellStub(len(nexusBin))
+	stub := nxFatShellStub(len(darwinBin), len(linuxBin))
 
-	// Preamble = stub + raw nexus binary.  WriteNXPack writes this before the
-	// assets blob; NXPACK footer offsets are absolute from file start and thus
-	// account for the full preamble automatically.
-	preamble := append(stub, nexusBin...) //nolint:gocritic
+	preamble := make([]byte, 0, len(stub)+len(darwinBin)+len(linuxBin))
+	preamble = append(preamble, stub...)
+	preamble = append(preamble, darwinBin...)
+	preamble = append(preamble, linuxBin...)
 
 	if err := WriteNXPack(f, assetsBlob, manifestJSON, preamble); err != nil {
 		return err
 	}
 
-	// Ensure the file is executable regardless of umask.
 	if err := f.Chmod(0o755); err != nil { //nolint:gosec
 		return fmt.Errorf("bundle: chmod bundle: %w", err)
 	}
@@ -405,7 +421,6 @@ func readCurrentBinary() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve executable: %w", err)
 	}
-	// Follow symlinks so we get the real binary, not a wrapper script.
 	real, err := filepath.EvalSymlinks(exe)
 	if err != nil {
 		real = exe
@@ -415,6 +430,142 @@ func readCurrentBinary() ([]byte, error) {
 		return nil, fmt.Errorf("read %s: %w", real, err)
 	}
 	return data, nil
+}
+
+// readCrossPlatformBinaries returns nexus binaries for darwin-arm64 and linux-amd64.
+// The current platform's binary is read from the running executable.
+// The other platform's binary is located via search paths or cross-compiled.
+func readCrossPlatformBinaries() (darwinBin, linuxBin []byte, err error) {
+	currentBin, err := readCurrentBinary()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	switch runtime.GOOS + "-" + runtime.GOARCH {
+	case "darwin-arm64":
+		darwinBin = currentBin
+		linuxBin, err = findCrossBinary("linux-amd64")
+	case "linux-amd64":
+		linuxBin = currentBin
+		darwinBin, err = findCrossBinary("darwin-arm64")
+	default:
+		return nil, nil, fmt.Errorf("bundle: unsupported export platform %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("bundle: find cross-platform binary: %w", err)
+	}
+	return darwinBin, linuxBin, nil
+}
+
+// findCrossBinary locates a pre-built nexus binary for the given platform.
+// Search order:
+//  1. Adjacent to the current executable (e.g. nexus-linux-amd64 next to nexus)
+//  2. packages/nexus-swift/Resources/nexus-<platform> (repo layout)
+//  3. ~/.local/share/nexus/bin/nexus-<platform>
+func findCrossBinary(platform string) ([]byte, error) {
+	candidates := []string{}
+
+	exe, _ := os.Executable()
+	if exe != "" {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "nexus-"+platform))
+	}
+
+	relResource := filepath.Join("packages", "nexus-swift", "Resources", "nexus-"+platform)
+	candidates = append(candidates, relResource)
+
+	if dir, _ := os.Getwd(); dir != "" {
+		for d := dir; d != "" && d != "/"; d = filepath.Dir(d) {
+			p := filepath.Join(d, relResource)
+			if p != relResource {
+				candidates = append(candidates, p)
+			}
+			if _, err := os.Stat(filepath.Join(d, "go.work")); err == nil {
+				candidates = append(candidates, filepath.Join(d, relResource))
+				break
+			}
+		}
+	}
+
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		candidates = append(candidates, filepath.Join(home, ".local", "share", "nexus", "bin", "nexus-"+platform))
+	}
+
+	for _, p := range candidates {
+		if data, err := os.ReadFile(p); err == nil {
+			return data, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no pre-built nexus-%s found — build one with: GOOS=%s GOARCH=%s go build -o nexus-%s ./cmd/nexus/",
+		platform, strings.SplitN(platform, "-", 2)[0], strings.SplitN(platform, "-", 2)[1], platform)
+}
+
+// nxFatShellStub returns a POSIX shell script that embeds offset/size pairs for
+// both darwin-arm64 and linux-amd64 nexus binaries. The stub detects the host
+// platform at runtime and dd-extracts the matching binary.
+//
+// Layout after stub: [darwin-arm64 binary][linux-amd64 binary][NXPACK data]
+func nxFatShellStub(darwinSize, linuxSize int) []byte {
+	const placeholder = "XXXXXXXXXXXXXXXXXX"
+
+	scriptTemplate := "#!/bin/sh\n" +
+		"# Nexus self-executing bundle — fully self-contained, no nexus in PATH needed.\n" +
+		"# Usage: ./bundle.nxbundle [args...]\n" +
+		"set -e\n" +
+		"_DARWIN_OFFSET=" + placeholder + "\n" +
+		"_DARWIN_SIZE=" + placeholder + "\n" +
+		"_LINUX_OFFSET=" + placeholder + "\n" +
+		"_LINUX_SIZE=" + placeholder + "\n" +
+		"if command -v nexus >/dev/null 2>&1; then\n" +
+		"  exec nexus bundle run \"$0\" \"$@\"\n" +
+		"fi\n" +
+		"case \"$(uname -s)-$(uname -m)\" in\n" +
+		"  Darwin-arm64)  _OFFSET=$_DARWIN_OFFSET _SIZE=$_DARWIN_SIZE ;;\n" +
+		"  Linux-x86_64)  _OFFSET=$_LINUX_OFFSET  _SIZE=$_LINUX_SIZE  ;;\n" +
+		"  *) echo \"unsupported platform (supported: darwin-arm64, linux-amd64)\"; exit 1 ;;\n" +
+		"esac\n" +
+		"_TMP=$(mktemp /tmp/.nexus-runner-XXXXXX)\n" +
+		"dd if=\"$0\" bs=1 skip=\"$_OFFSET\" count=\"$_SIZE\" of=\"$_TMP\" 2>/dev/null\n" +
+		"chmod +x \"$_TMP\"\n" +
+		"if [ \"$(uname -s)\" = \"Darwin\" ] && command -v codesign >/dev/null 2>&1; then\n" +
+		"  _ENT=$(mktemp /tmp/.nexus-ent-XXXXXX)\n" +
+		"  base64 -d <<'NXENT' >\"$_ENT\"\n" +
+		macOSEntitlementsBase64() + "\n" +
+		"NXENT\n" +
+		"  codesign --sign - --force --entitlements \"$_ENT\" \"$_TMP\" >/dev/null 2>&1 || true\n" +
+		"  rm -f \"$_ENT\"\n" +
+		"fi\n" +
+		"exec \"$_TMP\" bundle run \"$0\" \"$@\"\n" +
+		": <<'NXPACK_DATA_FOLLOWS'\n"
+
+	templateLen := len(scriptTemplate)
+	stubLen := templateLen
+
+	darwinOffset := stubLen
+	linuxOffset := stubLen + darwinSize
+
+	offsets := []struct {
+		placeholderIdx int
+		value          string
+	}{
+		{0, fmt.Sprintf("%d", darwinOffset)},
+		{1, fmt.Sprintf("%d", darwinSize)},
+		{2, fmt.Sprintf("%d", linuxOffset)},
+		{3, fmt.Sprintf("%d", linuxSize)},
+	}
+
+	script := scriptTemplate
+	for _, o := range offsets {
+		padded := fmt.Sprintf("%-*s", len(placeholder), o.value)
+		script = replaceFirst(script, placeholder, padded)
+	}
+
+	if len(script) != templateLen {
+		panic(fmt.Sprintf("bundle: fat stub length changed after substitution: %d → %d", templateLen, len(script)))
+	}
+
+	return []byte(script)
 }
 
 // nxpackShellStub returns a minimal POSIX shell script that, when executed,

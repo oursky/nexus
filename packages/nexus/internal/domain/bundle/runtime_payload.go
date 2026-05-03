@@ -78,24 +78,72 @@ func resolvePortableLibkrunAssets(ctx context.Context) ([]string, error) {
 
 func currentRuntimePayloadSpec() (runtimePayloadSpec, error) {
 	platform := runtime.GOOS + "-" + runtime.GOARCH
-	switch platform {
-	case "darwin-arm64":
-		name := "smolvm-0.5.17-darwin-arm64.tar.gz"
-		return runtimePayloadSpec{
-			Platform: platform,
-			URL:      "https://github.com/smol-machines/smolvm/releases/download/" + smolvmRuntimeVersion + "/" + name,
-			SHA256:   "aeb8e77b4c07c2d1996910b7bff44514c463982901aba2e50f62d7bacaee0e9c",
-		}, nil
-	case "linux-amd64":
-		name := "smolvm-0.5.17-linux-x86_64.tar.gz"
-		return runtimePayloadSpec{
-			Platform: platform,
-			URL:      "https://github.com/smol-machines/smolvm/releases/download/" + smolvmRuntimeVersion + "/" + name,
-			SHA256:   "803811fb93138a7a30816de0e6b0284e0f982fda1eb1839c0d239f31e90098fe",
-		}, nil
-	default:
+	spec, ok := runtimePayloadSpecs[platform]
+	if !ok {
 		return runtimePayloadSpec{}, fmt.Errorf("bundle: no portable runtime payload configured for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
+	return spec, nil
+}
+
+var runtimePayloadSpecs = map[string]runtimePayloadSpec{
+	"darwin-arm64": {
+		Platform: "darwin-arm64",
+		URL:      "https://github.com/smol-machines/smolvm/releases/download/" + smolvmRuntimeVersion + "/smolvm-0.5.17-darwin-arm64.tar.gz",
+		SHA256:   "aeb8e77b4c07c2d1996910b7bff44514c463982901aba2e50f62d7bacaee0e9c",
+	},
+	"linux-amd64": {
+		Platform: "linux-amd64",
+		URL:      "https://github.com/smol-machines/smolvm/releases/download/" + smolvmRuntimeVersion + "/smolvm-0.5.17-linux-x86_64.tar.gz",
+		SHA256:   "803811fb93138a7a30816de0e6b0284e0f982fda1eb1839c0d239f31e90098fe",
+	},
+}
+
+func allRuntimePayloadSpecs() []runtimePayloadSpec {
+	specs := make([]runtimePayloadSpec, 0, len(runtimePayloadSpecs))
+	for _, s := range runtimePayloadSpecs {
+		specs = append(specs, s)
+	}
+	return specs
+}
+
+func resolveAllPlatformLibkrunAssets(ctx context.Context) (map[string][]string, error) {
+	cacheRoot, err := runtimePayloadCacheDir()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string][]string)
+	for _, spec := range allRuntimePayloadSpecs() {
+		payloadDir := filepath.Join(cacheRoot, spec.Platform)
+		libDir := filepath.Join(payloadDir, "lib")
+
+		if paths, ok := existingRuntimeLibPaths(libDir); ok {
+			result[spec.Platform] = paths
+			continue
+		}
+
+		if os.Getenv(envRuntimeOffline) == "1" {
+			return nil, fmt.Errorf("bundle: runtime payload not cached for %s and %s=1 prevents downloading", spec.Platform, envRuntimeOffline)
+		}
+
+		if err := os.MkdirAll(payloadDir, 0o755); err != nil {
+			return nil, fmt.Errorf("bundle: create runtime cache dir for %s: %w", spec.Platform, err)
+		}
+		tarballPath := filepath.Join(payloadDir, "dist.tar.gz")
+		if err := ensureRuntimeTarball(ctx, tarballPath, spec); err != nil {
+			return nil, fmt.Errorf("bundle: download runtime for %s: %w", spec.Platform, err)
+		}
+		if err := extractRuntimeLibs(tarballPath, libDir); err != nil {
+			return nil, fmt.Errorf("bundle: extract runtime for %s: %w", spec.Platform, err)
+		}
+
+		if paths, ok := existingRuntimeLibPaths(libDir); ok {
+			result[spec.Platform] = paths
+			continue
+		}
+		return nil, fmt.Errorf("bundle: runtime payload extracted but required libkrun files are missing for %s in %s", spec.Platform, libDir)
+	}
+	return result, nil
 }
 
 func runtimePayloadCacheDir() (string, error) {
@@ -115,6 +163,30 @@ func runtimePayloadCacheDir() (string, error) {
 func existingRuntimeLibPaths(libDir string) ([]string, bool) {
 	libkrunPath, fwPath := libkrun.LibPaths(libDir)
 	paths := []string{libkrunPath, fwPath}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err != nil {
+			return tryCrossPlatformLibPaths(libDir)
+		}
+	}
+	return paths, true
+}
+
+// tryCrossPlatformLibPaths checks for .so files when running on macOS
+// (checking a linux-amd64 cache dir) or .dylib files on Linux.
+func tryCrossPlatformLibPaths(libDir string) ([]string, bool) {
+	var altNames []string
+	switch {
+	case strings.Contains(libDir, "linux-"):
+		altNames = []string{"libkrun.so", "libkrunfw.so"}
+	case strings.Contains(libDir, "darwin-"):
+		altNames = []string{"libkrun.dylib", "libkrunfw.dylib"}
+	default:
+		return nil, false
+	}
+	paths := []string{
+		filepath.Join(libDir, altNames[0]),
+		filepath.Join(libDir, altNames[1]),
+	}
 	for _, p := range paths {
 		if _, err := os.Stat(p); err != nil {
 			return nil, false
@@ -211,11 +283,9 @@ func extractRuntimeLibs(tarballPath, libDir string) error {
 			return fmt.Errorf("bundle: read runtime payload tar: %w", err)
 		}
 
-		// Extract every file/symlink inside any "lib/" directory in the tarball.
-		// This handles versioned shared libraries (e.g. libkrunfw.so.5 -> libkrunfw.so.5.3.0)
-		// without requiring us to chase symlink chains or maintain a version whitelist.
 		name := hdr.Name
-		if !strings.Contains(name, "/lib/") {
+		parts := strings.SplitN(name, "/", 3)
+		if len(parts) < 3 || parts[1] != "lib" {
 			continue
 		}
 		base := filepath.Base(name)
