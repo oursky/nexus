@@ -179,6 +179,9 @@ This command is typically invoked automatically by the bundle's shell stub:
 						return r.Run(ctx, eb, runArgs[1:])
 					}
 					return fmt.Errorf("bundle run: exec requires a command")
+				default:
+					fmt.Fprintf(os.Stderr, "bundle run: unknown command %q\n", runArgs[0])
+					os.Exit(2)
 				}
 			}
 
