@@ -386,6 +386,9 @@ func runBundleStart(ctx context.Context, r *runner.Runner, eb runner.ExtractedBu
 
 	// Write init marker on first start so subsequent starts can skip init.
 	if !markerExists {
+		if err := os.MkdirAll(stateDir, 0o755); err != nil {
+			return fmt.Errorf("bundle run: create state dir: %w", err)
+		}
 		if err := os.WriteFile(initMarker, []byte("ok"), 0o644); err != nil {
 			return fmt.Errorf("bundle run: write init marker: %w", err)
 		}
