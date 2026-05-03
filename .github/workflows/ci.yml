@@ -72,11 +72,7 @@ jobs:
             ./cmd/nexus
 
       - name: Run full Go test coverage
-        working-directory: packages/nexus
-        run: |
-          set -euo pipefail
-          go test ./... -covermode=atomic -coverprofile=coverage.out
-          go tool cover -func=coverage.out | tail -n 1
+        run: scripts/ci/coverage.sh
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
