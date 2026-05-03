@@ -446,10 +446,15 @@ func nxpackShellStub(nexusSize int) []byte {
 		"_TMP=$(mktemp /tmp/.nexus-runner-XXXXXX)\n" +
 		"dd if=\"$0\" bs=1 skip=\"$_NEXUS_OFFSET\" count=\"$_NEXUS_SIZE\" of=\"$_TMP\" 2>/dev/null\n" +
 		"chmod +x \"$_TMP\"\n" +
-		"# macOS: re-sign extracted binary so it can execute (best-effort; may lack\n" +
-		"# hypervisor entitlement if the host nexus binary is not in PATH).\n" +
+		"# macOS: re-sign extracted binary with hypervisor entitlements so\n" +
+		"# libkrun can use Hypervisor.framework.\n" +
 		"if [ \"$(uname -s)\" = \"Darwin\" ] && command -v codesign >/dev/null 2>&1; then\n" +
-		"  codesign --sign - --force \"$_TMP\" >/dev/null 2>&1 || true\n" +
+		"  _ENT=$(mktemp /tmp/.nexus-ent-XXXXXX)\n" +
+		"  base64 -d <<'NXENT' >\"$_ENT\"\n" +
+		macOSEntitlementsBase64() + "\n" +
+		"NXENT\n" +
+		"  codesign --sign - --force --entitlements \"$_ENT\" \"$_TMP\" >/dev/null 2>&1 || true\n" +
+		"  rm -f \"$_ENT\"\n" +
 		"fi\n" +
 		"exec \"$_TMP\" bundle run \"$0\" \"$@\"\n" +
 		": <<'NXPACK_DATA_FOLLOWS'\n"
@@ -483,6 +488,13 @@ func nxpackShellStub(nexusSize int) []byte {
 	}
 
 	return []byte(script)
+}
+
+// macOSEntitlementsBase64 returns the base64-encoded macOS entitlements plist
+// required for Hypervisor.framework access (com.apple.security.hypervisor)
+// and dynamic library loading (com.apple.security.cs.disable-library-validation).
+func macOSEntitlementsBase64() string {
+	return "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPCFET0NUWVBFIHBsaXN0IFBVQkxJQyAiLS8vQXBwbGUvL0RURCBQTElTVCAxLjAvL0VOIiAiaHR0cDovL3d3dy5hcHBsZS5jb20vRFREcy9Qcm9wZXJ0eUxpc3QtMS4wLmR0ZCI+CjxwbGlzdCB2ZXJzaW9uPSIxLjAiPgo8ZGljdD4KICAgIDxrZXk+Y29tLmFwcGxlLnNlY3VyaXR5Lmh5cGVydmlzb3I8L2tleT4KICAgIDx0cnVlLz4KICAgIDxrZXk+Y29tLmFwcGxlLnNlY3VyaXR5LmNzLmRpc2FibGUtbGlicmFyeS12YWxpZGF0aW9uPC9rZXk+CiAgICA8dHJ1ZS8+CjwvZGljdD4KPC9wbGlzdD4K"
 }
 
 // replaceFirst replaces the first occurrence of old in s with new.

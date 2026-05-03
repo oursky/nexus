@@ -67,6 +67,31 @@ tasks:
     cmds:
       - go run ./test/e2e/coverage --check
 
+  test:e2e:standalone:lima:
+    desc: "Run self-contained standalone artifact proof in Lima"
+    cmds:
+      - ./scripts/e2e-standalone-lima.sh
+
+  test:e2e:cli:lima:
+    desc: "Run Go e2e CLI package in Lima with preflight"
+    cmds:
+      - ./scripts/e2e/cli-lima-test.sh
+
+  test:e2e:cli:lima:preflight:
+    desc: "Run Lima preflight checks for CLI e2e"
+    cmds:
+      - ./scripts/e2e/cli-lima-preflight.sh
+
+  test:e2e:cli:remote:
+    desc: "Run Go e2e CLI package on remote Linux host"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+    cmds:
+      - ./scripts/remote/e2e-cli.sh
+
   ci:libkrun:prep:
     desc: "Prepare libkrun VM assets for CI/e2e (host prereqs, build nexus, provision, prewarm)"
     cmds:
@@ -178,6 +203,11 @@ tasks:
           -o ../../packages/nexus-swift/Resources/nexus \
           ./cmd/nexus
         chmod +x packages/nexus-swift/Resources/nexus
+        if [ "$(uname -s)" = "Darwin" ] && [ -f packages/nexus/nexus.entitlements ]; then
+          codesign --sign - --force --entitlements packages/nexus/nexus.entitlements packages/nexus-swift/Resources/nexus 2>/dev/null && \
+            echo "✓ Codesigned with hypervisor entitlements" || \
+            echo "Warning: codesign failed"
+        fi
         echo "✓ Staged $(ls -lh packages/nexus-swift/Resources/nexus | awk '{print $5}')"
 
   stage:nexus-linux:
@@ -190,6 +220,20 @@ tasks:
     desc: "Regenerate NexusRPC.swift from Go RPC types"
     cmds:
       - scripts/generate-sdk.sh
+
+  release:publish:
+    desc: "Tag and push a new release to trigger the GitHub Actions release workflow"
+    vars:
+      VERSION: '{{.VERSION | default ""}}'
+    preconditions:
+      - sh: '[ -n "{{.VERSION}}" ]'
+        msg: "VERSION is required. Usage: task release:publish VERSION=v1.2.3"
+      - sh: 'echo "{{.VERSION}}" | grep -qE "^v[0-9]+\.[0-9]+\.[0-9]"'
+        msg: "VERSION must be a semver tag like v1.2.3 or v1.2.3-rc1"
+    cmds:
+      - git tag -a "{{.VERSION}}" -m "Release {{.VERSION}}"
+      - git push origin "{{.VERSION}}"
+      - 'echo "Tagged and pushed {{.VERSION}} — GitHub Actions will build and publish the release assets."'
 
   showcase:rerecord:
     desc: "Re-record showcase flow by controlling NexusApp through headless RPC, then render remotion"

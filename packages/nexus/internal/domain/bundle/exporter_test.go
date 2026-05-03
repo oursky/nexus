@@ -3,6 +3,7 @@ package bundle
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/base64"
 	"io"
 	"os"
 	"path/filepath"
@@ -183,6 +184,38 @@ func TestNXPackShellStub(t *testing.T) {
 	}
 	if !strings.Contains(s, "exec \"$_TMP\" bundle run") {
 		t.Error("stub does not fall back to embedded binary")
+	}
+}
+
+func TestMacOSEntitlementsBase64(t *testing.T) {
+	b64 := macOSEntitlementsBase64()
+	decoded, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatalf("base64 decode: %v", err)
+	}
+	s := string(decoded)
+	if !strings.Contains(s, "com.apple.security.hypervisor") {
+		t.Error("entitlements plist missing com.apple.security.hypervisor")
+	}
+	if !strings.Contains(s, "com.apple.security.cs.disable-library-validation") {
+		t.Error("entitlements plist missing com.apple.security.cs.disable-library-validation")
+	}
+	if !strings.HasPrefix(s, "<?xml") {
+		t.Errorf("entitlements does not start with XML declaration: %q", s[:min(len(s), 20)])
+	}
+}
+
+func TestNXPackShellStub_ContainsEntitlements(t *testing.T) {
+	stub := nxpackShellStub(999)
+	s := string(stub)
+	if !strings.Contains(s, "base64 -d") {
+		t.Error("stub does not contain base64 decode step")
+	}
+	if !strings.Contains(s, "codesign --sign - --force --entitlements") {
+		t.Error("stub does not codesign with entitlements")
+	}
+	if !strings.Contains(s, macOSEntitlementsBase64()) {
+		t.Error("stub does not contain the base64 entitlements blob")
 	}
 }
 
