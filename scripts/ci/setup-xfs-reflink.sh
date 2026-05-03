@@ -33,8 +33,15 @@ else
 fi
 
 # Mount loopback.
-sudo mount -o loop "$BACKING_FILE" "$MOUNT_POINT"
-sudo chmod 777 "$MOUNT_POINT"
+if sudo mount -o loop "$BACKING_FILE" "$MOUNT_POINT" 2>/dev/null; then
+  sudo chmod 777 "$MOUNT_POINT"
+  echo "XFS with reflink=1 mounted at $MOUNT_POINT"
+  xfs_info "$MOUNT_POINT" | grep reflink
+  exit 0
+fi
 
-echo "XFS with reflink=1 mounted at $MOUNT_POINT"
-xfs_info "$MOUNT_POINT" | grep reflink
+echo "WARNING: loop device mount failed (containerized runner). Falling back to direct directory."
+sudo rm -rf "$MOUNT_POINT"
+sudo mkdir -p "$MOUNT_POINT"
+sudo chmod 777 "$MOUNT_POINT"
+echo "Fallback: using regular directory at $MOUNT_POINT"
