@@ -55,9 +55,21 @@ func TestBuildAssetsTar_WithOCILayers(t *testing.T) {
 	}
 }
 
+// requireCrossPlatformBinaries skips the test if cross-platform nexus binaries
+// are not available (e.g. on Linux CI runners without a pre-built darwin binary).
+func requireCrossPlatformBinaries(t *testing.T) {
+	t.Helper()
+	_, _, err := readCrossPlatformBinaries()
+	if err != nil {
+		t.Skipf("skipping: cross-platform binaries not available: %v", err)
+	}
+}
+
 // TestWriteNXPackBundle verifies that WriteNXPackBundle produces a valid NXPACK
 // file with a shell stub and readable footer.
 func TestWriteNXPackBundle(t *testing.T) {
+	requireCrossPlatformBinaries(t)
+
 	// Build a minimal assets tar.
 	tarBytes, err := buildAssetsTar(nil, nil, nil, BundleMeta{})
 	if err != nil {

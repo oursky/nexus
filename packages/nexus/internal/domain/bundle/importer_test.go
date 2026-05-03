@@ -9,6 +9,7 @@ import (
 
 func makeTestNXPackBundle(t *testing.T, workspaceName string) string {
 	t.Helper()
+	requireCrossPlatformBinaries(t)
 
 	meta := BundleMeta{
 		Arch: []string{"amd64", "arm64"},
