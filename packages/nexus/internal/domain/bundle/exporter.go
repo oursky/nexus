@@ -111,7 +111,9 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 	meta := BundleMeta{
 		Arch:    []string{"arm64", "amd64"},
 		Bake:    workspaceIntent.Bake,
+		Init:    workspaceIntent.Init,
 		Up:      workspaceIntent.Up,
+		Down:    workspaceIntent.Down,
 		CPUs:    vmCPUs,
 		Memory:  vmMemMiB,
 		Workdir: "/workspace",

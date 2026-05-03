@@ -10,7 +10,9 @@ import (
 type BundleMeta struct {
 	Arch    []string `json:"arch"`
 	Bake    []string `json:"bake"`
+	Init    []string `json:"init"`
 	Up      []string `json:"up"`
+	Down    []string `json:"down"`
 	Ports   []int    `json:"ports"`
 	CPUs    uint8    `json:"cpus"`
 	Memory  uint32   `json:"memory"`

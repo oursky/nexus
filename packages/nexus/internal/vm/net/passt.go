@@ -28,8 +28,9 @@ type Passt struct {
 }
 
 // FindPasst returns the path to the passt binary, searching in order:
-//  1. PATH
-//  2. ~/.cache/nexus/bin/passt
+//  1. $NEXUS_PASST_PATH
+//  2. PATH
+//  3. ~/.cache/nexus/bin/passt
 //
 // If the binary is not found and autoDownload is true, it will be downloaded
 // to the cache directory (Linux x86_64 only).
@@ -38,12 +39,19 @@ func FindPasst(autoDownload bool) (string, error) {
 		return "", fmt.Errorf("passt is only supported on Linux")
 	}
 
-	// 1. PATH
+	// 1. Explicit override from environment.
+	if envPath := os.Getenv("NEXUS_PASST_PATH"); envPath != "" {
+		if _, err := os.Stat(envPath); err == nil {
+			return envPath, nil
+		}
+	}
+
+	// 2. PATH
 	if p, err := exec.LookPath("passt"); err == nil {
 		return p, nil
 	}
 
-	// 2. Cache dir
+	// 3. Cache dir
 	cacheBin := cachePasstPath()
 	if _, err := os.Stat(cacheBin); err == nil {
 		return cacheBin, nil

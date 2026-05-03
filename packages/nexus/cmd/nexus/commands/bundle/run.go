@@ -37,12 +37,17 @@ func runCommand() *cobra.Command {
 The bundle is extracted to ~/.cache/nexus/bundles/<id>/ on first run (idempotent).
 Workspace commands run inside an isolated microVM — no nexus daemon required.
 
+Subcommands (when invoked via the self-executing bundle stub):
+  start          Run workspace.init (first time) then workspace.up
+  stop           Run workspace.down
+  exec <cmd...>  Execute a command inside the VM
+  run            Alias for start
+
 If meta.Bake commands are defined and have not yet run for this
 extracted bundle, they are executed inside the VM first (one-time setup).
 Then meta.Up commands are run inside the VM.
 
-If additional arguments are provided they are executed inside the VM instead
-of the workspace.up intent.
+Note: services[].start is NOT executed by the runner; only workspace.up is run.
 
 This command is typically invoked automatically by the bundle's shell stub:
   ./myworkspace.nxbundle [args...]
@@ -92,6 +97,11 @@ This command is typically invoked automatically by the bundle's shell stub:
 			}
 
 			r := runner.Runner{}
+
+			// Handle --help before extracting the bundle.
+			if len(runArgs) == 1 && (runArgs[0] == "--help" || runArgs[0] == "-h") {
+				return cmd.Help()
+			}
 
 			// Extract bundle (idempotent).
 			eb, err := r.ExtractBundle(bundlePath)
@@ -157,7 +167,22 @@ This command is typically invoked automatically by the bundle's shell stub:
 				return nil
 			}
 
-			// If caller passed explicit args, run those inside the VM.
+			// Dispatch runner subcommands.
+			if len(runArgs) > 0 {
+				switch runArgs[0] {
+				case "start", "run":
+					return runBundleStart(ctx, &r, eb, normalizedUp)
+				case "stop":
+					return runBundleStop(ctx, &r, eb)
+				case "exec":
+					if len(runArgs) > 1 {
+						return r.Run(ctx, eb, runArgs[1:])
+					}
+					return fmt.Errorf("bundle run: exec requires a command")
+				}
+			}
+
+			// If caller passed explicit args (non-subcommand), run those inside the VM.
 			if len(runArgs) > 0 {
 				return r.Run(ctx, eb, runArgs)
 			}
@@ -331,4 +356,65 @@ func ensureDockerDaemonCmd() string {
 	// CONFIG_IP_NF_IPTABLES enabled, so default bridge networking works.
 	// We keep --ip6tables=false because IPv6 netfilter is not enabled.
 	return "if docker info >/dev/null 2>&1; then true; else pkill -9 -x dockerd >/dev/null 2>&1 || true; pkill -9 -x containerd >/dev/null 2>&1 || true; pkill -9 -f containerd-shim >/dev/null 2>&1 || true; rm -rf /var/run/containerd /var/run/docker; rm -f /var/run/docker.pid /var/run/docker.sock; mkdir -p /var/run/containerd /var/run/docker /var/lib/docker /var/lib/docker-exec; echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true; nohup dockerd --data-root=/var/lib/docker --exec-root=/var/lib/docker-exec --storage-driver=overlay2 --ip6tables=false >/tmp/nexus-dockerd.log 2>&1 & fi; i=0; until docker info >/dev/null 2>&1; do i=$((i+1)); [ $i -ge 30 ] && { tail -n 80 /tmp/nexus-dockerd.log 2>/dev/null || true; echo 'docker daemon failed to start' >&2; exit 1; }; sleep 1; done"
+}
+
+// runBundleStart runs workspace.init (if needed) then workspace.up.
+func runBundleStart(ctx context.Context, r *runner.Runner, eb runner.ExtractedBundle, normalizedUp []string) error {
+	stateDir := os.Getenv("NEXUS_RUNNER_STATE_DIR")
+	if stateDir == "" {
+		stateDir = eb.WorkspaceDir
+	}
+	initMarker := filepath.Join(stateDir, ".init-done")
+
+	needsInit := len(eb.Meta.Init) > 0
+	if _, err := os.Stat(initMarker); err == nil {
+		needsInit = false
+		fmt.Fprintln(os.Stderr, "bundle run: init already completed")
+	}
+
+	if needsInit {
+		fmt.Fprintln(os.Stderr, "bundle run: running init commands...")
+		script := buildInitScript(eb.Meta.Init, initMarker)
+		scriptPath, err := writeRunScript(eb.WorkspaceDir, []string{script})
+		if err != nil {
+			return err
+		}
+		if err := r.Run(ctx, eb, []string{"/bin/sh", scriptPath}); err != nil {
+			return err
+		}
+	}
+
+	if len(normalizedUp) == 0 {
+		fmt.Fprintln(os.Stderr, "bundle run: no workspace.up commands defined")
+		return nil
+	}
+	cmds := append([]string{ensureDockerDaemonCmd()}, normalizedUp...)
+	scriptPath, err := writeRunScript(eb.WorkspaceDir, cmds)
+	if err != nil {
+		return err
+	}
+	return r.Run(ctx, eb, []string{"/bin/sh", scriptPath})
+}
+
+// runBundleStop runs workspace.down inside the VM.
+func runBundleStop(ctx context.Context, r *runner.Runner, eb runner.ExtractedBundle) error {
+	if len(eb.Meta.Down) == 0 {
+		fmt.Fprintln(os.Stderr, "bundle run: no workspace.down commands defined")
+		return nil
+	}
+	scriptPath, err := writeRunScript(eb.WorkspaceDir, normalizeUpCommands(eb.Meta.Down))
+	if err != nil {
+		return err
+	}
+	return r.Run(ctx, eb, []string{"/bin/sh", scriptPath})
+}
+
+// buildInitScript returns a shell command that runs init commands and touches the marker.
+func buildInitScript(cmds []string, marker string) string {
+	parts := make([]string, 0, len(cmds)+1)
+	for _, c := range cmds {
+		parts = append(parts, c)
+	}
+	parts = append(parts, "touch "+strconv.Quote(marker))
+	return strings.Join(parts, " && ")
 }

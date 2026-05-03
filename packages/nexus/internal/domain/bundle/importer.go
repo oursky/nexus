@@ -382,5 +382,7 @@ func printCompatibilityReportMeta(meta BundleMeta, hasWorkspace bool) {
 	}
 	fmt.Printf("workspace intent (from Nexusfile):\n")
 	fmt.Printf("  workspace.bake: %v\n", meta.Bake)
+	fmt.Printf("  workspace.init: %v\n", meta.Init)
 	fmt.Printf("  workspace.up:   %v\n", meta.Up)
+	fmt.Printf("  workspace.down: %v\n", meta.Down)
 }
