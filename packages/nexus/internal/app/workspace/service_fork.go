@@ -29,10 +29,11 @@ func (s *Service) Fork(ctx context.Context, parentID string, spec ForkSpec) (*wo
 		return nil, fmt.Errorf("cannot fork removed workspace: %s", parentID)
 	}
 
-	if strings.TrimSpace(spec.ChildRef) == "" {
-		return nil, fmt.Errorf("childRef is required")
+	childRef := spec.ChildRef
+	if strings.TrimSpace(childRef) == "" {
+		childRef = parent.Ref
 	}
-	childRef := normalizeRef(spec.ChildRef, "")
+	childRef = normalizeRef(childRef, "")
 
 	childName := spec.ChildWorkspaceName
 	if childName == "" {
@@ -81,8 +82,8 @@ func (s *Service) Fork(ctx context.Context, parentID string, spec ForkSpec) (*wo
 			return nil, fmt.Errorf("runtime fork: %w", err)
 		}
 		// Persist the child's project root when the backend created a new
-		// path (e.g. a git worktree). This survives daemon restarts because
-		// Guest VM fork path reads child.Repo from the DB.
+		// path (for example process backend git worktree). libkrun fork
+		// correctness is volume-based; child.Repo remains metadata.
 		if childRoot != "" && childRoot != child.Repo {
 			child.Repo = childRoot
 			child.UpdatedAt = time.Now().UTC()

@@ -512,8 +512,12 @@ func TestSetupWorkspaceMountNoDevice(t *testing.T) {
 		return nil
 	}
 
-	if err := setupWorkspaceMount(); err != nil {
-		t.Fatalf("expected missing device to be non-fatal, got %v", err)
+	err := setupWorkspaceMount()
+	if err == nil {
+		t.Fatal("expected error when workspace device is missing; got nil")
+	}
+	if !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("expected 'not available' in error, got: %v", err)
 	}
 	if !calledStat {
 		t.Fatal("expected workspace device stat to be called")

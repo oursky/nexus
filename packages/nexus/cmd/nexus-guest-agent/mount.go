@@ -125,14 +125,14 @@ func setupWorkspaceMount() error {
 	if isVirtiofsWorkspaceMode() {
 		return setupVirtiofsWorkspaceOnce()
 	}
-	return setupWorkspaceMountWithRequirement(false)
+	return setupBlockWorkspaceMount()
 }
 
 func setupWorkspaceMountRequired() error {
 	if isVirtiofsWorkspaceMode() {
 		return setupVirtiofsWorkspaceOnce()
 	}
-	return setupWorkspaceMountWithRequirement(true)
+	return setupBlockWorkspaceMount()
 }
 
 // setupVirtiofsWorkspaceOnce calls setupVirtiofsWorkspace exactly once.
@@ -143,7 +143,10 @@ func setupVirtiofsWorkspaceOnce() error {
 	return virtiofsWorkspaceOnceErr
 }
 
-func setupWorkspaceMountWithRequirement(required bool) error {
+// setupBlockWorkspaceMount mounts the block workspace device and docker-data.
+// It fails hard if any device is not available — there is no legitimate case
+// where a block-mode workspace should boot without its volumes.
+func setupBlockWorkspaceMount() error {
 	if err := workspaceMkdirAll(workspaceMountPoint, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", workspaceMountPoint, err)
 	}
@@ -153,10 +156,8 @@ func setupWorkspaceMountWithRequirement(required bool) error {
 		return err
 	}
 	if !available {
-		if required {
-			return fmt.Errorf("workspace device %s not available", workspaceDevicePath)
-		}
-		return nil
+		return fmt.Errorf("workspace device %s not available after %s: volume missing or host provisioning failed",
+			workspaceDevicePath, time.Duration(workspaceDeviceAttempts)*workspaceDeviceInterval)
 	}
 
 	if err := workspaceMountFunc(workspaceDevicePath, workspaceMountPoint, "ext4", 0, ""); err != nil {
@@ -166,13 +167,13 @@ func setupWorkspaceMountWithRequirement(required bool) error {
 				return fmt.Errorf("verify workspace mount after EBUSY: %w", mErr)
 			}
 			if mounted {
-				return nil
+				goto mountDockerData
 			}
 			if err := workspaceUnmountNonWorkspaceMounts(); err != nil {
 				return fmt.Errorf("clear conflicting workspace mounts after EBUSY: %w", err)
 			}
 			if retryErr := workspaceMountFunc(workspaceDevicePath, workspaceMountPoint, "ext4", 0, ""); retryErr == nil {
-				return nil
+				goto mountDockerData
 			} else if !errors.Is(retryErr, unix.EBUSY) {
 				return fmt.Errorf("retry mount %s at %s after clearing conflicts: %w", workspaceDevicePath, workspaceMountPoint, retryErr)
 			}
@@ -181,11 +182,39 @@ func setupWorkspaceMountWithRequirement(required bool) error {
 				return fmt.Errorf("verify workspace mount after retry EBUSY: %w", mErr)
 			}
 			if mounted {
-				return nil
+				goto mountDockerData
 			}
 			return fmt.Errorf("mount %s at %s returned EBUSY but workspace mount is not active", workspaceDevicePath, workspaceMountPoint)
 		}
 		return fmt.Errorf("mount %s at %s: %w", workspaceDevicePath, workspaceMountPoint, err)
+	}
+
+mountDockerData:
+	// In hybrid mode the workspace is a block device (vdb), but docker-data
+	// (vdc) must also be mounted at /var/lib/docker so that Docker writes to
+	// its dedicated image rather than the rootfs.  The virtiofs path already
+	// handles this in setupVirtiofsWorkspace; replicate it here.
+	dockerDev := dockerDevPath()
+	if err := workspaceMkdirAll("/var/lib/docker", 0o755); err != nil {
+		return fmt.Errorf("mkdir /var/lib/docker: %w", err)
+	}
+	// Wait up to 30 s for docker-data block device to appear.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, statErr := workspaceStat(dockerDev); statErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("docker-data device %s not available after 30s", dockerDev)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err := workspaceMountFunc(dockerDev, "/var/lib/docker", "ext4", 0, ""); err != nil {
+		if !errors.Is(err, unix.EBUSY) {
+			return fmt.Errorf("mount docker-data %s → /var/lib/docker: %w", dockerDev, err)
+		}
+	} else {
+		emitDiagnostic("agent docker-data mounted at /var/lib/docker (hybrid mode)")
 	}
 
 	return nil
