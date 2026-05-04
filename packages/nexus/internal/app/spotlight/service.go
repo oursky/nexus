@@ -198,6 +198,24 @@ func (s *Service) CloseForward(ctx context.Context, forwardID string) error {
 	return nil
 }
 
+// StopAll closes all active forwards across all workspaces.
+// Called during daemon shutdown to release all listener sockets.
+func (s *Service) StopAll(ctx context.Context) error {
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.listeners))
+	for id := range s.listeners {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+
+	for _, id := range ids {
+		if err := s.CloseForward(ctx, id); err != nil && !errors.Is(err, spotlight.ErrNotFound) {
+			log.Printf("[spotlight] StopAll: close forward %s: %v", id, err)
+		}
+	}
+	return nil
+}
+
 // StopWorkspaceSpotlight closes all active forwards for the given workspace.
 // This is the primary stop path — one spotlight per workspace is the design invariant.
 func (s *Service) StopWorkspaceSpotlight(ctx context.Context, workspaceID string) error {

@@ -108,3 +108,13 @@ func (s *ForwardStore) Delete(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+// DeleteAll removes all forward records from the store.
+// Used on daemon restart to clear stale records whose in-memory listeners are gone.
+func (s *ForwardStore) DeleteAll(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM spotlight_forwards`)
+	if err != nil {
+		return fmt.Errorf("delete all forwards: %w", err)
+	}
+	return nil
+}

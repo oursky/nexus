@@ -12,6 +12,7 @@ func Command() *cobra.Command {
 	}
 	cmd.AddCommand(
 		startCommand(),
+		runCommand(),
 		listCommand(),
 		stopCommand(),
 		portCommand(),

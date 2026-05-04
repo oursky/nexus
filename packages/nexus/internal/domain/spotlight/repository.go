@@ -9,4 +9,5 @@ type Repository interface {
 	ListByWorkspace(ctx context.Context, workspaceID string) ([]*Forward, error)
 	Update(ctx context.Context, fwd *Forward) error
 	Delete(ctx context.Context, id string) error
+	DeleteAll(ctx context.Context) error
 }

@@ -2,7 +2,9 @@ package spotlight
 
 import (
 	"fmt"
-	"io"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
@@ -12,34 +14,35 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// discoveredPort matches the server's DiscoveredPort DTO.
-type discoveredPort struct {
-	LocalPort  int    `json:"localPort"`
-	RemotePort int    `json:"remotePort"`
-	Service    string `json:"service,omitempty"`
-	Protocol   string `json:"protocol,omitempty"`
-	Source     string `json:"source,omitempty"`
-}
-
-func startCommand() *cobra.Command {
-	var workspaceID string
-
+// runCommand is a long-running foreground command that:
+//  1. Calls spotlight.start on the daemon for each discovered port
+//  2. Starts a single SSH multi-tunnel
+//  3. Prints "forwarded N/N ports" to stdout (Mac app scans for this line)
+//  4. Blocks until SIGTERM/SIGINT or the SSH tunnel dies
+//  5. Calls spotlight.stop on the daemon before exiting
+//
+// The Mac app launches this as a long-lived process, waits for the
+// "forwarded" line in its stdout pipe, then stores the CLI PID.
+// To stop: SIGTERM to this process.
+func runCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "start <workspace-id>",
-		Short: "Start spotlight — tunnels all discovered ports to localhost",
-		Args:  cobra.ExactArgs(1),
+		Use:    "run <workspace-id>",
+		Short:  "Run spotlight (long-lived; used by Mac app)",
+		Args:   cobra.ExactArgs(1),
+		Hidden: true, // internal; Mac app uses this, not end users
 		RunE: func(cmd *cobra.Command, args []string) error {
-			workspaceID = args[0]
+			workspaceID := args[0]
+
 			conn, err := rpc.EnsureMux()
 			if err != nil {
-				return fmt.Errorf("nexus spotlight start: %w", err)
+				return fmt.Errorf("nexus spotlight run: %w", err)
 			}
 			defer conn.Close()
 
-			// Discover ports from docker-compose + workspace config.
+			// Discover ports.
 			var ports []discoveredPort
 			if err := conn.Call("workspace.discover-ports", map[string]any{"id": workspaceID}, &ports); err != nil {
-				return fmt.Errorf("nexus spotlight start: port discovery failed: %w", err)
+				return fmt.Errorf("nexus spotlight run: port discovery failed: %w", err)
 			}
 			if len(ports) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "no ports discovered")
@@ -49,15 +52,10 @@ func startCommand() *cobra.Command {
 			// Load profile for SSH tunneling.
 			p, err := profile.LoadDefault()
 			if err != nil {
-				return fmt.Errorf("nexus spotlight start: %w", err)
+				return fmt.Errorf("nexus spotlight run: %w", err)
 			}
 
-			// Stop any previously-active spotlight (daemon + tunnels).
-			if err := stopClientActiveSpotlight(conn, p, cmd.OutOrStdout()); err != nil {
-				return fmt.Errorf("nexus spotlight start: stop previous spotlight: %w", err)
-			}
-
-			// Create daemon-side spotlight forwards for each port.
+			// Create daemon-side spotlight forwards.
 			type forwardResult struct {
 				port discoveredPort
 				fwd  *spotlight.Forward
@@ -83,7 +81,13 @@ func startCommand() *cobra.Command {
 				results = append(results, forwardResult{port: port, fwd: result.Forward})
 			}
 
-			// Build a single MultiTunnel with all forwards in one SSH process.
+			// Ensure cleanup: stop daemon-side forwards when we exit.
+			// This runs regardless of how we exit (SIGTERM, tunnel death, etc.).
+			defer func() {
+				_ = conn.Call("spotlight.stop", map[string]any{"workspaceId": workspaceID}, nil)
+			}()
+
+			// Build SSH multi-tunnel.
 			var fwds []sshtunnel.Forward
 			for _, r := range results {
 				rh := "127.0.0.1"
@@ -106,16 +110,11 @@ func startCommand() *cobra.Command {
 			mt := sshtunnel.NewMultiWithOptions(p.Host, p.SSHPort, p.SSHIdentityFile, false)
 			boundPorts, err := mt.Start(fwds, 5*time.Second)
 			if err != nil {
-				_ = conn.Call("spotlight.stop", map[string]any{"workspaceId": workspaceID}, nil)
-				return fmt.Errorf("nexus spotlight start: SSH tunnel failed: %w", err)
+				return fmt.Errorf("nexus spotlight run: SSH tunnel failed: %w", err)
 			}
+			defer mt.Close()
 
-			if err := persistClientActiveSpotlight(p, workspaceID, mt.PID()); err != nil {
-				_ = mt.Close()
-				_ = conn.Call("spotlight.stop", map[string]any{"workspaceId": workspaceID}, nil)
-				return fmt.Errorf("persist spotlight client state: %w", err)
-			}
-
+			// Print the "forwarded" line — Mac app waits for this before returning.
 			for i, r := range results {
 				label := r.port.Service
 				if label == "" {
@@ -129,45 +128,39 @@ func startCommand() *cobra.Command {
 				}
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "forwarded %d/%d ports\n", len(results), len(ports))
+
+			// Block until SIGTERM/SIGINT or the SSH tunnel process exits.
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
+			tunnelDied := make(chan struct{})
+			go func() {
+				// Poll SSH tunnel liveness. mt.PID() returns 0 once Close() is called,
+				// but that's our own cleanup — we only care about unexpected death here.
+				pid := mt.PID()
+				if pid <= 0 {
+					return
+				}
+				proc, err := os.FindProcess(pid)
+				if err != nil {
+					close(tunnelDied)
+					return
+				}
+				// Wait blocks until the process exits. On macOS/Linux this works fine.
+				_, _ = proc.Wait()
+				close(tunnelDied)
+			}()
+
+			select {
+			case sig := <-sigCh:
+				fmt.Fprintf(os.Stderr, "nexus spotlight run: received %s, shutting down\n", sig)
+			case <-tunnelDied:
+				fmt.Fprintf(os.Stderr, "nexus spotlight run: SSH tunnel exited unexpectedly\n")
+			}
+
+			// defer mt.Close() and defer spotlight.stop run here.
 			return nil
 		},
 	}
-
 	return cmd
-}
-
-func stopClientActiveSpotlight(conn *rpc.MuxConn, p *profile.Profile, out io.Writer) error {
-	state, err := loadSpotlightClientState()
-	if err != nil {
-		return err
-	}
-	key := spotlightProfileKey(p)
-	active, ok := state.Profiles[key]
-	if !ok || active.WorkspaceID == "" {
-		return nil
-	}
-
-	if err := conn.Call("spotlight.stop", map[string]any{"workspaceId": active.WorkspaceID}, nil); err != nil {
-		fmt.Fprintf(out, "warning: failed to stop previous spotlight for %s: %v\n", active.WorkspaceID, err)
-	}
-	delete(state.Profiles, key)
-	// Gracefully shut down all persisted SSH tunnel processes (handles old + new format).
-	for _, pid := range active.allTunnelPIDs() {
-		sshtunnel.CloseByPID(pid)
-	}
-	return saveSpotlightClientState(state)
-}
-
-func persistClientActiveSpotlight(p *profile.Profile, workspaceID string, pid int) error {
-	state, err := loadSpotlightClientState()
-	if err != nil {
-		return err
-	}
-	key := spotlightProfileKey(p)
-	if workspaceID == "" {
-		delete(state.Profiles, key)
-		return saveSpotlightClientState(state)
-	}
-	state.Profiles[key] = spotlightProfileState{WorkspaceID: workspaceID, TunnelPID: pid}
-	return saveSpotlightClientState(state)
 }
