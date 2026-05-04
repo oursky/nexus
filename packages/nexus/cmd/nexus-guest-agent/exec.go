@@ -197,7 +197,7 @@ func ensureSSHAuthSockEnv(env []string) []string {
 }
 
 func ensureDockerHostEnv(env []string) []string {
-	if !isVirtiofsWorkspaceMode() {
+	if !isTSINetworkMode() {
 		return env
 	}
 	const dockerSocket = "/var/lib/docker/docker.sock"

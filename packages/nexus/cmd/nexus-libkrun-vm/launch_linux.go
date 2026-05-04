@@ -171,17 +171,17 @@ func detectKernelFormat(path string) (uint32, bool) {
 	}
 }
 
-// launchHybridMode boots a VM with a block rootfs and virtiofs workspace share.
+// launchHybridMode boots a VM with block-backed rootfs and workspace volumes.
 // The root filesystem is a block device (giving the guest true root ownership),
-// while /workspace is still shared via virtiofs for the volume mount feature.
+// and /workspace is mounted from workspace.ext4 by the guest agent.
 //
 // Guest disk layout:
 //
 //	/dev/vda  rootfs.{raw,qcow2}     → /  (via krun_set_root_disk_remount)
-//	/dev/vdb  workspace.ext4         → reserved workspace state volume
+//	/dev/vdb  workspace.ext4         → /workspace
 //	/dev/vdc  docker-data.ext4       → /var/lib/docker
 //	/dev/vdd  hostconfig.ext4        → /run/nexus-host (optional, ro)
-//	virtiofs "nexus-workspace"        → /workspace (rw)
+//	virtiofs "nexus-workspace"        → optional auxiliary share
 func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...interface{})) error {
 	rootfsPath := strings.TrimSpace(spec.RootFSImage)
 	if rootfsPath == "" {
@@ -221,18 +221,17 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 	}
 
 	hostPath := strings.TrimSpace(spec.WorkspaceHostPath)
-	if hostPath == "" {
-		return fmt.Errorf("hybrid mode requires workspace_host_path")
-	}
-	if fi, err := os.Stat(hostPath); err != nil || !fi.IsDir() {
-		if err != nil {
-			return fmt.Errorf("hybrid workspace_host_path stat: %w", err)
+	if hostPath != "" {
+		if fi, err := os.Stat(hostPath); err != nil || !fi.IsDir() {
+			if err != nil {
+				return fmt.Errorf("hybrid workspace_host_path stat: %w", err)
+			}
+			return fmt.Errorf("hybrid workspace_host_path is not a directory: %s", hostPath)
 		}
-		return fmt.Errorf("hybrid workspace_host_path is not a directory: %s", hostPath)
-	}
-	logf("add_virtiofs: tag=nexus-workspace path=%s ro=false", hostPath)
-	if err := krunAddVirtioFS3(ctx, "nexus-workspace", hostPath, 0, false); err != nil {
-		return fmt.Errorf("add virtiofs workspace share: %w", err)
+		logf("add_virtiofs: tag=nexus-workspace path=%s ro=true", hostPath)
+		if err := krunAddVirtioFS3(ctx, "nexus-workspace", hostPath, 0, true); err != nil {
+			return fmt.Errorf("add optional virtiofs workspace share: %w", err)
+		}
 	}
 
 	if strings.TrimSpace(spec.KernelPath) != "" {
@@ -254,7 +253,10 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 	}
 	env := []string{
 		"NEXUS_CONTAINER_MODE=1",
-		"NEXUS_WORKSPACE_MODE=virtiofs",
+		// Hybrid mode: workspace is mounted from /dev/vdb (workspace.ext4),
+		// which is a per-workspace block image giving proper fork isolation.
+		// Do NOT set NEXUS_WORKSPACE_MODE=virtiofs here — that would mount
+		// the host project dir directly at /workspace (shared across forks).
 		"NEXUS_DOCKER_DEV=/dev/vdc",
 		"HOME=/root",
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",

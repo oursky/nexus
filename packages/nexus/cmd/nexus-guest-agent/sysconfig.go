@@ -416,19 +416,24 @@ func ensureDockerDaemon() error {
 		return nil
 	}
 
-	// In virtiofs mode: Docker data lives on /dev/vdc (mounted at /var/lib/docker),
-	// a dedicated sparse ext4 so overlay2 runs on a native kernel filesystem.
+	// In libkrun hybrid mode: Docker data lives on /dev/vdc (mounted at
+	// /var/lib/docker), a dedicated sparse ext4 so overlay2 runs on a native
+	// kernel filesystem.
 	// In legacy mode: data lives inside /workspace (native ext4 block device).
 	dataRoot := "/workspace/.nexus-docker"
 	execRoot := "/workspace/.nexus-docker-exec"
 	socketPath := "/var/run/docker.sock"
-	if isVirtiofsWorkspaceMode() {
+	if hasDedicatedDockerDisk() {
 		dataRoot = "/var/lib/docker"
 		execRoot = "/var/lib/docker/exec"
-		// /run lives on virtiofs root and dockerd cannot chown a socket there.
-		// Keep the real socket on docker-data ext4 and expose /var/run/docker.sock
-		// as a symlink for default CLI behavior.
-		socketPath = "/var/lib/docker/docker.sock"
+		// In virtiofs-root mode (TSI), /run lives on the virtiofs root and
+		// dockerd cannot chown a socket there; keep the real socket on
+		// docker-data ext4 and expose /var/run/docker.sock as a symlink.
+		// In hybrid block-root mode, /run is a writable tmpfs so the socket
+		// can live at /var/run/docker.sock directly.
+		if isVirtiofsWorkspaceMode() {
+			socketPath = "/var/lib/docker/docker.sock"
+		}
 	}
 	dockerHost := "unix://" + socketPath
 
@@ -470,10 +475,11 @@ func ensureDockerDaemon() error {
 	if err := os.MkdirAll(execRoot, 0o755); err != nil {
 		return fmt.Errorf("mkdir docker exec root: %w", err)
 	}
-	if isVirtiofsWorkspaceMode() {
-		// In hybrid mode /run is a writable tmpfs (block rootfs), so containerd
-		// can use /run/containerd directly. Remove any stale symlink left from a
-		// previous virtiofs-only boot to avoid "mkdir /run/containerd: file exists".
+	if hasDedicatedDockerDisk() {
+		// Remove any stale /run/containerd symlink left from a previous boot
+		// (e.g. after switching workspace modes). Then redirect containerd's
+		// default /run/containerd path into the exec-root on the docker-data
+		// disk so that containerd socket/state survives across VM restarts.
 		if info, err := os.Lstat("/run/containerd"); err == nil && info.Mode()&os.ModeSymlink != 0 {
 			_ = os.Remove("/run/containerd")
 		}
@@ -536,7 +542,7 @@ func ensureDockerDaemon() error {
 		check := exec.Command("docker", "info")
 		check.Env = append(ensurePathInEnv(os.Environ()), "DOCKER_HOST="+dockerHost)
 		if err := check.Run(); err == nil {
-			if isVirtiofsWorkspaceMode() {
+			if hasDedicatedDockerDisk() && isVirtiofsWorkspaceMode() {
 				_ = os.MkdirAll("/var/run", 0o755)
 				_ = os.Remove("/var/run/docker.sock")
 				_ = os.Symlink(socketPath, "/var/run/docker.sock")
@@ -966,6 +972,14 @@ func parseNexusDNSServersFromCmdline(cmdline string) []string {
 		return servers
 	}
 	return nil
+}
+
+// hasDedicatedDockerDisk reports whether the host has provided a dedicated
+// docker-data block device (NEXUS_DOCKER_DEV env var set by launchHybridMode).
+// When true, docker data/exec root live at /var/lib/docker (mounted from the
+// block device) rather than inside /workspace.
+func hasDedicatedDockerDisk() bool {
+	return os.Getenv("NEXUS_DOCKER_DEV") != ""
 }
 
 func isTSINetworkMode() bool {
