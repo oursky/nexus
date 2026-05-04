@@ -21,6 +21,8 @@ type Driver interface {
 	// when the backend creates a dedicated git worktree), or an empty string
 	// if the child should inherit the parent's root. The service persists a
 	// non-empty return value as child.Repo so the path survives daemon restarts.
+	// Backends may still implement fork correctness via storage snapshots rather
+	// than project-root path divergence.
 	Fork(ctx context.Context, parent *workspace.Workspace, child *workspace.Workspace) (string, error)
 	Destroy(ctx context.Context, ws *workspace.Workspace) error
 	// GuestSSHHost returns the guest IPv4 on the engine host bridge when a libkrun

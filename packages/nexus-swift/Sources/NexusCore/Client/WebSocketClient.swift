@@ -645,19 +645,24 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         ])
     }
 
-    public func startTunnels(workspaceId: String) async throws -> TunnelStatus {
+    /// Registers spotlight forwards with the daemon and returns the (localPort, targetPort)
+    /// pairs so the caller can open SSH tunnels. `localPort` is the docker-exposed port
+    /// (e.g. 8080); `targetPort` is the daemon-side vsock proxy port to SSH-forward to.
+    public func startTunnels(workspaceId: String) async throws -> (status: TunnelStatus, forwards: [(localPort: Int, targetPort: Int)]) {
         let ports = try await discoverPorts(workspaceID: workspaceId)
         if ports.isEmpty {
-            return TunnelStatus(active: false, activeWorkspaceId: "")
+            return (TunnelStatus(active: false, activeWorkspaceId: ""), [])
         }
+        var forwards: [(localPort: Int, targetPort: Int)] = []
         for p in ports {
             let lp = (p["localPort"] as? Int) ?? (p["localPort"] as? NSNumber)?.intValue ?? 0
             let rp = (p["remotePort"] as? Int) ?? (p["remotePort"] as? NSNumber)?.intValue ?? 0
             guard lp > 0, rp > 0 else { continue }
             let proto = p["protocol"] as? String
-            _ = try await spotlightStart(workspaceId: workspaceId, localPort: lp, remotePort: rp, protocolText: proto)
+            let (_, targetPort) = try await spotlightStart(workspaceId: workspaceId, localPort: lp, remotePort: rp, protocolText: proto)
+            forwards.append((localPort: lp, targetPort: targetPort))
         }
-        return TunnelStatus(active: true, activeWorkspaceId: workspaceId)
+        return (TunnelStatus(active: true, activeWorkspaceId: workspaceId), forwards)
     }
 
     public func stopTunnels(workspaceId: String) async throws -> TunnelStatus {

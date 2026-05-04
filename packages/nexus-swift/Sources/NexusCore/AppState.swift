@@ -70,6 +70,9 @@ public final class AppState: ObservableObject {
     private var tunnelManager: SSHTunnelManager?
     private var daemonLogStream: DaemonLogStream?
     private var workspaceCreateMonitorTasks: [String: Task<Void, Never>] = [:]
+    /// PIDs of long-lived `nexus spotlight run <workspaceID>` processes.
+    /// Key = workspaceID. SIGTERM on stop.
+    private var spotlightCLIProcesses: [String: Int32] = [:]
 
     /// Set when the last connection attempt failed for a configuration reason that
     /// cannot be resolved by retrying (e.g. missing SSH identity key on a sandboxed build).
@@ -330,6 +333,21 @@ public final class AppState: ObservableObject {
             guard let self else { return (false, "AppState deallocated") }
             return await self.openEditorViaCLI(workspaceID: workspaceID, app: app, checkOnly: checkOnly)
         }
+        server.spotlightStartAction = { [weak self] workspaceID in
+            guard let self else { return (false, "AppState deallocated") }
+            do {
+                self.killSpotlightCLI(workspaceID: workspaceID)
+                let output = try await self.runSpotlightRun(workspaceID: workspaceID)
+                return (true, output)
+            } catch {
+                return (false, error.localizedDescription)
+            }
+        }
+        server.spotlightStopAction = { [weak self] workspaceID in
+            guard let self else { return (false, "AppState deallocated") }
+            self.killSpotlightCLI(workspaceID: workspaceID)
+            return (true, "spotlight stopped")
+        }
         server.daemonCheckAction = { [weak self] driver in
             guard let self else { return (false, "AppState deallocated") }
             return await self.runDaemonCheckViaCLI(driver: driver)
@@ -399,6 +417,9 @@ public final class AppState: ObservableObject {
                 "daemonStatus": daemonText,
                 "clientType": String(describing: type(of: self.client)),
                 "hasProfile": self.activeDaemonProfile != nil,
+                "daemonWebSocketURL": self.daemonWebSocketURL?.absoluteString as Any,
+                "daemonToken": self.daemonToken != nil ? "set(\(self.daemonToken!.count)chars)" : "nil",
+                "sshTarget": self.cachedProfile?.sshTarget as Any,
             ]
         }
         rpcServer = server
@@ -1378,14 +1399,167 @@ public final class AppState: ObservableObject {
 
     public func startTunnels(_ workspace: Workspace) async {
         await perform {
-            _ = try await self.client.startTunnels(workspaceId: workspace.id)
+            // Kill any existing spotlight run process for this workspace first.
+            self.killSpotlightCLI(workspaceID: workspace.id)
+            // Launch long-lived `nexus spotlight run <workspaceId>`.
+            // The process owns the SSH tunnel and calls spotlight.stop on exit.
+            // We scan stdout for the "forwarded N/N ports" line, then return.
+            let output = try await self.runSpotlightRun(workspaceID: workspace.id)
+            Self.logger.info("spotlight run output: \(output, privacy: .public)")
         }
     }
 
     public func stopTunnels(_ workspace: Workspace) async {
         await perform {
-            _ = try await self.client.stopTunnels(workspaceId: workspace.id)
+            self.killSpotlightCLI(workspaceID: workspace.id)
+            Self.logger.info("spotlight run process stopped for \(workspace.id, privacy: .public)")
         }
+    }
+
+    /// Run a nexus CLI subcommand with the current daemon connection injected via env vars.
+    /// Returns combined stdout+stderr. Throws if the process exits non-zero.
+    @discardableResult
+    private func runSpotlightCLI(args: [String]) async throws -> String {
+        let nexusBin = Self.nexusBinaryPath()
+        let wsURL = daemonWebSocketURL?.absoluteString
+        let tok = daemonToken
+        let sshHost = cachedProfile?.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sshPort = cachedProfile?.sshPort
+        let sshIdentity = cachedProfile?.sshIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        Self.logger.info("runSpotlightCLI: wsURL=\(wsURL ?? "nil", privacy: .public) tok=\(tok != nil ? "set(\(tok!.count)chars)" : "nil", privacy: .public) sshHost=\(sshHost ?? "nil", privacy: .public) sshIdentity=\(sshIdentity ?? "nil", privacy: .public) nexusBin=\(nexusBin, privacy: .public)")
+
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                // Build CLI flags for connection info. We pass these as args rather than
+                // env vars because macOS App Sandbox strips env vars from child processes.
+                var cliArgs: [String] = []
+                if let u = wsURL    { cliArgs += ["--daemon-ws", u] }
+                if let t = tok      { cliArgs += ["--daemon-token", t] }
+                if let h = sshHost, !h.isEmpty { cliArgs += ["--daemon-ssh-host", h] }
+                if let id = sshIdentity, !id.isEmpty { cliArgs += ["--daemon-ssh-identity", id] }
+
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: nexusBin)
+                proc.arguments = cliArgs + args
+
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                proc.standardOutput = outPipe
+                proc.standardError  = errPipe
+
+                do {
+                    try proc.run()
+                } catch {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                proc.waitUntilExit()
+
+                let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let combined = [out, err].filter { !$0.isEmpty }.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if proc.terminationStatus != 0 {
+                    continuation.resume(throwing: RPCError(message: "nexus \(args.joined(separator: " ")) failed (exit \(proc.terminationStatus)): \(combined)"))
+                } else {
+                    continuation.resume(returning: combined)
+                }
+            }
+        }
+    }
+
+    // MARK: - Spotlight run (long-lived CLI process)
+
+    /// Launches `nexus spotlight run <workspaceID>` as a background process.
+    /// Scans its stdout for the "forwarded N/N ports" line, then returns.
+    /// The process continues running until `killSpotlightCLI` is called or it exits on its own.
+    @discardableResult
+    private func runSpotlightRun(workspaceID: String) async throws -> String {
+        let nexusBin = Self.nexusBinaryPath()
+        let wsURL = daemonWebSocketURL?.absoluteString
+        let tok = daemonToken
+        let sshHost = cachedProfile?.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sshIdentity = cachedProfile?.sshIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        Self.logger.info("runSpotlightRun: workspaceID=\(workspaceID, privacy: .public)")
+
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var cliArgs: [String] = []
+                if let u = wsURL    { cliArgs += ["--daemon-ws", u] }
+                if let t = tok      { cliArgs += ["--daemon-token", t] }
+                if let h = sshHost, !h.isEmpty { cliArgs += ["--daemon-ssh-host", h] }
+                if let id = sshIdentity, !id.isEmpty { cliArgs += ["--daemon-ssh-identity", id] }
+
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: nexusBin)
+                proc.arguments = cliArgs + ["spotlight", "run", workspaceID]
+
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                proc.standardOutput = outPipe
+                proc.standardError  = errPipe
+
+                do {
+                    try proc.run()
+                } catch {
+                    continuation.resume(throwing: error)
+                    return
+                }
+
+                let pid = proc.processIdentifier
+                Task { @MainActor [weak self] in
+                    self?.spotlightCLIProcesses[workspaceID] = pid
+                }
+
+                // Read stdout line-by-line until we see "forwarded N/N ports" or EOF.
+                var output = ""
+                var resolved = false
+                let handle = outPipe.fileHandleForReading
+                // Use a timeout so we don't block forever if the process hangs.
+                let deadline = Date().addingTimeInterval(30)
+                while Date() < deadline {
+                    let data = handle.availableData
+                    if data.isEmpty {
+                        if !proc.isRunning {
+                            break
+                        }
+                        Thread.sleep(forTimeInterval: 0.05)
+                        continue
+                    }
+                    let chunk = String(data: data, encoding: .utf8) ?? ""
+                    output += chunk
+                    if output.contains("forwarded ") {
+                        resolved = true
+                        break
+                    }
+                    if !proc.isRunning { break }
+                }
+
+                if !proc.isRunning {
+                    let exitCode = proc.terminationStatus
+                    let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    continuation.resume(throwing: RPCError(message: "nexus spotlight run exited (exit \(exitCode)): \(err.trimmingCharacters(in: .whitespacesAndNewlines))"))
+                    return
+                }
+
+                if !resolved {
+                    // Timed out waiting for "forwarded" line — still continue, just warn.
+                    Self.logger.warning("runSpotlightRun: timed out waiting for 'forwarded' line")
+                }
+
+                continuation.resume(returning: output.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+        }
+    }
+
+    /// Sends SIGTERM to the `nexus spotlight run` process for `workspaceID`, if running.
+    private func killSpotlightCLI(workspaceID: String) {
+        guard let pid = spotlightCLIProcesses.removeValue(forKey: workspaceID) else { return }
+        Self.logger.info("killSpotlightCLI: sending SIGTERM to pid=\(pid, privacy: .public) workspaceID=\(workspaceID, privacy: .public)")
+        kill(pid, SIGTERM)
     }
 
     private func perform(workspaceID: String? = nil, opState: WorkspaceOpState? = nil, _ op: @escaping () async throws -> Void) async {

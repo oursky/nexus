@@ -122,7 +122,7 @@ func (m *Manager) EnsureWithLocalPort(localPort int) (int, error) {
 	if m.verbose {
 		args = append(args, "-v")
 	}
-	args = append(args, "-fNL",
+	args = append(args, "-NL",
 		fmt.Sprintf("localhost:%d:%s:%d", m.localPort, m.remoteHost, m.remotePort),
 		"-o", "ServerAliveInterval=30",
 		"-o", "ServerAliveCountMax=3",
@@ -164,8 +164,23 @@ func (m *Manager) Close() error {
 	defer m.mu.Unlock()
 
 	if m.cmd != nil && m.cmd.Process != nil {
-		_ = m.cmd.Process.Kill()
-		_ = m.cmd.Wait()
+		// Send SIGTERM first so SSH can send TCP FINs to any open forwarded
+		// connections (e.g. browser keep-alive). SIGKILL would RST them immediately,
+		// causing "connection reset" errors in the browser on the next request.
+		_ = m.cmd.Process.Signal(os.Interrupt)
+		done := make(chan struct{})
+		go func() {
+			_ = m.cmd.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			// Exited cleanly.
+		case <-time.After(300 * time.Millisecond):
+			// Didn't exit — force kill.
+			_ = m.cmd.Process.Kill()
+			_ = m.cmd.Wait()
+		}
 	}
 	m.running = false
 	return nil
@@ -183,6 +198,16 @@ func (m *Manager) LocalPort() int {
 	return m.localPort
 }
 
+// PID returns the OS process ID of the SSH tunnel child, or 0 if not running.
+func (m *Manager) PID() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cmd != nil && m.cmd.Process != nil {
+		return m.cmd.Process.Pid
+	}
+	return 0
+}
+
 func (m *Manager) isAlive() bool {
 	if m.cmd == nil || m.cmd.Process == nil {
 		return false
@@ -191,15 +216,54 @@ func (m *Manager) isAlive() bool {
 	return err == nil
 }
 
+// waitForTunnel waits until the SSH tunnel is ready to forward connections.
+//
+// SSH opens the local listener socket before completing authentication. A
+// connection to localhost:localPort at that point is accepted by SSH locally
+// but immediately RST'd when SSH tries to open the forwarding channel. We
+// detect "truly ready" by dialing and attempting a 1-byte read with a short
+// deadline: an authenticated tunnel holds the connection open (read times out),
+// whereas a not-yet-authenticated tunnel RST's it immediately (read returns
+// an error with 0 bytes in < a few ms).
 func (m *Manager) waitForTunnel(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+
+	// Phase 1: wait for the local SSH listener to bind.
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", m.localPort), 200*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
-			return nil
+			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
+		if time.Now().After(deadline) {
+			return fmt.Errorf("tunnel local listener did not bind within %s", timeout)
+		}
+	}
+
+	// Phase 2: wait until the tunnel actually forwards (SSH session authenticated).
+	// Probe by dialing and doing a short-deadline read. If the read times out,
+	// the connection is being held (forwarding ready). If it errors immediately,
+	// SSH closed it (auth not done yet).
+	const probeReadTimeout = 150 * time.Millisecond
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", m.localPort), 300*time.Millisecond)
+		if err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(probeReadTimeout))
+		buf := make([]byte, 1)
+		_, readErr := conn.Read(buf)
+		_ = conn.Close()
+		if readErr != nil {
+			if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+				// Read timed out = connection held open = tunnel is forwarding.
+				return nil
+			}
+		}
+		// Connection was closed/RST immediately — SSH not ready yet.
+		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("tunnel did not become ready within %s", timeout)
 }

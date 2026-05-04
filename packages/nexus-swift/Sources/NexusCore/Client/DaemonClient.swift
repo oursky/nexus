@@ -30,7 +30,7 @@ public protocol DaemonClient: Sendable {
     func listPorts(workspaceId: String) async throws -> [ForwardedPort]
     func addPortForward(workspaceId: String, localPort: Int, remotePort: Int) async throws
     func removePortForward(workspaceId: String, forwardId: String) async throws
-    func startTunnels(workspaceId: String) async throws -> TunnelStatus
+    func startTunnels(workspaceId: String) async throws -> (status: TunnelStatus, forwards: [(localPort: Int, targetPort: Int)])
     func stopTunnels(workspaceId: String) async throws -> TunnelStatus
     func tunnelStatus(workspaceId: String) async throws -> TunnelStatus
 

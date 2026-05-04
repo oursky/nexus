@@ -23,7 +23,7 @@ public struct NullDaemonClient: DaemonClient {
     public func listPorts(workspaceId: String) async throws -> [ForwardedPort] { throw Self.err }
     public func addPortForward(workspaceId: String, localPort: Int, remotePort: Int) async throws { throw Self.err }
     public func removePortForward(workspaceId: String, forwardId: String) async throws { throw Self.err }
-    public func startTunnels(workspaceId: String) async throws -> TunnelStatus { throw Self.err }
+    public func startTunnels(workspaceId: String) async throws -> (status: TunnelStatus, forwards: [(localPort: Int, targetPort: Int)]) { throw Self.err }
     public func stopTunnels(workspaceId: String) async throws -> TunnelStatus { throw Self.err }
     public func tunnelStatus(workspaceId: String) async throws -> TunnelStatus { throw Self.err }
     public func workspaceInfo(id: String) async throws -> WorkspaceInfo { throw Self.err }

@@ -32,7 +32,29 @@ func main() {
 		Short:         "Nexus remote workspace CLI",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			// --daemon-ws allows callers (e.g. sandboxed macOS app) to pass the
+			// WebSocket URL via CLI arg instead of NEXUS_E2E_DAEMON_WEBSOCKET env var,
+			// since macOS App Sandbox may strip env vars from child processes.
+			pf := cmd.Root().PersistentFlags()
+			if ws, _ := pf.GetString("daemon-ws"); ws != "" {
+				os.Setenv("NEXUS_E2E_DAEMON_WEBSOCKET", ws)
+			}
+			if tok, _ := pf.GetString("daemon-token"); tok != "" {
+				os.Setenv("NEXUS_DAEMON_TOKEN", tok)
+			}
+			if sshHost, _ := pf.GetString("daemon-ssh-host"); sshHost != "" {
+				os.Setenv("NEXUS_DAEMON_SSH_HOST", sshHost)
+			}
+			if sshIdentity, _ := pf.GetString("daemon-ssh-identity"); sshIdentity != "" {
+				os.Setenv("NEXUS_DAEMON_SSH_IDENTITY", sshIdentity)
+			}
+		},
 	}
+	root.PersistentFlags().String("daemon-ws", "", "daemon WebSocket URL (overrides NEXUS_E2E_DAEMON_WEBSOCKET)")
+	root.PersistentFlags().String("daemon-token", "", "daemon bearer token (overrides NEXUS_DAEMON_TOKEN)")
+	root.PersistentFlags().String("daemon-ssh-host", "", "SSH host for daemon (overrides NEXUS_DAEMON_SSH_HOST)")
+	root.PersistentFlags().String("daemon-ssh-identity", "", "SSH identity file (overrides NEXUS_DAEMON_SSH_IDENTITY)")
 
 	root.AddCommand(
 		bundlecmd.Command(),
