@@ -68,7 +68,7 @@ public actor RemoteProvisioner {
     /// https://github.com/oursky/nexus/releases
     ///
     /// Then start the daemon on the remote host:
-    ///   nexus daemon start --port 7778
+    ///   nexus daemon start --port 7777
     public func provision(progress: ProgressHandler? = nil) async throws {
         throw ProvisionError.provisioningDisabled
     }
