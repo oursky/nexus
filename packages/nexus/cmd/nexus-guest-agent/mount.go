@@ -182,10 +182,11 @@ func setupBlockWorkspaceMount() error {
 }
 
 // tryMountHybridOverlay assembles the overlayfs workspace:
-//   lowerdir: virtiofs "nexus-workspace" : /workspace-base (baked base)
-//   upperdir: /dev/vdb mounted at /workspace-upper (mutable workspace state)
-//   workdir:  /workspace-upper/.workdir
-//   merged:   /workspace
+//
+//	lowerdir: virtiofs "nexus-workspace" : /workspace-base (baked base)
+//	upperdir: /dev/vdb mounted at /workspace-upper (mutable workspace state)
+//	workdir:  /workspace-upper/.workdir
+//	merged:   /workspace
 func tryMountHybridOverlay() error {
 	// Mount block device as the overlay upperdir.
 	if err := workspaceMountFunc(workspaceDevicePath, workspaceUpperMountPoint, "ext4", 0, ""); err != nil {

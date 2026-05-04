@@ -7,7 +7,7 @@ package tokenstore
 // it is never actually called because probe() only constructs it on darwin.
 type KeychainStore struct{}
 
-func NewKeychainStore() *KeychainStore         { return &KeychainStore{} }
+func NewKeychainStore() *KeychainStore               { return &KeychainStore{} }
 func (k *KeychainStore) Load() (string, bool, error) { return "", false, nil }
 func (k *KeychainStore) Save(_ string) error         { return nil }
 func (k *KeychainStore) Delete() error               { return nil }

@@ -73,7 +73,7 @@ func serveConn(conn net.Conn) {
 		}
 
 		// Handle request
-		resp := execResponse{}
+		var resp execResponse
 		if req.Stream {
 			resp = handleExecStreaming(req, encoder)
 		} else {
@@ -170,7 +170,7 @@ func serveSpotlightForward(conn net.Conn) {
 
 	target, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
 	if err != nil {
-		_, _ = conn.Write([]byte(fmt.Sprintf("ERR %v\n", err)))
+		_, _ = fmt.Fprintf(conn, "ERR %v\n", err)
 		return
 	}
 	defer target.Close()

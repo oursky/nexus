@@ -218,8 +218,6 @@ func (b libkrunDriverBundle) SerialLogPath(workspaceID string) (string, error) {
 	return b.vm.SerialLogPath(workspaceID)
 }
 
-
-
 // prewarmLibkrunBaseImages builds cached base workspace ext4 images for all
 // known libkrun workspaces at daemon startup so the first workspace start
 // doesn't block on mkfs.ext4 -d <project_root> (30–120 s for large repos).

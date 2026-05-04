@@ -19,12 +19,12 @@ import (
 // and falls back to a sparse copy on filesystems that don't support reflinks.
 func copyFile(src, dst string) error {
 	// Try reflink first (O(1) CoW); if unsupported fall back to sparse copy.
-	out, err := exec.Command("cp", "--reflink=always", "--sparse=always", src, dst).CombinedOutput()
+	_, err := exec.Command("cp", "--reflink=always", "--sparse=always", src, dst).CombinedOutput()
 	if err == nil {
 		return nil
 	}
 	// Reflink failed (non-XFS/btrfs host); use sparse copy instead.
-	out, err = exec.Command("cp", "--sparse=always", src, dst).CombinedOutput()
+	out, err := exec.Command("cp", "--sparse=always", src, dst).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("cp %s → %s: %w: %s", src, dst, err, strings.TrimSpace(string(out)))
 	}

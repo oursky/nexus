@@ -62,9 +62,6 @@ func downloadAndExtractTarGz(url, innerPath string) ([]byte, error) {
 		return nil, err
 	}
 
-	gr, err := gzip.NewReader(strings.NewReader(""))
-	_ = gr
-	// Use io.NopCloser pattern
 	gzReader, err := gzip.NewReader(
 		func() io.Reader {
 			return &readerBytes{data: data}
