@@ -129,7 +129,7 @@ public final class DaemonProfileStore {
         DaemonProfile(
             profileId: "remote-default",
             name: "Remote",
-            port: 7777,
+            port: 7778,
             isDefault: true,
             lastKnownStatus: .unknown
         )

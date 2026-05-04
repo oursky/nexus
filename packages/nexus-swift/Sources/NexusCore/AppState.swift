@@ -883,7 +883,6 @@ public final class AppState: ObservableObject {
             case .daemonReadyTimeout: return true
             case .bundledBinaryMissing: return true
             case .sshIdentityRequired: return true
-            case .provisioningDisabled: return true
             default: return false
             }
         }() {
