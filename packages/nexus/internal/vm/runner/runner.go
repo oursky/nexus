@@ -21,6 +21,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -812,7 +813,12 @@ func buildRootFSImage(rootfsDir, outPath string) error {
 	if err != nil {
 		return err
 	}
-	const minSize = int64(2 * 1024 * 1024 * 1024)
+	minSize := int64(2 * 1024 * 1024 * 1024)
+	if raw := strings.TrimSpace(os.Getenv("NEXUS_RUNNER_ROOTFS_MIN_MIB")); raw != "" {
+		if v, err := strconv.ParseInt(raw, 10, 64); err == nil && v > 0 {
+			minSize = v * 1024 * 1024
+		}
+	}
 	const overhead = int64(512 * 1024 * 1024)
 	imageSize := bytesUsed + overhead
 	if imageSize < minSize {
