@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		440293D0BE7E427B87682B5B /* SSHClientArgs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 968C7ECF02C64C08AAB40878 /* SSHClientArgs.swift */; };
 		0602F286F9E4B1D94A9855F4 /* SSHSecurityScope.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8119AFD4BCAD21CF77FBC6FA /* SSHSecurityScope.swift */; };
 		062DA6B8127FF2AD08CF5D55 /* NexusAppTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1075C8BF288888AA4624C6B0 /* NexusAppTests.swift */; };
 		0C76B45650EA71489DE56713 /* Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E3741BD5102248BC1C00360 /* Workspace.swift */; };
@@ -17,6 +16,7 @@
 		2CCD8461D600482E18166009 /* libNexusCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = E3045A4B1F455132950EB624 /* libNexusCore.a */; };
 		3E04BAB98CAECB30936BB575 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = A2237CDA02F353B6B534D6A0 /* SwiftTerm */; };
 		5142C089169B296EB634FB67 /* StartupTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBE87649ADC2236DDDD799E3 /* StartupTrace.swift */; };
+		5201F6052C1CA337B106D671 /* MacAppFormalVerificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 067F555E3B54E505B46027D3 /* MacAppFormalVerificationTests.swift */; };
 		5294C6DF01F200E1219CC1D2 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = E82D4B646E6A09E4463C92C5 /* Theme.swift */; };
 		5C7C69C6848449AB19252743 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E3984D60065231C71CC97564 /* Assets.xcassets */; };
 		6121CA0E10799FFEA9E3C199 /* HeadlessRPCServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38E21B28FFABA6F3CC3615AD /* HeadlessRPCServer.swift */; };
@@ -35,6 +35,7 @@
 		AD51BA2C3901D464D639F60D /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9C9A878181FBC6C382D9F0 /* SidebarView.swift */; };
 		B5EC8D397B7A962CD2BDF820 /* debug_pty.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D96DD4872B23F7851C58FC /* debug_pty.swift */; };
 		BDC55CBE4A8A0411ED521DA7 /* GitLogReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADCBCD9E06B53B830CCD0102 /* GitLogReader.swift */; };
+		BEE0BBA0EFDB9C6FFE9212B9 /* SSHClientArgs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16B5A328A971277066265E01 /* SSHClientArgs.swift */; };
 		BFA6AE086469802D3B4DB201 /* LocalWorkspaceState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 005481512D95B12DFBE232BB /* LocalWorkspaceState.swift */; };
 		C1C7D99C12055E99522AC87F /* SSHTunnelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4813F94247C8246742DEA82F /* SSHTunnelManager.swift */; };
 		CBD8EF15A85756F63CF36229 /* AsyncDeadline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E4D7D285580F1646BA523C0 /* AsyncDeadline.swift */; };
@@ -70,10 +71,12 @@
 
 /* Begin PBXFileReference section */
 		005481512D95B12DFBE232BB /* LocalWorkspaceState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalWorkspaceState.swift; sourceTree = "<group>"; };
+		067F555E3B54E505B46027D3 /* MacAppFormalVerificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacAppFormalVerificationTests.swift; sourceTree = "<group>"; };
 		08F9D4363D42212510937E4D /* NullDaemonClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NullDaemonClient.swift; sourceTree = "<group>"; };
 		0E4D7D285580F1646BA523C0 /* AsyncDeadline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncDeadline.swift; sourceTree = "<group>"; };
 		1075C8BF288888AA4624C6B0 /* NexusAppTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusAppTests.swift; sourceTree = "<group>"; };
 		14DE7269B3B6401897CF20B5 /* TerminalRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalRegistry.swift; sourceTree = "<group>"; };
+		16B5A328A971277066265E01 /* SSHClientArgs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHClientArgs.swift; sourceTree = "<group>"; };
 		2B1758E3987EA79C35151F7B /* BottomPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BottomPanelView.swift; sourceTree = "<group>"; };
 		2E3741BD5102248BC1C00360 /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
 		38E21B28FFABA6F3CC3615AD /* HeadlessRPCServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeadlessRPCServer.swift; sourceTree = "<group>"; };
@@ -82,6 +85,7 @@
 		4646410F10ECC1921C4F685B /* NexusRPC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusRPC.swift; sourceTree = "<group>"; };
 		4813F94247C8246742DEA82F /* SSHTunnelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHTunnelManager.swift; sourceTree = "<group>"; };
 		4F536D8D8113B5D7DEAFEEFC /* RemoteProvisioner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteProvisioner.swift; sourceTree = "<group>"; };
+		528623899FCE30A5FBC238F4 /* NexusApp-DMG.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "NexusApp-DMG.entitlements"; sourceTree = "<group>"; };
 		52D96DD4872B23F7851C58FC /* debug_pty.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = debug_pty.swift; sourceTree = "<group>"; };
 		5600243E10A19C71DA84256F /* DaemonLogStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonLogStream.swift; sourceTree = "<group>"; };
 		578374C9B41398139FEF60DE /* RemoteEditorURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteEditorURL.swift; sourceTree = "<group>"; };
@@ -92,7 +96,6 @@
 		672D7B0442C4E1B8A74B7083 /* RemoteEngineFolderPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteEngineFolderPicker.swift; sourceTree = "<group>"; };
 		72A481E34E338F542786AE6F /* NexusApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NexusApp.entitlements; sourceTree = "<group>"; };
 		804B2FADD0C5143C198F46DA /* NexusApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusApp.swift; sourceTree = "<group>"; };
-		968C7ECF02C64C08AAB40878 /* SSHClientArgs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHClientArgs.swift; sourceTree = "<group>"; };
 		8119AFD4BCAD21CF77FBC6FA /* SSHSecurityScope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHSecurityScope.swift; sourceTree = "<group>"; };
 		85417139225FD79454603276 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		88535B8DEC2991EA5557D322 /* EngineRemotePathBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineRemotePathBrowser.swift; sourceTree = "<group>"; };
@@ -141,6 +144,7 @@
 			children = (
 				E3984D60065231C71CC97564 /* Assets.xcassets */,
 				85417139225FD79454603276 /* Info.plist */,
+				528623899FCE30A5FBC238F4 /* NexusApp-DMG.entitlements */,
 				72A481E34E338F542786AE6F /* NexusApp.entitlements */,
 				804B2FADD0C5143C198F46DA /* NexusApp.swift */,
 				E82D4B646E6A09E4463C92C5 /* Theme.swift */,
@@ -180,6 +184,7 @@
 			isa = PBXGroup;
 			children = (
 				A1299EB3EDDA3B0AD4AA85C6 /* AsyncDeadlineTests.swift */,
+				067F555E3B54E505B46027D3 /* MacAppFormalVerificationTests.swift */,
 				1075C8BF288888AA4624C6B0 /* NexusAppTests.swift */,
 			);
 			path = NexusAppTests;
@@ -211,7 +216,7 @@
 				BE2B07751BE8ACCB41EBA453 /* PTYSessionManager.swift */,
 				578374C9B41398139FEF60DE /* RemoteEditorURL.swift */,
 				4F536D8D8113B5D7DEAFEEFC /* RemoteProvisioner.swift */,
-			968C7ECF02C64C08AAB40878 /* SSHClientArgs.swift */,
+				16B5A328A971277066265E01 /* SSHClientArgs.swift */,
 				8119AFD4BCAD21CF77FBC6FA /* SSHSecurityScope.swift */,
 				4813F94247C8246742DEA82F /* SSHTunnelManager.swift */,
 				CBE87649ADC2236DDDD799E3 /* StartupTrace.swift */,
@@ -458,6 +463,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				DA15791279FE3FB2D12D1CC2 /* AsyncDeadlineTests.swift in Sources */,
+				5201F6052C1CA337B106D671 /* MacAppFormalVerificationTests.swift in Sources */,
 				062DA6B8127FF2AD08CF5D55 /* NexusAppTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -482,7 +488,7 @@
 				DCD55CD52BA08D65FF1A4C57 /* PTYSessionManager.swift in Sources */,
 				FDB08C96B9DB1ED11E82C5B5 /* RemoteEditorURL.swift in Sources */,
 				2837D8E1C547498450A97FFE /* RemoteProvisioner.swift in Sources */,
-				440293D0BE7E427B87682B5B /* SSHClientArgs.swift in Sources */,
+				BEE0BBA0EFDB9C6FFE9212B9 /* SSHClientArgs.swift in Sources */,
 				0602F286F9E4B1D94A9855F4 /* SSHSecurityScope.swift in Sources */,
 				C1C7D99C12055E99522AC87F /* SSHTunnelManager.swift in Sources */,
 				5142C089169B296EB634FB67 /* StartupTrace.swift in Sources */,
@@ -661,7 +667,7 @@
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = FEATURE_EXPORT_IMPORT;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_STRICT_CONCURRENCY = strict;
 				SWIFT_VERSION = 5.10;

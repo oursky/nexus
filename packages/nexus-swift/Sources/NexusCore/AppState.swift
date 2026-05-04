@@ -535,6 +535,7 @@ public final class AppState: ObservableObject {
     }
 
     // MARK: - Workspace export / import via CLI
+    #if FEATURE_EXPORT_IMPORT
 
     private static let bundleLogger = Logger(subsystem: "com.nexus.NexusApp", category: "Bundle")
 
@@ -665,6 +666,7 @@ public final class AppState: ObservableObject {
             }
         }
     }
+    #endif
 
     // MARK: - Daemon health check (runs on daemon host via SSH)
 

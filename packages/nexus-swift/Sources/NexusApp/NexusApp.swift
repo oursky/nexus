@@ -106,15 +106,18 @@ struct NexusApp: App {
                 }
                     .keyboardShortcut("n", modifiers: .command)
             }
+            #if FEATURE_EXPORT_IMPORT
             CommandGroup(after: .newItem) {
                 Button("Import Workspace Bundle…") {
                     importWorkspaceBundle()
                 }
                     .keyboardShortcut("o", modifiers: [.command, .shift])
             }
+            #endif
         }
     }
 
+    #if FEATURE_EXPORT_IMPORT
     private func importWorkspaceBundle() {
         let panel = NSOpenPanel()
         panel.message = "Import workspace bundle"
@@ -143,4 +146,5 @@ struct NexusApp: App {
             }
         }
     }
+    #endif
 }

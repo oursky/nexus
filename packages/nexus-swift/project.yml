@@ -28,6 +28,7 @@ settings:
   configs:
     Debug:
       ONLY_ACTIVE_ARCH: YES
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: FEATURE_EXPORT_IMPORT
 
 targets:
 

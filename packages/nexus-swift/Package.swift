@@ -14,6 +14,7 @@ let package = Package(
             path: "Sources/NexusCore",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
+                .define("FEATURE_EXPORT_IMPORT"),
             ]
         ),
 
@@ -27,6 +28,7 @@ let package = Package(
             path: "Sources/NexusApp",
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
+                .define("FEATURE_EXPORT_IMPORT"),
             ]
         ),
 

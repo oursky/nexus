@@ -317,12 +317,14 @@ private struct WorkspaceOverflowMenu: View {
 
     var body: some View {
         Menu {
+            #if FEATURE_EXPORT_IMPORT
             Button {
                 exportWorkspace()
             } label: {
                 Label("Export Bundle…", systemImage: "square.and.arrow.up")
             }
             .disabled(isBusy)
+            #endif
 
             Button(role: .destructive) {
                 Task { await appState.remove(workspace) }
@@ -336,6 +338,7 @@ private struct WorkspaceOverflowMenu: View {
         }
     }
 
+    #if FEATURE_EXPORT_IMPORT
     private func exportWorkspace() {
         let panel = NSSavePanel()
         panel.message = "Export workspace as bundle"
@@ -361,6 +364,7 @@ private struct WorkspaceOverflowMenu: View {
             }
         }
     }
+    #endif
 }
 
 private struct WorkspaceStartStopButton: View {
