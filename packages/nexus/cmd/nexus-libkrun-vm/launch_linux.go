@@ -178,10 +178,10 @@ func detectKernelFormat(path string) (uint32, bool) {
 // Guest disk layout:
 //
 //	/dev/vda  rootfs.{raw,qcow2}     → /  (via krun_set_root_disk_remount)
-//	/dev/vdb  workspace.ext4         → overlay upper for /workspace
+//	/dev/vdb  workspace.ext4         → reserved workspace state volume
 //	/dev/vdc  docker-data.ext4       → /var/lib/docker
 //	/dev/vdd  hostconfig.ext4        → /run/nexus-host (optional, ro)
-//	virtiofs "nexus-workspace"        → project dir (ro lower layer)
+//	virtiofs "nexus-workspace"        → /workspace (rw)
 func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...interface{})) error {
 	rootfsPath := strings.TrimSpace(spec.RootFSImage)
 	if rootfsPath == "" {
@@ -230,8 +230,8 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 		}
 		return fmt.Errorf("hybrid workspace_host_path is not a directory: %s", hostPath)
 	}
-	logf("add_virtiofs: tag=nexus-workspace path=%s ro=true", hostPath)
-	if err := krunAddVirtioFS3(ctx, "nexus-workspace", hostPath, 0, true); err != nil {
+	logf("add_virtiofs: tag=nexus-workspace path=%s ro=false", hostPath)
+	if err := krunAddVirtioFS3(ctx, "nexus-workspace", hostPath, 0, false); err != nil {
 		return fmt.Errorf("add virtiofs workspace share: %w", err)
 	}
 
@@ -255,7 +255,6 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 	env := []string{
 		"NEXUS_CONTAINER_MODE=1",
 		"NEXUS_WORKSPACE_MODE=virtiofs",
-		"NEXUS_OVERLAY_DEV=/dev/vdb",
 		"NEXUS_DOCKER_DEV=/dev/vdc",
 		"HOME=/root",
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",

@@ -20,10 +20,10 @@ import (
 // Disk layout inside the guest (assembled by the agent):
 //
 //	/dev/vda  rootfs.ext4             (reflink clone, rw)     → /  (block rootfs)
-//	/dev/vdb  workspace.ext4          (workspace clone, rw)   → overlay upper for /workspace
+//	/dev/vdb  workspace.ext4          (workspace clone, rw)   → reserved workspace state volume
 //	/dev/vdc  docker-data.ext4        (sparse, Docker data)   → /var/lib/docker
 //	/dev/vdd  hostconfig.ext4         (read-only, optional)   → /run/nexus-host
-//	virtiofs "nexus-workspace"        project dir (ro lower layer)
+//	virtiofs "nexus-workspace"        project dir (/workspace, rw)
 func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) {
 	spawnStart := time.Now()
 	log.Printf("[libkrun] Spawn start: workspace=%s", spec.WorkspaceID)
@@ -72,7 +72,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		log.Printf("[libkrun] workspace %s: phase_done=restore_workspace (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
 		log.Printf("[libkrun] workspace %s: restored workspace from snapshot %s", spec.WorkspaceID, snapID)
 	} else if _, err := os.Stat(workspacePath); err != nil {
-		log.Printf("[libkrun] workspace %s: workspace mount strategy=virtiofs lower + ext4 overlay upper", spec.WorkspaceID)
+		log.Printf("[libkrun] workspace %s: workspace mount strategy=direct rw virtiofs", spec.WorkspaceID)
 		log.Printf("[libkrun] workspace %s: phase=ensure_base_image", spec.WorkspaceID)
 		basePhaseStart := time.Now()
 		phaseCtx, cancel := phaseTimeout(ctx, 3*time.Minute)
