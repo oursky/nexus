@@ -261,7 +261,7 @@ func applyOCILayerTar(tarBytes []byte, destDir string) error {
 					return fmt.Errorf("hardlink fallback copy %s: %w", destPath, copyErr)
 				}
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 				return fmt.Errorf("mkdir parent %s: %w", destPath, err)
 			}

@@ -475,5 +475,3 @@ func (h *Handler) handleNexusfile(ctx context.Context, raw json.RawMessage) (any
 	}
 	return &nexusfileRes{WorkspaceIntent: intent}, nil
 }
-
-

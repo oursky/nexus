@@ -99,9 +99,9 @@ func StartPasst(passtPath string, cfg PasstConfig) (*Passt, error) {
 
 	// Build passt command line.
 	args := []string{
-		"--fd", "3",           // fd 3 is the first ExtraFiles fd
-		"--foreground",        // keep in foreground so we can kill it
-		"--stderr",            // log to stderr
+		"--fd", "3", // fd 3 is the first ExtraFiles fd
+		"--foreground", // keep in foreground so we can kill it
+		"--stderr",     // log to stderr
 	}
 	if cfg.GuestIP != "" {
 		args = append(args, "--address", cfg.GuestIP+"/24")

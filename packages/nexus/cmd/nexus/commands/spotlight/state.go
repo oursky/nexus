@@ -30,23 +30,6 @@ func (s spotlightProfileState) allTunnelPIDs() []int {
 	return s.TunnelPIDs
 }
 
-// loadTunnelPIDForWorkspace returns the SSH tunnel PID persisted for the given workspaceID.
-func loadTunnelPIDForWorkspace(workspaceID string) (int, bool) {
-	p, err := profile.LoadDefault()
-	if err != nil {
-		return 0, false
-	}
-	state, err := loadSpotlightClientState()
-	if err != nil {
-		return 0, false
-	}
-	key := spotlightProfileKey(p)
-	if entry, ok := state.Profiles[key]; ok && entry.WorkspaceID == workspaceID {
-		return entry.TunnelPID, true
-	}
-	return 0, false
-}
-
 // loadTunnelPIDsForWorkspace returns all tunnel PIDs associated with the
 // workspace across all stored profile entries. This handles both the new
 // single-PID and legacy multi-PID formats.

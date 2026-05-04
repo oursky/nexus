@@ -59,12 +59,12 @@ type libkrunFns struct {
 	StartEnter       func(ctxID uint32) int32                                                             `C:"krun_start_enter"`
 
 	// Optional symbols — nil if not present in the loaded library.
-	DisableImplicitVsock func(ctxID uint32) int32                               `C:"krun_disable_implicit_vsock"`
-	AddVsock             func(ctxID uint32, features uint32) int32              `C:"krun_add_vsock"`
-	SetGPUOptions2       func(ctxID uint32, flags uint32, ramSize uint64) int32 `C:"krun_set_gpu_options2"`
-	AddNetUnixgram       func(ctxID uint32, cPath string, fd int, cMac unsafe.Pointer, features uint32, flags uint32) int32 `C:"krun_add_net_unixgram"`
+	DisableImplicitVsock func(ctxID uint32) int32                                                                                               `C:"krun_disable_implicit_vsock"`
+	AddVsock             func(ctxID uint32, features uint32) int32                                                                              `C:"krun_add_vsock"`
+	SetGPUOptions2       func(ctxID uint32, flags uint32, ramSize uint64) int32                                                                 `C:"krun_set_gpu_options2"`
+	AddNetUnixgram       func(ctxID uint32, cPath string, fd int, cMac unsafe.Pointer, features uint32, flags uint32) int32                     `C:"krun_add_net_unixgram"`
 	SetKernel            func(ctxID uint32, kernelPath string, kernelFormat uint32, initramfsPath unsafe.Pointer, cmdline unsafe.Pointer) int32 `C:"krun_set_kernel"`
-	SetPasstFd           func(ctxID uint32, fd int32) int32                    `C:"krun_set_passt_fd"`
+	SetPasstFd           func(ctxID uint32, fd int32) int32                                                                                     `C:"krun_set_passt_fd"`
 }
 
 // Load opens libkrunfw (kernel firmware) and libkrun from the given paths

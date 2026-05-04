@@ -228,12 +228,14 @@ func (m *Manager) snapshotDockerPath(snapshotID string) string {
 	return filepath.Join(m.cfg.WorkDirRoot, ".snapshots", snapshotID+".docker.ext4")
 }
 
-// PromoteWorkspaceImageFromProjectRoot refreshes the workspace.ext4 artifact for
-// a workspace from the current host project root state.
+// PromoteWorkspaceImageFromProjectRoot refreshes the workspace base image from
+// the current host project root state.
 //
-// This is intended for virtiofs-first phased-promotion mode where host project
-// files are authoritative during active editing. Callers should stop the parent
-// VM first to establish a clear snapshot boundary.
+// In the hybrid overlay model this updates workspace-base.ext4 (the read-only
+// baked lowerdir). For legacy workspaces without a base image it falls back to
+// updating workspace.ext4 directly.
+//
+// Callers should stop the parent VM first to establish a clear snapshot boundary.
 func (m *Manager) PromoteWorkspaceImageFromProjectRoot(ctx context.Context, workspaceID, projectRoot string) error {
 	root := strings.TrimSpace(projectRoot)
 	if workspaceID == "" {
@@ -254,14 +256,16 @@ func (m *Manager) PromoteWorkspaceImageFromProjectRoot(ctx context.Context, work
 		return fmt.Errorf("create workspace dir %s: %w", workDir, err)
 	}
 
-	workspacePath := filepath.Join(workDir, "workspace.ext4")
-	tmpPath := workspacePath + ".promote.tmp"
+	// In hybrid overlay mode the baked base always lives in workspace-base.ext4.
+	workspaceBasePath := filepath.Join(workDir, "workspace-base.ext4")
+
+	tmpPath := workspaceBasePath + ".promote.tmp"
 	_ = os.Remove(tmpPath)
 	if err := copyFileWithContext(ctx, basePath, tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("promote workspace clone %s -> %s: %w", basePath, tmpPath, err)
 	}
-	if err := os.Rename(tmpPath, workspacePath); err != nil {
+	if err := os.Rename(tmpPath, workspaceBasePath); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("promote workspace image: %w", err)
 	}

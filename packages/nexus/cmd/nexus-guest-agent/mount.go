@@ -18,6 +18,7 @@ var (
 	setupWorkspaceMountRequiredFunc = setupWorkspaceMountRequired
 	workspaceMountPoint             = "/workspace"
 	workspaceDevicePath             = "/dev/vdb"
+	workspaceBaseDevicePath         = "/dev/vde"
 	workspaceDeviceAttempts         = 300
 	workspaceDeviceInterval         = 100 * time.Millisecond
 	workspaceMkdirAll               = os.MkdirAll
@@ -32,6 +33,7 @@ var (
 	workspaceLowerMountPoint = "/workspace-lower"
 	workspaceUpperMountPoint = "/workspace-upper"
 	workspaceOverlayWorkDir  = "/workspace-upper/.workdir"
+	workspaceBaseMountPoint  = "/workspace-base"
 
 	// virtiofsWorkspaceOnce ensures setupVirtiofsWorkspace runs exactly once
 	// during agent lifecycle.
@@ -148,11 +150,13 @@ func setupVirtiofsWorkspaceOnce() error {
 	return virtiofsWorkspaceOnceErr
 }
 
-// setupBlockWorkspaceMount mounts the block workspace device and docker-data.
-// It prefers the hybrid overlayfs path (virtiofs lowerdir + ext4 upperdir) and
-// falls back to a plain ext4 mount at /workspace if overlay assembly fails.
+// setupBlockWorkspaceMount assembles the hybrid overlayfs workspace.
+// It mounts /dev/vdb as the mutable upperdir, /dev/vde as the read-only
+// baked base lowerdir, and virtiofs as the live host project lowerdir.
+// If overlay assembly fails, it falls back to mounting the base image
+// directly at /workspace.
 func setupBlockWorkspaceMount() error {
-	for _, dir := range []string{workspaceMountPoint, workspaceLowerMountPoint, workspaceUpperMountPoint} {
+	for _, dir := range []string{workspaceMountPoint, workspaceLowerMountPoint, workspaceUpperMountPoint, workspaceBaseMountPoint} {
 		if err := workspaceMkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", dir, err)
 		}
@@ -168,8 +172,8 @@ func setupBlockWorkspaceMount() error {
 	}
 
 	if err := tryMountHybridOverlay(); err != nil {
-		emitDiagnostic("agent hybrid overlay failed (%v), falling back to block workspace", err)
-		if fallbackErr := mountBlockWorkspaceDirect(); fallbackErr != nil {
+		emitDiagnostic("agent hybrid overlay failed (%v), falling back to base image", err)
+		if fallbackErr := mountBaseWorkspaceDirect(); fallbackErr != nil {
 			return fallbackErr
 		}
 	}
@@ -178,7 +182,7 @@ func setupBlockWorkspaceMount() error {
 }
 
 // tryMountHybridOverlay assembles the overlayfs workspace:
-//   lowerdir: virtiofs "nexus-workspace" (live read-only host project)
+//   lowerdir: virtiofs "nexus-workspace" : /workspace-base (baked base)
 //   upperdir: /dev/vdb mounted at /workspace-upper (mutable workspace state)
 //   workdir:  /workspace-upper/.workdir
 //   merged:   /workspace
@@ -200,71 +204,66 @@ func tryMountHybridOverlay() error {
 		return fmt.Errorf("mkdir %s: %w", workspaceOverlayWorkDir, err)
 	}
 
-	// Mount virtiofs lowerdir (read-only host project directory).
-	if err := workspaceMountFunc("nexus-workspace", workspaceLowerMountPoint, "virtiofs", unix.MS_RDONLY, ""); err != nil {
+	// Mount baked base lowerdir (read-only project snapshot).
+	if err := workspaceMountFunc(workspaceBaseDevicePath, workspaceBaseMountPoint, "ext4", unix.MS_RDONLY, ""); err != nil {
 		if errors.Is(err, unix.EBUSY) {
-			if !mountPointIsActive("nexus-workspace", workspaceLowerMountPoint) {
+			if !mountPointIsActive(workspaceBaseDevicePath, workspaceBaseMountPoint) {
 				_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
-				return fmt.Errorf("mount virtiofs at %s returned EBUSY but not active", workspaceLowerMountPoint)
+				return fmt.Errorf("mount base %s at %s returned EBUSY but not active", workspaceBaseDevicePath, workspaceBaseMountPoint)
 			}
 		} else {
 			_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
+			return fmt.Errorf("mount workspace base %s → %s: %w", workspaceBaseDevicePath, workspaceBaseMountPoint, err)
+		}
+	}
+
+	// Mount virtiofs lowerdir (read-only host project directory).
+	if err := workspaceMountFunc("nexus-workspace", workspaceLowerMountPoint, "virtiofs", unix.MS_RDONLY, ""); err != nil {
+		_ = workspaceUnmountFunc(workspaceBaseMountPoint, 0)
+		_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
+		if errors.Is(err, unix.EBUSY) {
+			if !mountPointIsActive("nexus-workspace", workspaceLowerMountPoint) {
+				return fmt.Errorf("mount virtiofs at %s returned EBUSY but not active", workspaceLowerMountPoint)
+			}
+		} else {
 			return fmt.Errorf("mount virtiofs nexus-workspace → %s: %w", workspaceLowerMountPoint, err)
 		}
 	}
 
 	// Assemble overlayfs at /workspace.
-	overlayOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", workspaceLowerMountPoint, workspaceUpperMountPoint, workspaceOverlayWorkDir)
+	lowerdir := workspaceLowerMountPoint + ":" + workspaceBaseMountPoint
+	overlayOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lowerdir, workspaceUpperMountPoint, workspaceOverlayWorkDir)
 	if err := workspaceMountFunc("overlay", workspaceMountPoint, "overlay", 0, overlayOpts); err != nil {
+		_ = workspaceUnmountFunc(workspaceLowerMountPoint, 0)
+		_ = workspaceUnmountFunc(workspaceBaseMountPoint, 0)
+		_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
 		if errors.Is(err, unix.EBUSY) {
 			if !mountPointIsActive("overlay", workspaceMountPoint) {
-				_ = workspaceUnmountFunc(workspaceLowerMountPoint, 0)
-				_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
 				return fmt.Errorf("mount overlay at %s returned EBUSY but not active", workspaceMountPoint)
 			}
 		} else {
-			_ = workspaceUnmountFunc(workspaceLowerMountPoint, 0)
-			_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
 			return fmt.Errorf("mount overlay at %s: %w", workspaceMountPoint, err)
 		}
 	}
 
-	emitDiagnostic("agent hybrid overlay workspace mounted at %s", workspaceMountPoint)
+	emitDiagnostic("agent hybrid overlay workspace mounted at %s (lowerdirs=%s)", workspaceMountPoint, lowerdir)
 	return nil
 }
 
-// mountBlockWorkspaceDirect mounts the workspace block device directly at
-// /workspace as a plain ext4 filesystem. Used as the fallback when hybrid
-// overlayfs assembly fails.
-func mountBlockWorkspaceDirect() error {
-	if err := workspaceMountFunc(workspaceDevicePath, workspaceMountPoint, "ext4", 0, ""); err != nil {
+// mountBaseWorkspaceDirect mounts the baked base image directly at /workspace
+// when overlayfs assembly fails. This ensures the workspace is still usable
+// even if overlay cannot be mounted.
+func mountBaseWorkspaceDirect() error {
+	if err := workspaceMountFunc(workspaceBaseDevicePath, workspaceMountPoint, "ext4", 0, ""); err != nil {
 		if errors.Is(err, unix.EBUSY) {
-			mounted, mErr := workspaceMountIsActive(workspaceDevicePath)
-			if mErr != nil {
-				return fmt.Errorf("verify workspace mount after EBUSY: %w", mErr)
-			}
-			if mounted {
+			if mountPointIsActive(workspaceBaseDevicePath, workspaceMountPoint) {
+				emitDiagnostic("agent workspace mounted from base image %s (fallback)", workspaceBaseDevicePath)
 				return nil
 			}
-			if err := workspaceUnmountNonWorkspaceMounts(); err != nil {
-				return fmt.Errorf("clear conflicting workspace mounts after EBUSY: %w", err)
-			}
-			if retryErr := workspaceMountFunc(workspaceDevicePath, workspaceMountPoint, "ext4", 0, ""); retryErr == nil {
-				return nil
-			} else if !errors.Is(retryErr, unix.EBUSY) {
-				return fmt.Errorf("retry mount %s at %s after clearing conflicts: %w", workspaceDevicePath, workspaceMountPoint, retryErr)
-			}
-			mounted, mErr = workspaceMountIsActive(workspaceDevicePath)
-			if mErr != nil {
-				return fmt.Errorf("verify workspace mount after retry EBUSY: %w", mErr)
-			}
-			if mounted {
-				return nil
-			}
-			return fmt.Errorf("mount %s at %s returned EBUSY but workspace mount is not active", workspaceDevicePath, workspaceMountPoint)
 		}
-		return fmt.Errorf("mount %s at %s: %w", workspaceDevicePath, workspaceMountPoint, err)
+		return fmt.Errorf("mount fallback base %s at %s: %w", workspaceBaseDevicePath, workspaceMountPoint, err)
 	}
+	emitDiagnostic("agent workspace mounted from base image %s (fallback)", workspaceBaseDevicePath)
 	return nil
 }
 
@@ -312,35 +311,6 @@ func mountPointIsActive(source, target string) bool {
 		}
 	}
 	return false
-}
-
-// workspaceMountIsActive reports whether workspaceDevicePath is mounted at
-// workspaceMountPoint. It is kept for backward compatibility with the block
-// workspace fallback path.
-func workspaceMountIsActive(devicePath string) (bool, error) {
-	return mountPointIsActive(devicePath, workspaceMountPoint), nil
-}
-
-func workspaceUnmountNonWorkspaceMounts() error {
-	raw, err := workspaceReadProcMounts("/proc/mounts")
-	if err != nil {
-		return err
-	}
-	lines := strings.Split(string(raw), "\n")
-	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		mountPoint := fields[1]
-		if mountPoint == workspaceMountPoint || !strings.HasPrefix(mountPoint, workspaceMountPoint+"/") {
-			continue
-		}
-		if err := workspaceUnmountFunc(mountPoint, 0); err != nil && !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.ENOENT) {
-			return err
-		}
-	}
-	return nil
 }
 
 func waitForWorkspaceDevice() (bool, error) {

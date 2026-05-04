@@ -13,10 +13,11 @@ package libkrun
 // Guest disk layout (hybrid mode):
 //
 //	/dev/vda  rootfs.{raw,qcow2}     → /  (via krun_set_root_disk_remount)
-//	/dev/vdb  workspace.ext4         → /workspace
+//	/dev/vdb  workspace.ext4         → /workspace-upper (overlay upperdir)
 //	/dev/vdc  docker-data.ext4       → /var/lib/docker
 //	/dev/vdd  hostconfig.ext4        → /run/nexus-host (optional, ro)
-//	virtiofs "nexus-workspace"        → optional auxiliary host share
+//	/dev/vde  workspace-base.ext4    → /workspace-base (optional, ro fallback lowerdir)
+//	virtiofs "nexus-workspace"        → /workspace-lower (overlay lowerdir)
 type VMSpec struct {
 	WorkspaceID string `json:"workspace_id"`
 	// WorkspaceMode selects guest assembly path. Current production path is
@@ -44,9 +45,16 @@ type VMSpec struct {
 	// can skip the heavy apt-get/npm install path.
 	BakedRootfs bool `json:"baked_rootfs,omitempty"`
 
-	// WorkspaceImage is the per-workspace ext4 image mounted at /workspace in
-	// hybrid mode and used for snapshot/fork lineage.
+	// WorkspaceImage is the per-workspace ext4 image used as the overlayfs
+	// upperdir in hybrid mode. It holds mutations (uncommitted changes,
+	// node_modules, build artifacts) and is used for snapshot/fork lineage.
+	// In the optimal path this is an empty sparse image; in the legacy path it
+	// contains a full baked project snapshot.
 	WorkspaceImage string `json:"workspace_image"`
+	// WorkspaceBaseImage is a baked read-only ext4 image of the project used as
+	// a fallback lowerdir in hybrid overlay mode. When set, WorkspaceImage should
+	// be an empty or mutation-only upperdir.
+	WorkspaceBaseImage string `json:"workspace_base_image,omitempty"`
 	// WorkspaceHostPath is the daemon-host project path used for virtiofs share
 	// when attached as an optional auxiliary host share.
 	WorkspaceHostPath string `json:"workspace_host_path,omitempty"`

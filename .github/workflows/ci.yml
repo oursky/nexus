@@ -6,10 +6,6 @@ on:
   pull_request:
     branches: [main, develop]
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   lint:
     name: Lint (nexus)
@@ -45,7 +41,7 @@ jobs:
           fi
 
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.1
 
       - name: Run golangci-lint
         working-directory: packages/nexus
@@ -87,6 +83,8 @@ jobs:
           echo "NEXUS_CROSS_BINARY_DIR=${GITHUB_WORKSPACE}/packages/nexus-swift/Resources" >> "$GITHUB_ENV"
 
       - name: Run unit tests with coverage
+        env:
+          GOTOOLCHAIN: local
         run: scripts/ci/coverage.sh
 
       - name: Upload coverage artifact

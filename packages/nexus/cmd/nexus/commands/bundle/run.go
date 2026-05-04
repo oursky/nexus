@@ -302,14 +302,6 @@ func isComposeBuildCommand(cmd string) bool {
 	return strings.Contains(compact, "docker compose build") || strings.Contains(compact, "docker-compose build")
 }
 
-func buildShellInvocation(args []string) string {
-	quoted := make([]string, len(args))
-	for i, a := range args {
-		quoted[i] = strconv.Quote(a)
-	}
-	return strings.Join(quoted, " ")
-}
-
 func normalizeBakeCommand(cmd string) string {
 	if strings.Contains(cmd, "docker-compose-plugin") {
 		// Install official Docker CE static binaries instead of Ubuntu's docker.io
@@ -409,12 +401,12 @@ func writeRunScript(workspaceDir string, cmds []string) (string, error) {
 	b.WriteString("ln -sf /usr/sbin/ip6tables-legacy /usr/sbin/ip6tables 2>/dev/null || true\n")
 	for i, c := range cmds {
 		if debug {
-			b.WriteString(fmt.Sprintf("echo '[nexus-run] step %d starting...'\n", i+1))
+			fmt.Fprintf(&b, "echo '[nexus-run] step %d starting...'\n", i+1)
 		}
 		b.WriteString(c)
 		b.WriteByte('\n')
 		if debug {
-			b.WriteString(fmt.Sprintf("echo \"[nexus-run] step %d exited with code $?\"\n", i+1))
+			fmt.Fprintf(&b, "echo \"[nexus-run] step %d exited with code $?\"\n", i+1)
 		}
 	}
 	if debug {

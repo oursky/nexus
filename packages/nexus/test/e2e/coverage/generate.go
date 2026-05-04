@@ -291,7 +291,7 @@ func renderCoverageReport(specIDs []string, coverage map[string][]testRef, waive
 			}
 			refCol = strings.Join(items, "<br>")
 		}
-		b.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", id, status, refCol, note))
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", id, status, refCol, note)
 	}
 
 	b.WriteString("\n")

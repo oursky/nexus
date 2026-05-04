@@ -95,7 +95,7 @@ func DecompressZstd(src []byte) ([]byte, error) {
 // Layout written: [stub] | assetsBlob | footer(64 bytes)
 // Footer offsets are absolute from the start of the file.
 func WriteNXPack(w io.Writer, assetsBlob []byte, stubBytes []byte) error {
-	var written uint64
+	var assetsOffset uint64
 
 	// Write optional stub.
 	if len(stubBytes) > 0 {
@@ -103,17 +103,14 @@ func WriteNXPack(w io.Writer, assetsBlob []byte, stubBytes []byte) error {
 		if err != nil {
 			return fmt.Errorf("bundle: write stub: %w", err)
 		}
-		written += uint64(n)
+		assetsOffset = uint64(n)
 	}
 
-	assetsOffset := written
-
 	// Write assets blob.
-	n, err := w.Write(assetsBlob)
+	_, err := w.Write(assetsBlob)
 	if err != nil {
 		return fmt.Errorf("bundle: write assets blob: %w", err)
 	}
-	written += uint64(n)
 
 	// Compute CRC32 over assetsBlob.
 	h := crc32.NewIEEE()

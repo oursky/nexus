@@ -55,10 +55,11 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	serialLog := filepath.Join(workDir, "libkrun.log")
 	workspacePath := filepath.Join(workDir, "workspace.ext4")
+	workspaceBasePath := filepath.Join(workDir, "workspace-base.ext4")
 	dockerDataPath := filepath.Join(workDir, "docker-data.ext4")
 	rootfsPath := filepath.Join(workDir, "rootfs.ext4")
 
-	// Workspace image: restore from snapshot or clone repo base image.
+	// Workspace upperdir: restore from snapshot or create empty.
 	if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
 		log.Printf("[libkrun] workspace %s: phase=restore_workspace snapshot=%s", spec.WorkspaceID, snapID)
 		phaseStart := time.Now()
@@ -72,7 +73,23 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		log.Printf("[libkrun] workspace %s: phase_done=restore_workspace (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
 		log.Printf("[libkrun] workspace %s: restored workspace from snapshot %s", spec.WorkspaceID, snapID)
 	} else if _, err := os.Stat(workspacePath); err != nil {
-		log.Printf("[libkrun] workspace %s: workspace mount strategy=block ext4 (/dev/vdb)", spec.WorkspaceID)
+		log.Printf("[libkrun] workspace %s: workspace mount strategy=hybrid overlay (empty upperdir)", spec.WorkspaceID)
+		log.Printf("[libkrun] workspace %s: phase=create_workspace_upperdir", spec.WorkspaceID)
+		upperPhaseStart := time.Now()
+		phaseCtx, cancel := phaseTimeout(ctx, 1*time.Minute)
+		if err := createWorkspaceOverlayWithContext(phaseCtx, workspacePath); err != nil {
+			cancel()
+			os.RemoveAll(workDir)
+			return nil, fmt.Errorf("create workspace upperdir: %w", err)
+		}
+		cancel()
+		log.Printf("[libkrun] workspace %s: phase_done=create_workspace_upperdir (%s)", spec.WorkspaceID, time.Since(upperPhaseStart).Round(time.Millisecond))
+		log.Printf("[libkrun] workspace %s: created empty workspace upperdir", spec.WorkspaceID)
+	}
+
+	// Workspace base image (read-only lowerdir): always required in hybrid
+	// overlay mode. Create from cached base image if missing.
+	if _, err := os.Stat(workspaceBasePath); err != nil {
 		log.Printf("[libkrun] workspace %s: phase=ensure_base_image", spec.WorkspaceID)
 		basePhaseStart := time.Now()
 		phaseCtx, cancel := phaseTimeout(ctx, 3*time.Minute)
@@ -83,17 +100,17 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 			return nil, fmt.Errorf("ensure base workspace image: %w", err)
 		}
 		log.Printf("[libkrun] workspace %s: phase_done=ensure_base_image (%s)", spec.WorkspaceID, time.Since(basePhaseStart).Round(time.Millisecond))
-		log.Printf("[libkrun] workspace %s: phase=clone_workspace", spec.WorkspaceID)
+		log.Printf("[libkrun] workspace %s: phase=clone_workspace_base", spec.WorkspaceID)
 		clonePhaseStart := time.Now()
 		phaseCtx, cancel = phaseTimeout(ctx, 2*time.Minute)
-		if err := copyFileWithContext(phaseCtx, basePath, workspacePath); err != nil {
+		if err := copyFileWithContext(phaseCtx, basePath, workspaceBasePath); err != nil {
 			cancel()
 			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("clone workspace image: %w", err)
+			return nil, fmt.Errorf("clone workspace base image: %w", err)
 		}
 		cancel()
-		log.Printf("[libkrun] workspace %s: phase_done=clone_workspace (%s)", spec.WorkspaceID, time.Since(clonePhaseStart).Round(time.Millisecond))
-		log.Printf("[libkrun] workspace %s: cloned workspace image", spec.WorkspaceID)
+		log.Printf("[libkrun] workspace %s: phase_done=clone_workspace_base (%s)", spec.WorkspaceID, time.Since(clonePhaseStart).Round(time.Millisecond))
+		log.Printf("[libkrun] workspace %s: cloned workspace base image", spec.WorkspaceID)
 	}
 
 	// Docker data image: restore from snapshot for forks, otherwise create fresh.
@@ -206,8 +223,9 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		RootFSImage:       rootfsPath,
 		AgentPath:         "/usr/local/bin/nexus-guest-agent",
 		BakedRootfs:       spec.BakedRootfs,
-		WorkspaceImage:    workspacePath,
-		WorkspaceHostPath: strings.TrimSpace(spec.ProjectRoot),
+		WorkspaceImage:     workspacePath,
+		WorkspaceBaseImage: workspaceBasePath,
+		WorkspaceHostPath:  strings.TrimSpace(spec.ProjectRoot),
 		DockerDataImage:   dockerDataPath,
 		HostConfigDrive:   spec.HostConfigDrive,
 		MemoryMiB:         spec.MemoryMiB,

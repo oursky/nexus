@@ -661,7 +661,7 @@ func extractInnerTar(r io.Reader, destDir string) error {
 			if mkErr := os.MkdirAll(target, 0o755); mkErr != nil {
 				return mkErr
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if mkErr := os.MkdirAll(filepath.Dir(target), 0o755); mkErr != nil {
 				return mkErr
 			}
@@ -701,102 +701,6 @@ func setEnvPath(key, dir string) {
 	} else {
 		_ = os.Setenv(key, dir+":"+existing)
 	}
-}
-
-// mergeOCILayers applies OCI layers in order onto destDir, creating a merged
-// rootfs suitable for krun_set_root. Each layer is a plain tar archive extracted
-// on top of the previous one (later layers overwrite earlier files, whiteout
-// entries delete files per OCI spec).
-func mergeOCILayers(layerDirs []string, destDir string) error {
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return fmt.Errorf("mergeOCILayers: mkdir dest: %w", err)
-	}
-	for _, layerDir := range layerDirs {
-		// Each layerDir was extracted from a layer tar; re-walk it and copy
-		// entries into destDir, applying whiteout semantics.
-		if err := applyLayerDir(layerDir, destDir); err != nil {
-			return fmt.Errorf("mergeOCILayers: apply layer %s: %w", layerDir, err)
-		}
-	}
-	return nil
-}
-
-// applyLayerDir copies the contents of srcDir into destDir, applying OCI
-// whiteout semantics:
-//   - A file named ".wh.<name>" deletes <name> in destDir.
-//   - A file named ".wh..wh..opq" marks an opaque whiteout: delete all of destDir/<parent>.
-func applyLayerDir(srcDir, destDir string) error {
-	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, relErr := filepath.Rel(srcDir, path)
-		if relErr != nil {
-			return relErr
-		}
-		if rel == "." {
-			return nil
-		}
-
-		base := filepath.Base(rel)
-		destPath := filepath.Join(destDir, rel)
-
-		// Opaque whiteout: delete entire parent directory contents.
-		if base == ".wh..wh..opq" {
-			parent := filepath.Dir(destPath)
-			entries, rdErr := os.ReadDir(parent)
-			if rdErr == nil {
-				for _, e := range entries {
-					_ = os.RemoveAll(filepath.Join(parent, e.Name()))
-				}
-			}
-			return nil
-		}
-
-		// Regular whiteout: delete the named file/dir.
-		if strings.HasPrefix(base, ".wh.") {
-			target := filepath.Join(filepath.Dir(destPath), strings.TrimPrefix(base, ".wh."))
-			_ = os.RemoveAll(target)
-			return nil
-		}
-
-		if info.IsDir() {
-			return os.MkdirAll(destPath, info.Mode())
-		}
-
-		// Symlink.
-		if info.Mode()&os.ModeSymlink != 0 {
-			link, lErr := os.Readlink(path)
-			if lErr != nil {
-				return lErr
-			}
-			_ = os.Remove(destPath)
-			return os.Symlink(link, destPath)
-		}
-
-		// Regular file: copy.
-		return copyFile(path, destPath, info.Mode())
-	})
-}
-
-// copyFile copies src to dst with the given mode.
-func copyFile(src, dst string, mode os.FileMode) error {
-	if mkErr := os.MkdirAll(filepath.Dir(dst), 0o755); mkErr != nil {
-		return mkErr
-	}
-	in, err := os.Open(src) //nolint:gosec
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	//nolint:gosec
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode|0o600)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
 }
 
 func isPortInUseExposeError(err error) bool {

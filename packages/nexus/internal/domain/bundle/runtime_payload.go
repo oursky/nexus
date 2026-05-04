@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/oursky/nexus/packages/nexus/internal/vm/libkrun"
@@ -28,61 +27,6 @@ type runtimePayloadSpec struct {
 	Platform string
 	URL      string
 	SHA256   string
-}
-
-func resolvePortableLibkrunAssets(ctx context.Context) ([]string, error) {
-	localPaths, err := discoverLibkrunAssets()
-	if err != nil {
-		return nil, err
-	}
-	if len(localPaths) > 0 {
-		return localPaths, nil
-	}
-
-	spec, err := currentRuntimePayloadSpec()
-	if err != nil {
-		return nil, err
-	}
-
-	cacheRoot, err := runtimePayloadCacheDir()
-	if err != nil {
-		return nil, err
-	}
-	payloadDir := filepath.Join(cacheRoot, spec.Platform)
-	libDir := filepath.Join(payloadDir, "lib")
-
-	if paths, ok := existingRuntimeLibPaths(libDir); ok {
-		return paths, nil
-	}
-
-	if os.Getenv(envRuntimeOffline) == "1" {
-		return nil, fmt.Errorf("bundle: runtime payload not cached and %s=1 prevents downloading %s", envRuntimeOffline, spec.URL)
-	}
-
-	if err := os.MkdirAll(payloadDir, 0o755); err != nil {
-		return nil, fmt.Errorf("bundle: create runtime cache dir: %w", err)
-	}
-	tarballPath := filepath.Join(payloadDir, "dist.tar.gz")
-	if err := ensureRuntimeTarball(ctx, tarballPath, spec); err != nil {
-		return nil, err
-	}
-	if err := extractRuntimeLibs(tarballPath, libDir); err != nil {
-		return nil, err
-	}
-
-	if paths, ok := existingRuntimeLibPaths(libDir); ok {
-		return paths, nil
-	}
-	return nil, fmt.Errorf("bundle: runtime payload extracted but required libkrun files are missing in %s", libDir)
-}
-
-func currentRuntimePayloadSpec() (runtimePayloadSpec, error) {
-	platform := runtime.GOOS + "-" + runtime.GOARCH
-	spec, ok := runtimePayloadSpecs[platform]
-	if !ok {
-		return runtimePayloadSpec{}, fmt.Errorf("bundle: no portable runtime payload configured for %s/%s", runtime.GOOS, runtime.GOARCH)
-	}
-	return spec, nil
 }
 
 var runtimePayloadSpecs = map[string]runtimePayloadSpec{
@@ -295,7 +239,7 @@ func extractRuntimeLibs(tarballPath, libDir string) error {
 
 		outPath := filepath.Join(libDir, base)
 		switch hdr.Typeflag {
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			out, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644) //nolint:gosec
 			if err != nil {
 				return fmt.Errorf("bundle: create runtime lib %s: %w", outPath, err)

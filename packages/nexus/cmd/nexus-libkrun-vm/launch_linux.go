@@ -173,15 +173,16 @@ func detectKernelFormat(path string) (uint32, bool) {
 
 // launchHybridMode boots a VM with block-backed rootfs and workspace volumes.
 // The root filesystem is a block device (giving the guest true root ownership),
-// and /workspace is mounted from workspace.ext4 by the guest agent.
+// and /workspace is assembled from an overlayfs stack by the guest agent.
 //
 // Guest disk layout:
 //
 //	/dev/vda  rootfs.{raw,qcow2}     → /  (via krun_set_root_disk_remount)
-//	/dev/vdb  workspace.ext4         → /workspace
+//	/dev/vdb  workspace.ext4         → /workspace-upper (overlay upperdir, mutable)
 //	/dev/vdc  docker-data.ext4       → /var/lib/docker
 //	/dev/vdd  hostconfig.ext4        → /run/nexus-host (optional, ro)
-//	virtiofs "nexus-workspace"        → optional auxiliary share
+//	/dev/vde  workspace-base.ext4    → /workspace-base (optional, ro fallback lowerdir)
+//	virtiofs "nexus-workspace"        → /workspace-lower (overlay lowerdir, live host project)
 func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...interface{})) error {
 	rootfsPath := strings.TrimSpace(spec.RootFSImage)
 	if rootfsPath == "" {
@@ -213,6 +214,10 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 		if err := krunAddDisk(ctx, "hostconfig", spec.HostConfigDrive, true); err != nil {
 			logf("warning: host config drive: %v", err)
 		}
+	}
+	logf("add_disk: workspace_base=%s", spec.WorkspaceBaseImage)
+	if err := krunAddDisk(ctx, "workspace_base", spec.WorkspaceBaseImage, true); err != nil {
+		return fmt.Errorf("add workspace base disk: %w", err)
 	}
 
 	logf("set_root_disk_remount: /dev/vda (ext4)")
@@ -253,10 +258,10 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 	}
 	env := []string{
 		"NEXUS_CONTAINER_MODE=1",
-		// Hybrid mode: workspace is mounted from /dev/vdb (workspace.ext4),
-		// which is a per-workspace block image giving proper fork isolation.
-		// Do NOT set NEXUS_WORKSPACE_MODE=virtiofs here — that would mount
-		// the host project dir directly at /workspace (shared across forks).
+		// Hybrid overlay mode: /dev/vdb is the mutable upperdir,
+		// /dev/vde is the baked base lowerdir, and virtiofs provides
+		// the live host project lowerdir. Do NOT set
+		// NEXUS_WORKSPACE_MODE=virtiofs — that bypasses fork isolation.
 		"NEXUS_DOCKER_DEV=/dev/vdc",
 		"HOME=/root",
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -271,6 +276,7 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 	if spec.HostConfigDrive != "" {
 		env = append(env, "NEXUS_CONFIG_DEV=/dev/vdd")
 	}
+	env = append(env, "NEXUS_WORKSPACE_BASE_DEV=/dev/vde")
 	if err := krunSetWorkdir(ctx, "/"); err != nil {
 		return fmt.Errorf("set workdir: %w", err)
 	}
