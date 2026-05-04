@@ -48,7 +48,7 @@ var tunnelCache struct {
 const envE2EDaemonWebSocket = "NEXUS_E2E_DAEMON_WEBSOCKET"
 
 func EnsureDaemon() (*websocket.Conn, error) {
-	return EnsureDaemonVerbose(true)
+	return EnsureDaemonVerbose(false)
 }
 
 func EnsureDaemonVerbose(verbose bool) (*websocket.Conn, error) {
