@@ -243,6 +243,16 @@ func (r *Runner) Run(ctx context.Context, eb ExtractedBundle, cmd []string) erro
 		} else {
 			rootfsImageExists = true
 		}
+		// Sync the run script into the existing rootfs image so that each run
+		// uses the current script (bake vs up vs down) rather than a stale one.
+		if rootfsImageExists {
+			scriptHostPath := filepath.Join(rootfsDir, "workspace", ".nexus-run.sh")
+			if _, err := os.Stat(scriptHostPath); err == nil {
+				if syncErr := writeFileIntoExt4(rootfsImage, scriptHostPath, "/workspace/.nexus-run.sh"); syncErr != nil {
+					return fmt.Errorf("runner: sync run script into rootfs image: %w", syncErr)
+				}
+			}
+		}
 		if err := vmCtx.AddDisk("rootfs", rootfsImage, 0, false); err != nil {
 			return fmt.Errorf("runner: add rootfs disk: %w", err)
 		}
