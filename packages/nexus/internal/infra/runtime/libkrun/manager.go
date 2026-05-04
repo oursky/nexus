@@ -63,8 +63,9 @@ type ManagerConfig struct {
 type Instance struct {
 	WorkspaceID     string
 	WorkDir         string
-	WorkspaceImage  string // ext4 mounted at /workspace
+	WorkspaceImage  string // ext4 mounted at /workspace (fork/snapshot source of truth)
 	DockerDataImage string // sparse ext4 for /var/lib/docker
+	RootfsImage     string // per-workspace rootfs.ext4 (writable clone of base rootfs)
 	SerialLog       string
 	PasstProcess    *os.Process
 	// GuestIP is the host-accessible SSH target (127.0.0.1:PORT).
@@ -85,6 +86,11 @@ type Manager struct {
 const (
 	libkrunPIDFileName = "libkrun.pid"
 	passtPIDFileName   = "passt.pid"
+	// vmDirtyFlagFileName is written when a VM spawns and deleted only on a
+	// clean Stop(). Its presence means the VM's disk images may still have
+	// unflushed kernel page-cache dirty pages and must be fsync'd before any
+	// snapshot copy (fork, checkpoint, etc.).
+	vmDirtyFlagFileName = "vm-dirty.flag"
 )
 
 // NewManager creates a new Manager.
@@ -222,6 +228,46 @@ func (m *Manager) snapshotDockerPath(snapshotID string) string {
 	return filepath.Join(m.cfg.WorkDirRoot, ".snapshots", snapshotID+".docker.ext4")
 }
 
+// PromoteWorkspaceImageFromProjectRoot refreshes the workspace.ext4 artifact for
+// a workspace from the current host project root state.
+//
+// This is intended for virtiofs-first phased-promotion mode where host project
+// files are authoritative during active editing. Callers should stop the parent
+// VM first to establish a clear snapshot boundary.
+func (m *Manager) PromoteWorkspaceImageFromProjectRoot(ctx context.Context, workspaceID, projectRoot string) error {
+	root := strings.TrimSpace(projectRoot)
+	if workspaceID == "" {
+		return fmt.Errorf("workspaceID is required")
+	}
+	if root == "" {
+		return fmt.Errorf("project root is required")
+	}
+
+	manifestHash := resolveManifestHash(root)
+	basePath, err := EnsureBaseImage(ctx, root, m.cfg.BasesDir, manifestHash)
+	if err != nil {
+		return fmt.Errorf("ensure base workspace image: %w", err)
+	}
+
+	workDir := filepath.Join(m.cfg.WorkDirRoot, workspaceID)
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		return fmt.Errorf("create workspace dir %s: %w", workDir, err)
+	}
+
+	workspacePath := filepath.Join(workDir, "workspace.ext4")
+	tmpPath := workspacePath + ".promote.tmp"
+	_ = os.Remove(tmpPath)
+	if err := copyFileWithContext(ctx, basePath, tmpPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("promote workspace clone %s -> %s: %w", basePath, tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, workspacePath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("promote workspace image: %w", err)
+	}
+	return nil
+}
+
 // ForkWorkspaceImage snapshots the parent's workspace and docker images for
 // the child lineage snapshot.
 // The caller (Driver.CheckpointFork) is responsible for stopping the parent VM
@@ -237,15 +283,17 @@ func (m *Manager) ForkWorkspaceImage(_ context.Context, parentWorkspaceID, child
 	// be cleaned up after the snapshot copy finishes.
 	var tmpDockerPath string
 
-	var workspaceSrcPath, dockerSrcPath string
+	var workspaceSrcPath, dockerSrcPath, rootfsSrcPath string
 	if exists {
 		workspaceSrcPath = parent.WorkspaceImage
 		dockerSrcPath = parent.DockerDataImage
+		rootfsSrcPath = parent.RootfsImage
 	} else {
 		// Parent not currently running; find images from its workdir.
 		parentDir := filepath.Join(m.cfg.WorkDirRoot, parentWorkspaceID)
 		workspaceSrcPath = filepath.Join(parentDir, "workspace.ext4")
 		dockerSrcPath = filepath.Join(parentDir, "docker-data.ext4")
+		rootfsSrcPath = filepath.Join(parentDir, "rootfs.ext4")
 
 		// When the workspace was registered but never booted the workdir
 		// images don't exist yet. Fall back to base images so that a fork of
@@ -284,7 +332,28 @@ func (m *Manager) ForkWorkspaceImage(_ context.Context, parentWorkspaceID, child
 		if _, err := os.Stat(p.path); err != nil {
 			return fmt.Errorf("parent %s image not found at %s: %w", p.label, p.path, err)
 		}
+		// Materialize XFS unwritten extents before copying. Stopping a libkrun
+		// VM via SIGINT/SIGKILL does not cause the guest OS to cleanly unmount
+		// its filesystems. The kernel retains dirty mmap page-cache pages for
+		// the virtio-blk backing files even after the process exits. A simple
+		// fsync flushes those dirty pages but does NOT convert XFS "unwritten"
+		// (preallocated) extents to written extents — the data lives only in
+		// page cache. When we snapshot via FICLONE the clone shares the same
+		// unwritten XFS extents but not the page cache, so the forked VM would
+		// read zeros from disk. materializeExtents does a read-then-write pass
+		// to force the kernel to realise all page-cache data into real disk
+		// blocks, converting unwritten extents to written ones, before we
+		// FICLONE the result.
+		log.Printf("[libkrun] ForkWorkspaceImage: materializing %s image extents before copy", p.label)
+		if err := materializeExtents(p.path); err != nil {
+			log.Printf("[libkrun] ForkWorkspaceImage: materializeExtents %s: %v (continuing)", p.label, err)
+		}
 	}
+
+	// rootfsSrcPath is resolved above (from running instance or workdir) so the
+	// compiler is satisfied; rootfs is always re-cloned from the base on spawn
+	// and is not included in the fork snapshot.
+	_ = rootfsSrcPath
 
 	snapshotsDir := filepath.Join(m.cfg.WorkDirRoot, ".snapshots")
 	if err := os.MkdirAll(snapshotsDir, 0o755); err != nil {

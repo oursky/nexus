@@ -443,6 +443,26 @@ func (d *Driver) CheckpointFork(ctx context.Context, parentID, childID string) (
 		if stopErr := d.manager.Stop(ctx, parentID); stopErr != nil {
 			log.Printf("[libkrun] CheckpointFork: stop parent %s: %v (continuing)", parentID, stopErr)
 		}
+	} else {
+		// Parent is not in the instances map — it may have just crashed or been
+		// stopped concurrently (e.g. monitor goroutine removed it). Ensure any
+		// lingering VM/passt process is fully dead before we copy the disk
+		// image; the ext4 file is only consistent once the guest has unmounted
+		// it (i.e. the process has exited).
+		parentWorkDir := filepath.Join(d.manager.cfg.WorkDirRoot, parentID)
+		log.Printf("[libkrun] CheckpointFork: parent %s not running; ensuring processes stopped before copy", parentID)
+		cleanupWorkspaceRuntimeArtifacts(parentWorkDir, parentID)
+	}
+
+	if shouldPromoteWorkspaceOnFork() && strings.TrimSpace(parentRoot) != "" {
+		log.Printf("[libkrun] CheckpointFork: phase=promote_workspace parent=%s", parentID)
+		if promoteErr := d.manager.PromoteWorkspaceImageFromProjectRoot(ctx, parentID, parentRoot); promoteErr != nil {
+			if parentWasRunning && parentRoot != "" {
+				_ = d.EnsureStarted(ctx, parentID, parentRoot)
+			}
+			return "", fmt.Errorf("promote workspace image before fork: %w", promoteErr)
+		}
+		log.Printf("[libkrun] CheckpointFork: phase_done=promote_workspace parent=%s", parentID)
 	}
 
 	if err := d.manager.ForkWorkspaceImage(ctx, parentID, childID, parentRoot); err != nil {
@@ -458,6 +478,19 @@ func (d *Driver) CheckpointFork(ctx context.Context, parentID, childID string) (
 		}
 	}
 	return childID, nil
+}
+
+func shouldPromoteWorkspaceOnFork() bool {
+	raw := strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_FORK_PROMOTE"))
+	if raw == "" {
+		return false
+	}
+	switch strings.ToLower(raw) {
+	case "0", "false", "off", "no":
+		return false
+	default:
+		return true
+	}
 }
 
 // Destroy stops the VM and removes all state.

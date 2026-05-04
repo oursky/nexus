@@ -57,6 +57,10 @@ func (m *Manager) Stop(_ context.Context, workspaceID string) error {
 	}
 	_ = os.Remove(filepath.Join(inst.WorkDir, libkrunPIDFileName))
 	_ = os.Remove(filepath.Join(inst.WorkDir, passtPIDFileName))
+	// Clear the dirty flag so it doesn't accumulate across normal stop/start
+	// cycles. Note: Stop() sends SIGINT and does NOT guarantee a clean guest
+	// unmount, so ForkWorkspaceImage always fsyncs regardless of this flag.
+	_ = os.Remove(filepath.Join(inst.WorkDir, vmDirtyFlagFileName))
 	return nil
 }
 

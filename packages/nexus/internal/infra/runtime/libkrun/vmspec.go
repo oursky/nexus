@@ -13,10 +13,10 @@ package libkrun
 // Guest disk layout (hybrid mode):
 //
 //	/dev/vda  rootfs.{raw,qcow2}     → /  (via krun_set_root_disk_remount)
-//	/dev/vdb  workspace.ext4         → reserved workspace state volume
+//	/dev/vdb  workspace.ext4         → /workspace
 //	/dev/vdc  docker-data.ext4       → /var/lib/docker
 //	/dev/vdd  hostconfig.ext4        → /run/nexus-host (optional, ro)
-//	virtiofs "nexus-workspace"        → /workspace (rw)
+//	virtiofs "nexus-workspace"        → optional auxiliary host share
 type VMSpec struct {
 	WorkspaceID string `json:"workspace_id"`
 	// WorkspaceMode selects guest assembly path. Current production path is
@@ -44,11 +44,11 @@ type VMSpec struct {
 	// can skip the heavy apt-get/npm install path.
 	BakedRootfs bool `json:"baked_rootfs,omitempty"`
 
-	// WorkspaceImage is the per-workspace ext4 image reserved for workspace
-	// state/snapshots in hybrid mode.
+	// WorkspaceImage is the per-workspace ext4 image mounted at /workspace in
+	// hybrid mode and used for snapshot/fork lineage.
 	WorkspaceImage string `json:"workspace_image"`
 	// WorkspaceHostPath is the daemon-host project path used for virtiofs share
-	// in experimental workspace mode.
+	// when attached as an optional auxiliary host share.
 	WorkspaceHostPath string `json:"workspace_host_path,omitempty"`
 
 	// DockerDataImage is a sparse ext4 image for Docker's data-root
