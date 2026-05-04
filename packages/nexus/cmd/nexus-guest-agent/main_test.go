@@ -531,6 +531,9 @@ func TestSetupWorkspaceMountSuccess(t *testing.T) {
 	origDevice := workspaceDevicePath
 	origBaseDev := workspaceBaseDevicePath
 	origMount := workspaceMountPoint
+	origLower := workspaceLowerMountPoint
+	origUpper := workspaceUpperMountPoint
+	origBase := workspaceBaseMountPoint
 	origAttempts := workspaceDeviceAttempts
 	origInterval := workspaceDeviceInterval
 	origMkdir := workspaceMkdirAll
@@ -540,6 +543,9 @@ func TestSetupWorkspaceMountSuccess(t *testing.T) {
 		workspaceDevicePath = origDevice
 		workspaceBaseDevicePath = origBaseDev
 		workspaceMountPoint = origMount
+		workspaceLowerMountPoint = origLower
+		workspaceUpperMountPoint = origUpper
+		workspaceBaseMountPoint = origBase
 		workspaceDeviceAttempts = origAttempts
 		workspaceDeviceInterval = origInterval
 		workspaceMkdirAll = origMkdir
@@ -550,6 +556,10 @@ func TestSetupWorkspaceMountSuccess(t *testing.T) {
 	workspaceDevicePath = "/test/vdb"
 	workspaceBaseDevicePath = "/test/vde"
 	workspaceMountPoint = "/test/workspace"
+	workspaceLowerMountPoint = "/test/workspace-lower"
+	workspaceUpperMountPoint = "/test/workspace-upper"
+	workspaceBaseMountPoint = "/test/workspace-base"
+	workspaceOverlayWorkDir = "/test/workspace-upper/.workdir"
 	workspaceDeviceAttempts = 1
 	workspaceDeviceInterval = 0
 
@@ -558,10 +568,8 @@ func TestSetupWorkspaceMountSuccess(t *testing.T) {
 		mkdirCalls = append(mkdirCalls, path)
 		return nil
 	}
+	// Accept stat for both workspace device and docker device (mountDockerData).
 	workspaceStat = func(path string) (os.FileInfo, error) {
-		if path != workspaceDevicePath {
-			t.Fatalf("unexpected stat path %q", path)
-		}
 		return fakeFileInfo{name: "vdb"}, nil
 	}
 
@@ -575,7 +583,7 @@ func TestSetupWorkspaceMountSuccess(t *testing.T) {
 		t.Fatalf("expected setupWorkspaceMount success, got %v", err)
 	}
 
-	// Should mkdir all mount points.
+	// Should mkdir all overlay mount points.
 	expectedMkdirs := map[string]bool{
 		"/test/workspace":       false,
 		"/test/workspace-lower": false,
@@ -593,9 +601,10 @@ func TestSetupWorkspaceMountSuccess(t *testing.T) {
 		}
 	}
 
-	// Should mount: ext4 upperdir, ext4 base lowerdir (ro), virtiofs lowerdir (ro), overlay merged.
-	if len(mountCalls) != 4 {
-		t.Fatalf("expected 4 mount calls, got %d", len(mountCalls))
+	// Should mount: ext4 upperdir, ext4 base lowerdir (ro), virtiofs lowerdir (ro),
+	// overlay merged, then docker-data at /var/lib/docker.
+	if len(mountCalls) != 5 {
+		t.Fatalf("expected 5 mount calls, got %d: %+v", len(mountCalls), mountCalls)
 	}
 	if mountCalls[0].source != "/test/vdb" || mountCalls[0].target != "/test/workspace-upper" || mountCalls[0].fstype != "ext4" {
 		t.Fatalf("unexpected first mount args %+v", mountCalls[0])
@@ -609,12 +618,19 @@ func TestSetupWorkspaceMountSuccess(t *testing.T) {
 	if mountCalls[3].source != "overlay" || mountCalls[3].target != "/test/workspace" || mountCalls[3].fstype != "overlay" {
 		t.Fatalf("unexpected fourth mount args %+v", mountCalls[3])
 	}
+	if mountCalls[4].target != "/var/lib/docker" || mountCalls[4].fstype != "ext4" {
+		t.Fatalf("unexpected fifth mount args (docker-data) %+v", mountCalls[4])
+	}
 }
 
 func TestSetupWorkspaceMountFallbackToBase(t *testing.T) {
 	origDevice := workspaceDevicePath
 	origBaseDev := workspaceBaseDevicePath
 	origMount := workspaceMountPoint
+	origLower := workspaceLowerMountPoint
+	origUpper := workspaceUpperMountPoint
+	origBase := workspaceBaseMountPoint
+	origOverlayWorkDir := workspaceOverlayWorkDir
 	origAttempts := workspaceDeviceAttempts
 	origInterval := workspaceDeviceInterval
 	origMkdir := workspaceMkdirAll
@@ -624,6 +640,10 @@ func TestSetupWorkspaceMountFallbackToBase(t *testing.T) {
 		workspaceDevicePath = origDevice
 		workspaceBaseDevicePath = origBaseDev
 		workspaceMountPoint = origMount
+		workspaceLowerMountPoint = origLower
+		workspaceUpperMountPoint = origUpper
+		workspaceBaseMountPoint = origBase
+		workspaceOverlayWorkDir = origOverlayWorkDir
 		workspaceDeviceAttempts = origAttempts
 		workspaceDeviceInterval = origInterval
 		workspaceMkdirAll = origMkdir
@@ -634,6 +654,10 @@ func TestSetupWorkspaceMountFallbackToBase(t *testing.T) {
 	workspaceDevicePath = "/test/vdb"
 	workspaceBaseDevicePath = "/test/vde"
 	workspaceMountPoint = "/test/workspace"
+	workspaceLowerMountPoint = "/test/workspace-lower"
+	workspaceUpperMountPoint = "/test/workspace-upper"
+	workspaceBaseMountPoint = "/test/workspace-base"
+	workspaceOverlayWorkDir = "/test/workspace-upper/.workdir"
 	workspaceDeviceAttempts = 1
 	workspaceDeviceInterval = 0
 
@@ -687,6 +711,10 @@ func TestSetupWorkspaceMountBusyOverlayIsIgnored(t *testing.T) {
 	origDevice := workspaceDevicePath
 	origBaseDev := workspaceBaseDevicePath
 	origMount := workspaceMountPoint
+	origLower := workspaceLowerMountPoint
+	origUpper := workspaceUpperMountPoint
+	origBase := workspaceBaseMountPoint
+	origOverlayWorkDir := workspaceOverlayWorkDir
 	origAttempts := workspaceDeviceAttempts
 	origInterval := workspaceDeviceInterval
 	origMkdir := workspaceMkdirAll
@@ -697,6 +725,10 @@ func TestSetupWorkspaceMountBusyOverlayIsIgnored(t *testing.T) {
 		workspaceDevicePath = origDevice
 		workspaceBaseDevicePath = origBaseDev
 		workspaceMountPoint = origMount
+		workspaceLowerMountPoint = origLower
+		workspaceUpperMountPoint = origUpper
+		workspaceBaseMountPoint = origBase
+		workspaceOverlayWorkDir = origOverlayWorkDir
 		workspaceDeviceAttempts = origAttempts
 		workspaceDeviceInterval = origInterval
 		workspaceMkdirAll = origMkdir
@@ -708,13 +740,24 @@ func TestSetupWorkspaceMountBusyOverlayIsIgnored(t *testing.T) {
 	workspaceDevicePath = "/test/vdb"
 	workspaceBaseDevicePath = "/test/vde"
 	workspaceMountPoint = "/test/workspace"
+	workspaceLowerMountPoint = "/test/workspace-lower"
+	workspaceUpperMountPoint = "/test/workspace-upper"
+	workspaceBaseMountPoint = "/test/workspace-base"
+	workspaceOverlayWorkDir = "/test/workspace-upper/.workdir"
 	workspaceDeviceAttempts = 1
 	workspaceDeviceInterval = 0
 	workspaceMkdirAll = func(string, os.FileMode) error { return nil }
 	workspaceStat = func(string) (os.FileInfo, error) { return fakeFileInfo{name: "vdb"}, nil }
 	workspaceMountFunc = func(string, string, string, uintptr, string) error { return unix.EBUSY }
+	// Provide all mount entries so every EBUSY is treated as "already mounted".
 	workspaceReadProcMounts = func(string) ([]byte, error) {
-		return []byte("overlay /test/workspace overlay rw,relatime 0 0\n"), nil
+		return []byte(
+			"/test/vdb /test/workspace-upper ext4 rw,relatime 0 0\n" +
+				"/test/vde /test/workspace-base ext4 rw,relatime 0 0\n" +
+				"nexus-workspace /test/workspace-lower virtiofs rw,relatime 0 0\n" +
+				"overlay /test/workspace overlay rw,relatime 0 0\n" +
+				"/dev/vdc /var/lib/docker ext4 rw,relatime 0 0\n",
+		), nil
 	}
 
 	if err := setupWorkspaceMount(); err != nil {
