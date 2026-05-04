@@ -831,15 +831,19 @@ func TestService_Fork_RemovedParent(t *testing.T) {
 	}
 }
 
-func TestService_Fork_MissingRef(t *testing.T) {
+func TestService_Fork_InheritsParentRef(t *testing.T) {
 	svc, repo, _, _ := newTestService()
 	ctx := context.Background()
 
 	parent := createAndStore(t, repo, "ws-fork-noref", workspace.StateRunning)
 
-	_, err := svc.Fork(ctx, parent.ID, ForkSpec{ChildRef: "  "})
-	if err == nil {
-		t.Fatal("expected error for empty childRef")
+	// Blank ChildRef should inherit the parent's ref rather than returning an error.
+	child, err := svc.Fork(ctx, parent.ID, ForkSpec{ChildRef: "  "})
+	if err != nil {
+		t.Fatalf("unexpected error for empty childRef: %v", err)
+	}
+	if child.Ref != parent.Ref {
+		t.Fatalf("expected child ref %q, got %q", parent.Ref, child.Ref)
 	}
 }
 

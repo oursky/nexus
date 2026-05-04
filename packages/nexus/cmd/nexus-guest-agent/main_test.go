@@ -550,16 +550,9 @@ func TestSetupWorkspaceMountSuccess(t *testing.T) {
 	workspaceDeviceAttempts = 1
 	workspaceDeviceInterval = 0
 
-	mkdirCalled := false
-	mountCalled := false
+	mkdirCalls := []string{}
 	workspaceMkdirAll = func(path string, mode os.FileMode) error {
-		mkdirCalled = true
-		if path != workspaceMountPoint {
-			t.Fatalf("unexpected mkdir path %q", path)
-		}
-		if mode != 0o755 {
-			t.Fatalf("unexpected mkdir mode %v", mode)
-		}
+		mkdirCalls = append(mkdirCalls, path)
 		return nil
 	}
 	workspaceStat = func(path string) (os.FileInfo, error) {
@@ -568,22 +561,111 @@ func TestSetupWorkspaceMountSuccess(t *testing.T) {
 		}
 		return fakeFileInfo{name: "vdb"}, nil
 	}
+
+	mountCalls := []struct{ source, target, fstype string }{}
 	workspaceMountFunc = func(source, target, fstype string, flags uintptr, data string) error {
-		mountCalled = true
-		if source != workspaceDevicePath || target != workspaceMountPoint || fstype != "ext4" {
-			t.Fatalf("unexpected mount args source=%q target=%q fstype=%q", source, target, fstype)
-		}
+		mountCalls = append(mountCalls, struct{ source, target, fstype string }{source, target, fstype})
 		return nil
 	}
 
 	if err := setupWorkspaceMount(); err != nil {
 		t.Fatalf("expected setupWorkspaceMount success, got %v", err)
 	}
-	if !mkdirCalled {
-		t.Fatal("expected workspace mkdir to be called")
+
+	// Should mkdir workspace, lower, and upper mount points.
+	expectedMkdirs := map[string]bool{
+		"/test/workspace":       false,
+		"/test/workspace-lower": false,
+		"/test/workspace-upper": false,
 	}
-	if !mountCalled {
-		t.Fatal("expected workspace mount to be called")
+	for _, p := range mkdirCalls {
+		if _, ok := expectedMkdirs[p]; ok {
+			expectedMkdirs[p] = true
+		}
+	}
+	for p, found := range expectedMkdirs {
+		if !found {
+			t.Fatalf("expected mkdir to be called for %s", p)
+		}
+	}
+
+	// Should mount: ext4 upperdir, virtiofs lowerdir, overlay merged.
+	if len(mountCalls) < 3 {
+		t.Fatalf("expected at least 3 mount calls, got %d", len(mountCalls))
+	}
+	if mountCalls[0].source != "/test/vdb" || mountCalls[0].target != "/test/workspace-upper" || mountCalls[0].fstype != "ext4" {
+		t.Fatalf("unexpected first mount args %+v", mountCalls[0])
+	}
+	if mountCalls[1].source != "nexus-workspace" || mountCalls[1].target != "/test/workspace-lower" || mountCalls[1].fstype != "virtiofs" {
+		t.Fatalf("unexpected second mount args %+v", mountCalls[1])
+	}
+	if mountCalls[2].source != "overlay" || mountCalls[2].target != "/test/workspace" || mountCalls[2].fstype != "overlay" {
+		t.Fatalf("unexpected third mount args %+v", mountCalls[2])
+	}
+}
+
+func TestSetupWorkspaceMountFallbackToBlock(t *testing.T) {
+	origDevice := workspaceDevicePath
+	origMount := workspaceMountPoint
+	origAttempts := workspaceDeviceAttempts
+	origInterval := workspaceDeviceInterval
+	origMkdir := workspaceMkdirAll
+	origStat := workspaceStat
+	origMountFunc := workspaceMountFunc
+	t.Cleanup(func() {
+		workspaceDevicePath = origDevice
+		workspaceMountPoint = origMount
+		workspaceDeviceAttempts = origAttempts
+		workspaceDeviceInterval = origInterval
+		workspaceMkdirAll = origMkdir
+		workspaceStat = origStat
+		workspaceMountFunc = origMountFunc
+	})
+
+	workspaceDevicePath = "/test/vdb"
+	workspaceMountPoint = "/test/workspace"
+	workspaceDeviceAttempts = 1
+	workspaceDeviceInterval = 0
+
+	workspaceMkdirAll = func(string, os.FileMode) error { return nil }
+	workspaceStat = func(string) (os.FileInfo, error) { return fakeFileInfo{name: "vdb"}, nil }
+
+	mountCalls := []struct{ source, target, fstype string }{}
+	workspaceMountFunc = func(source, target, fstype string, flags uintptr, data string) error {
+		mountCalls = append(mountCalls, struct{ source, target, fstype string }{source, target, fstype})
+		// Fail the virtiofs lowerdir mount to trigger fallback.
+		if source == "nexus-workspace" {
+			return unix.ENOENT
+		}
+		return nil
+	}
+
+	if err := setupWorkspaceMount(); err != nil {
+		t.Fatalf("expected setupWorkspaceMount success with fallback, got %v", err)
+	}
+
+	// Should have tried overlay then fallen back to direct ext4.
+	if len(mountCalls) < 2 {
+		t.Fatalf("expected at least 2 mount calls, got %d", len(mountCalls))
+	}
+	// First call: ext4 at upperdir.
+	if mountCalls[0].source != "/test/vdb" || mountCalls[0].target != "/test/workspace-upper" || mountCalls[0].fstype != "ext4" {
+		t.Fatalf("unexpected first mount args %+v", mountCalls[0])
+	}
+	// Second call should be virtiofs (which fails).
+	if mountCalls[1].source != "nexus-workspace" || mountCalls[1].target != "/test/workspace-lower" || mountCalls[1].fstype != "virtiofs" {
+		t.Fatalf("unexpected second mount args %+v", mountCalls[1])
+	}
+	// After virtiofs fails, fallback mounts ext4 at /workspace.
+	foundFallback := false
+	for _, c := range mountCalls[2:] {
+		if c.source == "/test/vdb" && c.target == "/test/workspace" && c.fstype == "ext4" {
+			foundFallback = true
+			break
+		}
+	}
+	if !foundFallback {
+		t.Fatalf("expected fallback ext4 mount at /workspace, got calls: %+v", mountCalls)
 	}
 }
 
@@ -720,7 +802,9 @@ func TestSetupWorkspaceMountBusyUnmountsNestedAndRetries(t *testing.T) {
 	mountCalls := 0
 	workspaceMountFunc = func(source, target, fstype string, flags uintptr, data string) error {
 		mountCalls++
-		if mountCalls == 1 {
+		// Call 1 = overlay upperdir (EBUSY), call 2 = fallback workspace (EBUSY),
+		// call 3 = retry workspace (success).
+		if mountCalls == 1 || mountCalls == 2 {
 			return unix.EBUSY
 		}
 		mountedActive = true

@@ -28,6 +28,11 @@ var (
 	kernelMkdirAll                  = os.MkdirAll
 	kernelMountFunc                 = unix.Mount
 
+	// Hybrid overlayfs mount points.
+	workspaceLowerMountPoint = "/workspace-lower"
+	workspaceUpperMountPoint = "/workspace-upper"
+	workspaceOverlayWorkDir  = "/workspace-upper/.workdir"
+
 	// virtiofsWorkspaceOnce ensures setupVirtiofsWorkspace runs exactly once
 	// during agent lifecycle.
 	virtiofsWorkspaceOnce    sync.Once
@@ -144,11 +149,13 @@ func setupVirtiofsWorkspaceOnce() error {
 }
 
 // setupBlockWorkspaceMount mounts the block workspace device and docker-data.
-// It fails hard if any device is not available — there is no legitimate case
-// where a block-mode workspace should boot without its volumes.
+// It prefers the hybrid overlayfs path (virtiofs lowerdir + ext4 upperdir) and
+// falls back to a plain ext4 mount at /workspace if overlay assembly fails.
 func setupBlockWorkspaceMount() error {
-	if err := workspaceMkdirAll(workspaceMountPoint, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", workspaceMountPoint, err)
+	for _, dir := range []string{workspaceMountPoint, workspaceLowerMountPoint, workspaceUpperMountPoint} {
+		if err := workspaceMkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dir, err)
+		}
 	}
 
 	available, err := waitForWorkspaceDevice()
@@ -160,6 +167,76 @@ func setupBlockWorkspaceMount() error {
 			workspaceDevicePath, time.Duration(workspaceDeviceAttempts)*workspaceDeviceInterval)
 	}
 
+	if err := tryMountHybridOverlay(); err != nil {
+		emitDiagnostic("agent hybrid overlay failed (%v), falling back to block workspace", err)
+		if fallbackErr := mountBlockWorkspaceDirect(); fallbackErr != nil {
+			return fallbackErr
+		}
+	}
+
+	return mountDockerData()
+}
+
+// tryMountHybridOverlay assembles the overlayfs workspace:
+//   lowerdir: virtiofs "nexus-workspace" (live read-only host project)
+//   upperdir: /dev/vdb mounted at /workspace-upper (mutable workspace state)
+//   workdir:  /workspace-upper/.workdir
+//   merged:   /workspace
+func tryMountHybridOverlay() error {
+	// Mount block device as the overlay upperdir.
+	if err := workspaceMountFunc(workspaceDevicePath, workspaceUpperMountPoint, "ext4", 0, ""); err != nil {
+		if errors.Is(err, unix.EBUSY) {
+			if !mountPointIsActive(workspaceDevicePath, workspaceUpperMountPoint) {
+				return fmt.Errorf("mount %s at %s returned EBUSY but not active", workspaceDevicePath, workspaceUpperMountPoint)
+			}
+		} else {
+			return fmt.Errorf("mount %s at %s: %w", workspaceDevicePath, workspaceUpperMountPoint, err)
+		}
+	}
+
+	// Ensure overlay workdir exists on the same filesystem as upperdir.
+	if err := workspaceMkdirAll(workspaceOverlayWorkDir, 0o755); err != nil {
+		_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
+		return fmt.Errorf("mkdir %s: %w", workspaceOverlayWorkDir, err)
+	}
+
+	// Mount virtiofs lowerdir (read-only host project directory).
+	if err := workspaceMountFunc("nexus-workspace", workspaceLowerMountPoint, "virtiofs", unix.MS_RDONLY, ""); err != nil {
+		if errors.Is(err, unix.EBUSY) {
+			if !mountPointIsActive("nexus-workspace", workspaceLowerMountPoint) {
+				_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
+				return fmt.Errorf("mount virtiofs at %s returned EBUSY but not active", workspaceLowerMountPoint)
+			}
+		} else {
+			_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
+			return fmt.Errorf("mount virtiofs nexus-workspace → %s: %w", workspaceLowerMountPoint, err)
+		}
+	}
+
+	// Assemble overlayfs at /workspace.
+	overlayOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", workspaceLowerMountPoint, workspaceUpperMountPoint, workspaceOverlayWorkDir)
+	if err := workspaceMountFunc("overlay", workspaceMountPoint, "overlay", 0, overlayOpts); err != nil {
+		if errors.Is(err, unix.EBUSY) {
+			if !mountPointIsActive("overlay", workspaceMountPoint) {
+				_ = workspaceUnmountFunc(workspaceLowerMountPoint, 0)
+				_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
+				return fmt.Errorf("mount overlay at %s returned EBUSY but not active", workspaceMountPoint)
+			}
+		} else {
+			_ = workspaceUnmountFunc(workspaceLowerMountPoint, 0)
+			_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
+			return fmt.Errorf("mount overlay at %s: %w", workspaceMountPoint, err)
+		}
+	}
+
+	emitDiagnostic("agent hybrid overlay workspace mounted at %s", workspaceMountPoint)
+	return nil
+}
+
+// mountBlockWorkspaceDirect mounts the workspace block device directly at
+// /workspace as a plain ext4 filesystem. Used as the fallback when hybrid
+// overlayfs assembly fails.
+func mountBlockWorkspaceDirect() error {
 	if err := workspaceMountFunc(workspaceDevicePath, workspaceMountPoint, "ext4", 0, ""); err != nil {
 		if errors.Is(err, unix.EBUSY) {
 			mounted, mErr := workspaceMountIsActive(workspaceDevicePath)
@@ -167,13 +244,13 @@ func setupBlockWorkspaceMount() error {
 				return fmt.Errorf("verify workspace mount after EBUSY: %w", mErr)
 			}
 			if mounted {
-				goto mountDockerData
+				return nil
 			}
 			if err := workspaceUnmountNonWorkspaceMounts(); err != nil {
 				return fmt.Errorf("clear conflicting workspace mounts after EBUSY: %w", err)
 			}
 			if retryErr := workspaceMountFunc(workspaceDevicePath, workspaceMountPoint, "ext4", 0, ""); retryErr == nil {
-				goto mountDockerData
+				return nil
 			} else if !errors.Is(retryErr, unix.EBUSY) {
 				return fmt.Errorf("retry mount %s at %s after clearing conflicts: %w", workspaceDevicePath, workspaceMountPoint, retryErr)
 			}
@@ -182,23 +259,22 @@ func setupBlockWorkspaceMount() error {
 				return fmt.Errorf("verify workspace mount after retry EBUSY: %w", mErr)
 			}
 			if mounted {
-				goto mountDockerData
+				return nil
 			}
 			return fmt.Errorf("mount %s at %s returned EBUSY but workspace mount is not active", workspaceDevicePath, workspaceMountPoint)
 		}
 		return fmt.Errorf("mount %s at %s: %w", workspaceDevicePath, workspaceMountPoint, err)
 	}
+	return nil
+}
 
-mountDockerData:
-	// In hybrid mode the workspace is a block device (vdb), but docker-data
-	// (vdc) must also be mounted at /var/lib/docker so that Docker writes to
-	// its dedicated image rather than the rootfs.  The virtiofs path already
-	// handles this in setupVirtiofsWorkspace; replicate it here.
+// mountDockerData waits for the docker-data block device and mounts it at
+// /var/lib/docker.
+func mountDockerData() error {
 	dockerDev := dockerDevPath()
 	if err := workspaceMkdirAll("/var/lib/docker", 0o755); err != nil {
 		return fmt.Errorf("mkdir /var/lib/docker: %w", err)
 	}
-	// Wait up to 30 s for docker-data block device to appear.
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if _, statErr := workspaceStat(dockerDev); statErr == nil {
@@ -216,25 +292,33 @@ mountDockerData:
 	} else {
 		emitDiagnostic("agent docker-data mounted at /var/lib/docker (hybrid mode)")
 	}
-
 	return nil
 }
 
-func workspaceMountIsActive(devicePath string) (bool, error) {
+// mountPointIsActive reports whether source is mounted at target according to
+// /proc/mounts.
+func mountPointIsActive(source, target string) bool {
 	raw, err := workspaceReadProcMounts("/proc/mounts")
 	if err != nil {
-		return false, err
+		return false
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
-		if fields[1] == workspaceMountPoint {
-			return fields[0] == devicePath, nil
+		if fields[1] == target {
+			return fields[0] == source
 		}
 	}
-	return false, nil
+	return false
+}
+
+// workspaceMountIsActive reports whether workspaceDevicePath is mounted at
+// workspaceMountPoint. It is kept for backward compatibility with the block
+// workspace fallback path.
+func workspaceMountIsActive(devicePath string) (bool, error) {
+	return mountPointIsActive(devicePath, workspaceMountPoint), nil
 }
 
 func workspaceUnmountNonWorkspaceMounts() error {
