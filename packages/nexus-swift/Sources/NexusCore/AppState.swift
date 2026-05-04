@@ -534,6 +534,138 @@ public final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Workspace export / import via CLI
+
+    private static let bundleLogger = Logger(subsystem: "com.nexus.NexusApp", category: "Bundle")
+
+    /// Spawns `nexus workspace export <id> --out <path>` and returns (ok, combinedOutput).
+    public func exportWorkspaceViaCLI(workspaceID: String, outPath: String) async -> (Bool, String) {
+        let log = Self.bundleLogger
+        let wsURL = daemonWebSocketURL?.absoluteString
+        let tok = daemonToken
+        let sshHost = cachedProfile?.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sshPort = cachedProfile?.sshPort
+        let sshIdentity = cachedProfile?.sshIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        log.info("export start workspaceID=\(workspaceID, privacy: .public) out=\(outPath, privacy: .public)")
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let nexusBin = Self.nexusBinaryPath()
+
+                var env = ProcessInfo.processInfo.environment
+                env["SHELL"] = "/bin/sh"
+                if let u = wsURL    { env["NEXUS_E2E_DAEMON_WEBSOCKET"] = u }
+                if let t = tok      { env["NEXUS_DAEMON_TOKEN"] = t }
+                if let h = sshHost, !h.isEmpty { env["NEXUS_DAEMON_SSH_HOST"] = h }
+                if let p = sshPort, p > 0 { env["NEXUS_DAEMON_SSH_PORT"] = "\(p)" }
+                if let id = sshIdentity, !id.isEmpty {
+                    env["NEXUS_DAEMON_SSH_IDENTITY"] = id
+                }
+
+                let args = ["workspace", "export", workspaceID, "--out", outPath]
+                log.info("export running: \(nexusBin) \(args.joined(separator: " "), privacy: .public)")
+
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: nexusBin)
+                proc.arguments = args
+                proc.environment = env
+
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                proc.standardOutput = outPipe
+                proc.standardError  = errPipe
+
+                do {
+                    try proc.run()
+                } catch {
+                    log.error("export launch failed: \(error.localizedDescription, privacy: .public)")
+                    continuation.resume(returning: (false, "Could not launch nexus: \(error.localizedDescription)"))
+                    return
+                }
+                proc.waitUntilExit()
+
+                let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let combined = [out, err].filter { !$0.isEmpty }.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let ok = proc.terminationStatus == 0
+
+                if ok {
+                    log.info("export succeeded workspaceID=\(workspaceID, privacy: .public)")
+                    continuation.resume(returning: (true, combined))
+                } else {
+                    log.error("export failed (exit \(proc.terminationStatus, privacy: .public)): \(combined, privacy: .public)")
+                    continuation.resume(returning: (false, combined))
+                }
+            }
+        }
+    }
+
+    /// Spawns `nexus workspace import --from <path>` and returns (ok, combinedOutput).
+    public func importWorkspaceViaCLI(fromPath: String) async -> (Bool, String) {
+        let log = Self.bundleLogger
+        let wsURL = daemonWebSocketURL?.absoluteString
+        let tok = daemonToken
+        let sshHost = cachedProfile?.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sshPort = cachedProfile?.sshPort
+        let sshIdentity = cachedProfile?.sshIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        log.info("import start from=\(fromPath, privacy: .public)")
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let nexusBin = Self.nexusBinaryPath()
+
+                var env = ProcessInfo.processInfo.environment
+                env["SHELL"] = "/bin/sh"
+                if let u = wsURL    { env["NEXUS_E2E_DAEMON_WEBSOCKET"] = u }
+                if let t = tok      { env["NEXUS_DAEMON_TOKEN"] = t }
+                if let h = sshHost, !h.isEmpty { env["NEXUS_DAEMON_SSH_HOST"] = h }
+                if let p = sshPort, p > 0 { env["NEXUS_DAEMON_SSH_PORT"] = "\(p)" }
+                if let id = sshIdentity, !id.isEmpty {
+                    env["NEXUS_DAEMON_SSH_IDENTITY"] = id
+                }
+
+                let args = ["workspace", "import", "--from", fromPath]
+                log.info("import running: \(nexusBin) \(args.joined(separator: " "), privacy: .public)")
+
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: nexusBin)
+                proc.arguments = args
+                proc.environment = env
+
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                proc.standardOutput = outPipe
+                proc.standardError  = errPipe
+
+                do {
+                    try proc.run()
+                } catch {
+                    log.error("import launch failed: \(error.localizedDescription, privacy: .public)")
+                    continuation.resume(returning: (false, "Could not launch nexus: \(error.localizedDescription)"))
+                    return
+                }
+                proc.waitUntilExit()
+
+                let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let combined = [out, err].filter { !$0.isEmpty }.joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let ok = proc.terminationStatus == 0
+
+                if ok {
+                    log.info("import succeeded")
+                    continuation.resume(returning: (true, combined))
+                } else {
+                    log.error("import failed (exit \(proc.terminationStatus, privacy: .public)): \(combined, privacy: .public)")
+                    continuation.resume(returning: (false, combined))
+                }
+            }
+        }
+    }
+
     // MARK: - Daemon health check (runs on daemon host via SSH)
 
     private static let daemonCheckLogger = Logger(subsystem: "com.nexus.NexusApp", category: "DaemonCheck")

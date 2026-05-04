@@ -106,6 +106,41 @@ struct NexusApp: App {
                 }
                     .keyboardShortcut("n", modifiers: .command)
             }
+            CommandGroup(after: .newItem) {
+                Button("Import Workspace Bundle…") {
+                    importWorkspaceBundle()
+                }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+            }
+        }
+    }
+
+    private func importWorkspaceBundle() {
+        let panel = NSOpenPanel()
+        panel.message = "Import workspace bundle"
+        panel.prompt = "Import"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = false
+        panel.allowedContentTypes = []
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        Task {
+            let (ok, output) = await appState.importWorkspaceViaCLI(fromPath: url.path)
+            await MainActor.run {
+                let alert = NSAlert()
+                alert.messageText = ok ? "Import Complete" : "Import Failed"
+                alert.informativeText = output.isEmpty ? (ok ? "Workspace imported." : "Unknown error.") : output
+                alert.alertStyle = ok ? .informational : .critical
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+            if ok {
+                // Refresh workspace list so the imported workspace appears.
+                await appState.load()
+            }
         }
     }
 }
