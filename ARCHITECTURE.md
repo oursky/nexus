@@ -69,7 +69,7 @@ In addition to the core daemon, the repository contains:
 - **`packages/nexus-swift`** — The macOS app (`NexusApp.app`), which connects to a remote Linux daemon via SSH tunnel + WebSocket. It does not run a local daemon in production.
 - **`cmd/nexus-libkrun-vm`** — VMM child process (libkrun wrapper)
 - **`cmd/nexus-guest-agent`** — In-VM agent
-- **`cmd/test-libkrun`**, **`cmd/test-runner`**, **`cmd/make-test-bundle`**, **`cmd/schema`** — Test and build utilities
+- **`cmd/test-libkrun`**, **`cmd/test-runner`**, **`cmd/schema`** — Test and build utilities
 
 ---
 
