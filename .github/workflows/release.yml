@@ -2,32 +2,60 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    name: Build and publish nexus binary
+  release:
+    name: Build and publish release
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Enable corepack and install pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run semantic-release
+        id: semantic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          output=$(pnpm exec semantic-release --json 2>&1 || true)
+          echo "$output"
+          if echo "$output" | jq -e '.nextRelease.version' >/dev/null 2>&1; then
+            version=$(echo "$output" | jq -r '.nextRelease.version')
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Go
+        if: steps.semantic.outputs.released == 'true'
         uses: actions/setup-go@v5
         with:
           go-version-file: packages/nexus/go.mod
           cache-dependency-path: packages/nexus/go.sum
 
-      - name: Get version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-
       - name: Build guest agent (linux/amd64)
+        if: steps.semantic.outputs.released == 'true'
         working-directory: packages/nexus
         env:
           CGO_ENABLED: "0"
@@ -39,12 +67,13 @@ jobs:
           LDFLAGS="-s -w \
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
-            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ steps.version.outputs.version }}"
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ steps.semantic.outputs.version }}"
           go build -trimpath -ldflags "$LDFLAGS" \
             -o cmd/nexus/agent-linux-amd64 \
             ./cmd/nexus-guest-agent
 
       - name: Build nexus (linux/amd64)
+        if: steps.semantic.outputs.released == 'true'
         working-directory: packages/nexus
         env:
           CGO_ENABLED: "0"
@@ -56,25 +85,25 @@ jobs:
           LDFLAGS="-s -w \
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
-            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ steps.version.outputs.version }}"
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ steps.semantic.outputs.version }}"
           go build -trimpath -ldflags "$LDFLAGS" \
             -o ../../dist/nexus-linux-amd64 \
             ./cmd/nexus
 
       - name: Build nexus (linux/arm64)
+        if: steps.semantic.outputs.released == 'true'
         working-directory: packages/nexus
         env:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: arm64
         run: |
-          # Rebuild agent for arm64 first so it gets embedded correctly.
           BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           GIT_COMMIT="${GITHUB_SHA::8}"
           LDFLAGS="-s -w \
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
-            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ steps.version.outputs.version }}"
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ steps.semantic.outputs.version }}"
           go build -trimpath -ldflags "$LDFLAGS" \
             -o cmd/nexus/agent-linux-arm64 \
             ./cmd/nexus-guest-agent
@@ -83,83 +112,39 @@ jobs:
             ./cmd/nexus
 
       - name: Build nexus (darwin/arm64)
+        if: steps.semantic.outputs.released == 'true'
         working-directory: packages/nexus
         env:
           CGO_ENABLED: "0"
           GOOS: darwin
           GOARCH: arm64
         run: |
-          # macOS binary for local bundle-run usage.
-          # Ad-hoc signed by users after download (codesign --sign -) or auto-signed
-          # by the fat bundle shell stub on extraction.
           BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           GIT_COMMIT="${GITHUB_SHA::8}"
           LDFLAGS="-s -w \
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
-            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ steps.version.outputs.version }}"
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ steps.semantic.outputs.version }}"
           go build -trimpath -ldflags "$LDFLAGS" \
             -o ../../dist/nexus-darwin-arm64 \
             ./cmd/nexus
 
       - name: Create checksums
+        if: steps.semantic.outputs.released == 'true'
         run: |
           cd dist
           sha256sum nexus-linux-amd64 nexus-linux-arm64 nexus-darwin-arm64 > sha256sums.txt
           cat sha256sums.txt
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: ${{ steps.version.outputs.version }}
-          draft: false
-          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
-          files: |
-            dist/nexus-linux-amd64
-            dist/nexus-linux-arm64
-            dist/nexus-darwin-arm64
-            dist/sha256sums.txt
-          body: |
-            ## Installation
-
-            ### Linux (daemon host)
-
-            ```bash
-            # For x86_64 (amd64):
-            curl -fsSL https://github.com/oursky/nexus/releases/download/${{ steps.version.outputs.version }}/nexus-linux-amd64 \
-              -o ~/.local/bin/nexus
-            chmod +x ~/.local/bin/nexus
-
-            # For arm64:
-            curl -fsSL https://github.com/oursky/nexus/releases/download/${{ steps.version.outputs.version }}/nexus-linux-arm64 \
-              -o ~/.local/bin/nexus
-            chmod +x ~/.local/bin/nexus
-            ```
-
-            Then start the daemon:
-
-            ```bash
-            nexus daemon start --port 7777
-            ```
-
-            ### macOS (local bundle run)
-
-            Download for Apple Silicon (arm64). For VM support, ad-hoc sign after download:
-
-            ```bash
-            curl -fsSL https://github.com/oursky/nexus/releases/download/${{ steps.version.outputs.version }}/nexus-darwin-arm64 \
-              -o ~/.local/bin/nexus
-            chmod +x ~/.local/bin/nexus
-            # Required for Hypervisor.framework:
-            codesign --sign - --force \
-              --entitlements <(echo '<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>') \
-              ~/.local/bin/nexus
-            ```
-
-            > **Note:** The signed macOS app is distributed via TestFlight, not GitHub Releases.
-
-            Verify the checksum:
-
-            ```bash
-            sha256sum -c sha256sums.txt
-            ```
+      - name: Upload assets to GitHub Release
+        if: steps.semantic.outputs.released == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.semantic.outputs.tag }}"
+          gh release upload "$tag" \
+            dist/nexus-linux-amd64 \
+            dist/nexus-linux-arm64 \
+            dist/nexus-darwin-arm64 \
+            dist/sha256sums.txt \
+            --clobber
