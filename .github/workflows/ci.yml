@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, develop]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint (nexus)
@@ -95,7 +99,6 @@ jobs:
   e2e:
     name: E2E Tests (linux)
     runs-on: [self-hosted, linux, x64, v1]
-    needs: unit-tests
 
     steps:
       - name: Checkout code
