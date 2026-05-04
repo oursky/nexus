@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -90,7 +91,11 @@ func handleGitHookConn(conn net.Conn, cb GitHookCallback) {
 // The hook runs inside the VM (on the virtiofs-mounted project directory) and
 // sends a branch-change notification to the daemon via the guest agent unix socket.
 func installGitHook(projectRoot, workspaceID string) {
-	hooksDir := filepath.Join(projectRoot, ".git", "hooks")
+	hooksDir, err := resolveGitHooksDir(projectRoot)
+	if err != nil {
+		log.Printf("[libkrun] git hook: skip install in %s: %v", projectRoot, err)
+		return
+	}
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		log.Printf("[libkrun] git hook: mkdir %s: %v", hooksDir, err)
 		return
@@ -134,4 +139,20 @@ python3 "$_notify" "%s" "$ref" "%s" 2>/dev/null || true
 	if err := os.WriteFile(hookPath, []byte(script), 0o755); err != nil {
 		log.Printf("[libkrun] git hook: write %s: %v", hookPath, err)
 	}
+}
+
+func resolveGitHooksDir(projectRoot string) (string, error) {
+	cmd := exec.Command("git", "-C", projectRoot, "rev-parse", "--git-path", "hooks")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("resolve hooks path: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	hooksDir := strings.TrimSpace(string(out))
+	if hooksDir == "" {
+		return "", fmt.Errorf("resolve hooks path: empty output")
+	}
+	if !filepath.IsAbs(hooksDir) {
+		hooksDir = filepath.Join(projectRoot, hooksDir)
+	}
+	return hooksDir, nil
 }
