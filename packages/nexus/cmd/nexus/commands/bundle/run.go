@@ -119,6 +119,10 @@ This command is typically invoked automatically by the bundle's shell stub:
 
 			ctx := context.Background()
 			normalizedUp := normalizeUpCommands(eb.Meta.Up)
+			autoBake, runtimeUp := splitComposeBuildFromUp(normalizedUp)
+			effectiveBake := append([]string{}, eb.Meta.Bake...)
+			effectiveBake = append(effectiveBake, autoBake...)
+			normalizedUp = normalizeRuntimeUpCommands(runtimeUp)
 
 			// Discover published ports from docker-compose files and forward them
 			// into the VM via gvproxy.
@@ -129,33 +133,20 @@ This command is typically invoked automatically by the bundle's shell stub:
 			r.ForwardPorts = forwardPorts
 
 			stamp := bakeStampPath(eb.WorkspaceDir)
-			if needsBake(eb, eb.Meta.Bake, stamp) {
+			if needsBake(eb, effectiveBake, stamp) {
 				fmt.Fprintln(os.Stderr, "bundle run: running bake commands (first-time setup)...")
-				for _, c := range eb.Meta.Bake {
+				for _, c := range effectiveBake {
 					fmt.Fprintf(os.Stderr, "bundle run: bake: %s\n", c)
 				}
-				if len(runArgs) > 0 {
-					scriptPath, err := writeRunScript(eb.WorkspaceDir, []string{
-						buildBakeScript(eb.Meta.Bake, stamp),
-						strings.Join(runArgs, " "),
-					})
-					if err != nil {
-						return err
+				cmds := []string{buildBakeScript(effectiveBake, stamp)}
+				if len(runArgs) == 0 {
+					if len(normalizedUp) == 0 {
+						fmt.Fprintln(os.Stderr, "bundle run: no workspace.up commands defined")
+						return nil
 					}
-					if err := r.Run(ctx, eb, []string{"/bin/sh", scriptPath}); err != nil {
-						return err
-					}
-					_ = writeHostStamp(stamp)
-					return nil
+					cmds = append(cmds, ensureDockerDaemonCmd())
+					cmds = append(cmds, normalizedUp...)
 				}
-				if len(normalizedUp) == 0 {
-					fmt.Fprintln(os.Stderr, "bundle run: no workspace.up commands defined")
-					return nil
-				}
-				cmds := make([]string, 0, len(eb.Meta.Bake)+len(normalizedUp)+2)
-				cmds = append(cmds, buildBakeScript(eb.Meta.Bake, stamp))
-				cmds = append(cmds, ensureDockerDaemonCmd())
-				cmds = append(cmds, normalizedUp...)
 				scriptPath, err := writeRunScript(eb.WorkspaceDir, cmds)
 				if err != nil {
 					return err
@@ -164,7 +155,9 @@ This command is typically invoked automatically by the bundle's shell stub:
 					return err
 				}
 				_ = writeHostStamp(stamp)
-				return nil
+				if len(runArgs) == 0 {
+					return nil
+				}
 			}
 
 			// Dispatch runner subcommands.
@@ -262,10 +255,51 @@ func buildBakeScript(cmds []string, stamp string) string {
 	parts := make([]string, 0, len(cmds)+2)
 	parts = append(parts, prefix)
 	for _, c := range cmds {
-		parts = append(parts, normalizeBakeCommand(c))
+		normalized := normalizeBakeCommand(c)
+		if isComposeBuildCommand(normalized) {
+			normalized = normalizeComposeBuildForBake(normalized)
+			normalized = ensureDockerDaemonCmd() + " && " + normalized
+		}
+		parts = append(parts, normalized)
 	}
 	parts = append(parts, "touch "+strconv.Quote("/workspace/.nexus-baked"))
 	return strings.Join(parts, " && ")
+}
+
+func splitComposeBuildFromUp(cmds []string) (bake []string, up []string) {
+	for _, c := range cmds {
+		if isComposeBuildCommand(c) {
+			bake = append(bake, normalizeComposeBuildForBake(c))
+			continue
+		}
+		up = append(up, c)
+	}
+	return bake, up
+}
+
+func normalizeComposeBuildForBake(cmd string) string {
+	n := strings.TrimSpace(cmd)
+	for {
+		changed := false
+		for _, p := range []string{"DOCKER_BUILDKIT=0 ", "COMPOSE_DOCKER_CLI_BUILD=0 "} {
+			if strings.HasPrefix(n, p) {
+				n = strings.TrimPrefix(n, p)
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	if !strings.HasPrefix(n, "COMPOSE_BAKE=") {
+		n = "COMPOSE_BAKE=false " + n
+	}
+	return n
+}
+
+func isComposeBuildCommand(cmd string) bool {
+	compact := strings.TrimSpace(strings.ToLower(cmd))
+	return strings.Contains(compact, "docker compose build") || strings.Contains(compact, "docker-compose build")
 }
 
 func buildShellInvocation(args []string) string {
@@ -298,22 +332,60 @@ func normalizeUpCommands(cmds []string) []string {
 	}
 	out := make([]string, len(cmds))
 	for i, c := range cmds {
-		n := strings.ReplaceAll(c, "docker-compose", "docker compose")
-		if strings.Contains(n, "docker compose") {
-			n = "DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 " + n
-		}
-		out[i] = n
+		out[i] = strings.ReplaceAll(c, "docker-compose", "docker compose")
 	}
 	return out
 }
 
+func normalizeRuntimeUpCommands(cmds []string) []string {
+	if len(cmds) == 0 {
+		return nil
+	}
+	out := make([]string, len(cmds))
+	for i, c := range cmds {
+		out[i] = normalizeComposeUpForeground(c)
+	}
+	return out
+}
+
+func normalizeComposeUpForeground(cmd string) string {
+	n := strings.TrimSpace(cmd)
+	compact := strings.ToLower(n)
+	if !strings.Contains(compact, "docker compose up") && !strings.Contains(compact, "docker-compose up") {
+		return cmd
+	}
+	if strings.Contains(n, "&&") || strings.Contains(n, "||") || strings.Contains(n, ";") {
+		return cmd
+	}
+	fields := strings.Fields(n)
+	if len(fields) == 0 {
+		return cmd
+	}
+	rewritten := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if f == "-d" || f == "--detach" || strings.HasPrefix(f, "--detach=") {
+			continue
+		}
+		rewritten = append(rewritten, f)
+	}
+	if len(rewritten) == 0 {
+		return cmd
+	}
+	return strings.Join(rewritten, " ")
+}
+
 // writeRunScript writes shell commands to a script file in the workspace
 // directory and returns the guest path (e.g. /workspace/.nexus-run.sh).
-// Using a script file avoids libkrun kernel command line length limits that
+// Using a script file avoids libkrun kernel command line limits that
 // can trigger InvalidAscii panics with long inline shell commands.
 func writeRunScript(workspaceDir string, cmds []string) (string, error) {
 	var b strings.Builder
-	b.WriteString("#!/bin/sh\nset -e\n")
+	debug := os.Getenv("NEXUS_RUNNER_DEBUG") != ""
+	if debug {
+		b.WriteString("#!/bin/sh\nset -ex\n")
+	} else {
+		b.WriteString("#!/bin/sh\nset -e\n")
+	}
 	// On macOS init.krun does not auto-mount virtiofs shares. Manually mount
 	// the workspace share so host changes are visible at /workspace.
 	b.WriteString("mkdir -p /workspace && mount -t virtiofs workspace /workspace 2>/dev/null || true\n")
@@ -335,13 +407,28 @@ func writeRunScript(workspaceDir string, cmds []string) (string, error) {
 	// CONFIG_IP_NF_IPTABLES but not CONFIG_NF_TABLES, so nft backend fails).
 	b.WriteString("ln -sf /usr/sbin/iptables-legacy /usr/sbin/iptables 2>/dev/null || true\n")
 	b.WriteString("ln -sf /usr/sbin/ip6tables-legacy /usr/sbin/ip6tables 2>/dev/null || true\n")
-	for _, c := range cmds {
+	for i, c := range cmds {
+		if debug {
+			b.WriteString(fmt.Sprintf("echo '[nexus-run] step %d starting...'\n", i+1))
+		}
 		b.WriteString(c)
 		b.WriteByte('\n')
+		if debug {
+			b.WriteString(fmt.Sprintf("echo \"[nexus-run] step %d exited with code $?\"\n", i+1))
+		}
+	}
+	if debug {
+		b.WriteString("echo '[nexus-run] all steps done, checking docker status...'\n")
+		b.WriteString("docker compose ps || true\n")
 	}
 	hostPath := filepath.Join(workspaceDir, ".nexus-run.sh")
-	if err := os.WriteFile(hostPath, []byte(b.String()), 0o755); err != nil {
+	contents := []byte(b.String())
+	if err := os.WriteFile(hostPath, contents, 0o755); err != nil {
 		return "", fmt.Errorf("write run script: %w", err)
+	}
+	if debug {
+		fmt.Fprintf(os.Stderr, "bundle run: wrote script (%d bytes) to %s\n", len(contents), hostPath)
+		fmt.Fprintf(os.Stderr, "--- script begin ---\n%s\n--- script end ---\n", contents)
 	}
 	return "/workspace/.nexus-run.sh", nil
 }

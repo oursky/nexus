@@ -248,9 +248,16 @@ func (r *Runner) Run(ctx context.Context, eb ExtractedBundle, cmd []string) erro
 		if rootfsImageExists {
 			scriptHostPath := filepath.Join(rootfsDir, "workspace", ".nexus-run.sh")
 			if _, err := os.Stat(scriptHostPath); err == nil {
+				if os.Getenv("NEXUS_RUNNER_DEBUG") != "" {
+					data, _ := os.ReadFile(scriptHostPath)
+					fmt.Fprintf(os.Stderr, "runner: syncing run script (%d bytes) into rootfs image\n", len(data))
+					fmt.Fprintf(os.Stderr, "--- script begin ---\n%s\n--- script end ---\n", data)
+				}
 				if syncErr := writeFileIntoExt4(rootfsImage, scriptHostPath, "/workspace/.nexus-run.sh"); syncErr != nil {
 					return fmt.Errorf("runner: sync run script into rootfs image: %w", syncErr)
 				}
+			} else if os.Getenv("NEXUS_RUNNER_DEBUG") != "" {
+				fmt.Fprintf(os.Stderr, "runner: warning: run script not found at %s\n", scriptHostPath)
 			}
 		}
 		if err := vmCtx.AddDisk("rootfs", rootfsImage, 0, false); err != nil {
@@ -337,6 +344,9 @@ func (r *Runner) Run(ctx context.Context, eb ExtractedBundle, cmd []string) erro
 				// Expose VM ports on the host via gvproxy's forwarder API.
 				for _, port := range r.ForwardPorts {
 					if err := gvproxyProc.ExposePort(port); err != nil {
+						if isPortInUseExposeError(err) {
+							return fmt.Errorf("runner: gvproxy expose port %d: %w%s", port, err, portInUseHint(port))
+						}
 						return fmt.Errorf("runner: gvproxy expose port %d: %w", port, err)
 					}
 				}
@@ -407,6 +417,9 @@ func (r *Runner) Run(ctx context.Context, eb ExtractedBundle, cmd []string) erro
 		} else {
 			execCmd = []string{"/bin/sh"}
 		}
+	}
+	if os.Getenv("NEXUS_RUNNER_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "runner: VM exec command: %v\n", execCmd)
 	}
 	if cfgErr := writeKrunConfig(rootfsDir, execCmd, guestEnv, workdir); cfgErr != nil {
 		return fmt.Errorf("runner: write krun config: %w", cfgErr)
@@ -784,6 +797,27 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
+}
+
+func isPortInUseExposeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "address already in use") || strings.Contains(msg, "bind: address already in use")
+}
+
+func portInUseHint(port int) string {
+	cmd := exec.Command("lsof", "-nP", "-iTCP:"+strconv.Itoa(port), "-sTCP:LISTEN", "-t")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	lines := strings.Fields(strings.TrimSpace(string(out)))
+	if len(lines) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (host port %d is already in use by pid(s): %s; if stale, stop it and retry)", port, strings.Join(lines, ","))
 }
 
 func writeFile(path string, data []byte, perm os.FileMode) error {

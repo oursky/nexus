@@ -60,3 +60,57 @@ func TestResolveDestPath_UnknownEntry(t *testing.T) {
 		t.Error("expected error for unknown entry")
 	}
 }
+
+func TestIsPortInUseExposeError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "address already in use",
+			err:  testErr("address already in use"),
+			want: true,
+		},
+		{
+			name: "bind in use message",
+			err:  testErr("gvproxy expose 127.0.0.1:3000->192.168.127.2:3000: HTTP 500: listen tcp 127.0.0.1:3000: bind: address already in use"),
+			want: true,
+		},
+		{
+			name: "generic in use message",
+			err:  testErr("address already in use"),
+			want: true,
+		},
+		{
+			name: "different error",
+			err:  testErr("connection refused"),
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isPortInUseExposeError(tc.err)
+			if got != tc.want {
+				t.Fatalf("isPortInUseExposeError() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPortInUseHintNoListener(t *testing.T) {
+	hint := portInUseHint(65534)
+	if hint != "" {
+		t.Fatalf("expected empty hint when no listener, got %q", hint)
+	}
+}
+
+type testErr string
+
+func (e testErr) Error() string { return string(e) }
