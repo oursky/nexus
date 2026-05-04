@@ -7,8 +7,8 @@ on:
     branches: [main, develop]
 
 jobs:
-  go-fix:
-    name: Go Fix Check
+  lint:
+    name: Lint (nexus)
     runs-on: [self-hosted, linux, x64, v1]
 
     steps:
@@ -40,8 +40,15 @@ jobs:
             exit 1
           fi
 
-  coverage:
-    name: Go Coverage (nexus)
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+
+      - name: Run golangci-lint
+        working-directory: packages/nexus
+        run: golangci-lint run ./...
+
+  unit-tests:
+    name: Unit Tests (nexus)
     runs-on: [self-hosted, linux, x64, v1]
 
     steps:
@@ -73,10 +80,9 @@ jobs:
           go build -trimpath -ldflags "-s -w" \
             -o "${GITHUB_WORKSPACE}/packages/nexus-swift/Resources/nexus-darwin-arm64" \
             ./cmd/nexus
-          # Export the directory so findCrossBinary locates the cross-platform binary.
           echo "NEXUS_CROSS_BINARY_DIR=${GITHUB_WORKSPACE}/packages/nexus-swift/Resources" >> "$GITHUB_ENV"
 
-      - name: Run full Go test coverage
+      - name: Run unit tests with coverage
         run: scripts/ci/coverage.sh
 
       - name: Upload coverage artifact
@@ -86,9 +92,10 @@ jobs:
           path: packages/nexus/coverage.out
           retention-days: 7
 
-  ci:
-    name: Core CI (linux)
+  e2e:
+    name: E2E Tests (linux)
     runs-on: [self-hosted, linux, x64, v1]
+    needs: unit-tests
 
     steps:
       - name: Checkout code
@@ -156,7 +163,6 @@ jobs:
           go build -trimpath -ldflags "-s -w" \
             -o "${GITHUB_WORKSPACE}/packages/nexus-swift/Resources/nexus-darwin-arm64" \
             ./cmd/nexus
-          # Export the directory so findCrossBinary locates the cross-platform binary.
           echo "NEXUS_CROSS_BINARY_DIR=${GITHUB_WORKSPACE}/packages/nexus-swift/Resources" >> "$GITHUB_ENV"
 
       - name: Build patched passt for containerized CI
@@ -232,23 +238,7 @@ jobs:
         if: always()
         run: scripts/ci/refresh-libkrun-cache.sh
 
-      - name: Run CI pipeline
-        run: task ci
-        env:
-          CI: true
-          NEXUS_LIBKRUN_SKIP_BAKE: "1"
-          NEXUS_LIBKRUN_BAKE_TIMEOUT: "120s"
-          NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "1"
-          NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
-          NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
-          # Use a small workspace image so mkfs.ext4 finishes in seconds on CI.
-          NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
-          # Use a small runner rootfs so mkfs.ext4 finishes faster in bundle tests.
-          NEXUS_RUNNER_ROOTFS_MIN_MIB: "512"
-          # Limit VM memory to reduce peak RSS when tests run in parallel.
-          NEXUS_LIBKRUN_MEM_MIB: "256"
-
-      - name: Run full VM e2e tests
+      - name: Run e2e tests
         working-directory: packages/nexus
         run: |
           set -euo pipefail
@@ -315,4 +305,3 @@ jobs:
 
       - name: Build NexusApp (Debug)
         run: scripts/swift/build.sh
-

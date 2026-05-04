@@ -53,6 +53,19 @@ tasks:
     cmds:
       - go test ./...
 
+  lint:
+    desc: "Run golangci-lint"
+    dir: packages/nexus
+    cmds:
+      - golangci-lint run ./...
+
+  format:
+    desc: "Format Go code (gofmt + goimports)"
+    dir: packages/nexus
+    cmds:
+      - gofmt -w .
+      - goimports -w .
+
   ci:
     desc: "Run local CI equivalent (go-fix + coverage + core)"
     cmds:
