@@ -172,10 +172,7 @@ func setupBlockWorkspaceMount() error {
 	}
 
 	if err := tryMountHybridOverlay(); err != nil {
-		emitDiagnostic("agent hybrid overlay failed (%v), falling back to base image", err)
-		if fallbackErr := mountBaseWorkspaceDirect(); fallbackErr != nil {
-			return fallbackErr
-		}
+		return err
 	}
 
 	return mountDockerData()
@@ -265,27 +262,6 @@ func tryMountHybridOverlay() error {
 	}
 
 	emitDiagnostic("agent hybrid overlay workspace mounted at %s (lowerdirs=%s)", workspaceMountPoint, lowerdir)
-	return nil
-}
-
-// mountBaseWorkspaceDirect mounts the baked base image directly at /workspace
-// when overlayfs assembly fails. This ensures the workspace is still usable
-// even if overlay cannot be mounted. Only called when NEXUS_WORKSPACE_BASE_DEV
-// is set (export/import/fork flows); regular workspaces have no base disk.
-func mountBaseWorkspaceDirect() error {
-	if os.Getenv("NEXUS_WORKSPACE_BASE_DEV") == "" {
-		return fmt.Errorf("overlay mount failed and no workspace base disk is available (NEXUS_WORKSPACE_BASE_DEV not set)")
-	}
-	if err := workspaceMountFunc(workspaceBaseDevicePath, workspaceMountPoint, "ext4", 0, ""); err != nil {
-		if errors.Is(err, unix.EBUSY) {
-			if mountPointIsActive(workspaceBaseDevicePath, workspaceMountPoint) {
-				emitDiagnostic("agent workspace mounted from base image %s (fallback)", workspaceBaseDevicePath)
-				return nil
-			}
-		}
-		return fmt.Errorf("mount fallback base %s at %s: %w", workspaceBaseDevicePath, workspaceMountPoint, err)
-	}
-	emitDiagnostic("agent workspace mounted from base image %s (fallback)", workspaceBaseDevicePath)
 	return nil
 }
 
