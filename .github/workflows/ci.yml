@@ -296,6 +296,26 @@ jobs:
             go test -tags e2e -count=1 -timeout=4m -v -p ${{ matrix.shard.go_p }} -parallel ${{ matrix.shard.go_parallel }} \
             "${go_run_args[@]}" \
             ${{ matrix.shard.packages }}
+      - name: Dump VM diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== ldd nexus-libkrun-vm ==="
+          ldd "$HOME/.local/share/nexus/bin/nexus-libkrun-vm" 2>&1 || true
+          echo "=== libs in $HOME/.local/share/nexus/lib/ ==="
+          ls -la "$HOME/.local/share/nexus/lib/" 2>&1 || true
+          echo "=== libkrun.log files ==="
+          find /data/nexus/libkrun-vms-e2e -name "libkrun.log" 2>/dev/null | while read -r f; do
+            echo "--- $f ---"
+            cat "$f" 2>/dev/null || echo "(empty or unreadable)"
+          done
+          echo "=== passt.log files ==="
+          find /data/nexus/libkrun-vms-e2e -name "passt.log" 2>/dev/null | while read -r f; do
+            echo "--- $f ---"
+            cat "$f" 2>/dev/null || echo "(empty or unreadable)"
+          done
+          echo "=== /data/nexus/libkrun-vms-e2e directory listing ==="
+          find /data/nexus/libkrun-vms-e2e -maxdepth 2 2>/dev/null | head -60 || true
+
       - name: Upload test results on failure
         if: failure()
         uses: actions/upload-artifact@v4
