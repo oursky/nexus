@@ -96,7 +96,7 @@ jobs:
         with:
           name: nexus-go-coverage
           path: packages/nexus/coverage.out
-          retention-days: 7
+          retention-days: 1
 
   e2e:
     name: E2E Tests (linux / ${{ matrix.shard.name }})
@@ -324,7 +324,7 @@ jobs:
           path: |
             **/test-results/
             **/coverage/
-          retention-days: 7
+          retention-days: 1
 
   # Matches hkfc-style macOS builds: use repository variable NEXUS_MACOS_DEVELOPER_DIR
   # (e.g. /Applications/Xcode_16.2.app/Contents/Developer) on self-hosted runners
