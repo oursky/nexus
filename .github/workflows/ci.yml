@@ -99,8 +99,58 @@ jobs:
           retention-days: 7
 
   e2e:
-    name: E2E Tests (linux)
+    name: E2E Tests (linux / ${{ matrix.shard.name }})
     runs-on: [self-hosted, linux, x64, v1]
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard:
+          - name: auth-daemon-fs
+            packages: ./test/e2e/auth ./test/e2e/daemon ./test/e2e/fs
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
+          - name: project
+            packages: ./test/e2e/project
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
+          - name: pty-basic
+            packages: ./test/e2e/pty
+            go_p: 1
+            go_parallel: 1
+            go_run: TestPTY$
+          - name: pty-operations
+            packages: ./test/e2e/pty
+            go_p: 1
+            go_parallel: 1
+            go_run: TestPTY_Operations
+          - name: pty-behavioral
+            packages: ./test/e2e/pty
+            go_p: 1
+            go_parallel: 1
+            go_run: TestPTY_ExecPWD|TestPTY_ExecEcho|TestPTY_ExecGitBranch|TestPTY_ExecWriteAndReadFile|TestPTY_ExecExitCode|TestPTY_ShellNonInteractiveScript
+          - name: pty-sessions
+            packages: ./test/e2e/pty
+            go_p: 1
+            go_parallel: 1
+            go_run: TestPTY_ListSession|TestPTY_SessionNotFound|TestPTY_SessionNotPersisted
+          - name: spotlight
+            packages: ./test/e2e/spotlight
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
+          - name: vmproof-workspace
+            packages: ./test/e2e/vmproof ./test/e2e/workspace
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
+          - name: cli
+            packages: ./test/e2e/cli
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
     env:
       CI: true
       NEXUS_LIBKRUN_SKIP_BAKE: "1"
@@ -228,6 +278,7 @@ jobs:
           make CFLAGS="-static -DGLIBC_NO_STATIC_NSS" passt
           chmod +x passt
           cp passt /tmp/passt-patched
+          /tmp/passt-patched --help >/dev/null
           echo "NEXUS_PASST_PATH=/tmp/passt-patched" >> "$GITHUB_ENV"
 
       # Pre-provision libkrun host infrastructure once before the test suite.
@@ -266,134 +317,24 @@ jobs:
           set -euo pipefail
           source ../../scripts/ci/e2e-ssh-bootstrap.sh
 
-      - name: Run e2e tests (auth, daemon, fs)
+      - name: Run e2e tests (${{ matrix.shard.name }})
         timeout-minutes: 5
         working-directory: packages/nexus
         run: |
           set -euo pipefail
+          go_run_args=()
+          if [ -n "${{ matrix.shard.go_run }}" ]; then
+            go_run_args=(-run "${{ matrix.shard.go_run }}")
+          fi
           sudo -E env \
             "PATH=$PATH" \
             "HOME=$HOME" \
             "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
             "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
             "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
-            go test -tags e2e -count=1 -timeout=5m -v -p 2 -parallel 2 \
-            ./test/e2e/auth ./test/e2e/daemon ./test/e2e/fs
-
-      - name: Run e2e tests (project)
-        timeout-minutes: 5
-        working-directory: packages/nexus
-        run: |
-          set -euo pipefail
-          sudo -E env \
-            "PATH=$PATH" \
-            "HOME=$HOME" \
-            "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
-            "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
-            "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
-            go test -tags e2e -count=1 -timeout=5m -v -p 2 -parallel 2 \
-            ./test/e2e/project
-
-      - name: Run e2e tests (pty basic)
-        timeout-minutes: 5
-        working-directory: packages/nexus
-        run: |
-          set -euo pipefail
-          sudo -E env \
-            "PATH=$PATH" \
-            "HOME=$HOME" \
-            "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
-            "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
-            "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
-            go test -tags e2e -count=1 -timeout=4m -v -p 1 -parallel 1 \
-            -run 'TestPTY$' \
-            ./test/e2e/pty
-
-      - name: Run e2e tests (pty operations)
-        timeout-minutes: 5
-        working-directory: packages/nexus
-        run: |
-          set -euo pipefail
-          sudo -E env \
-            "PATH=$PATH" \
-            "HOME=$HOME" \
-            "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
-            "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
-            "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
-            go test -tags e2e -count=1 -timeout=4m -v -p 1 -parallel 1 \
-            -run 'TestPTY_Operations' \
-            ./test/e2e/pty
-
-      - name: Run e2e tests (pty behavioral)
-        timeout-minutes: 5
-        working-directory: packages/nexus
-        run: |
-          set -euo pipefail
-          sudo -E env \
-            "PATH=$PATH" \
-            "HOME=$HOME" \
-            "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
-            "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
-            "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
-            go test -tags e2e -count=1 -timeout=5m -v -p 1 -parallel 1 \
-            -run 'TestPTY_ExecPWD|TestPTY_ExecEcho|TestPTY_ExecGitBranch|TestPTY_ExecWriteAndReadFile|TestPTY_ExecExitCode|TestPTY_ShellNonInteractiveScript' \
-            ./test/e2e/pty
-
-      - name: Run e2e tests (pty sessions)
-        timeout-minutes: 5
-        working-directory: packages/nexus
-        run: |
-          set -euo pipefail
-          sudo -E env \
-            "PATH=$PATH" \
-            "HOME=$HOME" \
-            "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
-            "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
-            "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
-            go test -tags e2e -count=1 -timeout=5m -v -p 1 -parallel 1 \
-            -run 'TestPTY_ListSession|TestPTY_SessionNotFound|TestPTY_SessionNotPersisted' \
-            ./test/e2e/pty
-
-      - name: Run e2e tests (spotlight)
-        timeout-minutes: 5
-        working-directory: packages/nexus
-        run: |
-          set -euo pipefail
-          sudo -E env \
-            "PATH=$PATH" \
-            "HOME=$HOME" \
-            "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
-            "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
-            "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
-            go test -tags e2e -count=1 -timeout=5m -v -p 2 -parallel 2 \
-            ./test/e2e/spotlight
-
-      - name: Run e2e tests (vmproof, workspace)
-        timeout-minutes: 5
-        working-directory: packages/nexus
-        run: |
-          set -euo pipefail
-          sudo -E env \
-            "PATH=$PATH" \
-            "HOME=$HOME" \
-            "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
-            "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
-            "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
-            go test -tags e2e -count=1 -timeout=5m -v -p 2 -parallel 2 \
-            ./test/e2e/vmproof ./test/e2e/workspace
-
-      - name: Run e2e tests (cli)
-        timeout-minutes: 5
-        working-directory: packages/nexus
-        run: |
-          set -euo pipefail
-          sudo -E env \
-            "PATH=$PATH" \
-            "HOME=$HOME" \
-            "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
-            "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
-            "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
-            go test -tags e2e -count=1 -timeout=5m -v -p 2 -parallel 2 ./test/e2e/cli
+            go test -tags e2e -count=1 -timeout=4m -v -p ${{ matrix.shard.go_p }} -parallel ${{ matrix.shard.go_parallel }} \
+            "${go_run_args[@]}" \
+            ${{ matrix.shard.packages }}
       - name: Upload test results on failure
         if: failure()
         uses: actions/upload-artifact@v4
