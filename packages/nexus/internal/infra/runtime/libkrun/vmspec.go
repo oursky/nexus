@@ -15,9 +15,9 @@ package libkrun
 //	/dev/vda  rootfs.{raw,qcow2}     → /  (via krun_set_root_disk_remount)
 //	/dev/vdb  workspace.ext4         → /workspace-upper (overlay upperdir)
 //	/dev/vdc  docker-data.ext4       → /var/lib/docker
-//	/dev/vdd  hostconfig.ext4        → /run/nexus-host (optional, ro)
-//	/dev/vde  workspace-base.ext4    → /workspace-base (optional, ro fallback lowerdir)
+//	/dev/vdd  workspace-base.ext4    → /workspace-base (optional, ro fallback lowerdir)
 //	virtiofs "nexus-workspace"        → /workspace-lower (overlay lowerdir)
+//	virtiofs "nexus-host-config"      → /run/nexus-host (optional, ro host config files)
 type VMSpec struct {
 	WorkspaceID string `json:"workspace_id"`
 	// WorkspaceMode selects guest assembly path. Current production path is
@@ -64,10 +64,10 @@ type VMSpec struct {
 	// native kernel filesystem; it cannot run on virtiofs.
 	DockerDataImage string `json:"docker_data_image"`
 
-	HostConfigDrive string `json:"host_config_drive,omitempty"`
-	MemoryMiB       int    `json:"memory_mib"`
-	VCPUs           int    `json:"vcpus"`
-	SerialLog       string `json:"serial_log"`
+	HostConfigDir string `json:"host_config_dir,omitempty"`
+	MemoryMiB     int    `json:"memory_mib"`
+	VCPUs         int    `json:"vcpus"`
+	SerialLog     string `json:"serial_log"`
 
 	// SSHHostPort is the host-side TCP port that libkrun TSI maps to guest port 22.
 	SSHHostPort int `json:"ssh_host_port,omitempty"`

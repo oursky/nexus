@@ -22,7 +22,8 @@ import (
 //	/dev/vda  rootfs.ext4             (reflink clone, rw)     → /  (block rootfs)
 //	/dev/vdb  workspace.ext4          (workspace clone, rw)   → /workspace
 //	/dev/vdc  docker-data.ext4        (sparse, Docker data)   → /var/lib/docker
-//	/dev/vdd  hostconfig.ext4         (read-only, optional)   → /run/nexus-host
+//	/dev/vdd  workspace-base.ext4     (read-only, optional)   → /workspace-base (fork/import only)
+//	virtiofs "nexus-host-config"      (read-only, optional)   → /run/nexus-host (host config files)
 //	virtiofs "nexus-workspace"        optional auxiliary host share
 func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) {
 	spawnStart := time.Now()
@@ -229,7 +230,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		WorkspaceImage:    workspacePath,
 		WorkspaceHostPath: strings.TrimSpace(spec.ProjectRoot),
 		DockerDataImage:   dockerDataPath,
-		HostConfigDrive:   spec.HostConfigDrive,
+		HostConfigDir:     spec.HostConfigDir,
 		MemoryMiB:         spec.MemoryMiB,
 		VCPUs:             spec.VCPUs,
 		SerialLog:         serialLog,

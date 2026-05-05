@@ -18,7 +18,7 @@ var (
 	setupWorkspaceMountRequiredFunc = setupWorkspaceMountRequired
 	workspaceMountPoint             = "/workspace"
 	workspaceDevicePath             = "/dev/vdb"
-	workspaceBaseDevicePath         = "/dev/vde"
+	workspaceBaseDevicePath         = "/dev/vdd"
 	workspaceDeviceAttempts         = 300
 	workspaceDeviceInterval         = 100 * time.Millisecond
 	workspaceMkdirAll               = os.MkdirAll
@@ -70,24 +70,24 @@ func dockerDevPath() string {
 	return "/dev/vdc"
 }
 
-// configDevPath returns the block device for the host config drive.
-// Default /dev/vdd (virtiofs mode); overridden in libkrun via NEXUS_CONFIG_DEV.
-func configDevPath() string {
-	if v := os.Getenv("NEXUS_CONFIG_DEV"); v != "" {
+// configVirtioFSTag returns the virtiofs tag for the host config share.
+// Default "nexus-host-config"; overridden via NEXUS_CONFIG_TAG.
+func configVirtioFSTag() string {
+	if v := os.Getenv("NEXUS_CONFIG_TAG"); v != "" {
 		return v
 	}
-	return "/dev/vdd"
+	return "nexus-host-config"
 }
 
 // setupVirtiofsWorkspace assembles the virtiofs workspace mount.
 //
 // Device layout is resolved from environment variables set by the host daemon:
 //
-//	virtiofs "nexus-workspace"   project dir (rw at /workspace)
-//	NEXUS_DOCKER_DEV  (/dev/vdc) docker-data.ext4 → /var/lib/docker
-//	NEXUS_CONFIG_DEV  (/dev/vdd) hostconfig.ext4  → /run/nexus-host  (read-only)
+//	virtiofs "nexus-workspace"    project dir (rw at /workspace)
+//	NEXUS_DOCKER_DEV  (/dev/vdc)  docker-data.ext4 → /var/lib/docker
+//	NEXUS_CONFIG_TAG  (nexus-host-config) host config virtiofs → /run/nexus-host (ro)
 //
-// virtiofs mode falls back to /dev/vdc, /dev/vdd.
+// virtiofs mode falls back to /dev/vdc for docker-data.
 func setupVirtiofsWorkspace() error {
 	dockerDev := dockerDevPath()
 
@@ -152,7 +152,7 @@ func setupVirtiofsWorkspaceOnce() error {
 
 // setupBlockWorkspaceMount assembles the hybrid overlayfs workspace.
 // It mounts /dev/vdb as the mutable upperdir, virtiofs as the live host project
-// lowerdir, and (when NEXUS_WORKSPACE_BASE_DEV is set) /dev/vde as the
+// lowerdir, and (when NEXUS_WORKSPACE_BASE_DEV is set) /dev/vdd as the
 // read-only baked base lowerdir for export/import flows. If overlay assembly
 // fails, it falls back to mounting the base image directly at /workspace.
 func setupBlockWorkspaceMount() error {
@@ -270,8 +270,12 @@ func tryMountHybridOverlay() error {
 
 // mountBaseWorkspaceDirect mounts the baked base image directly at /workspace
 // when overlayfs assembly fails. This ensures the workspace is still usable
-// even if overlay cannot be mounted.
+// even if overlay cannot be mounted. Only called when NEXUS_WORKSPACE_BASE_DEV
+// is set (export/import/fork flows); regular workspaces have no base disk.
 func mountBaseWorkspaceDirect() error {
+	if os.Getenv("NEXUS_WORKSPACE_BASE_DEV") == "" {
+		return fmt.Errorf("overlay mount failed and no workspace base disk is available (NEXUS_WORKSPACE_BASE_DEV not set)")
+	}
 	if err := workspaceMountFunc(workspaceBaseDevicePath, workspaceMountPoint, "ext4", 0, ""); err != nil {
 		if errors.Is(err, unix.EBUSY) {
 			if mountPointIsActive(workspaceBaseDevicePath, workspaceMountPoint) {

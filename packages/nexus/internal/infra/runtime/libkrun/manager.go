@@ -111,7 +111,7 @@ type SpawnSpec struct {
 	SnapshotID       string // non-empty → restore overlay from this snapshot
 	MemoryMiB        int
 	VCPUs            int
-	HostConfigDrive  string
+	HostConfigDir    string
 	VMProfile        string
 	ManifestHash     string // derived from base+project Nexusfile contents
 	BakedRootfs      bool   // true when the host rootfs bake stamp is present

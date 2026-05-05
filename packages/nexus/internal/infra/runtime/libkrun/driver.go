@@ -227,32 +227,32 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 	memMiB := defaultMemMiB()
 
 	// Build host config drive (gitconfig, SSH keys, tool auth).
-	// Use a per-workspace path in the work dir so concurrent workspace starts
-	// don't reformat each other's drive (the old project-root path was shared).
+	// Build a host-config directory that will be shared via virtiofs.
+	// The directory lives inside the workspace workdir so it persists for
+	// the entire VM lifetime and is cleaned up with the workspace.
 	home, _ := os.UserHomeDir()
-	configDriveDir := filepath.Join(d.manager.cfg.WorkDirRoot, workspaceID)
+	configDriveDir := filepath.Join(d.manager.cfg.WorkDirRoot, workspaceID, "host-config")
 	if err := os.MkdirAll(configDriveDir, 0o755); err != nil {
-		log.Printf("[libkrun] warning: create config drive dir: %v", err)
-	}
-	configDrivePath := filepath.Join(configDriveDir, "host-config.ext4")
-	if err := buildHostConfigDriveLibkrun(home, configDrivePath); err != nil {
-		log.Printf("[libkrun] warning: host config drive: %v", err)
-		configDrivePath = ""
+		log.Printf("[libkrun] warning: create host config dir: %v", err)
+		configDriveDir = ""
+	} else if err := buildHostConfigDirLibkrun(home, configDriveDir); err != nil {
+		log.Printf("[libkrun] warning: host config dir: %v", err)
+		configDriveDir = ""
 	}
 
 	manifestHash := resolveManifestHash(root)
 	bakedRootfs := IsRootfsBaked(defaultStampDir())
 
 	spec := SpawnSpec{
-		WorkspaceID:     workspaceID,
-		ProjectRoot:     root,
-		MemoryMiB:       memMiB,
-		VCPUs:           1,
-		SnapshotID:      snapshotID,
-		HostConfigDrive: configDrivePath,
-		VMProfile:       resolveGuestVMProfile(root),
-		ManifestHash:    manifestHash,
-		BakedRootfs:     bakedRootfs,
+		WorkspaceID:   workspaceID,
+		ProjectRoot:   root,
+		MemoryMiB:     memMiB,
+		VCPUs:         1,
+		SnapshotID:    snapshotID,
+		HostConfigDir: configDriveDir,
+		VMProfile:     resolveGuestVMProfile(root),
+		ManifestHash:  manifestHash,
+		BakedRootfs:   bakedRootfs,
 	}
 
 	d.mu.Lock()

@@ -15,25 +15,26 @@ import (
 
 const hostConfigMount = "/run/nexus-host"
 
-// applyHostConfigDrive mounts the host config ext4 image at /run/nexus-host
+// applyHostConfigDrive mounts the host config virtiofs share at /run/nexus-host
 // and copies known config files into place.
-// Device path is resolved from NEXUS_CONFIG_DEV (libkrun) or derived from mode
-// (virtiofs layout → /dev/vdd, legacy block layout → /dev/vdc).
+// The virtiofs tag is resolved from NEXUS_CONFIG_TAG (libkrun) or defaults to
+// "nexus-host-config". If the tag env var is not set the share is not available.
 func applyHostConfigDrive() error {
-	hostConfigDevice := configDevPath()
-	if _, err := os.Stat(hostConfigDevice); err != nil {
-		return nil // drive not attached — nothing to do
+	tag := configVirtioFSTag()
+	if os.Getenv("NEXUS_CONFIG_TAG") == "" {
+		// No host config share attached — nothing to do.
+		return nil
 	}
 
 	if err := os.MkdirAll(hostConfigMount, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", hostConfigMount, err)
 	}
 
-	if err := unix.Mount(hostConfigDevice, hostConfigMount, "ext4", unix.MS_RDONLY, ""); err != nil {
+	if err := unix.Mount(tag, hostConfigMount, "virtiofs", 0, ""); err != nil {
 		if !errors.Is(err, unix.EBUSY) {
-			return fmt.Errorf("mount %s: %w", hostConfigDevice, err)
+			return fmt.Errorf("mount virtiofs %s: %w", tag, err)
 		}
-		// Already mounted from a previous call — proceed to copy files.
+		// Already mounted — proceed to copy files.
 	}
 
 	type copySpec struct {

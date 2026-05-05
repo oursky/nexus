@@ -180,9 +180,9 @@ func detectKernelFormat(path string) (uint32, bool) {
 //	/dev/vda  rootfs.{raw,qcow2}     → /  (via krun_set_root_disk_remount)
 //	/dev/vdb  workspace.ext4         → /workspace-upper (overlay upperdir, mutable)
 //	/dev/vdc  docker-data.ext4       → /var/lib/docker
-//	/dev/vdd  hostconfig.ext4        → /run/nexus-host (optional, ro)
-//	/dev/vde  workspace-base.ext4    → /workspace-base (optional, ro fallback lowerdir)
+//	/dev/vdd  workspace-base.ext4    → /workspace-base (optional, ro fallback lowerdir)
 //	virtiofs "nexus-workspace"        → /workspace-lower (overlay lowerdir, live host project)
+//	virtiofs "nexus-host-config"      → /run/nexus-host (optional, ro host config files)
 func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...interface{})) error {
 	rootfsPath := strings.TrimSpace(spec.RootFSImage)
 	if rootfsPath == "" {
@@ -209,10 +209,10 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 	if err := krunAddDisk(ctx, "docker_data", spec.DockerDataImage, false); err != nil {
 		return fmt.Errorf("add docker-data disk: %w", err)
 	}
-	if spec.HostConfigDrive != "" {
-		logf("add_disk: hostconfig=%s", spec.HostConfigDrive)
-		if err := krunAddDisk(ctx, "hostconfig", spec.HostConfigDrive, true); err != nil {
-			logf("warning: host config drive: %v", err)
+	if spec.HostConfigDir != "" {
+		logf("add_virtiofs: tag=nexus-host-config path=%s ro=false", spec.HostConfigDir)
+		if err := krunAddVirtioFS3(ctx, "nexus-host-config", spec.HostConfigDir, 0, false); err != nil {
+			logf("warning: host config virtiofs: %v", err)
 		}
 	}
 	if spec.WorkspaceBaseImage != "" {
@@ -261,7 +261,7 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 	env := []string{
 		"NEXUS_CONTAINER_MODE=1",
 		// /dev/vdb is the mutable workspace upperdir; /dev/vdc is docker data.
-		// When UseWorkspaceBase is set, /dev/vde is added as the baked base
+		// When UseWorkspaceBase is set, /dev/vdd is added as the baked base
 		// lowerdir and NEXUS_WORKSPACE_BASE_DEV is passed to the guest agent.
 		// For regular workspaces, virtiofs provides the live host project dir.
 		"NEXUS_DOCKER_DEV=/dev/vdc",
@@ -275,11 +275,11 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 	if strings.Contains(spec.KernelCmdline, "nexus.bake=1") {
 		env = append(env, "NEXUS_BAKE=1")
 	}
-	if spec.HostConfigDrive != "" {
-		env = append(env, "NEXUS_CONFIG_DEV=/dev/vdd")
+	if spec.HostConfigDir != "" {
+		env = append(env, "NEXUS_CONFIG_TAG=nexus-host-config")
 	}
 	if spec.WorkspaceBaseImage != "" {
-		env = append(env, "NEXUS_WORKSPACE_BASE_DEV=/dev/vde")
+		env = append(env, "NEXUS_WORKSPACE_BASE_DEV=/dev/vdd")
 	}
 	if err := krunSetWorkdir(ctx, "/"); err != nil {
 		return fmt.Errorf("set workdir: %w", err)
@@ -324,10 +324,10 @@ func launchBlockMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inter
 			return fmt.Errorf("add docker-data disk: %w", err)
 		}
 	}
-	if spec.HostConfigDrive != "" {
-		logf("add_disk: hostconfig=%s", spec.HostConfigDrive)
-		if err := krunAddDisk(ctx, "hostconfig", spec.HostConfigDrive, true); err != nil {
-			logf("warning: host config drive: %v", err)
+	if spec.HostConfigDir != "" {
+		logf("add_virtiofs: tag=nexus-host-config path=%s ro=false", spec.HostConfigDir)
+		if err := krunAddVirtioFS3(ctx, "nexus-host-config", spec.HostConfigDir, 0, false); err != nil {
+			logf("warning: host config virtiofs: %v", err)
 		}
 	}
 
@@ -353,8 +353,8 @@ func launchBlockMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inter
 	if strings.Contains(spec.KernelCmdline, "nexus.bake=1") {
 		env = append(env, "NEXUS_BAKE=1")
 	}
-	if spec.HostConfigDrive != "" {
-		env = append(env, "NEXUS_CONFIG_DEV=/dev/vdb")
+	if spec.HostConfigDir != "" {
+		env = append(env, "NEXUS_CONFIG_TAG=nexus-host-config")
 	}
 	if err := krunSetWorkdir(ctx, "/"); err != nil {
 		return fmt.Errorf("set workdir: %w", err)
