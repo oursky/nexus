@@ -109,17 +109,19 @@ ssh -A -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${REMOTE_HOST}" "ba
   # the loopback SSH tunnel works without a TTY (no passphrase prompt).
   export CI=true
 
-  # Build run filter flag if E2E_RUN is set.
-  run_flag=""
-  if [[ -n "${E2E_RUN}" ]]; then
-    run_flag="-run ${E2E_RUN}"
-  fi
-
   pkg="./test/e2e/${E2E_PKG}"
 
-  echo "==> running: go test \$pkg -tags=e2e -count=1 -p ${E2E_P} -parallel ${E2E_PARALLEL} -timeout ${E2E_TIMEOUT} -v \$run_flag"
-  run_go test "\$pkg" -tags=e2e -count=1 \
-    -p ${E2E_P} -parallel ${E2E_PARALLEL} \
-    -timeout ${E2E_TIMEOUT} \
-    -v \${run_flag}
+  if [[ -n "\${E2E_RUN:-}" ]]; then
+    echo "==> running: go test \$pkg -tags=e2e -count=1 -p ${E2E_P} -parallel ${E2E_PARALLEL} -timeout ${E2E_TIMEOUT} -v -run \${E2E_RUN:-}"
+    run_go test "\$pkg" -tags=e2e -count=1 \
+      -p ${E2E_P} -parallel ${E2E_PARALLEL} \
+      -timeout ${E2E_TIMEOUT} \
+      -v -run "\${E2E_RUN:-}"
+  else
+    echo "==> running: go test \$pkg -tags=e2e -count=1 -p ${E2E_P} -parallel ${E2E_PARALLEL} -timeout ${E2E_TIMEOUT} -v"
+    run_go test "\$pkg" -tags=e2e -count=1 \
+      -p ${E2E_P} -parallel ${E2E_PARALLEL} \
+      -timeout ${E2E_TIMEOUT} \
+      -v
+  fi
 '"
