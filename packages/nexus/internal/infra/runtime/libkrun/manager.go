@@ -106,15 +106,16 @@ func NewManager(cfg ManagerConfig) *Manager {
 
 // SpawnSpec defines the configuration for spawning a new libkrun VM.
 type SpawnSpec struct {
-	WorkspaceID     string
-	ProjectRoot     string
-	SnapshotID      string // non-empty → restore overlay from this snapshot
-	MemoryMiB       int
-	VCPUs           int
-	HostConfigDrive string
-	VMProfile       string
-	ManifestHash    string // derived from base+project Nexusfile contents
-	BakedRootfs     bool   // true when the host rootfs bake stamp is present
+	WorkspaceID      string
+	ProjectRoot      string
+	SnapshotID       string // non-empty → restore overlay from this snapshot
+	MemoryMiB        int
+	VCPUs            int
+	HostConfigDrive  string
+	VMProfile        string
+	ManifestHash     string // derived from base+project Nexusfile contents
+	BakedRootfs      bool   // true when the host rootfs bake stamp is present
+	UseWorkspaceBase bool   // true → hybrid overlay with workspace-base.ext4 (export/import flows only)
 }
 
 // spawnTimeout is the maximum time allowed for the entire Spawn operation.

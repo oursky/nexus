@@ -151,10 +151,10 @@ func setupVirtiofsWorkspaceOnce() error {
 }
 
 // setupBlockWorkspaceMount assembles the hybrid overlayfs workspace.
-// It mounts /dev/vdb as the mutable upperdir, /dev/vde as the read-only
-// baked base lowerdir, and virtiofs as the live host project lowerdir.
-// If overlay assembly fails, it falls back to mounting the base image
-// directly at /workspace.
+// It mounts /dev/vdb as the mutable upperdir, virtiofs as the live host project
+// lowerdir, and (when NEXUS_WORKSPACE_BASE_DEV is set) /dev/vde as the
+// read-only baked base lowerdir for export/import flows. If overlay assembly
+// fails, it falls back to mounting the base image directly at /workspace.
 func setupBlockWorkspaceMount() error {
 	for _, dir := range []string{workspaceMountPoint, workspaceLowerMountPoint, workspaceUpperMountPoint, workspaceBaseMountPoint} {
 		if err := workspaceMkdirAll(dir, 0o755); err != nil {
@@ -183,10 +183,13 @@ func setupBlockWorkspaceMount() error {
 
 // tryMountHybridOverlay assembles the overlayfs workspace:
 //
-//	lowerdir: virtiofs "nexus-workspace" : /workspace-base (baked base)
+//	lowerdir: virtiofs "nexus-workspace" [: /workspace-base (baked base, when NEXUS_WORKSPACE_BASE_DEV is set)]
 //	upperdir: /dev/vdb mounted at /workspace-upper (mutable workspace state)
 //	workdir:  /workspace-upper/.workdir
 //	merged:   /workspace
+//
+// When NEXUS_WORKSPACE_BASE_DEV is not set (regular workspaces), the workspace-base
+// lowerdir is omitted and only the virtiofs lowerdir is used.
 func tryMountHybridOverlay() error {
 	// Mount block device as the overlay upperdir.
 	if err := workspaceMountFunc(workspaceDevicePath, workspaceUpperMountPoint, "ext4", 0, ""); err != nil {
@@ -205,22 +208,29 @@ func tryMountHybridOverlay() error {
 		return fmt.Errorf("mkdir %s: %w", workspaceOverlayWorkDir, err)
 	}
 
-	// Mount baked base lowerdir (read-only project snapshot).
-	if err := workspaceMountFunc(workspaceBaseDevicePath, workspaceBaseMountPoint, "ext4", unix.MS_RDONLY, ""); err != nil {
-		if errors.Is(err, unix.EBUSY) {
-			if !mountPointIsActive(workspaceBaseDevicePath, workspaceBaseMountPoint) {
+	// Mount baked base lowerdir (read-only project snapshot) only when
+	// NEXUS_WORKSPACE_BASE_DEV is set (export/import flows). Regular
+	// workspaces omit this disk to stay within the 16-IRQ libkrun limit.
+	useBase := os.Getenv("NEXUS_WORKSPACE_BASE_DEV") != ""
+	if useBase {
+		if err := workspaceMountFunc(workspaceBaseDevicePath, workspaceBaseMountPoint, "ext4", unix.MS_RDONLY, ""); err != nil {
+			if errors.Is(err, unix.EBUSY) {
+				if !mountPointIsActive(workspaceBaseDevicePath, workspaceBaseMountPoint) {
+					_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
+					return fmt.Errorf("mount base %s at %s returned EBUSY but not active", workspaceBaseDevicePath, workspaceBaseMountPoint)
+				}
+			} else {
 				_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
-				return fmt.Errorf("mount base %s at %s returned EBUSY but not active", workspaceBaseDevicePath, workspaceBaseMountPoint)
+				return fmt.Errorf("mount workspace base %s → %s: %w", workspaceBaseDevicePath, workspaceBaseMountPoint, err)
 			}
-		} else {
-			_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
-			return fmt.Errorf("mount workspace base %s → %s: %w", workspaceBaseDevicePath, workspaceBaseMountPoint, err)
 		}
 	}
 
 	// Mount virtiofs lowerdir (read-only host project directory).
 	if err := workspaceMountFunc("nexus-workspace", workspaceLowerMountPoint, "virtiofs", unix.MS_RDONLY, ""); err != nil {
-		_ = workspaceUnmountFunc(workspaceBaseMountPoint, 0)
+		if useBase {
+			_ = workspaceUnmountFunc(workspaceBaseMountPoint, 0)
+		}
 		_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
 		if errors.Is(err, unix.EBUSY) {
 			if !mountPointIsActive("nexus-workspace", workspaceLowerMountPoint) {
@@ -232,11 +242,18 @@ func tryMountHybridOverlay() error {
 	}
 
 	// Assemble overlayfs at /workspace.
-	lowerdir := workspaceLowerMountPoint + ":" + workspaceBaseMountPoint
+	var lowerdir string
+	if useBase {
+		lowerdir = workspaceLowerMountPoint + ":" + workspaceBaseMountPoint
+	} else {
+		lowerdir = workspaceLowerMountPoint
+	}
 	overlayOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lowerdir, workspaceUpperMountPoint, workspaceOverlayWorkDir)
 	if err := workspaceMountFunc("overlay", workspaceMountPoint, "overlay", 0, overlayOpts); err != nil {
 		_ = workspaceUnmountFunc(workspaceLowerMountPoint, 0)
-		_ = workspaceUnmountFunc(workspaceBaseMountPoint, 0)
+		if useBase {
+			_ = workspaceUnmountFunc(workspaceBaseMountPoint, 0)
+		}
 		_ = workspaceUnmountFunc(workspaceUpperMountPoint, 0)
 		if errors.Is(err, unix.EBUSY) {
 			if !mountPointIsActive("overlay", workspaceMountPoint) {

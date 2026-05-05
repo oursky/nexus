@@ -552,6 +552,8 @@ func TestSetupWorkspaceMountSuccess(t *testing.T) {
 		workspaceStat = origStat
 		workspaceMountFunc = origMountFunc
 	})
+	// Simulate export/import flow with workspace_base disk present.
+	t.Setenv("NEXUS_WORKSPACE_BASE_DEV", "/test/vde")
 
 	workspaceDevicePath = "/test/vdb"
 	workspaceBaseDevicePath = "/test/vde"
@@ -623,6 +625,85 @@ func TestSetupWorkspaceMountSuccess(t *testing.T) {
 	}
 }
 
+// TestSetupWorkspaceMountSuccessNoBase verifies the regular workspace flow
+// where NEXUS_WORKSPACE_BASE_DEV is not set. The workspace-base disk is
+// absent and must not be mounted (IRQ budget: 4 block disks + net device).
+func TestSetupWorkspaceMountSuccessNoBase(t *testing.T) {
+	origDevice := workspaceDevicePath
+	origBaseDev := workspaceBaseDevicePath
+	origMount := workspaceMountPoint
+	origLower := workspaceLowerMountPoint
+	origUpper := workspaceUpperMountPoint
+	origBase := workspaceBaseMountPoint
+	origAttempts := workspaceDeviceAttempts
+	origInterval := workspaceDeviceInterval
+	origMkdir := workspaceMkdirAll
+	origStat := workspaceStat
+	origMountFunc := workspaceMountFunc
+	t.Cleanup(func() {
+		workspaceDevicePath = origDevice
+		workspaceBaseDevicePath = origBaseDev
+		workspaceMountPoint = origMount
+		workspaceLowerMountPoint = origLower
+		workspaceUpperMountPoint = origUpper
+		workspaceBaseMountPoint = origBase
+		workspaceDeviceAttempts = origAttempts
+		workspaceDeviceInterval = origInterval
+		workspaceMkdirAll = origMkdir
+		workspaceStat = origStat
+		workspaceMountFunc = origMountFunc
+	})
+	// NEXUS_WORKSPACE_BASE_DEV is intentionally NOT set → regular workspace.
+
+	workspaceDevicePath = "/test/vdb"
+	workspaceBaseDevicePath = "/test/vde"
+	workspaceMountPoint = "/test/workspace"
+	workspaceLowerMountPoint = "/test/workspace-lower"
+	workspaceUpperMountPoint = "/test/workspace-upper"
+	workspaceBaseMountPoint = "/test/workspace-base"
+	workspaceOverlayWorkDir = "/test/workspace-upper/.workdir"
+	workspaceDeviceAttempts = 1
+	workspaceDeviceInterval = 0
+
+	workspaceMkdirAll = func(string, os.FileMode) error { return nil }
+	workspaceStat = func(string) (os.FileInfo, error) { return fakeFileInfo{name: "vdb"}, nil }
+
+	mountCalls := []struct{ source, target, fstype string }{}
+	workspaceMountFunc = func(source, target, fstype string, flags uintptr, data string) error {
+		mountCalls = append(mountCalls, struct{ source, target, fstype string }{source, target, fstype})
+		return nil
+	}
+
+	if err := setupWorkspaceMount(); err != nil {
+		t.Fatalf("expected setupWorkspaceMount success (no base), got %v", err)
+	}
+
+	// Without workspace_base: ext4 upperdir, virtiofs lowerdir, overlay merged, docker-data.
+	if len(mountCalls) != 4 {
+		t.Fatalf("expected 4 mount calls (no base disk), got %d: %+v", len(mountCalls), mountCalls)
+	}
+	if mountCalls[0].source != "/test/vdb" || mountCalls[0].target != "/test/workspace-upper" || mountCalls[0].fstype != "ext4" {
+		t.Fatalf("unexpected first mount args %+v", mountCalls[0])
+	}
+	// No workspace-base mount — second call must be virtiofs.
+	if mountCalls[1].source != "nexus-workspace" || mountCalls[1].target != "/test/workspace-lower" || mountCalls[1].fstype != "virtiofs" {
+		t.Fatalf("unexpected second mount args (expected virtiofs) %+v", mountCalls[1])
+	}
+	if mountCalls[2].source != "overlay" || mountCalls[2].target != "/test/workspace" || mountCalls[2].fstype != "overlay" {
+		t.Fatalf("unexpected third mount args %+v", mountCalls[2])
+	}
+	if mountCalls[3].target != "/var/lib/docker" || mountCalls[3].fstype != "ext4" {
+		t.Fatalf("unexpected fourth mount args (docker-data) %+v", mountCalls[3])
+	}
+
+	// Confirm workspace-base device was never touched.
+	for _, c := range mountCalls {
+		if c.source == "/test/vde" || c.target == "/test/workspace-base" {
+			t.Fatalf("workspace-base was mounted but NEXUS_WORKSPACE_BASE_DEV not set: %+v", c)
+		}
+	}
+}
+
 func TestSetupWorkspaceMountFallbackToBase(t *testing.T) {
 	origDevice := workspaceDevicePath
 	origBaseDev := workspaceBaseDevicePath
@@ -650,6 +731,8 @@ func TestSetupWorkspaceMountFallbackToBase(t *testing.T) {
 		workspaceStat = origStat
 		workspaceMountFunc = origMountFunc
 	})
+	// Simulate export/import flow with workspace_base disk present.
+	t.Setenv("NEXUS_WORKSPACE_BASE_DEV", "/test/vde")
 
 	workspaceDevicePath = "/test/vdb"
 	workspaceBaseDevicePath = "/test/vde"
@@ -736,6 +819,8 @@ func TestSetupWorkspaceMountBusyOverlayIsIgnored(t *testing.T) {
 		workspaceMountFunc = origMountFunc
 		workspaceReadProcMounts = origReadProcMounts
 	})
+	// Simulate export/import flow with workspace_base disk present.
+	t.Setenv("NEXUS_WORKSPACE_BASE_DEV", "/test/vde")
 
 	workspaceDevicePath = "/test/vdb"
 	workspaceBaseDevicePath = "/test/vde"
@@ -786,6 +871,8 @@ func TestSetupWorkspaceMountBusyBaseFallbackIsIgnored(t *testing.T) {
 		workspaceMountFunc = origMountFunc
 		workspaceReadProcMounts = origReadProcMounts
 	})
+	// Simulate export/import flow with workspace_base disk present.
+	t.Setenv("NEXUS_WORKSPACE_BASE_DEV", "/test/vde")
 
 	workspaceDevicePath = "/test/vdb"
 	workspaceBaseDevicePath = "/test/vde"
@@ -831,6 +918,8 @@ func TestSetupWorkspaceMountBusyWithoutActiveMountFails(t *testing.T) {
 		workspaceMountFunc = origMountFunc
 		workspaceReadProcMounts = origReadProcMounts
 	})
+	// Simulate export/import flow with workspace_base disk present.
+	t.Setenv("NEXUS_WORKSPACE_BASE_DEV", "/test/vde")
 
 	workspaceDevicePath = "/test/vdb"
 	workspaceBaseDevicePath = "/test/vde"

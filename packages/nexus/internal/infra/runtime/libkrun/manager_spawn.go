@@ -87,30 +87,33 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		log.Printf("[libkrun] workspace %s: created empty workspace upperdir", spec.WorkspaceID)
 	}
 
-	// Workspace base image (read-only lowerdir): always required in hybrid
-	// overlay mode. Create from cached base image if missing.
-	if _, err := os.Stat(workspaceBasePath); err != nil {
-		log.Printf("[libkrun] workspace %s: phase=ensure_base_image", spec.WorkspaceID)
-		basePhaseStart := time.Now()
-		phaseCtx, cancel := phaseTimeout(ctx, 3*time.Minute)
-		basePath, err := EnsureBaseImage(phaseCtx, spec.ProjectRoot, m.cfg.BasesDir, spec.ManifestHash)
-		cancel()
-		if err != nil {
-			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("ensure base workspace image: %w", err)
-		}
-		log.Printf("[libkrun] workspace %s: phase_done=ensure_base_image (%s)", spec.WorkspaceID, time.Since(basePhaseStart).Round(time.Millisecond))
-		log.Printf("[libkrun] workspace %s: phase=clone_workspace_base", spec.WorkspaceID)
-		clonePhaseStart := time.Now()
-		phaseCtx, cancel = phaseTimeout(ctx, 2*time.Minute)
-		if err := copyFileWithContext(phaseCtx, basePath, workspaceBasePath); err != nil {
+	// Workspace base image (read-only lowerdir): only required for hybrid
+	// overlay mode (export/import flows). Regular workspace starts skip this
+	// to stay within the 16-IRQ limit imposed by libkrun.
+	if spec.UseWorkspaceBase {
+		if _, err := os.Stat(workspaceBasePath); err != nil {
+			log.Printf("[libkrun] workspace %s: phase=ensure_base_image", spec.WorkspaceID)
+			basePhaseStart := time.Now()
+			phaseCtx, cancel := phaseTimeout(ctx, 3*time.Minute)
+			basePath, err := EnsureBaseImage(phaseCtx, spec.ProjectRoot, m.cfg.BasesDir, spec.ManifestHash)
 			cancel()
-			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("clone workspace base image: %w", err)
+			if err != nil {
+				os.RemoveAll(workDir)
+				return nil, fmt.Errorf("ensure base workspace image: %w", err)
+			}
+			log.Printf("[libkrun] workspace %s: phase_done=ensure_base_image (%s)", spec.WorkspaceID, time.Since(basePhaseStart).Round(time.Millisecond))
+			log.Printf("[libkrun] workspace %s: phase=clone_workspace_base", spec.WorkspaceID)
+			clonePhaseStart := time.Now()
+			phaseCtx, cancel = phaseTimeout(ctx, 2*time.Minute)
+			if err := copyFileWithContext(phaseCtx, basePath, workspaceBasePath); err != nil {
+				cancel()
+				os.RemoveAll(workDir)
+				return nil, fmt.Errorf("clone workspace base image: %w", err)
+			}
+			cancel()
+			log.Printf("[libkrun] workspace %s: phase_done=clone_workspace_base (%s)", spec.WorkspaceID, time.Since(clonePhaseStart).Round(time.Millisecond))
+			log.Printf("[libkrun] workspace %s: cloned workspace base image", spec.WorkspaceID)
 		}
-		cancel()
-		log.Printf("[libkrun] workspace %s: phase_done=clone_workspace_base (%s)", spec.WorkspaceID, time.Since(clonePhaseStart).Round(time.Millisecond))
-		log.Printf("[libkrun] workspace %s: cloned workspace base image", spec.WorkspaceID)
 	}
 
 	// Docker data image: restore from snapshot for forks, otherwise create fresh.
@@ -216,25 +219,27 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	}
 
 	vmSpec := VMSpec{
-		WorkspaceID:        spec.WorkspaceID,
-		WorkspaceMode:      "hybrid",
-		KernelPath:         m.cfg.KernelPath,
-		KernelCmdline:      kernelCmdline,
-		RootFSImage:        rootfsPath,
-		AgentPath:          "/usr/local/bin/nexus-guest-agent",
-		BakedRootfs:        spec.BakedRootfs,
-		WorkspaceImage:     workspacePath,
-		WorkspaceBaseImage: workspaceBasePath,
-		WorkspaceHostPath:  strings.TrimSpace(spec.ProjectRoot),
-		DockerDataImage:    dockerDataPath,
-		HostConfigDrive:    spec.HostConfigDrive,
-		MemoryMiB:          spec.MemoryMiB,
-		VCPUs:              spec.VCPUs,
-		SerialLog:          serialLog,
-		SSHHostPort:        sshPort,
-		NetworkBackend:     strings.TrimSpace(m.cfg.NetworkBackend),
-		PortMap:            []string{fmt.Sprintf("%d:22", sshPort)},
-		VsockPorts:         vsockPorts,
+		WorkspaceID:       spec.WorkspaceID,
+		WorkspaceMode:     "hybrid",
+		KernelPath:        m.cfg.KernelPath,
+		KernelCmdline:     kernelCmdline,
+		RootFSImage:       rootfsPath,
+		AgentPath:         "/usr/local/bin/nexus-guest-agent",
+		BakedRootfs:       spec.BakedRootfs,
+		WorkspaceImage:    workspacePath,
+		WorkspaceHostPath: strings.TrimSpace(spec.ProjectRoot),
+		DockerDataImage:   dockerDataPath,
+		HostConfigDrive:   spec.HostConfigDrive,
+		MemoryMiB:         spec.MemoryMiB,
+		VCPUs:             spec.VCPUs,
+		SerialLog:         serialLog,
+		SSHHostPort:       sshPort,
+		NetworkBackend:    strings.TrimSpace(m.cfg.NetworkBackend),
+		PortMap:           []string{fmt.Sprintf("%d:22", sshPort)},
+		VsockPorts:        vsockPorts,
+	}
+	if spec.UseWorkspaceBase {
+		vmSpec.WorkspaceBaseImage = workspaceBasePath
 	}
 	if vmSpec.NetworkBackend == "" {
 		vmSpec.NetworkBackend = "auto"

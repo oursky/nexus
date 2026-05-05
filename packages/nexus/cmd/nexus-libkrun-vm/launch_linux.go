@@ -215,9 +215,11 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 			logf("warning: host config drive: %v", err)
 		}
 	}
-	logf("add_disk: workspace_base=%s", spec.WorkspaceBaseImage)
-	if err := krunAddDisk(ctx, "workspace_base", spec.WorkspaceBaseImage, true); err != nil {
-		return fmt.Errorf("add workspace base disk: %w", err)
+	if spec.WorkspaceBaseImage != "" {
+		logf("add_disk: workspace_base=%s", spec.WorkspaceBaseImage)
+		if err := krunAddDisk(ctx, "workspace_base", spec.WorkspaceBaseImage, true); err != nil {
+			return fmt.Errorf("add workspace base disk: %w", err)
+		}
 	}
 
 	logf("set_root_disk_remount: /dev/vda (ext4)")
@@ -258,10 +260,10 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 	}
 	env := []string{
 		"NEXUS_CONTAINER_MODE=1",
-		// Hybrid overlay mode: /dev/vdb is the mutable upperdir,
-		// /dev/vde is the baked base lowerdir, and virtiofs provides
-		// the live host project lowerdir. Do NOT set
-		// NEXUS_WORKSPACE_MODE=virtiofs — that bypasses fork isolation.
+		// /dev/vdb is the mutable workspace upperdir; /dev/vdc is docker data.
+		// When UseWorkspaceBase is set, /dev/vde is added as the baked base
+		// lowerdir and NEXUS_WORKSPACE_BASE_DEV is passed to the guest agent.
+		// For regular workspaces, virtiofs provides the live host project dir.
 		"NEXUS_DOCKER_DEV=/dev/vdc",
 		"HOME=/root",
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -276,7 +278,9 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 	if spec.HostConfigDrive != "" {
 		env = append(env, "NEXUS_CONFIG_DEV=/dev/vdd")
 	}
-	env = append(env, "NEXUS_WORKSPACE_BASE_DEV=/dev/vde")
+	if spec.WorkspaceBaseImage != "" {
+		env = append(env, "NEXUS_WORKSPACE_BASE_DEV=/dev/vde")
+	}
 	if err := krunSetWorkdir(ctx, "/"); err != nil {
 		return fmt.Errorf("set workdir: %w", err)
 	}
