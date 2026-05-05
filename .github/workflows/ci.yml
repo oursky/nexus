@@ -101,6 +101,17 @@ jobs:
   e2e:
     name: E2E Tests (linux)
     runs-on: [self-hosted, linux, x64, v1]
+    env:
+      CI: true
+      NEXUS_LIBKRUN_SKIP_BAKE: "1"
+      NEXUS_LIBKRUN_BAKE_TIMEOUT: "120s"
+      NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "1"
+      NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
+      NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
+      NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
+      NEXUS_RUNNER_ROOTFS_MIN_MIB: "512"
+      NEXUS_LIBKRUN_MEM_MIB: "256"
+      NEXUS_PASST_PATH: /tmp/passt-patched
 
     steps:
       - name: Checkout code
@@ -309,18 +320,6 @@ jobs:
             "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
             "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
             go test -tags e2e -count=1 -timeout=5m -v -p 2 -parallel 2 ./test/e2e/cli
-        env:
-          CI: true
-          NEXUS_LIBKRUN_SKIP_BAKE: "1"
-          NEXUS_LIBKRUN_BAKE_TIMEOUT: "120s"
-          NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "1"
-          NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
-          NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
-          NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
-          NEXUS_RUNNER_ROOTFS_MIN_MIB: "512"
-          NEXUS_LIBKRUN_MEM_MIB: "256"
-          NEXUS_PASST_PATH: /tmp/passt-patched
-
       - name: Upload test results on failure
         if: failure()
         uses: actions/upload-artifact@v4
