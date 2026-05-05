@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	idPattern   = regexp.MustCompile(`\b(?:DAEMON|AUTH|PRJ|PTY|SPOT|WS|CLI|ERR|INV|RPC|VM-PROOF|VM)-\d{3,}\b`)
+	idPattern   = regexp.MustCompile(`\b(?:DAEMON|AUTH|PRJ|PTY|SPOT|WS|CLI|ERR|INV|RPC|VM-PROOF|VM|MACAPP-PROOF|MACAPP)-\d{3,}\b`)
 	testPattern = regexp.MustCompile(`^func\s+(Test[^(\s]+)\s*\(`)
 )
 
@@ -29,7 +29,7 @@ type waiver struct {
 
 func main() {
 	var (
-		specDir    = flag.String("spec-dir", "../../docs/spec", "path to spec directory")
+		specDir    = flag.String("spec-dir", "../../docs", "path to spec directory")
 		outputPath = flag.String("out", "test/e2e/coverage/coverage-map.md", "output markdown path")
 		waiverPath = flag.String("waivers", "test/e2e/coverage/waivers.txt", "waiver definitions")
 		checkOnly  = flag.Bool("check", false, "fail on missing unwaived spec obligations")

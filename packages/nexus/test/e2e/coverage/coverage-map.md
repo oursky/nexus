@@ -1,6 +1,6 @@
 # Spec Coverage Map
 
-Source spec directory: `../../docs/spec`
+Source spec directory: `../../docs`
 
 | Spec ID | Status | Test References | Notes |
 |---|---|---|---|
@@ -100,14 +100,14 @@ Source spec directory: `../../docs/spec`
 | CLI-121 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
 | CLI-122 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
 | CLI-123 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
-| CLI-124 | covered | `TestCLI_WorkspaceBundleRunner_MacOSCompatibility` (test/e2e/cli/workspace_bundle_test.go:69) |  |
-| CLI-125 | covered | `TestCLI_WorkspaceBundleRunner_MacOSCompatibility` (test/e2e/cli/workspace_bundle_test.go:69) |  |
+| CLI-124 | covered | `TestCLI_WorkspaceBundleRunner_MacOSCompatibility` (test/e2e/cli/workspace_bundle_test.go:77) |  |
+| CLI-125 | covered | `TestCLI_WorkspaceBundleRunner_MacOSCompatibility` (test/e2e/cli/workspace_bundle_test.go:77) |  |
 | CLI-126 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
 | CLI-127 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
-| CLI-128 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:120) |  |
-| CLI-129 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:120) |  |
-| CLI-130 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:120) |  |
-| CLI-131 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:120) |  |
+| CLI-128 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:127) |  |
+| CLI-129 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:127) |  |
+| CLI-130 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:127) |  |
+| CLI-131 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:127) |  |
 | DAEMON-001 | waived | - | Conceptual clause: daemon is a single long-running process. |
 | DAEMON-002 | waived | - | Conceptual clause: CLI is a client process. |
 | DAEMON-003 | waived | - | Conceptual clause: connectivity modes table. |
@@ -214,6 +214,13 @@ Source spec directory: `../../docs/spec`
 | INV-025 | covered | `TestPTY_SessionNotPersisted` (test/e2e/pty/pty_test.go:199) |  |
 | INV-026 | waived | - | PTY exit notification delivery is best tested at unit level with mock processes. |
 | INV-027 | waived | - | Removed workspace cleanup is an internal implementation detail. |
+| MACAPP-001 | waived | - | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources. |
+| MACAPP-002 | waived | - | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources. |
+| MACAPP-003 | waived | - | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources. |
+| MACAPP-004 | waived | - | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources. |
+| MACAPP-PROOF-001 | waived | - | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources. |
+| MACAPP-PROOF-002 | waived | - | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources. |
+| MACAPP-PROOF-003 | waived | - | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources. |
 | PRJ-001 | waived | - | Conceptual clause: definition of a project. |
 | PRJ-002 | waived | - | Conceptual clause: project ID format. |
 | PRJ-003 | covered | `TestProjectRepoDedup` (test/e2e/workspace/idempotency_test.go:83) |  |
@@ -338,9 +345,13 @@ Source spec directory: `../../docs/spec`
 | VM-007 | waived | - | Internal implementation: workspace-local tooling bootstrap path. |
 | VM-008 | waived | - | Internal implementation: workspace-local tool installability. |
 | VM-009 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
-| VM-010 | covered | `TestCLI_WorkspaceBundleRunner_MacOSCompatibility` (test/e2e/cli/workspace_bundle_test.go:69) |  |
+| VM-010 | covered | `TestCLI_WorkspaceBundleRunner_MacOSCompatibility` (test/e2e/cli/workspace_bundle_test.go:77) |  |
 | VM-011 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
-| VM-012 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:120) |  |
+| VM-012 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:127) |  |
+| VM-013 | waived | - | Invariant covered by VM-PROOF-011 (host-guest sync E2E test). |
+| VM-014 | waived | - | Invariant covered by VM-PROOF-012 (guest write isolation E2E test). |
+| VM-015 | waived | - | Invariant covered by VM-PROOF-013 (fork isolation E2E test). |
+| VM-016 | waived | - | Invariant covered by VM-PROOF-014 and general workspace boot tests. |
 | VM-PROOF-001 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:69)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:152) |  |
 | VM-PROOF-002 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
 | VM-PROOF-003 | waived | - | Requires deterministic daemon restart harness coverage for VM workspaces; tracked in child PRD 06 TD follow-up. |
@@ -348,9 +359,13 @@ Source spec directory: `../../docs/spec`
 | VM-PROOF-005 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecPWD` (test/e2e/pty/pty_behavioral_test.go:43) |  |
 | VM-PROOF-006 | covered | `TestVMProof_GuestCLITools` (test/e2e/vmproof/tools_test.go:59) |  |
 | VM-PROOF-007 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
-| VM-PROOF-008 | covered | `TestCLI_WorkspaceBundleRunner_MacOSCompatibility` (test/e2e/cli/workspace_bundle_test.go:69) |  |
+| VM-PROOF-008 | covered | `TestCLI_WorkspaceBundleRunner_MacOSCompatibility` (test/e2e/cli/workspace_bundle_test.go:77) |  |
 | VM-PROOF-009 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
-| VM-PROOF-010 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:120) |  |
+| VM-PROOF-010 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:127) |  |
+| VM-PROOF-011 | covered | `TestVMProof_HostGuestSync` (test/e2e/vmproof/overlayfs_test.go:18) |  |
+| VM-PROOF-012 | covered | `TestVMProof_GuestWriteIsolation` (test/e2e/vmproof/overlayfs_test.go:58) |  |
+| VM-PROOF-013 | covered | `TestVMProof_ForkIsolation` (test/e2e/vmproof/overlayfs_test.go:97) |  |
+| VM-PROOF-014 | covered | `TestVMProof_DockerDaemon` (test/e2e/vmproof/docker_test.go:16) |  |
 | WS-001 | waived | - | Conceptual clause: workspace definition. |
 | WS-002 | waived | - | Conceptual clause: workspace ID uniqueness. |
 | WS-003 | waived | - | Conceptual clause: workspace ID non-reuse. |

@@ -75,7 +75,7 @@ tasks:
       - ./scripts/ci/nexus-core.sh
 
   check:spec-coverage:
-    desc: "Generate formal verification coverage map and fail on unwaived missing VM proof IDs"
+    desc: "Generate formal verification coverage map and fail on unwaived missing proof IDs"
     dir: packages/nexus
     cmds:
       - go run ./test/e2e/coverage --check
