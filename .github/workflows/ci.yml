@@ -305,7 +305,7 @@ jobs:
             "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
             "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
             "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
-            go test -tags e2e -count=1 -timeout=5m -v -p 2 -parallel 2 \
+            go test -tags e2e -count=1 -timeout=5m -v -p 1 -parallel 1 \
             ./test/e2e/pty
 
       - name: Run e2e tests (spotlight)
