@@ -247,7 +247,16 @@ jobs:
           set -euo pipefail
           source ../../scripts/ci/e2e-ssh-bootstrap.sh
           # Run without -short so VM tests execute.
-          # -p 1 -parallel 1 prevents concurrent VM boots which exhaust host resources.
+          # -p 2 runs up to 2 test packages concurrently; each package now shares a
+          # single daemon (via TestMain/Suite) so only one daemon per package is active
+          # rather than one per test. -parallel 2 allows intra-package test parallelism.
+          # Capped at 2 to limit peak concurrent VMs: worst case 2 packages × 2 parallel
+          # tests × 256 MiB = ~1 GiB VM RAM. Higher values risk KVM slot exhaustion and
+          # memory pressure on the self-hosted runner.
+          #
+          # NEXUS_E2E_BINARY is set by the "Build embedded guest-agent binary" step
+          # (scripts/ci/build-nexus-libkrun.sh) so all packages share one pre-built binary
+          # rather than rebuilding nexusd per package.
           #
           # Run as root via sudo because the containerized runner lacks unprivileged
           # namespace creation. The patched passt (NEXUS_PASST_PATH) tolerates EPERM
@@ -257,7 +266,8 @@ jobs:
             "HOME=$HOME" \
             "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
             "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
-            go test -tags e2e -count=1 -timeout=30m -v -p 1 -parallel 1 ./test/e2e/...
+            "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
+            go test -tags e2e -count=1 -timeout=60m -v -p 2 -parallel 2 ./test/e2e/...
         env:
           CI: true
           NEXUS_LIBKRUN_SKIP_BAKE: "1"

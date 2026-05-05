@@ -15,7 +15,7 @@ import (
 func TestCLI_WorkspaceCreate_EndToEnd(t *testing.T) {
 	t.Parallel()
 	harness.RequireE2EFullStack(t)
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 	repo := harness.MakeLocalGitRepo(t, "ws-create-e2e")
 
 	out, err := h.Run(t, repo, "workspace", "create", ".")

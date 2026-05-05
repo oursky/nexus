@@ -12,7 +12,7 @@ import (
 // Spec: WS-030, WS-031, WS-032, WS-033, WS-060, WS-062, INV-010
 func TestWorkspaceFork(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 
 	clientRepo := harness.MakeLocalGitRepo(t, "fork")
 	runGit := func(args ...string) {

@@ -16,7 +16,7 @@ import (
 func TestCLI_WorkspaceExportImport_EndToEnd(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 	clientRepo := harness.MakeLocalGitRepo(t, "ws-bundle-export-import")
 
 	_, daemonRepo := h.MirrorGitToDaemon(t, clientRepo, "proj-ws-bundle-e2e")
@@ -77,7 +77,7 @@ func TestCLI_WorkspaceExportImport_EndToEnd(t *testing.T) {
 func TestCLI_WorkspaceBundleRunner_MacOSCompatibility(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 	clientRepo := harness.MakeLocalGitRepo(t, "ws-bundle-runner-compat")
 
 	_, daemonRepo := h.MirrorGitToDaemon(t, clientRepo, "proj-ws-bundle-runner")
@@ -127,7 +127,7 @@ func TestCLI_WorkspaceBundleRunner_MacOSCompatibility(t *testing.T) {
 func TestCLI_WorkspaceBundleRunner_IntentExecution(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 	clientRepo := harness.MakeLocalGitRepo(t, "ws-bundle-runner-intent")
 
 	_, daemonRepo := h.MirrorGitToDaemon(t, clientRepo, "proj-ws-bundle-runner-intent")

@@ -12,7 +12,7 @@ import (
 func TestPTY(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 
 	repoPath := harness.MakeLocalGitRepo(t, "pty")
 	cfg := harness.MirrorProfileConfigHome(t)
@@ -95,7 +95,7 @@ func TestPTY(t *testing.T) {
 func TestPTY_Operations(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "pty-ops")
 	cfg := harness.MirrorProfileConfigHome(t)
 	_, remoteRepo := harness.MirrorGitCheckoutToDaemon(t, h, cfg, repoPath, "proj-pty-ops")
@@ -172,7 +172,7 @@ func TestPTY_Operations(t *testing.T) {
 // TestPTY_SessionNotFound verifies pty operations on unknown session return error.
 func TestPTY_SessionNotFound(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 
 	cases := []struct {
 		method string
@@ -199,7 +199,7 @@ func TestPTY_SessionNotFound(t *testing.T) {
 func TestPTY_SessionNotPersisted(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "pty-persist")
 
 	var wsRes struct {

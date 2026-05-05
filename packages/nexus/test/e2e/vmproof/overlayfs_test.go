@@ -18,7 +18,7 @@ import (
 func TestVMProof_HostGuestSync(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 
 	repoPath := harness.MakeGitRepoWithContent(t, "vmproof-sync", map[string]string{
 		"sync.txt": "original\n",
@@ -58,7 +58,7 @@ func TestVMProof_HostGuestSync(t *testing.T) {
 func TestVMProof_GuestWriteIsolation(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 
 	repoPath := harness.MakeGitRepoWithContent(t, "vmproof-isolation", map[string]string{
 		"isolate.txt": "host-original\n",
@@ -97,7 +97,7 @@ func TestVMProof_GuestWriteIsolation(t *testing.T) {
 func TestVMProof_ForkIsolation(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 
 	repoPath := harness.MakeGitRepoWithContent(t, "vmproof-fork", map[string]string{
 		"base.txt": "base\n",

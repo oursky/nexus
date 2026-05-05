@@ -59,7 +59,7 @@ func createWorkspaceAndStart(t *testing.T, h *harness.CLIHarness, repoPath, name
 func TestVMProof_GuestCLITools(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 	repoPath := harness.MakeLocalGitRepo(t, "vmproof-tools")
 	wsID := createWorkspaceAndStart(t, h, repoPath, "vmproof-tools")
 

@@ -63,7 +63,7 @@ func forkWorkspace(t *testing.T, h *harness.Harness, parentID, name, ref string)
 // Uses a local repo — no Mutagen required.
 func TestFork_MetadataIntegrity(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeGitRepoWithContent(t, "fork-metadata", map[string]string{
 		"hello.txt": "hello world\n",
 	})
@@ -153,7 +153,7 @@ func TestFork_MetadataIntegrity(t *testing.T) {
 // TestFork_LineageChain verifies nested forks inherit the root's lineageRootId.
 func TestFork_LineageChain(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "fork-lineage")
 	gitRun(t, repoPath, "git", "branch", "feature-a", "main")
 	gitRun(t, repoPath, "git", "branch", "feature-b", "main")

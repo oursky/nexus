@@ -8,6 +8,8 @@ vars:
   REMOTE_PORT:         '{{.REMOTE_PORT         | default "7778"}}'
   REMOTE_XDG_STATE_HOME: '{{.REMOTE_XDG_STATE_HOME | default "~/.local/state-dev"}}'
   LOCAL_BIN:           '{{.LOCAL_BIN           | default "~/.local/bin/nexus-dev"}}'
+  MAC_HOST:            '{{.MAC_HOST            | default ""}}'
+  MAC_REPO_ROOT:       '{{.MAC_REPO_ROOT       | default "~/magic/nexus"}}'
 
 tasks:
   # ── Setup ────────────────────────────────────────────────────────────────
@@ -104,6 +106,22 @@ tasks:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
     cmds:
       - ./scripts/remote/e2e-cli.sh
+
+  test:e2e:remote:
+    desc: "Run full e2e suite (all packages) on remote Linux host"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+      REMOTE_BIN: "{{.REMOTE_BIN | default \"~/.local/bin/nexus\"}}"
+      E2E_P: "{{.E2E_P | default \"2\"}}"
+      E2E_PARALLEL: "{{.E2E_PARALLEL | default \"2\"}}"
+      E2E_TIMEOUT: "{{.E2E_TIMEOUT | default \"60m\"}}"
+      E2E_RUN: "{{.E2E_RUN | default \"\"}}"
+      E2E_PKG: "{{.E2E_PKG | default \"...\"}}"
+    cmds:
+      - ./scripts/remote/e2e-full.sh
 
   ci:libkrun:prep:
     desc: "Prepare libkrun VM assets for CI/e2e (host prereqs, build nexus, provision, prewarm)"
@@ -218,6 +236,48 @@ tasks:
       - scripts/generate-sdk.sh
       - scripts/swift/build.sh
       - scripts/swift/open.sh
+
+  # ── Dogfooding (develop on Linux remote) ──────────────────────────────────
+  # Set MAC_HOST=user@mac-hostname in .env.local on the Linux remote.
+
+  dev:dogfood:swift:
+    desc: "Dogfood dev loop: build on Linux remote, then SSH back to Mac to build app and test headless RPC"
+    preconditions:
+      - sh: '[ -n "{{.MAC_HOST}}" ]'
+        msg: "MAC_HOST is not set. Add it to .env.local on the remote with MAC_HOST=user@mac-host."
+    env:
+      MAC_HOST: "{{.MAC_HOST}}"
+      MAC_REPO_ROOT: "{{.MAC_REPO_ROOT}}"
+      LOCAL_BIN:   "{{.LOCAL_BIN}}"
+    cmds:
+      - scripts/local/deploy.sh
+      - task: stage:nexus-macos
+      - task: stage:nexus-linux
+      - scripts/generate-sdk.sh
+      - scripts/remote/mac-build-app.sh
+      - scripts/remote/mac-test-headless.sh
+
+  dev:mac:build:
+    desc: "SSH from Linux remote back to Mac to build NexusApp"
+    preconditions:
+      - sh: '[ -n "{{.MAC_HOST}}" ]'
+        msg: "MAC_HOST is not set. Add it to .env.local on the remote with MAC_HOST=user@mac-host."
+    env:
+      MAC_HOST: "{{.MAC_HOST}}"
+      MAC_REPO_ROOT: "{{.MAC_REPO_ROOT}}"
+    cmds:
+      - scripts/remote/mac-build-app.sh
+
+  dev:mac:test-headless:
+    desc: "SSH from Linux remote back to Mac to start NexusApp headless RPC and verify connection"
+    preconditions:
+      - sh: '[ -n "{{.MAC_HOST}}" ]'
+        msg: "MAC_HOST is not set. Add it to .env.local on the remote with MAC_HOST=user@mac-host."
+    env:
+      MAC_HOST: "{{.MAC_HOST}}"
+      MAC_REPO_ROOT: "{{.MAC_REPO_ROOT}}"
+    cmds:
+      - scripts/remote/mac-test-headless.sh
 
   stage:nexus-macos:
     desc: "Build macOS arm64 nexus CLI and stage to packages/nexus-swift/Resources/nexus"

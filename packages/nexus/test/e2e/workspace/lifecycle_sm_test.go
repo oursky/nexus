@@ -62,7 +62,7 @@ func rpcErrorCode(err error) int {
 func TestLifecycle_StartAndStop(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	id := createWorkspaceForSM(t, h, "sm-start-stop")
 
 	h.MustCall("workspace.start", map[string]any{"id": id}, nil)
@@ -93,7 +93,7 @@ func TestLifecycle_StartAndStop(t *testing.T) {
 func TestLifecycle_ReadyState(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	id := createWorkspaceForSM(t, h, "sm-ready")
 
 	var readyRes struct{ Ready bool `json:"ready"` }
@@ -116,7 +116,7 @@ func TestLifecycle_ReadyState(t *testing.T) {
 func TestLifecycle_RestoreFromStopped(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	id := createWorkspaceForSM(t, h, "sm-restore")
 
 	h.MustCall("workspace.start", map[string]any{"id": id}, nil)
@@ -145,7 +145,7 @@ func TestLifecycle_RestoreFromStopped(t *testing.T) {
 // TestLifecycle_RemoveNotInList verifies a removed workspace is absent from workspace.list.
 func TestLifecycle_RemoveNotInList(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "sm-remove")
 	var res struct {
 		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
@@ -176,7 +176,7 @@ func TestLifecycle_RemoveNotInList(t *testing.T) {
 // TestLifecycle_NotFound verifies workspace.info for an unknown id returns a 404 error.
 func TestLifecycle_NotFound(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	err := h.Call("workspace.info", map[string]any{"id": "ws-nonexistent-999"}, nil)
 	if err == nil {
 		t.Fatal("workspace.info with unknown id: expected error, got nil")
@@ -191,7 +191,7 @@ func TestLifecycle_NotFound(t *testing.T) {
 // TestLifecycle_StartNotFound verifies workspace.start for an unknown id returns a 404 error.
 func TestLifecycle_StartNotFound(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	err := h.Call("workspace.start", map[string]any{"id": "ws-nonexistent-999"}, nil)
 	if err == nil {
 		t.Fatal("workspace.start with unknown id: expected error, got nil")
@@ -206,7 +206,7 @@ func TestLifecycle_StartNotFound(t *testing.T) {
 // TestLifecycle_ForkRequiresChildRef verifies workspace.fork without childRef is rejected.
 func TestLifecycle_ForkRequiresChildRef(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	id := createWorkspaceForSM(t, h, "sm-fork-noref")
 
 	err := h.Call("workspace.fork", map[string]any{"id": id, "childRef": ""}, nil)

@@ -16,7 +16,7 @@ import (
 func TestVMProof_DockerDaemon(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 	repoPath := harness.MakeLocalGitRepo(t, "vmproof-docker")
 	wsID := createWorkspaceAndStart(t, h, repoPath, "vmproof-docker")
 
