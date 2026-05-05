@@ -4,6 +4,12 @@ set -euo pipefail
 MOUNT_POINT="/data/nexus"
 BACKING_FILE="/var/lib/nexus-xfs-backing.img"
 SIZE_GB="${NEXUS_XFS_SIZE_GB:-20}"
+LOCK_FILE="/tmp/nexus-xfs-setup.lock"
+
+# Multiple matrix shards can run on the same runner host. Serialize setup
+# so one shard doesn't unmount/remove while another is preparing the mount.
+exec 9>"$LOCK_FILE"
+flock 9
 
 # Check if already correctly set up.
 if mountpoint -q "$MOUNT_POINT" 2>/dev/null; then
