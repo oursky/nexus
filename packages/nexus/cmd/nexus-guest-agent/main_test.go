@@ -489,6 +489,7 @@ func TestSetupWorkspaceMountNoDevice(t *testing.T) {
 		workspaceMkdirAll = origMkdir
 		workspaceStat = origStat
 		workspaceMountFunc = origMountFunc
+		resetBlockWorkspaceMountOnce()
 	})
 
 	workspaceDevicePath = "/test/missing-dev"
@@ -555,6 +556,7 @@ func TestSetupWorkspaceMountSuccess(t *testing.T) {
 		workspaceMkdirAll = origMkdir
 		workspaceStat = origStat
 		workspaceMountFunc = origMountFunc
+		resetBlockWorkspaceMountOnce()
 	})
 	// Simulate export/import flow with workspace_base disk present.
 	t.Setenv("NEXUS_WORKSPACE_BASE_DEV", "/test/vdd")
@@ -661,6 +663,7 @@ func TestSetupWorkspaceMountSuccessNoBase(t *testing.T) {
 		workspaceMkdirAll = origMkdir
 		workspaceStat = origStat
 		workspaceMountFunc = origMountFunc
+		resetBlockWorkspaceMountOnce()
 	})
 	// NEXUS_WORKSPACE_BASE_DEV is intentionally NOT set → regular workspace.
 
@@ -744,6 +747,7 @@ func TestSetupWorkspaceMountBusyOverlayIsIgnored(t *testing.T) {
 		workspaceStat = origStat
 		workspaceMountFunc = origMountFunc
 		workspaceReadProcMounts = origReadProcMounts
+		resetBlockWorkspaceMountOnce()
 	})
 	// Simulate export/import flow with workspace_base disk present.
 	t.Setenv("NEXUS_WORKSPACE_BASE_DEV", "/test/vdd")

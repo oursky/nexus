@@ -174,6 +174,13 @@ func setupBlockWorkspaceMountOnce() error {
 	return blockWorkspaceOnceErr
 }
 
+// resetBlockWorkspaceMountOnce resets the once guard so setupBlockWorkspaceMount
+// can be called again. Only for use in tests.
+func resetBlockWorkspaceMountOnce() {
+	blockWorkspaceOnce = sync.Once{}
+	blockWorkspaceOnceErr = nil
+}
+
 // setupBlockWorkspaceMount assembles the hybrid overlayfs workspace.
 // It mounts /dev/vdb as the mutable upperdir, virtiofs as the live host project
 // lowerdir, and (when NEXUS_WORKSPACE_BASE_DEV is set) /dev/vdd as the
