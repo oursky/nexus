@@ -3,10 +3,12 @@
 package harness
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -47,15 +49,42 @@ func IsVMBackend() bool {
 // provisioned, or until the server-side timeout fires. It passes wait=true
 // so the daemon uses a push-based subscription internally and returns as soon
 // as markWorkspaceRunning fires — no polling required on the client side.
+//
+// On failure, it fetches the VM serial log (libkrun.log) via workspace.serial-log
+// and includes it in the test failure message to aid CI crash diagnosis.
 func WaitForWorkspaceReady(t *testing.T, h *Harness, workspaceID string) {
 	t.Helper()
 	var readyRes struct {
 		Ready bool `json:"ready"`
 	}
-	h.MustCall("workspace.ready", map[string]any{"id": workspaceID, "wait": true}, &readyRes)
-	if !readyRes.Ready {
-		t.Fatalf("workspace %s: workspace.ready returned false after blocking wait", workspaceID)
+	err := h.Call("workspace.ready", map[string]any{"id": workspaceID, "wait": true}, &readyRes)
+	if err != nil {
+		serialLog := fetchSerialLog(h, workspaceID)
+		t.Fatalf("workspace %s: workspace.ready error: %v\n--- VM serial log (last 100 lines) ---\n%s", workspaceID, err, serialLog)
 	}
+	if !readyRes.Ready {
+		serialLog := fetchSerialLog(h, workspaceID)
+		t.Fatalf("workspace %s: workspace.ready returned false after blocking wait\n--- VM serial log (last 100 lines) ---\n%s", workspaceID, serialLog)
+	}
+}
+
+// fetchSerialLog retrieves the last N lines of the VM serial log for a workspace.
+// Returns a best-effort string; never fails the test.
+func fetchSerialLog(h *Harness, workspaceID string) string {
+	var res struct {
+		Lines     []string `json:"lines"`
+		Available bool     `json:"available"`
+	}
+	if err := h.Call("workspace.serial-log", map[string]any{"id": workspaceID, "lines": 100}, &res); err != nil {
+		return fmt.Sprintf("(serial-log fetch error: %v)", err)
+	}
+	if !res.Available {
+		return "(serial log not available)"
+	}
+	if len(res.Lines) == 0 {
+		return "(serial log empty)"
+	}
+	return strings.Join(res.Lines, "\n")
 }
 
 func TempDB(t *testing.T) string {
