@@ -73,18 +73,49 @@ func WaitForWorkspaceReady(t *testing.T, h *Harness, workspaceID string) {
 func fetchSerialLog(h *Harness, workspaceID string) string {
 	var res struct {
 		Lines     []string `json:"lines"`
+		Path      string   `json:"path"`
 		Available bool     `json:"available"`
 	}
 	if err := h.Call("workspace.serial-log", map[string]any{"id": workspaceID, "lines": 100}, &res); err != nil {
 		return fmt.Sprintf("(serial-log fetch error: %v)", err)
 	}
-	if !res.Available {
+	if !res.Available && strings.TrimSpace(res.Path) == "" {
 		return "(serial log not available)"
 	}
-	if len(res.Lines) == 0 {
+
+	sections := make([]string, 0, 2)
+	if len(res.Lines) > 0 {
+		sections = append(sections, strings.Join(res.Lines, "\n"))
+	}
+
+	if strings.HasSuffix(res.Path, ".hvc0") {
+		hostLogPath := strings.TrimSuffix(res.Path, ".hvc0")
+		hostLines, err := tailFileLines(hostLogPath, 100)
+		if err == nil && len(hostLines) > 0 {
+			sections = append(sections, "--- VM host log (libkrun child stdout/stderr) ---\n"+strings.Join(hostLines, "\n"))
+		}
+	}
+
+	if len(sections) == 0 {
 		return "(serial log empty)"
 	}
-	return strings.Join(res.Lines, "\n")
+	return strings.Join(sections, "\n")
+}
+
+func tailFileLines(path string, maxLines int) ([]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	text := strings.TrimRight(string(b), "\n")
+	if text == "" {
+		return []string{}, nil
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return lines, nil
 }
 
 func TempDB(t *testing.T) string {

@@ -136,6 +136,7 @@ jobs:
 
       - name: Restore pre-baked libkrun VM assets
         id: libkrun-baked-cache
+        timeout-minutes: 5
         uses: actions/cache@v4
         with:
           path: ${{ env.LIBKRUN_BAKED_CACHE_DIR }}
@@ -144,6 +145,7 @@ jobs:
             libkrun-baked-v4-${{ runner.os }}-
 
       - name: Hydrate cached VM assets to host paths
+        timeout-minutes: 5
         run: scripts/ci/hydrate-libkrun-cache.sh
 
       - name: Verify pre-baked VM assets (cache hint)
@@ -153,6 +155,7 @@ jobs:
       # embed_agent_linux_amd64.go is satisfied before compiling nexus.
       # This step also builds the kernel ELF (if cache miss) and embeds it.
       - name: Build embedded guest-agent binary
+        timeout-minutes: 5
         run: scripts/ci/build-nexus-libkrun.sh
 
       # Build cross-platform nexus binary for fat bundle tests.
@@ -171,6 +174,7 @@ jobs:
           echo "NEXUS_CROSS_BINARY_DIR=${GITHUB_WORKSPACE}/packages/nexus-swift/Resources" >> "$GITHUB_ENV"
 
       - name: Build patched passt for containerized CI
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           git clone --depth 1 https://passt.top/passt /tmp/passt
@@ -220,6 +224,7 @@ jobs:
       # it so that every per-test daemon start finds everything already in place
       # and skips the slow setup path.
       - name: Provision libkrun host (kernel + rootfs)
+        timeout-minutes: 5
         run: scripts/ci/provision-libkrun-host.sh
 
       - name: Verify VM assets after provisioning
@@ -233,15 +238,18 @@ jobs:
       - name: Prewarm default-profile baked rootfs (best effort, bounded)
         if: steps.runner-network-probe.outcome == 'success'
         continue-on-error: true
+        timeout-minutes: 5
         run: scripts/ci/prewarm-default-profile.sh
         env:
           NEXUS_PASST_PATH: /tmp/passt-patched
 
       - name: Refresh baked VM cache contents
         if: always()
+        timeout-minutes: 5
         run: scripts/ci/refresh-libkrun-cache.sh
 
       - name: Run e2e tests
+        timeout-minutes: 5
         working-directory: packages/nexus
         run: |
           set -euo pipefail
@@ -267,7 +275,7 @@ jobs:
             "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
             "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
             "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
-            go test -tags e2e -count=1 -timeout=60m -v -p 2 -parallel 2 ./test/e2e/...
+            go test -tags e2e -count=1 -timeout=5m -v -p 2 -parallel 2 ./test/e2e/...
         env:
           CI: true
           NEXUS_LIBKRUN_SKIP_BAKE: "1"

@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 RUNNER_USER="${USER:-$(id -un)}"
+STEP_TIMEOUT_SECONDS="${STEP_TIMEOUT_SECONDS:-300}"
+
+run_with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$STEP_TIMEOUT_SECONDS" "$@"
+  else
+    "$@"
+  fi
+}
 
 SOCK=/tmp/nexus-provision.sock
 DB=/tmp/nexus-provision.db
@@ -8,18 +17,18 @@ DB=/tmp/nexus-provision.db
 # Purge any stale extracted nexus-libkrun-vm so the daemon extracts the fresh
 # embedded binary from /tmp/nexus-bin on this run. Prevents ABI mismatches
 # when the committed binary changes but the extracted copy persists.
-sudo rm -f /root/.local/share/nexus/bin/nexus-libkrun-vm \
+run_with_timeout sudo rm -f /root/.local/share/nexus/bin/nexus-libkrun-vm \
   /root/.local/share/nexus/lib/libkrun-embed.so \
   /root/.local/share/nexus/lib/libkrunfw-embed.so
 
-sudo NEXUS_LIBKRUN_SKIP_BAKE=1 NEXUS_LIBKRUN_BAKE_TIMEOUT=120s NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS=1 /tmp/nexus-bin daemon start \
+run_with_timeout sudo NEXUS_LIBKRUN_SKIP_BAKE=1 NEXUS_LIBKRUN_BAKE_TIMEOUT=120s NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS=1 /tmp/nexus-bin daemon start \
   --db "$DB" --socket "$SOCK" --workdir-root /data/nexus/libkrun-vms-provision --network=false &
 DPID=$!
 
-timeout 180 bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
-  || { echo "daemon setup timed out after 180s"; kill $DPID; exit 1; }
+timeout "$STEP_TIMEOUT_SECONDS" bash -c 'until [ -S "$0" ]; do sleep 2; done' "$SOCK" \
+  || { echo "daemon setup timed out after ${STEP_TIMEOUT_SECONDS}s"; kill $DPID; exit 1; }
 
-sudo /tmp/nexus-bin daemon stop --socket "$SOCK" 2>/dev/null \
+run_with_timeout sudo /tmp/nexus-bin daemon stop --socket "$SOCK" 2>/dev/null \
   || kill $DPID 2>/dev/null || true
 wait $DPID 2>/dev/null || true
 sudo chown -R "$RUNNER_USER":"$RUNNER_USER" "$HOME/.local" 2>/dev/null || true
