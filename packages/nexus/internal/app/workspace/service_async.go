@@ -159,6 +159,8 @@ func (s *Service) markWorkspaceRunning(ctx context.Context, current *workspace.W
 	if err := s.repo.Update(ctx, current); err != nil {
 		log.Printf("[workspace] runStartAsync: persist running failed for %s: %v", current.ID, err)
 	}
+	// Notify any callers blocked in WaitReady.
+	s.notifyReady(current.ID)
 }
 
 func (s *Service) autoForwardPorts(ctx context.Context, current *workspace.Workspace) {

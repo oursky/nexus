@@ -83,8 +83,9 @@ func (c *Client) Call(method string, params, out any) error {
 	b = append(b, '\n')
 
 	// Per-call deadline: prevents indefinite hang when the daemon never responds.
-	// 5 minutes covers slow CI operations like mkfs.ext4 for workspace images.
-	_ = c.conn.SetDeadline(time.Now().Add(5 * time.Minute))
+	// 8 minutes covers the full runStartAsyncTimeout (6 min) plus buffer for
+	// slow CI operations like mkfs.ext4 or apt-get installs without prewarm.
+	_ = c.conn.SetDeadline(time.Now().Add(8 * time.Minute))
 	defer c.conn.SetDeadline(time.Time{}) //nolint:errcheck
 
 	if _, err := c.conn.Write(b); err != nil {

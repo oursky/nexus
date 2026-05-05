@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/oursky/nexus/packages/nexus/internal/domain/project"
@@ -35,6 +36,12 @@ type Service struct {
 	// bgCtx is a long-lived context used for async workspace starts so they
 	// are not cancelled when the originating RPC request context expires.
 	bgCtx context.Context
+
+	// readyMu guards readySubs.
+	readyMu sync.Mutex
+	// readySubs holds pending channels waiting for a workspace to become running.
+	// Each channel is closed (broadcast) when markWorkspaceRunning fires.
+	readySubs map[string][]chan struct{}
 }
 
 type runtimeReadinessDriver interface {
@@ -44,7 +51,7 @@ type runtimeReadinessDriver interface {
 // NewService constructs a Service. registry may be nil if no runtime backend is available.
 // bgCtx should be the daemon's root context (cancelled only on shutdown).
 func NewService(repo workspace.Repository, projectRepo project.Repository, registry RegistryResolver, portDiscoverer workspace.PortDiscoverer, forwardCreator ForwardCreator, bgCtx context.Context) *Service {
-	return &Service{repo: repo, projectRepo: projectRepo, registry: registry, portDiscoverer: portDiscoverer, forwardCreator: forwardCreator, bgCtx: bgCtx}
+	return &Service{repo: repo, projectRepo: projectRepo, registry: registry, portDiscoverer: portDiscoverer, forwardCreator: forwardCreator, bgCtx: bgCtx, readySubs: make(map[string][]chan struct{})}
 }
 
 // driverFor returns the runtime driver for a workspace, or nil if none is available.
@@ -204,6 +211,90 @@ func (s *Service) Restore(ctx context.Context, id string) (*workspace.Workspace,
 
 func (s *Service) Ready(ctx context.Context, id string) (bool, error) {
 	ws, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return false, workspace.ErrNotFound
+	}
+	if ws.State != workspace.StateRunning {
+		return false, nil
+	}
+	driver := s.driverFor(ws)
+	checker, ok := driver.(runtimeReadinessDriver)
+	if !ok || checker == nil {
+		return true, nil
+	}
+	return checker.WorkspaceReady(ctx, ws)
+}
+
+// subscribeReady registers a channel that will be closed when the workspace
+// transitions to running. The caller must call the returned cancel func to
+// clean up if it stops waiting before the notification arrives.
+func (s *Service) subscribeReady(id string) (<-chan struct{}, func()) {
+	ch := make(chan struct{})
+	s.readyMu.Lock()
+	s.readySubs[id] = append(s.readySubs[id], ch)
+	s.readyMu.Unlock()
+	cancel := func() {
+		s.readyMu.Lock()
+		defer s.readyMu.Unlock()
+		subs := s.readySubs[id]
+		for i, c := range subs {
+			if c == ch {
+				s.readySubs[id] = append(subs[:i], subs[i+1:]...)
+				break
+			}
+		}
+	}
+	return ch, cancel
+}
+
+// notifyReady closes all pending subscriber channels for a workspace,
+// waking any callers blocked in WaitReady.
+func (s *Service) notifyReady(id string) {
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	for _, ch := range s.readySubs[id] {
+		close(ch)
+	}
+	delete(s.readySubs, id)
+}
+
+// WaitReady blocks until the workspace is running and the driver reports ready,
+// or until ctx is cancelled. It uses a push-based subscription so it wakes
+// immediately when markWorkspaceRunning fires instead of polling.
+func (s *Service) WaitReady(ctx context.Context, id string) (bool, error) {
+	// Subscribe before the first state check to avoid a TOCTOU race where
+	// the workspace transitions between our check and subscribe.
+	readyCh, cancelSub := s.subscribeReady(id)
+	defer cancelSub()
+
+	ws, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return false, workspace.ErrNotFound
+	}
+
+	switch ws.State {
+	case workspace.StateRunning:
+		// Already running — check driver readiness immediately.
+		driver := s.driverFor(ws)
+		checker, ok := driver.(runtimeReadinessDriver)
+		if !ok || checker == nil {
+			return true, nil
+		}
+		return checker.WorkspaceReady(ctx, ws)
+	case workspace.StateCreated, workspace.StateStopped, workspace.StateRestored:
+		// Not starting and not running — will never become ready without another start.
+		return false, nil
+	}
+
+	// State is StateStarting — block until running or ctx done.
+	select {
+	case <-ctx.Done():
+		return false, nil
+	case <-readyCh:
+	}
+
+	// Re-fetch after notification to get the authoritative state.
+	ws, err = s.repo.Get(ctx, id)
 	if err != nil {
 		return false, workspace.ErrNotFound
 	}

@@ -81,7 +81,8 @@ type forkRes struct {
 }
 
 type readyReq struct {
-	ID string `json:"id"`
+	ID   string `json:"id"`
+	Wait bool   `json:"wait,omitempty"`
 }
 type readyRes struct {
 	Ready bool `json:"ready"`
@@ -209,7 +210,12 @@ func (h *Handler) handleReady(ctx context.Context, raw json.RawMessage) (any, er
 	if req.ID == "" {
 		return nil, rpce.InvalidParams("workspace.invalid_params", "id is required")
 	}
-	ready, err := h.svc.Ready(ctx, req.ID)
+	var ready bool
+	if req.Wait {
+		ready, err = h.svc.WaitReady(ctx, req.ID)
+	} else {
+		ready, err = h.svc.Ready(ctx, req.ID)
+	}
 	if err != nil {
 		return nil, mapErr(err)
 	}

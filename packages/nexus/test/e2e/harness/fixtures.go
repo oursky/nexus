@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // RequireVM gates the test on a passing preflight check for the VM backend.
@@ -44,22 +43,19 @@ func IsVMBackend() bool {
 	return kernel != "" && rootfs != ""
 }
 
-// WaitForWorkspaceReady polls workspace.ready until it returns true or the
-// timeout is reached. It must be called after workspace.start when the test
-// intends to run workspace.exec, because the VM backend needs time to boot.
+// WaitForWorkspaceReady blocks until the workspace is running and fully
+// provisioned, or until the server-side timeout fires. It passes wait=true
+// so the daemon uses a push-based subscription internally and returns as soon
+// as markWorkspaceRunning fires — no polling required on the client side.
 func WaitForWorkspaceReady(t *testing.T, h *Harness, workspaceID string) {
 	t.Helper()
 	var readyRes struct {
 		Ready bool `json:"ready"`
 	}
-	for attempts := 0; attempts < 120; attempts++ {
-		h.MustCall("workspace.ready", map[string]any{"id": workspaceID}, &readyRes)
-		if readyRes.Ready {
-			return
-		}
-		time.Sleep(1 * time.Second)
+	h.MustCall("workspace.ready", map[string]any{"id": workspaceID, "wait": true}, &readyRes)
+	if !readyRes.Ready {
+		t.Fatalf("workspace %s: workspace.ready returned false after blocking wait", workspaceID)
 	}
-	t.Fatalf("workspace %s did not become ready within 120s", workspaceID)
 }
 
 func TempDB(t *testing.T) string {
