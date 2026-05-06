@@ -134,20 +134,34 @@ jobs:
             go_run: ""
             go_timeout: 10m
             step_timeout_minutes: 15
-          - name: vmproof-workspace
-            packages: ./test/e2e/vmproof ./test/e2e/workspace
+          - name: vmproof
+            packages: ./test/e2e/vmproof
             go_p: 2
             go_parallel: 2
             go_run: ""
             go_timeout: 15m
             step_timeout_minutes: 20
-          - name: cli
+          - name: workspace
+            packages: ./test/e2e/workspace
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
+            go_timeout: 15m
+            step_timeout_minutes: 20
+          - name: cli-basic
             packages: ./test/e2e/cli
             go_p: 2
             go_parallel: 2
-            go_run: ""
+            go_run: "TestCLI_ProjectCreateListGetRemove|TestCLI_WorkspaceShellAndExec|TestCLI_UnknownSubcommand|TestCLI_DaemonUnreachable|TestCLI_WorkspaceForkAndRestore|TestCLI_WorkspaceShellPTY|TestCLI_WorkspaceCreate_EndToEnd"
             go_timeout: 15m
             step_timeout_minutes: 20
+          - name: cli-bundle
+            packages: ./test/e2e/cli
+            go_p: 1
+            go_parallel: 1
+            go_run: "TestCLI_WorkspaceExportImport_EndToEnd|TestCLI_WorkspaceBundleRunner_MacOSCompatibility|TestCLI_WorkspaceBundleRunner_IntentExecution"
+            go_timeout: 20m
+            step_timeout_minutes: 30
     env:
       CI: true
       NEXUS_LIBKRUN_SKIP_BAKE: "1"
