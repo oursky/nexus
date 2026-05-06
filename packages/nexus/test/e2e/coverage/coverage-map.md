@@ -164,9 +164,9 @@ Source spec directory: `../../docs`
 | ERR-011 | covered | `TestErrors_WorkspaceNotFound` (test/e2e/workspace/errors_test.go:13)<br>`TestErrors_PTYCreateMissingWorkspace` (test/e2e/workspace/errors_test.go:130)<br>`TestLifecycle_NotFound` (test/e2e/workspace/lifecycle_sm_test.go:177)<br>`TestLifecycle_StartNotFound` (test/e2e/workspace/lifecycle_sm_test.go:192) |  |
 | ERR-012 | waived | - | workspace.invalid_state — partially covered by invalid transition tests but exact error code mapping requires deeper assertion. |
 | ERR-013 | covered | `TestErrors_CreateMissingRequiredFields` (test/e2e/workspace/errors_test.go:47) |  |
-| ERR-014 | covered | `TestLifecycle_ForkRequiresChildRef` (test/e2e/workspace/lifecycle_sm_test.go:207) |  |
+| ERR-014 | n/a | - | workspace.fork_missing_ref — no longer applicable; empty childRef now inherits parent ref (WS-034 updated). |
 | ERR-015 | waived | - | workspace.no_snapshot — requires a workspace with no snapshot on restore; edge case. |
-| ERR-022 | waived | - | workspace.fork_missing_ref — covered by TestLifecycle_ForkRequiresChildRef but error code mapping is not explicitly asserted. |
+| ERR-022 | n/a | - | workspace.fork_missing_ref — no longer applicable; empty childRef inherits parent ref per updated WS-034. |
 | ERR-023 | waived | - | workspace.restore no snapshot — same as ERR-015. |
 | ERR-025 | waived | - | Workspace error not explicitly triggered in e2e. |
 | ERR-040 | covered | `TestProject_DuplicateName` (test/e2e/project/project_test.go:97) |  |
@@ -399,7 +399,7 @@ Source spec directory: `../../docs`
 | WS-031 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
 | WS-032 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
 | WS-033 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
-| WS-034 | covered | `TestLifecycle_ForkRequiresChildRef` (test/e2e/workspace/lifecycle_sm_test.go:207) |  |
+| WS-034 | covered | `TestLifecycle_ForkEmptyChildRefInheritsParent` (test/e2e/workspace/lifecycle_sm_test.go) |  |
 | WS-040 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12)<br>`TestProtocol_WorkflowRoundTrip` (test/e2e/workspace/protocol_test.go:108) |  |
 | WS-041 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
 | WS-042 | waived | - | workspace.create unique name pre-condition is covered by TestErrors_DuplicateWorkspaceName but the exact spec clause mapping is implicit. |

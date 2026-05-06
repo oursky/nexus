@@ -152,6 +152,10 @@ func (s *Service) Stop(ctx context.Context, id string) (*workspace.Workspace, er
 	if ws.State == workspace.StateRemoved {
 		return nil, fmt.Errorf("cannot stop removed workspace: %s", id)
 	}
+	// WS-027 / INV-013: stop is only valid from a running (or paused/starting) state.
+	if ws.State != workspace.StateRunning && ws.State != workspace.StatePaused && ws.State != workspace.StateStarting {
+		return nil, fmt.Errorf("cannot stop workspace in state %s: %s", ws.State, id)
+	}
 
 	if driver := s.driverFor(ws); driver != nil {
 		if err := driver.Stop(ctx, ws); err != nil {

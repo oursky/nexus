@@ -555,6 +555,18 @@ func TestService_Stop_Removed(t *testing.T) {
 	}
 }
 
+func TestService_Stop_AlreadyStopped(t *testing.T) {
+	svc, repo, _, _ := newTestService()
+	ctx := context.Background()
+
+	ws := createAndStore(t, repo, "ws-stop-already", workspace.StateStopped)
+
+	_, err := svc.Stop(ctx, ws.ID)
+	if err == nil {
+		t.Fatal("expected error stopping already-stopped workspace (WS-027)")
+	}
+}
+
 // ── Remove tests ─────────────────────────────────────────────────────────────
 
 func TestService_Remove_Success(t *testing.T) {

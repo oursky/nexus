@@ -15,7 +15,9 @@ func createWorkspaceForSM(t *testing.T, h *harness.Harness, name string) string 
 	t.Helper()
 	repoPath := harness.MakeLocalGitRepo(t, "sm-"+name)
 	var res struct {
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{"repo": repoPath, "ref": "main", "workspaceName": name},
@@ -69,14 +71,18 @@ func TestLifecycle_StartAndStop(t *testing.T) {
 	harness.WaitForWorkspaceReady(t, h, id)
 
 	var infoRes struct {
-		Workspace struct{ State string `json:"state"` } `json:"workspace"`
+		Workspace struct {
+			State string `json:"state"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.info", map[string]any{"id": id}, &infoRes)
 	if infoRes.Workspace.State != "running" {
 		t.Errorf("after start: state=%q, want running", infoRes.Workspace.State)
 	}
 
-	var stopRes struct{ Stopped bool `json:"stopped"` }
+	var stopRes struct {
+		Stopped bool `json:"stopped"`
+	}
 	h.MustCall("workspace.stop", map[string]any{"id": id}, &stopRes)
 	if !stopRes.Stopped {
 		t.Error("stop: expected stopped=true")
@@ -96,7 +102,9 @@ func TestLifecycle_ReadyState(t *testing.T) {
 	h := suite.Harness().ForTest(t)
 	id := createWorkspaceForSM(t, h, "sm-ready")
 
-	var readyRes struct{ Ready bool `json:"ready"` }
+	var readyRes struct {
+		Ready bool `json:"ready"`
+	}
 	h.MustCall("workspace.ready", map[string]any{"id": id}, &readyRes)
 	if readyRes.Ready {
 		t.Error("ready before start: expected false, got true")
@@ -125,7 +133,9 @@ func TestLifecycle_RestoreFromStopped(t *testing.T) {
 
 	var restoreRes struct {
 		Restored  bool `json:"restored"`
-		Workspace struct{ State string `json:"state"` } `json:"workspace"`
+		Workspace struct {
+			State string `json:"state"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.restore", map[string]any{"id": id}, &restoreRes)
 	if !restoreRes.Restored {
@@ -133,7 +143,9 @@ func TestLifecycle_RestoreFromStopped(t *testing.T) {
 	}
 
 	var infoRes struct {
-		Workspace struct{ State string `json:"state"` } `json:"workspace"`
+		Workspace struct {
+			State string `json:"state"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.info", map[string]any{"id": id}, &infoRes)
 	if infoRes.Workspace.State != "restored" {
@@ -148,21 +160,27 @@ func TestLifecycle_RemoveNotInList(t *testing.T) {
 	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "sm-remove")
 	var res struct {
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{"repo": repoPath, "ref": "main", "workspaceName": "sm-remove-test"},
 	}, &res)
 	id := res.Workspace.ID
 
-	var removeRes struct{ Removed bool `json:"removed"` }
+	var removeRes struct {
+		Removed bool `json:"removed"`
+	}
 	h.MustCall("workspace.remove", map[string]any{"id": id}, &removeRes)
 	if !removeRes.Removed {
 		t.Error("remove: expected removed=true")
 	}
 
 	var listRes struct {
-		Workspaces []struct{ ID string `json:"id"` } `json:"workspaces"`
+		Workspaces []struct {
+			ID string `json:"id"`
+		} `json:"workspaces"`
 	}
 	h.MustCall("workspace.list", nil, &listRes)
 	for _, ws := range listRes.Workspaces {
@@ -202,15 +220,26 @@ func TestLifecycle_StartNotFound(t *testing.T) {
 	}
 }
 
-// Spec: WS-034, ERR-014
-// TestLifecycle_ForkRequiresChildRef verifies workspace.fork without childRef is rejected.
-func TestLifecycle_ForkRequiresChildRef(t *testing.T) {
+// Spec: WS-034
+// TestLifecycle_ForkEmptyChildRefInheritsParent verifies workspace.fork with empty childRef
+// inherits the parent's ref instead of rejecting the request.
+func TestLifecycle_ForkEmptyChildRefInheritsParent(t *testing.T) {
 	t.Parallel()
 	h := suite.Harness().ForTest(t)
 	id := createWorkspaceForSM(t, h, "sm-fork-noref")
 
-	err := h.Call("workspace.fork", map[string]any{"id": id, "childRef": ""}, nil)
-	if err == nil {
-		t.Fatal("workspace.fork with empty childRef: expected error, got nil")
+	var res struct {
+		Forked    bool `json:"forked"`
+		Workspace struct {
+			ID  string `json:"id"`
+			Ref string `json:"ref"`
+		} `json:"workspace"`
 	}
+	if err := h.Call("workspace.fork", map[string]any{"id": id, "childRef": ""}, &res); err != nil {
+		t.Fatalf("workspace.fork with empty childRef: expected success (inherit parent ref), got %v", err)
+	}
+	if res.Workspace.Ref != "main" {
+		t.Errorf("child ref=%q, want main (inherited from parent)", res.Workspace.Ref)
+	}
+	t.Cleanup(func() { _ = h.Call("workspace.remove", map[string]any{"id": res.Workspace.ID}, nil) })
 }

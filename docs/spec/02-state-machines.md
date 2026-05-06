@@ -112,5 +112,5 @@ source workspace MUST be in state `running` when fork is called.
 **`WS-033`** — The fork's `lineageRootId` is set to the source workspace's `lineageRootId` (or
 to the source workspace's own ID if the source has no `lineageRootId`, i.e. it is itself a root).
 
-**`WS-034`** — `childRef` is REQUIRED when calling `workspace.fork`. Omitting it MUST return
-`ERR-022`.
+**`WS-034`** — When `childRef` is omitted or empty on `workspace.fork`, the child inherits the
+parent's ref. This is not an error.

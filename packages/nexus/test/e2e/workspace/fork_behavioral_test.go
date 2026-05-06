@@ -24,7 +24,9 @@ func gitRun(t *testing.T, dir string, args ...string) {
 func createWS(t *testing.T, h *harness.Harness, repoPath, ref, name string) string {
 	t.Helper()
 	var res struct {
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{"repo": repoPath, "ref": ref, "workspaceName": name},
@@ -42,7 +44,9 @@ func forkWorkspace(t *testing.T, h *harness.Harness, parentID, name, ref string)
 	t.Helper()
 	var res struct {
 		Forked    bool `json:"forked"`
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.fork", map[string]any{
 		"id": parentID, "childWorkspaceName": name, "childRef": ref,
@@ -130,7 +134,9 @@ func TestFork_MetadataIntegrity(t *testing.T) {
 
 	// Both parent and child must appear in workspace.list.
 	var listRes struct {
-		Workspaces []struct{ ID string `json:"id"` } `json:"workspaces"`
+		Workspaces []struct {
+			ID string `json:"id"`
+		} `json:"workspaces"`
 	}
 	h.MustCall("workspace.list", nil, &listRes)
 	var foundParent, foundChild bool
@@ -189,7 +195,9 @@ func TestFork_ContentVerification(t *testing.T) {
 	gitRun(t, repoPath, "git", "branch", "feature-content", "main")
 
 	var parentRes struct {
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{"repo": repoPath, "ref": "main", "workspaceName": "fork-cv-parent"},
@@ -201,7 +209,9 @@ func TestFork_ContentVerification(t *testing.T) {
 
 	var forkRes struct {
 		Forked    bool `json:"forked"`
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.fork", map[string]any{
 		"id": parentID, "childWorkspaceName": "fork-cv-child", "childRef": "feature-content",
@@ -212,7 +222,9 @@ func TestFork_ContentVerification(t *testing.T) {
 
 	// Parent ref must remain "main".
 	var infoRes struct {
-		Workspace struct{ Ref string `json:"ref"` } `json:"workspace"`
+		Workspace struct {
+			Ref string `json:"ref"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.info", map[string]any{"id": parentID}, &infoRes)
 	if infoRes.Workspace.Ref != "main" {
@@ -250,7 +262,9 @@ func TestFork_WorktreeSync(t *testing.T) {
 	_, daemonRepo := h.MirrorGitToDaemon(t, repoPath, "proj-fork-sync")
 
 	var parentRes struct {
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{"repo": daemonRepo, "ref": "main", "workspaceName": "fork-sync-parent"},
@@ -258,10 +272,13 @@ func TestFork_WorktreeSync(t *testing.T) {
 	parentID := parentRes.Workspace.ID
 	t.Cleanup(func() { _ = h.Call("workspace.remove", map[string]any{"id": parentID}, nil) })
 	h.MustCall("workspace.start", map[string]any{"id": parentID}, nil)
+	harness.WaitForWorkspaceReady(t, h.Harness, parentID)
 
 	var forkRes struct {
 		Forked    bool `json:"forked"`
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.fork", map[string]any{
 		"id": parentID, "childWorkspaceName": "fork-sync-child", "childRef": "feature-sync",

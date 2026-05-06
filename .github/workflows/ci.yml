@@ -343,6 +343,8 @@ jobs:
             "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
             "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
             "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
+            "NEXUS_E2E_REMOTE_PROFILE=${NEXUS_E2E_REMOTE_PROFILE:-}" \
+            "NEXUS_E2E_SSH_IDENTITY=${NEXUS_E2E_SSH_IDENTITY:-}" \
             go test -tags e2e -count=1 -timeout=${{ matrix.shard.go_timeout }} -v -p ${{ matrix.shard.go_p }} -parallel ${{ matrix.shard.go_parallel }} \
             "${go_run_args[@]}" \
             ${{ matrix.shard.packages }}
