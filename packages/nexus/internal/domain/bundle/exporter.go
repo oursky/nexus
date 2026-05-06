@@ -172,34 +172,6 @@ func WriteNXPackBundle(dst string, assetsBlob []byte) error {
 	return nil
 }
 
-// WriteNXPackBundleWithBinary writes a self-executing NXPACK bundle embedding
-// the provided nexus binary bytes instead of reading os.Executable().
-// Use this when you need to embed a specific binary (e.g. in tests or tooling).
-func WriteNXPackBundleWithBinary(dst string, assetsBlob, nexusBin []byte) error {
-	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755) //nolint:gosec
-	if err != nil {
-		return fmt.Errorf("bundle: create output file: %w", err)
-	}
-	defer f.Close()
-
-	stub := nxpackShellStub(len(nexusBin))
-	preamble := append(stub, nexusBin...) //nolint:gocritic
-
-	if err := WriteNXPack(f, assetsBlob, preamble); err != nil {
-		return err
-	}
-	if err := f.Chmod(0o755); err != nil { //nolint:gosec
-		return fmt.Errorf("bundle: chmod bundle: %w", err)
-	}
-	return nil
-}
-
-// BuildAssetsTar is the exported version of buildAssetsTar for use by the CLI.
-// It builds a single-platform assets tar without meta.json (for legacy use).
-func BuildAssetsTar(archiveBytes []byte, ociLayers []OCILayer) ([]byte, error) {
-	return buildAssetsTar(archiveBytes, map[string][]OCILayer{"": ociLayers}, nil, BundleMeta{})
-}
-
 // buildAssetsTar constructs the uncompressed tar archive with a rigid directory structure:
 //
 //	layers/arm64.tar

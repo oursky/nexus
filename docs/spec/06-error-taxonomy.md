@@ -35,9 +35,8 @@ condition.
 |--------|------------|-----------|-------------|
 | `ERR-010` | `workspace.duplicate_name` | `workspaceName` already in use by non-removed workspace | `workspace.create` |
 | `ERR-011` | `workspace.not_found` | No workspace with given ID exists | `workspace.info`, `workspace.start`, `workspace.stop`, `workspace.remove`, `workspace.fork`, `workspace.restore`, `workspace.ready` |
-| `ERR-012` | `workspace.invalid_state` | Operation not valid in current state | `workspace.start` (already running), `workspace.stop` (not running), `workspace.remove` (running), `workspace.fork` (not running), `workspace.restore` (not stopped/created) |
+| `ERR-012` | `workspace.invalid_state` | Operation not valid in current state | `workspace.start` (already running), `workspace.stop` (not running), `workspace.remove` (running), `workspace.restore` (not stopped/created) |
 | `ERR-013` | `workspace.invalid_spec` | Create spec validation failed (e.g. empty repo or name) | `workspace.create` |
-| `ERR-014` | `workspace.fork_missing_ref` | `childRef` omitted on fork | `workspace.fork` |
 | `ERR-015` | `workspace.no_snapshot` | No snapshot exists for restore | `workspace.restore` |
 
 > Note: `ERR-011` and `ERR-012` use the same underlying sentinel `ErrNotFound` /

@@ -200,7 +200,6 @@ CLI-111 | Deploy stub; not yet implemented.
 # Error codes requiring specific conditions not yet exercised in e2e
 ERR-012 | workspace.invalid_state — partially covered by invalid transition tests but exact error code mapping requires deeper assertion.
 ERR-015 | workspace.no_snapshot — requires a workspace with no snapshot on restore; edge case.
-ERR-022 | workspace.fork_missing_ref — covered by TestLifecycle_ForkRequiresChildRef but error code mapping is not explicitly asserted.
 ERR-023 | workspace.restore no snapshot — same as ERR-015.
 ERR-025 | Workspace error not explicitly triggered in e2e.
 ERR-041 | project.invalid_spec — requires empty repoUrl which is hard to trigger after client-side validation.
@@ -229,9 +228,6 @@ WS-025 | restored -> removed transition requires restored state setup.
 WS-029 | General illegal transition rule covered by specific transition tests.
 WS-042 | workspace.create unique name pre-condition is covered by TestErrors_DuplicateWorkspaceName but the exact spec clause mapping is implicit.
 WS-057 | workspace.fork request shape.
-WS-058 | workspace.fork childRef required.
-WS-059 | workspace.fork pre-condition (source running).
-WS-061 | workspace.fork auto-generated name.
 WS-069 | workspace.discover-ports request shape.
 WS-070 | workspace.discover-ports response shape.
 WS-071 | DiscoveredPort object shape.
@@ -249,10 +245,6 @@ INV-006 | workspace.list no duplicates — guaranteed by database primary key; n
 INV-017 | workspace.ports.remove unknown forward — requires racing removal or specific edge case.
 
 # VM overlayfs invariants — behavior is covered by corresponding VM-PROOF E2E tests
-VM-013 | Invariant covered by VM-PROOF-011 (host-guest sync E2E test).
-VM-014 | Invariant covered by VM-PROOF-012 (guest write isolation E2E test).
-VM-015 | Invariant covered by VM-PROOF-013 (fork isolation E2E test).
-VM-016 | Invariant covered by VM-PROOF-014 and general workspace boot tests.
 
 # macOS app invariants and proof obligations — tested in Swift unit tests in packages/nexus-swift
 MACAPP-001 | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources.
