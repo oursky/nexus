@@ -79,11 +79,14 @@ func (e *Exporter) Export(ctx context.Context, workspaceName, outPath string) (s
 	// Fetch OCI layers for the base VM rootfs.
 	imageRef := DefaultBaseImage
 
-	arm64Layers, arm64Err := FetchLayersCachedForArch(ctx, imageRef, "arm64")
+	fetchCtx, fetchCancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer fetchCancel()
+
+	arm64Layers, arm64Err := FetchLayersCachedForArch(fetchCtx, imageRef, "arm64")
 	if arm64Err != nil {
 		return "", fmt.Errorf("bundle: fetch OCI layers for %q (arm64): %w", imageRef, arm64Err)
 	}
-	amd64Layers, amd64Err := FetchLayersCachedForArch(ctx, imageRef, "amd64")
+	amd64Layers, amd64Err := FetchLayersCachedForArch(fetchCtx, imageRef, "amd64")
 	if amd64Err != nil {
 		return "", fmt.Errorf("bundle: fetch OCI layers for %q (amd64): %w", imageRef, amd64Err)
 	}
