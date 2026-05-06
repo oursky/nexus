@@ -218,7 +218,11 @@ func TestFork_ContentVerification(t *testing.T) {
 	}, &forkRes)
 	childID := forkRes.Workspace.ID
 	t.Cleanup(func() { _ = h.Call("workspace.remove", map[string]any{"id": childID}, nil) })
+	// Fork stops and restarts the parent VM; wait for it to be ready again
+	// before issuing exec commands against it.
+	harness.WaitForWorkspaceReady(t, h.Harness, parentID)
 	h.MustCall("workspace.start", map[string]any{"id": childID}, nil)
+	harness.WaitForWorkspaceReady(t, h.Harness, childID)
 
 	// Parent ref must remain "main".
 	var infoRes struct {

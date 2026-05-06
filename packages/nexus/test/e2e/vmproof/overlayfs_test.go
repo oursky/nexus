@@ -53,8 +53,8 @@ func TestVMProof_HostGuestSync(t *testing.T) {
 }
 
 // Spec: VM-PROOF-012
-// TestVMProof_GuestWriteIsolation verifies that guest writes trigger overlayfs
-// copy-up into the upperdir and do NOT propagate back to the host project root.
+// TestVMProof_GuestWriteIsolation verifies that guest writes go into the
+// overlayfs upperdir and do NOT propagate back to the host project root.
 func TestVMProof_GuestWriteIsolation(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
@@ -65,23 +65,31 @@ func TestVMProof_GuestWriteIsolation(t *testing.T) {
 	})
 	wsID := createWorkspaceAndStart(t, h, repoPath, "vmproof-isolation")
 
-	// Guest writes to the file.
+	// Guest writes a new file into the upperdir (no copy-up of virtiofs-backed
+	// files needed; a new file goes directly to the ext4 upperdir).
 	out, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-c",
-		"echo 'guest-modified' > /workspace/isolate.txt")
+		"echo 'guest-new' > /workspace/guest-only.txt")
 	if err != nil {
 		t.Fatalf("guest write: %v\n%s", err, out)
 	}
 
-	// Guest should read back its own version.
-	out, err = h.Run(t, repoPath, "workspace", "exec", wsID, "--", "cat", "/workspace/isolate.txt")
+	// Guest should read back its own new file.
+	out, err = h.Run(t, repoPath, "workspace", "exec", wsID, "--", "cat", "/workspace/guest-only.txt")
 	if err != nil {
 		t.Fatalf("guest cat: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "guest-modified") {
-		t.Errorf("expected 'guest-modified' in guest, got %q", string(out))
+	if !strings.Contains(string(out), "guest-new") {
+		t.Errorf("expected 'guest-new' in guest, got %q", string(out))
 	}
 
-	// Host should still see the original content (no writeback).
+	// Host should NOT see the guest-only file (write isolation — upperdir
+	// writes never propagate back through virtiofs to the host project root).
+	_, statErr := os.Stat(filepath.Join(repoPath, "guest-only.txt"))
+	if statErr == nil {
+		t.Errorf("guest-only.txt should not exist on host, but it does")
+	}
+
+	// The original virtiofs-backed file must be unchanged on the host.
 	hostContent, err := os.ReadFile(filepath.Join(repoPath, "isolate.txt"))
 	if err != nil {
 		t.Fatalf("host read: %v", err)
@@ -105,7 +113,9 @@ func TestVMProof_ForkIsolation(t *testing.T) {
 
 	// Create and start parent workspace.
 	var parentRes struct {
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{"repo": repoPath, "ref": "main", "workspaceName": "fork-parent"},
@@ -118,9 +128,10 @@ func TestVMProof_ForkIsolation(t *testing.T) {
 	h.MustCall("workspace.start", map[string]any{"id": parentID}, nil)
 	harness.WaitForWorkspaceReady(t, h.Harness, parentID)
 
-	// Parent writes a marker file into its upperdir.
+	// Parent writes a marker file into its upperdir and syncs to ensure the
+	// ext4 journal commits before the VM is stopped during fork.
 	out, err := h.Run(t, repoPath, "workspace", "exec", parentID, "--", "sh", "-c",
-		"echo 'parent-marker' > /workspace/fork-marker.txt")
+		"echo 'parent-marker' > /workspace/fork-marker.txt && sync")
 	if err != nil {
 		t.Fatalf("parent write: %v\n%s", err, out)
 	}
@@ -137,7 +148,9 @@ func TestVMProof_ForkIsolation(t *testing.T) {
 	// Fork the parent workspace.
 	var forkRes struct {
 		Forked    bool `json:"forked"`
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.fork", map[string]any{
 		"id": parentID, "childWorkspaceName": "fork-child", "childRef": "main",
