@@ -287,7 +287,7 @@ func tryMountHybridOverlay() error {
 	} else {
 		lowerdir = workspaceLowerMountPoint
 	}
-	overlayOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lowerdir, workspaceUpperMountPoint, workspaceOverlayWorkDir)
+	overlayOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s,userxattr", lowerdir, workspaceUpperMountPoint, workspaceOverlayWorkDir)
 	if err := workspaceMountFunc("overlay", workspaceMountPoint, "overlay", 0, overlayOpts); err != nil {
 		if errors.Is(err, unix.EBUSY) {
 			if !mountPointIsActive("overlay", workspaceMountPoint) {
