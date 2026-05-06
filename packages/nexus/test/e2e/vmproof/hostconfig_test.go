@@ -61,21 +61,19 @@ func TestVMProof_HostConfigDrive(t *testing.T) {
 		})
 	}
 
-	// The remaining assertions verify actual content injection, which depends on
-	// the host having config files to inject. Skip if /run/nexus-host/ is empty.
+	// Verify the host config drive has content — CI must provision fixture files
+	// via scripts/ci/setup-host-config-fixtures.sh.
 	out, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-c",
 		"ls /run/nexus-host/ | wc -l; sleep 0.05")
 	if err != nil {
 		t.Fatalf("host config mount check: %v\noutput: %s", err, out)
 	}
-	trimmed := strings.TrimSpace(string(out))
-	if trimmed == "0" {
-		t.Log("host config mount: /run/nexus-host/ is empty (no host config to inject), skipping content assertions")
-		return
+	fileCount := strings.TrimSpace(string(out))
+	if fileCount == "0" {
+		t.Fatal("/run/nexus-host/ is empty — host config fixtures not provisioned (run scripts/ci/setup-host-config-fixtures.sh)")
 	}
 
-	// Verify env var injection is active in guest shell sessions (spec: VM-021).
-	// The e2e daemon may inject a sentinel OPENAI_API_KEY if configured.
+	// Verify .nexus-env contains OPENAI_API_KEY (injected from api-keys.env fixture).
 	envContent, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-c",
 		"cat /run/nexus-host/.nexus-env 2>/dev/null; sleep 0.05")
 	if err != nil {
@@ -83,18 +81,18 @@ func TestVMProof_HostConfigDrive(t *testing.T) {
 	}
 	envStr := string(envContent)
 
-	if strings.Contains(envStr, "OPENAI_API_KEY") {
-		// Verify the sentinel var is active in a login shell (sources .profile → sources .nexus-env).
-		envOut, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-l", "-c",
-			"echo $OPENAI_API_KEY; sleep 0.05")
-		if err != nil {
-			t.Fatalf("check OPENAI_API_KEY in login shell: %v\noutput: %s", err, envOut)
-		}
-		val := strings.TrimSpace(string(envOut))
-		if val == "" {
-			t.Error("OPENAI_API_KEY is not active in login shell (.nexus-env exports it but login shell doesn't have it)")
-		}
-	} else {
-		t.Log(".nexus-env present but no OPENAI_API_KEY — daemon not configured with API keys")
+	if !strings.Contains(envStr, "OPENAI_API_KEY") {
+		t.Fatal(".nexus-env missing OPENAI_API_KEY — host config fixtures did not provision api-keys.env")
+	}
+
+	// Verify the sentinel var is active in a login shell (sources .profile → sources .nexus-env).
+	envOut, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-l", "-c",
+		"echo $OPENAI_API_KEY; sleep 0.05")
+	if err != nil {
+		t.Fatalf("check OPENAI_API_KEY in login shell: %v\noutput: %s", err, envOut)
+	}
+	val := strings.TrimSpace(string(envOut))
+	if val == "" {
+		t.Fatal("OPENAI_API_KEY is not active in login shell (.nexus-env exports it but login shell doesn't have it)")
 	}
 }
