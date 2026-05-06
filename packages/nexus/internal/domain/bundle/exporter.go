@@ -181,7 +181,6 @@ func WriteNXPackBundle(dst string, assetsBlob []byte) error {
 //	meta.json
 //
 // platformLibs maps "darwin-arm64" → {libkrun.dylib, libkrunfw.dylib}, etc.
-// If nil, falls back to discoverLibkrunAssets for single-platform behavior.
 func buildAssetsTar(archiveBytes []byte, multiArchLayers map[string][]OCILayer, platformLibs map[string][]string, meta BundleMeta) ([]byte, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -201,30 +200,13 @@ func buildAssetsTar(archiveBytes []byte, multiArchLayers map[string][]OCILayer, 
 		}
 	}
 
-	if platformLibs != nil {
-		for platform, paths := range platformLibs {
-			for _, p := range paths {
-				data, readErr := os.ReadFile(p)
-				if readErr != nil {
-					return nil, fmt.Errorf("bundle: read lib asset %s for %s: %w", p, platform, readErr)
-				}
-				name := "lib/" + platform + "/" + filepath.Base(p)
-				if err := writeTarEntry(tw, name, data); err != nil {
-					return nil, err
-				}
-			}
-		}
-	} else {
-		libPaths, libErr := discoverLibkrunAssets()
-		if libErr != nil {
-			return nil, libErr
-		}
-		for _, p := range libPaths {
+	for platform, paths := range platformLibs {
+		for _, p := range paths {
 			data, readErr := os.ReadFile(p)
 			if readErr != nil {
-				return nil, fmt.Errorf("bundle: read lib asset %s: %w", p, readErr)
+				return nil, fmt.Errorf("bundle: read lib asset %s for %s: %w", p, platform, readErr)
 			}
-			name := "lib/" + filepath.Base(p)
+			name := "lib/" + platform + "/" + filepath.Base(p)
 			if err := writeTarEntry(tw, name, data); err != nil {
 				return nil, err
 			}

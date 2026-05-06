@@ -48,8 +48,7 @@ type VMSpec struct {
 	// WorkspaceImage is the per-workspace ext4 image used as the overlayfs
 	// upperdir in hybrid mode. It holds mutations (uncommitted changes,
 	// node_modules, build artifacts) and is used for snapshot/fork lineage.
-	// In the optimal path this is an empty sparse image; in the legacy path it
-	// contains a full baked project snapshot.
+	// In the normal path this is an empty or mutation-only sparse image.
 	WorkspaceImage string `json:"workspace_image"`
 	// WorkspaceBaseImage is a baked read-only ext4 image of the project used as
 	// a fallback lowerdir in hybrid overlay mode. When set, WorkspaceImage should

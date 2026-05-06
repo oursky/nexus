@@ -233,8 +233,7 @@ func (m *Manager) snapshotDockerPath(snapshotID string) string {
 // the current host project root state.
 //
 // In the hybrid overlay model this updates workspace-base.ext4 (the read-only
-// baked lowerdir). For legacy workspaces without a base image it falls back to
-// updating workspace.ext4 directly.
+// baked lowerdir).
 //
 // Callers should stop the parent VM first to establish a clear snapshot boundary.
 func (m *Manager) PromoteWorkspaceImageFromProjectRoot(ctx context.Context, workspaceID, projectRoot string) error {

@@ -53,23 +53,9 @@ var (
 )
 
 // isVirtiofsWorkspaceMode reports whether the workspace uses virtiofs.
-// In libkrun container mode the kernel cmdline is not under our control, so
-// the host sets NEXUS_WORKSPACE_MODE=virtiofs via krun_set_exec. Legacy
-// virtiofs guests set nexus.workspace=virtiofs on the kernel cmdline.
+// The host sets NEXUS_WORKSPACE_MODE=virtiofs via krun_set_exec.
 func isVirtiofsWorkspaceMode() bool {
-	if os.Getenv("NEXUS_WORKSPACE_MODE") == "virtiofs" {
-		return true
-	}
-	data, err := os.ReadFile("/proc/cmdline")
-	if err != nil {
-		return false
-	}
-	for _, field := range strings.Fields(string(data)) {
-		if field == "nexus.workspace=virtiofs" {
-			return true
-		}
-	}
-	return false
+	return os.Getenv("NEXUS_WORKSPACE_MODE") == "virtiofs"
 }
 
 // dockerDevPath returns the block device for docker-data.

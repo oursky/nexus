@@ -117,36 +117,6 @@ func ensureGuestBasePackages() error {
 		return nil
 	}
 
-	// Backward-compat: older images may have v6, v5 or monolithic v4 stamps.
-	// Promote only if the full required toolchain is actually present.
-	if _, err := os.Stat("/var/lib/nexus-tools-base-v6"); err == nil {
-		if toolchainPresentInPATH(os.Environ()) {
-			_ = os.MkdirAll("/var/lib", 0o755)
-			_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
-			emitDiagnostic("agent base packages: promoted legacy v6 stamp to v7")
-			return nil
-		}
-		emitDiagnostic("agent base packages: legacy v6 stamp found but toolchain incomplete; reinstalling")
-	}
-	if _, err := os.Stat("/var/lib/nexus-tools-base-v5"); err == nil {
-		if toolchainPresentInPATH(os.Environ()) {
-			_ = os.MkdirAll("/var/lib", 0o755)
-			_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
-			emitDiagnostic("agent base packages: promoted legacy v5 stamp to v7")
-			return nil
-		}
-		emitDiagnostic("agent base packages: legacy v5 stamp found but toolchain incomplete; reinstalling")
-	}
-	if _, err := os.Stat("/var/lib/nexus-tools-installed-v4"); err == nil {
-		if toolchainPresentInPATH(os.Environ()) {
-			_ = os.MkdirAll("/var/lib", 0o755)
-			_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
-			emitDiagnostic("agent base packages: promoted legacy v4 stamp to v7")
-			return nil
-		}
-		emitDiagnostic("agent base packages: legacy v4 stamp found but toolchain incomplete; reinstalling")
-	}
-
 	if _, err := exec.LookPath("apt-get"); err != nil {
 		emitDiagnostic("agent base packages: apt-get not found, skipping")
 		return fmt.Errorf("apt-get not found")
@@ -214,13 +184,6 @@ func ensureGuestBasePackages() error {
 	// Write stamp so subsequent boots skip this step.
 	_ = os.MkdirAll("/var/lib", 0o755)
 	_ = os.WriteFile(stampFile, []byte("ok\n"), 0o644)
-	// Legacy stamp cleanup (best-effort).
-	_ = os.Remove("/var/lib/nexus-tools-base-v9")
-	_ = os.Remove("/var/lib/nexus-tools-base-v8")
-	_ = os.Remove("/var/lib/nexus-tools-base-v7")
-	_ = os.Remove("/var/lib/nexus-tools-base-v6")
-	_ = os.Remove("/var/lib/nexus-tools-base-v5")
-	_ = os.Remove("/var/lib/nexus-tools-optional-v5")
 	emitDiagnostic("agent base packages: installed successfully (total %v)", time.Since(start).Round(time.Second))
 	return nil
 }

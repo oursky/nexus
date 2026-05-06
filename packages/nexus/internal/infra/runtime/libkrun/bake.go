@@ -56,17 +56,6 @@ func BakeRootfsIfNeeded(ctx context.Context, cfg ManagerConfig, stampDir string)
 		log.Printf("[libkrun] rootfs bake: already baked (stamp %s)", stampPath)
 		return nil
 	}
-	// Backward-compat: older host caches used v6/v5/v4 bake-stamp names.
-	for _, legacy := range []string{"v6", "v5", "v4"} {
-		legacyStamp := filepath.Join(stampDir, "rootfs-baked-"+legacy)
-		if _, err := os.Stat(legacyStamp); err == nil {
-			if err := os.MkdirAll(stampDir, 0o755); err == nil {
-				_ = os.WriteFile(stampPath, []byte("baked\n"), 0o644)
-			}
-			log.Printf("[libkrun] rootfs bake: promoted legacy stamp %s -> %s; skipping rebake", legacyStamp, stampPath)
-			return nil
-		}
-	}
 
 	if cfg.LibkrunVMBin == "" {
 		return fmt.Errorf("LibkrunVMBin not set — cannot bake rootfs")

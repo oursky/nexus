@@ -13,8 +13,8 @@ import (
 
 func buildRootlessRootfs(w io.Writer, dest string) error {
 	// Rootless rootfs build sequence:
-	// 1. Download squashfs (or use cached)
-	// 2. unsquashfs to temp dir (no root)
+	// 1. Download Ubuntu minimal tar.xz (or use cached)
+	// 2. extract to a temp dir (no root)
 	// 3. genext2fs to create ext4 (no root) OR mke2fs+debugfs
 	tmpDir, err := os.MkdirTemp("", "nexus-rootfs-build-*")
 	if err != nil {
@@ -22,29 +22,19 @@ func buildRootlessRootfs(w io.Writer, dest string) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Rootfs archive cache under ~/.local/share/nexus/vm/.
-	// Prefer Ubuntu minimal tar.xz; support legacy squashfs cache for upgrades.
-	archivePath := filepath.Join(rootlessVMDir(), "ubuntu.squashfs")
-	archiveIsSquashfs := false
-	if _, err := os.Stat(archivePath); err == nil && vmRootfsIsSquashfs(archivePath) {
-		archiveIsSquashfs = true
-		fmt.Fprintf(w, "  using cached squashfs rootfs from %s\n", archivePath)
-	} else {
-		tarxzCache := filepath.Join(rootlessVMDir(), "ubuntu-minimal.tar.xz")
-		archivePath = tarxzCache
-		if _, err := os.Stat(tarxzCache); err != nil {
-			fmt.Fprintf(w, "  downloading Ubuntu minimal rootfs (tar.xz)...\n")
-			url := vmSquashfsURL()
-			data, err := httpDownload(url)
-			if err != nil {
-				return fmt.Errorf("download rootfs from %s: %w", url, err)
-			}
-			if err := atomicWriteFile(tarxzCache, data, 0o644); err != nil {
-				return fmt.Errorf("save rootfs tar.xz: %w", err)
-			}
-		} else {
-			fmt.Fprintf(w, "  using cached tar.xz rootfs from %s\n", tarxzCache)
+	archivePath := filepath.Join(rootlessVMDir(), "ubuntu-minimal.tar.xz")
+	if _, err := os.Stat(archivePath); err != nil {
+		fmt.Fprintf(w, "  downloading Ubuntu minimal rootfs (tar.xz)...\n")
+		url := vmSquashfsURL()
+		data, err := httpDownload(url)
+		if err != nil {
+			return fmt.Errorf("download rootfs from %s: %w", url, err)
 		}
+		if err := atomicWriteFile(archivePath, data, 0o644); err != nil {
+			return fmt.Errorf("save rootfs tar.xz: %w", err)
+		}
+	} else {
+		fmt.Fprintf(w, "  using cached tar.xz rootfs from %s\n", archivePath)
 	}
 
 	rootfsDir := filepath.Join(tmpDir, "rootfs")
@@ -53,8 +43,8 @@ func buildRootlessRootfs(w io.Writer, dest string) error {
 	}
 	fmt.Fprintf(w, "  extracting rootfs archive...\n")
 
-	// Wrap with fakeroot if available so unsquashfs can preserve the original
-	// UIDs/GIDs from the squashfs (e.g. root-owned dirs like /root, /etc/ssh).
+	// Wrap with fakeroot if available so extraction can preserve the original
+	// UIDs/GIDs from the rootfs archive (e.g. root-owned dirs like /root, /etc/ssh).
 	// Without fakeroot, everything is owned by the calling user (uid ≠ 0),
 	// which breaks sshd authorised_keys checks and setuid binaries.
 	fakerootDBPath := filepath.Join(tmpDir, "fakeroot.db")
@@ -71,27 +61,11 @@ func buildRootlessRootfs(w io.Writer, dest string) error {
 		return exec.Command(name, args...)
 	}
 
-	if archiveIsSquashfs {
-		if _, err := exec.LookPath("unsquashfs"); err != nil {
-			return fmt.Errorf(
-				"bootstrap_error.asset_install: unsquashfs not found\n\n" +
-					"Remediation:\n" +
-					"  sudo apt install squashfs-tools",
-			)
-		}
-		unsqCmd := runCmd("unsquashfs", "-d", rootfsDir, archivePath)
-		unsqCmd.Stdout = w
-		unsqCmd.Stderr = w
-		if err := unsqCmd.Run(); err != nil {
-			return fmt.Errorf("unsquashfs: %w", err)
-		}
-	} else {
-		tarCmd := runCmd("tar", "-xJf", archivePath, "-C", rootfsDir)
-		tarCmd.Stdout = w
-		tarCmd.Stderr = w
-		if err := tarCmd.Run(); err != nil {
-			return fmt.Errorf("tar -xJf: %w", err)
-		}
+	tarCmd := runCmd("tar", "-xJf", archivePath, "-C", rootfsDir)
+	tarCmd.Stdout = w
+	tarCmd.Stderr = w
+	if err := tarCmd.Run(); err != nil {
+		return fmt.Errorf("tar -xJf: %w", err)
 	}
 
 	// Require at least one ext4 builder.

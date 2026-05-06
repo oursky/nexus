@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/oursky/nexus/packages/nexus/internal/domain/bundle"
+	lkruntime "github.com/oursky/nexus/packages/nexus/internal/infra/runtime/libkrun"
 )
 
 // ── VM rootfs installation ────────────────────────────────────────────────────
@@ -23,20 +24,6 @@ func installVMRootfsRootless(w io.Writer, emitJSON bool) error {
 		return nil // already present (agent injection handled separately)
 	}
 
-	// Migration only: copy from legacy privileged-setup rootfs if present and
-	// readable.  We never look in /tmp — that path is world-writable and may be
-	// owned by root from old implode-based setups.
-	legacyRootfs := "/var/lib/nexus/rootfs.ext4"
-	if fi, err := os.Stat(legacyRootfs); err == nil && fi.Size() > 1024*1024 {
-		fmt.Fprintf(w, "  migrating rootfs from legacy /var/lib/nexus...\n")
-		if err := copyFileRootless(legacyRootfs, dest); err == nil {
-			_ = os.Chmod(dest, 0o600)
-			fmt.Fprintf(w, "  rootfs installed at %s\n", dest)
-			return nil
-		}
-		fmt.Fprintf(w, "  warning: legacy migration failed, building from squashfs\n")
-	}
-
 	if err := buildRootlessRootfs(w, dest); err != nil {
 		return err
 	}
@@ -44,9 +31,9 @@ func installVMRootfsRootless(w io.Writer, emitJSON bool) error {
 	// Remove the cached agent hash so ensureGuestAgent knows to
 	// re-inject rather than skip because the old hash still matches.
 	_ = os.Remove(filepath.Join(xdgStateNexus(), "rootfs-agent.sha256"))
-	// Also remove the bake stamp so the next daemon start re-bakes the rootfs
-	// with developer tools baked into the fresh image.
-	_ = os.Remove(filepath.Join(xdgStateNexus(), "rootfs-baked-v3"))
+	// Also remove the current bake stamp so the next daemon start re-bakes the
+	// rootfs with developer tools baked into the fresh image.
+	lkruntime.DeleteBakeStamp(xdgStateNexus())
 	return nil
 }
 
@@ -54,11 +41,8 @@ func installVMRootfsRootless(w io.Writer, emitJSON bool) error {
 // and extracts it directly to rootfs-dir/ — the only rootfs artifact libkrun needs.
 // It deliberately skips building rootfs.ext4, saving 5–10 min of ext4 work.
 //
-// Image source: ubuntu:26.04 (Docker Hub, multi-arch).  OCI layers are cached
+// Image source: ubuntu:26.04 (Docker Hub, multi-arch). OCI layers are cached
 // at ~/.cache/nexus/bundle-layers/ so subsequent installs work offline.
-//
-// Legacy upgrade path: if the old ubuntu.squashfs cache file is present it is
-// extracted with unsquashfs so users who already downloaded it don't re-download.
 func installRootfsDirForLibkrun(w io.Writer, emitJSON bool) error {
 	permDir := rootlessRootfsDirPath()
 	if _, err := os.Stat(permDir); err == nil {
@@ -78,41 +62,14 @@ func installRootfsDirForLibkrun(w io.Writer, emitJSON bool) error {
 		return fmt.Errorf("mkdir extract dir: %w", err)
 	}
 
-	// ── Legacy path: cached squashfs from old installs ────────────────────────
-	squashfsCache := filepath.Join(rootlessVMDir(), "ubuntu.squashfs")
-	if _, err := os.Stat(squashfsCache); err == nil && vmRootfsIsSquashfs(squashfsCache) {
-		fmt.Fprintf(w, "  using cached squashfs (legacy) from %s\n", squashfsCache)
+	imageRef := bundle.DefaultBaseImage
+	layerCacheDir := defaultOCILayerCacheDir()
+	fmt.Fprintf(w, "  pulling OCI image %s ...\n", imageRef)
+	emitPhase(w, emitJSON, "asset-install", "start", "pulling OCI image "+imageRef)
 
-		fakerootDBPath := filepath.Join(tmpDir, "fakeroot.db")
-		hasFakeroot := func() bool { _, err := exec.LookPath("fakeroot"); return err == nil }()
-		runCmd := func(name string, args ...string) *exec.Cmd {
-			if hasFakeroot {
-				allArgs := append([]string{"-s", fakerootDBPath, "-i", fakerootDBPath, name}, args...)
-				return exec.Command("fakeroot", allArgs...)
-			}
-			return exec.Command(name, args...)
-		}
-
-		if _, err := exec.LookPath("unsquashfs"); err != nil {
-			return fmt.Errorf("unsquashfs not found — install squashfs-tools")
-		}
-		unsqCmd := runCmd("unsquashfs", "-d", extractDir, squashfsCache)
-		unsqCmd.Stdout = w
-		unsqCmd.Stderr = w
-		if err := unsqCmd.Run(); err != nil {
-			return fmt.Errorf("unsquashfs: %w", err)
-		}
-	} else {
-		// ── OCI path: pull ubuntu:26.04 from Docker Hub ───────────────────────
-		imageRef := bundle.DefaultBaseImage
-		layerCacheDir := defaultOCILayerCacheDir()
-		fmt.Fprintf(w, "  pulling OCI image %s ...\n", imageRef)
-		emitPhase(w, emitJSON, "asset-install", "start", "pulling OCI image "+imageRef)
-
-		ctx := context.Background()
-		if err := bundle.ExtractImageToDir(ctx, imageRef, extractDir, layerCacheDir); err != nil {
-			return fmt.Errorf("extract OCI image: %w", err)
-		}
+	ctx := context.Background()
+	if err := bundle.ExtractImageToDir(ctx, imageRef, extractDir, layerCacheDir); err != nil {
+		return fmt.Errorf("extract OCI image: %w", err)
 	}
 
 	// ── Patch and install to permanent location ───────────────────────────────
@@ -156,33 +113,6 @@ func defaultOCILayerCacheDir() string {
 	return filepath.Join(home, ".cache", "nexus", "bundle-layers")
 }
 
-// copyFileRootless copies a file in userspace (no root needed).
-func copyFileRootless(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	dir := filepath.Dir(dst)
-	base := filepath.Base(dst)
-	out, err := os.CreateTemp(dir, base+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmp := out.Name()
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := out.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, dst)
-}
-
 // patchRootfsForRoot writes OS-level configuration files into the extracted
 // rootfs directory so that root has full, unrestricted control of the VM
 // environment from first boot — no per-operation workarounds needed.
@@ -204,7 +134,7 @@ func patchRootfsForRoot(rootfsDir string) error {
 	}
 
 	files := []fileSpec{
-		// /tmp: ensure world-writable sticky bit — squashfs default is 0755.
+		// /tmp: ensure world-writable sticky bit — the extracted rootfs may default to 0755.
 		// The agent also mounts tmpfs here on boot, but this covers any path
 		// that does not go through the agent's mountKernelFilesystems.
 		// (The directory entry in the ext4 image sets the on-disk mode.)
@@ -241,7 +171,7 @@ kernel.unprivileged_userns_clone = 1
 		errs = append(errs, fmt.Sprintf("chmod tmp: %v", err))
 	}
 
-	// Create the apt cache directories that are absent in minimal squashfs images.
+	// Create the apt cache directories that are absent in the minimal rootfs archive.
 	// Without these, apt-get install fails immediately with "directory missing".
 	for _, dir := range []string{
 		"var/cache/apt/archives/partial",

@@ -9,7 +9,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
-// Spec: WS-030, WS-031, WS-032, WS-033, WS-060, WS-062, INV-010
+// Spec: WS-030, WS-031, WS-032, WS-033, WS-059, WS-060, WS-062, INV-010
 func TestWorkspaceFork(t *testing.T) {
 	t.Parallel()
 	h := suite.Harness().ForTest(t)

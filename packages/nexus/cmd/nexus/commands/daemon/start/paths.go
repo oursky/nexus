@@ -18,21 +18,14 @@ func defaultVMRootfsPath() string {
 	return XDGVMAsset("rootfs.ext4")
 }
 
-// XDGVMAsset returns the path to a VM asset under ~/.local/share/nexus/vm/
-// or the legacy /var/lib/nexus/ path if the legacy file still exists and the
-// XDG file does not, providing seamless migration for existing setups.
+func xdgVMAssetPath(home, name string) string {
+	return filepath.Join(home, ".local", "share", "nexus", "vm", name)
+}
+
+// XDGVMAsset returns the path to a VM asset under ~/.local/share/nexus/vm/.
 func XDGVMAsset(name string) string {
 	home, _ := os.UserHomeDir()
-	xdgPath := filepath.Join(home, ".local", "share", "nexus", "vm", name)
-	legacyPath := "/var/lib/nexus/" + name
-
-	if _, err := os.Stat(xdgPath); err == nil {
-		return xdgPath
-	}
-	if _, err := os.Stat(legacyPath); err == nil {
-		return legacyPath
-	}
-	return xdgPath
+	return xdgVMAssetPath(home, name)
 }
 
 // DefaultDataDir returns the default data directory for nexus state.
