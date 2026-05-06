@@ -58,6 +58,9 @@ func launchVM(spec libkrun.VMSpec) error {
 		return fmt.Errorf("launchVM requires rootfs_image")
 	}
 	if workspaceHostPath != "" {
+		if spec.WorkspaceMode == "virtiofs" {
+			return launchVirtiofsDirectMode(ctx, spec, logf)
+		}
 		return launchHybridMode(ctx, spec, logf)
 	}
 	return launchBlockMode(ctx, spec, logf)
@@ -171,6 +174,109 @@ func detectKernelFormat(path string) (uint32, bool) {
 	}
 }
 
+// launchVirtiofsDirectMode boots a VM with writable virtiofs for /workspace.
+// Regular workspaces use this mode: guest writes reflect directly to host.
+//
+// Guest layout:
+//
+//	/dev/vda  rootfs.{raw,qcow2}     → /  (via krun_set_root_disk_remount)
+//	/dev/vdb  docker-data.ext4       → /var/lib/docker
+//	virtiofs "nexus-workspace"        → /workspace (writable, live host project)
+//	virtiofs "nexus-host-config"      → /run/nexus-host (optional, ro host config files)
+func launchVirtiofsDirectMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...interface{})) error {
+	rootfsPath := strings.TrimSpace(spec.RootFSImage)
+	if rootfsPath == "" {
+		return fmt.Errorf("virtiofs-direct mode requires rootfs_image")
+	}
+	if _, err := os.Stat(rootfsPath); err != nil {
+		return fmt.Errorf("virtiofs-direct mode rootfs image stat: %w", err)
+	}
+
+	format := uint32(spec.RootFSImageFormat)
+	logf("add_disk: rootfs=%s format=%d", rootfsPath, format)
+	if err := krunAddDiskWithFormat(ctx, "rootfs", rootfsPath, format, false); err != nil {
+		return fmt.Errorf("add rootfs disk: %w", err)
+	}
+
+	// Docker data on block device (docker overlay2 needs native fs).
+	logf("add_disk: docker_data=%s", spec.DockerDataImage)
+	if err := krunAddDisk(ctx, "docker_data", spec.DockerDataImage, false); err != nil {
+		return fmt.Errorf("add docker-data disk: %w", err)
+	}
+
+	if spec.HostConfigDir != "" {
+		logf("add_virtiofs: tag=nexus-host-config path=%s ro=false", spec.HostConfigDir)
+		if err := krunAddVirtioFS3(ctx, "nexus-host-config", spec.HostConfigDir, 0, false); err != nil {
+			logf("warning: host config virtiofs: %v", err)
+		}
+	}
+
+	logf("set_root_disk_remount: /dev/vda (ext4)")
+	if err := krunSetRootDiskRemount(ctx, "/dev/vda", "ext4", ""); err != nil {
+		return fmt.Errorf("set root disk remount: %w", err)
+	}
+
+	hostPath := strings.TrimSpace(spec.WorkspaceHostPath)
+	if hostPath != "" {
+		if fi, err := os.Stat(hostPath); err != nil || !fi.IsDir() {
+			if err != nil {
+				return fmt.Errorf("virtiofs-direct workspace_host_path stat: %w", err)
+			}
+			return fmt.Errorf("virtiofs-direct workspace_host_path is not a directory: %s", hostPath)
+		}
+		logf("add_virtiofs: tag=nexus-workspace path=%s ro=false (writable)", hostPath)
+		if err := krunAddVirtioFS3(ctx, "nexus-workspace", hostPath, 0, false); err != nil {
+			return fmt.Errorf("add virtiofs workspace share: %w", err)
+		}
+	}
+
+	if strings.TrimSpace(spec.KernelPath) != "" {
+		if err := setKernel(ctx, spec, logf); err != nil {
+			return err
+		}
+	}
+
+	if err := configureNetworking(ctx, spec, logf); err != nil {
+		return err
+	}
+	if err := addVsockAndConsole(ctx, spec, logf); err != nil {
+		return err
+	}
+
+	agentPath := strings.TrimSpace(spec.AgentPath)
+	if agentPath == "" {
+		agentPath = "/usr/local/bin/nexus-guest-agent"
+	}
+	env := []string{
+		"NEXUS_CONTAINER_MODE=1",
+		"NEXUS_WORKSPACE_MODE=virtiofs",
+		// /dev/vdb is docker data (no workspace block device in virtiofs-direct).
+		"NEXUS_DOCKER_DEV=/dev/vdb",
+		"HOME=/root",
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"TERM=xterm-256color",
+	}
+	if spec.BakedRootfs {
+		env = append(env, "NEXUS_BAKED=1")
+	}
+	if strings.Contains(spec.KernelCmdline, "nexus.bake=1") {
+		env = append(env, "NEXUS_BAKE=1")
+	}
+	if spec.HostConfigDir != "" {
+		env = append(env, "NEXUS_CONFIG_TAG=nexus-host-config")
+	}
+	if err := krunSetWorkdir(ctx, "/"); err != nil {
+		return fmt.Errorf("set workdir: %w", err)
+	}
+	logf("set_exec: path=%s env=%d vars", agentPath, len(env))
+	if err := krunSetExec(ctx, agentPath, env); err != nil {
+		return fmt.Errorf("set exec: %w", err)
+	}
+
+	logf("calling krun_start_enter (process will become the VMM)")
+	return krunStartEnter(ctx)
+}
+
 // launchHybridMode boots a VM with block-backed rootfs and workspace volumes.
 // The root filesystem is a block device (giving the guest true root ownership),
 // and /workspace is assembled from an overlayfs stack by the guest agent.
@@ -228,7 +334,10 @@ func launchHybridMode(ctx uint32, spec libkrun.VMSpec, logf func(string, ...inte
 	}
 
 	hostPath := strings.TrimSpace(spec.WorkspaceHostPath)
-	if hostPath != "" {
+	// Attach the host project as a read-only virtiofs lowerdir only when
+	// there is no baked base image. Fork/restore workspaces use the ext4
+	// base as the authoritative lowerdir instead of the live host share.
+	if hostPath != "" && spec.WorkspaceBaseImage == "" {
 		if fi, err := os.Stat(hostPath); err != nil || !fi.IsDir() {
 			if err != nil {
 				return fmt.Errorf("hybrid workspace_host_path stat: %w", err)

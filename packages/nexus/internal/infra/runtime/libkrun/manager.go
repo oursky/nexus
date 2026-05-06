@@ -116,6 +116,7 @@ type SpawnSpec struct {
 	ManifestHash     string // derived from base+project Nexusfile contents
 	BakedRootfs      bool   // true when the host rootfs bake stamp is present
 	UseWorkspaceBase bool   // true → hybrid overlay with workspace-base.ext4 (export/import flows only)
+	ForkRestore      bool   // true → workspace is a fork/restore and should use hybrid-overlay mode with ext4 base lowerdir
 }
 
 // spawnTimeout is the maximum time allowed for the entire Spawn operation.

@@ -101,7 +101,7 @@ forwards associated with it.
 
 ---
 
-## VM Backend — `VM-001`–`VM-016`
+## VM Backend — `VM-001`–`VM-017`
 
 **`VM-001`** — For VM backends, interactive shell sessions MUST execute inside the guest VM, not on
 the daemon host.
@@ -148,10 +148,11 @@ virtiofs host project root lowerdir MUST be mounted read-only inside the guest. 
 unmodified files MUST be served directly from these lowerdirs. Host edits to files that have not
 been modified in the guest MUST become visible inside the guest without restart or remount.
 
-**`VM-014` (Copy-Up Isolation)** — Guest writes to any path under `/workspace` MUST trigger
+**`VM-014` (Copy-Up Isolation)** — For workspaces using hybrid-overlay mode, guest writes to any path under `/workspace` MUST trigger
 overlayfs copy-up into the writable upperdir (`workspace-upper`). After copy-up, the guest MUST
 read back its own modified version (shadowing the lowerdir original). The host MUST NOT observe
-guest writes; there is no guest→host writeback.
+guest writes; there is no guest→host writeback. This invariant applies only to fork/bundle/restore
+workspaces; regular workspaces use virtiofs-direct mode (see VM-017).
 
 **`VM-015` (Fork Snapshot Semantics)** — `CheckpointFork` MUST copy only the parent's upperdir
 (`workspace.ext4`) and `docker-data.ext4` into the child's snapshot. The baked base lowerdir
@@ -159,9 +160,16 @@ guest writes; there is no guest→host writeback.
 Fork time and space overhead MUST be O(1) relative to mutation size (upperdir size), not project
 size (lowerdir size).
 
-**`VM-016` (Empty Upperdir Boot)** — A newly-created workspace with no prior mutations MUST boot
-with an empty upperdir. The guest MUST still see the full project tree via the virtiofs lowerdir
-(and optional baked base lowerdir). The first guest write to any file MUST succeed via copy-up.
+**`VM-016` (Empty Upperdir Boot)** — For workspaces using hybrid-overlay mode, a newly-created workspace with no prior mutations MUST boot
+with an empty upperdir. The guest MUST still see the full project tree via the baked base lowerdir.
+The first guest write to any file MUST succeed via copy-up. This invariant applies only to
+fork/bundle/restore workspaces; regular workspaces use virtiofs-direct mode (see VM-017).
+
+**`VM-017` (Virtiofs-Direct Guest↔Host Reflection)** — For regular workspaces using virtiofs-direct
+mode, `/workspace` MUST be a writable virtiofs mount backed by the host project directory. Guest
+writes MUST be immediately reflected on the host filesystem (no upperdir isolation). Host writes to
+unmodified files MUST be visible inside the guest without restart or remount. No overlayfs is used;
+there is no copy-up or snapshot isolation.
 
 ---
 

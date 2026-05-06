@@ -167,6 +167,13 @@ func resetBlockWorkspaceMountOnce() {
 	blockWorkspaceOnceErr = nil
 }
 
+// resetVirtiofsWorkspaceMountOnce resets the once guard so setupVirtiofsWorkspace
+// can be called again. Only for use in tests.
+func resetVirtiofsWorkspaceMountOnce() {
+	virtiofsWorkspaceOnce = sync.Once{}
+	virtiofsWorkspaceOnceErr = nil
+}
+
 // setupBlockWorkspaceMount assembles the hybrid overlayfs workspace.
 // It mounts /dev/vdb as the mutable upperdir, virtiofs as the live host project
 // lowerdir, and (when NEXUS_WORKSPACE_BASE_DEV is set) /dev/vdd as the
@@ -245,33 +252,42 @@ func tryMountHybridOverlay() error {
 	}
 
 	// Mount virtiofs lowerdir (read-only host project directory).
+	// Fork/restore workspaces do not attach a live virtiofs share; they
+	// use the ext4 base as the sole lowerdir instead.
+	useVirtiofs := true
 	if err := workspaceMountFunc("nexus-workspace", workspaceLowerMountPoint, "virtiofs", unix.MS_RDONLY, ""); err != nil {
 		if errors.Is(err, unix.EBUSY) {
 			if !mountPointIsActive("nexus-workspace", workspaceLowerMountPoint) {
-				// EBUSY but not actually mounted — tear down what we set up.
-				if useBase {
-					_ = workspaceUnmountFunc(workspaceBaseMountPoint, 0)
+				// EBUSY but not actually mounted — if we have a base, this is
+				// expected (fork/restore); otherwise it's a real error.
+				if !useBase {
+					_ = workspaceUnmountFunc(workspaceMutableMountPoint, 0)
+					return fmt.Errorf("mount virtiofs at %s returned EBUSY but not active", workspaceLowerMountPoint)
 				}
-				_ = workspaceUnmountFunc(workspaceMutableMountPoint, 0)
-				return fmt.Errorf("mount virtiofs at %s returned EBUSY but not active", workspaceLowerMountPoint)
+				useVirtiofs = false
 			}
 			// Already mounted — continue without unmounting /workspace-mutable.
 		} else {
-			// Hard error — tear down what we set up.
-			if useBase {
-				_ = workspaceUnmountFunc(workspaceBaseMountPoint, 0)
+			// Hard error — if we have a base lowerdir, virtiofs is optional.
+			if !useBase {
+				_ = workspaceUnmountFunc(workspaceMutableMountPoint, 0)
+				return fmt.Errorf("mount virtiofs nexus-workspace → %s: %w", workspaceLowerMountPoint, err)
 			}
-			_ = workspaceUnmountFunc(workspaceMutableMountPoint, 0)
-			return fmt.Errorf("mount virtiofs nexus-workspace → %s: %w", workspaceLowerMountPoint, err)
+			useVirtiofs = false
 		}
 	}
 
 	// Assemble overlayfs at /workspace.
 	var lowerdir string
-	if useBase {
+	switch {
+	case useVirtiofs && useBase:
 		lowerdir = workspaceLowerMountPoint + ":" + workspaceBaseMountPoint
-	} else {
+	case useVirtiofs:
 		lowerdir = workspaceLowerMountPoint
+	case useBase:
+		lowerdir = workspaceBaseMountPoint
+	default:
+		return fmt.Errorf("hybrid overlay requires at least one lowerdir (virtiofs or base)")
 	}
 	overlayOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s,userxattr", lowerdir, workspaceUpperMountPoint, workspaceOverlayWorkDir)
 	if err := workspaceMountFunc("overlay", workspaceMountPoint, "overlay", 0, overlayOpts); err != nil {

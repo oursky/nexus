@@ -244,15 +244,17 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 	bakedRootfs := IsRootfsBaked(defaultStampDir())
 
 	spec := SpawnSpec{
-		WorkspaceID:   workspaceID,
-		ProjectRoot:   root,
-		MemoryMiB:     memMiB,
-		VCPUs:         1,
-		SnapshotID:    snapshotID,
-		HostConfigDir: configDriveDir,
-		VMProfile:     resolveGuestVMProfile(root),
-		ManifestHash:  manifestHash,
-		BakedRootfs:   bakedRootfs,
+		WorkspaceID:      workspaceID,
+		ProjectRoot:      root,
+		MemoryMiB:        memMiB,
+		VCPUs:            1,
+		SnapshotID:       snapshotID,
+		HostConfigDir:    configDriveDir,
+		VMProfile:        resolveGuestVMProfile(root),
+		ManifestHash:     manifestHash,
+		BakedRootfs:      bakedRootfs,
+		ForkRestore:      snapshotID != "", // fork/restore workspaces use hybrid-overlay mode
+		UseWorkspaceBase: snapshotID != "", // fork/restore needs snapshot as base lowerdir
 	}
 
 	d.mu.Lock()

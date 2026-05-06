@@ -62,17 +62,44 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	// Workspace upperdir: restore from snapshot or create empty.
 	if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
-		log.Printf("[libkrun] workspace %s: phase=restore_workspace snapshot=%s", spec.WorkspaceID, snapID)
-		phaseStart := time.Now()
-		phaseCtx, cancel := phaseTimeout(ctx, 2*time.Minute)
-		if err := copyFileWithContext(phaseCtx, m.snapshotWorkspacePath(snapID), workspacePath); err != nil {
+		if spec.ForkRestore {
+			// Fork/restore: the snapshot becomes the base lowerdir.
+			// Copy it to workspace-base.ext4 and create a fresh empty upperdir.
+			log.Printf("[libkrun] workspace %s: phase=restore_base snapshot=%s", spec.WorkspaceID, snapID)
+			phaseStart := time.Now()
+			phaseCtx, cancel := phaseTimeout(ctx, 2*time.Minute)
+			if err := copyFileWithContext(phaseCtx, m.snapshotWorkspacePath(snapID), workspaceBasePath); err != nil {
+				cancel()
+				os.RemoveAll(workDir)
+				return nil, fmt.Errorf("restore base from snapshot: %w", err)
+			}
 			cancel()
-			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("restore workspace from snapshot: %w", err)
+			log.Printf("[libkrun] workspace %s: phase_done=restore_base (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
+
+			// Create fresh empty upperdir for child mutations.
+			log.Printf("[libkrun] workspace %s: phase=create_fork_upperdir", spec.WorkspaceID)
+			upperPhaseStart := time.Now()
+			phaseCtx, cancel = phaseTimeout(ctx, 1*time.Minute)
+			if err := createWorkspaceOverlayWithContext(phaseCtx, workspacePath); err != nil {
+				cancel()
+				os.RemoveAll(workDir)
+				return nil, fmt.Errorf("create fork upperdir: %w", err)
+			}
+			cancel()
+			log.Printf("[libkrun] workspace %s: phase_done=create_fork_upperdir (%s)", spec.WorkspaceID, time.Since(upperPhaseStart).Round(time.Millisecond))
+		} else {
+			log.Printf("[libkrun] workspace %s: phase=restore_workspace snapshot=%s", spec.WorkspaceID, snapID)
+			phaseStart := time.Now()
+			phaseCtx, cancel := phaseTimeout(ctx, 2*time.Minute)
+			if err := copyFileWithContext(phaseCtx, m.snapshotWorkspacePath(snapID), workspacePath); err != nil {
+				cancel()
+				os.RemoveAll(workDir)
+				return nil, fmt.Errorf("restore workspace from snapshot: %w", err)
+			}
+			cancel()
+			log.Printf("[libkrun] workspace %s: phase_done=restore_workspace (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
+			log.Printf("[libkrun] workspace %s: restored workspace from snapshot %s", spec.WorkspaceID, snapID)
 		}
-		cancel()
-		log.Printf("[libkrun] workspace %s: phase_done=restore_workspace (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
-		log.Printf("[libkrun] workspace %s: restored workspace from snapshot %s", spec.WorkspaceID, snapID)
 	} else if _, err := os.Stat(workspacePath); err != nil {
 		log.Printf("[libkrun] workspace %s: workspace mount strategy=hybrid overlay (empty upperdir)", spec.WorkspaceID)
 		log.Printf("[libkrun] workspace %s: phase=create_workspace_upperdir", spec.WorkspaceID)
@@ -221,7 +248,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	vmSpec := VMSpec{
 		WorkspaceID:       spec.WorkspaceID,
-		WorkspaceMode:     "hybrid",
+		WorkspaceMode:     "virtiofs", // default: regular workspace uses writable virtiofs
 		KernelPath:        m.cfg.KernelPath,
 		KernelCmdline:     kernelCmdline,
 		RootFSImage:       rootfsPath,
@@ -238,6 +265,9 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		NetworkBackend:    strings.TrimSpace(m.cfg.NetworkBackend),
 		PortMap:           []string{fmt.Sprintf("%d:22", sshPort)},
 		VsockPorts:        vsockPorts,
+	}
+	if spec.ForkRestore {
+		vmSpec.WorkspaceMode = "hybrid"
 	}
 	if spec.UseWorkspaceBase {
 		vmSpec.WorkspaceBaseImage = workspaceBasePath

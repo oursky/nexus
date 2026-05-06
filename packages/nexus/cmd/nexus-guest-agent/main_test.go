@@ -873,6 +873,170 @@ func TestMountKernelFilesystemsUsesCgroup2WhenAvailable(t *testing.T) {
 	}
 }
 
+func TestSetupVirtiofsWorkspaceMode(t *testing.T) {
+	t.Setenv("NEXUS_WORKSPACE_MODE", "virtiofs")
+
+	origWorkspaceMountPoint := workspaceMountPoint
+	origMkdir := workspaceMkdirAll
+	origStat := workspaceStat
+	origMountFunc := workspaceMountFunc
+	t.Cleanup(func() {
+		workspaceMountPoint = origWorkspaceMountPoint
+		workspaceMkdirAll = origMkdir
+		workspaceStat = origStat
+		workspaceMountFunc = origMountFunc
+		resetVirtiofsWorkspaceMountOnce()
+	})
+
+	workspaceMountPoint = "/test/workspace"
+
+	mkdirCalls := []string{}
+	workspaceMkdirAll = func(path string, mode os.FileMode) error {
+		mkdirCalls = append(mkdirCalls, path)
+		return nil
+	}
+	workspaceStat = func(path string) (os.FileInfo, error) {
+		return fakeFileInfo{name: "vdb"}, nil
+	}
+	mountCalls := []struct{ source, target, fstype string }{}
+	workspaceMountFunc = func(source, target, fstype string, flags uintptr, data string) error {
+		mountCalls = append(mountCalls, struct{ source, target, fstype string }{source, target, fstype})
+		return nil
+	}
+
+	if err := setupWorkspaceMount(); err != nil {
+		t.Fatalf("expected setupWorkspaceMount success in virtiofs mode, got %v", err)
+	}
+
+	expectedMkdirs := map[string]bool{
+		"/test/workspace": false,
+		"/var/lib/docker": false,
+	}
+	for _, p := range mkdirCalls {
+		if _, ok := expectedMkdirs[p]; ok {
+			expectedMkdirs[p] = true
+		}
+	}
+	for p, found := range expectedMkdirs {
+		if !found {
+			t.Fatalf("expected mkdir to be called for %s, got mkdirs: %v", p, mkdirCalls)
+		}
+	}
+
+	if len(mountCalls) != 2 {
+		t.Fatalf("expected 2 mount calls in virtiofs mode, got %d: %+v", len(mountCalls), mountCalls)
+	}
+	if mountCalls[0].source != "nexus-workspace" || mountCalls[0].target != "/test/workspace" || mountCalls[0].fstype != "virtiofs" {
+		t.Fatalf("unexpected first mount (expected nexus-workspace → /workspace rw): %+v", mountCalls[0])
+	}
+	if mountCalls[1].target != "/var/lib/docker" || mountCalls[1].fstype != "ext4" {
+		t.Fatalf("unexpected second mount (expected docker-data → /var/lib/docker): %+v", mountCalls[1])
+	}
+
+	for _, c := range mountCalls {
+		if c.source == "overlay" {
+			t.Fatalf("virtiofs mode should not use overlayfs: %+v", c)
+		}
+		if c.target == "/workspace-mutable" {
+			t.Fatalf("virtiofs mode should not mount ext4 mutable: %+v", c)
+		}
+	}
+}
+
+func TestSetupWorkspaceMountDispatchesByMode(t *testing.T) {
+	t.Run("virtiofs_mode_dispatches_to_virtiofs", func(t *testing.T) {
+		t.Setenv("NEXUS_WORKSPACE_MODE", "virtiofs")
+
+		origMountFunc := workspaceMountFunc
+		origMkdir := workspaceMkdirAll
+		origStat := workspaceStat
+		origMountPoint := workspaceMountPoint
+		t.Cleanup(func() {
+			workspaceMountFunc = origMountFunc
+			workspaceMkdirAll = origMkdir
+			workspaceStat = origStat
+			workspaceMountPoint = origMountPoint
+			resetVirtiofsWorkspaceMountOnce()
+		})
+
+		workspaceMountPoint = "/test/workspace"
+		workspaceMkdirAll = func(string, os.FileMode) error { return nil }
+		workspaceStat = func(string) (os.FileInfo, error) { return fakeFileInfo{name: "vdb"}, nil }
+
+		called := false
+		workspaceMountFunc = func(source, target, fstype string, flags uintptr, data string) error {
+			if source == "nexus-workspace" && fstype == "virtiofs" {
+				called = true
+			}
+			return nil
+		}
+
+		if err := setupWorkspaceMount(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !called {
+			t.Fatal("expected virtiofs mount to be called when NEXUS_WORKSPACE_MODE=virtiofs")
+		}
+	})
+
+	t.Run("default_dispatches_to_block", func(t *testing.T) {
+		origDevice := workspaceDevicePath
+		origMountPoint := workspaceMountPoint
+		origLower := workspaceLowerMountPoint
+		origMutable := workspaceMutableMountPoint
+		origUpper := workspaceUpperMountPoint
+		origWorkDir := workspaceOverlayWorkDir
+		origBase := workspaceBaseMountPoint
+		origAttempts := workspaceDeviceAttempts
+		origInterval := workspaceDeviceInterval
+		origMkdir := workspaceMkdirAll
+		origStat := workspaceStat
+		origMountFunc := workspaceMountFunc
+		t.Cleanup(func() {
+			workspaceDevicePath = origDevice
+			workspaceMountPoint = origMountPoint
+			workspaceLowerMountPoint = origLower
+			workspaceMutableMountPoint = origMutable
+			workspaceUpperMountPoint = origUpper
+			workspaceOverlayWorkDir = origWorkDir
+			workspaceBaseMountPoint = origBase
+			workspaceDeviceAttempts = origAttempts
+			workspaceDeviceInterval = origInterval
+			workspaceMkdirAll = origMkdir
+			workspaceStat = origStat
+			workspaceMountFunc = origMountFunc
+			resetBlockWorkspaceMountOnce()
+		})
+
+		workspaceDevicePath = "/test/vdb"
+		workspaceMountPoint = "/test/workspace"
+		workspaceLowerMountPoint = "/test/workspace-lower"
+		workspaceMutableMountPoint = "/test/workspace-mutable"
+		workspaceUpperMountPoint = "/test/workspace-mutable/upper"
+		workspaceOverlayWorkDir = "/test/workspace-mutable/work"
+		workspaceBaseMountPoint = "/test/workspace-base"
+		workspaceDeviceAttempts = 1
+		workspaceDeviceInterval = 0
+
+		calledOverlay := false
+		workspaceMkdirAll = func(string, os.FileMode) error { return nil }
+		workspaceStat = func(string) (os.FileInfo, error) { return fakeFileInfo{name: "vdb"}, nil }
+		workspaceMountFunc = func(source, target, fstype string, flags uintptr, data string) error {
+			if fstype == "overlay" {
+				calledOverlay = true
+			}
+			return nil
+		}
+
+		if err := setupWorkspaceMount(); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !calledOverlay {
+			t.Fatal("expected overlay mount when NEXUS_WORKSPACE_MODE is not set")
+		}
+	})
+}
+
 type fakeFileInfo struct {
 	name string
 }

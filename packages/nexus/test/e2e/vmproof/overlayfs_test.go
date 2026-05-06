@@ -52,7 +52,7 @@ func TestVMProof_HostGuestSync(t *testing.T) {
 	}
 }
 
-// Spec: VM-PROOF-012
+// Spec: VM-014 (hybrid-overlay mode only), VM-PROOF-012
 // TestVMProof_GuestWriteIsolation verifies that guest writes remain isolated
 // from the host-visible lowerdir state.
 func TestVMProof_GuestWriteIsolation(t *testing.T) {
@@ -94,7 +94,7 @@ func TestVMProof_GuestWriteIsolation(t *testing.T) {
 	}
 }
 
-// Spec: VM-015, VM-PROOF-013
+// Spec: VM-016 (hybrid-overlay mode only), VM-015, VM-PROOF-013
 // TestVMProof_ForkIsolation verifies fork snapshot semantics: the child inherits
 // the parent's upperdir state, but subsequent writes in the child are isolated.
 func TestVMProof_ForkIsolation(t *testing.T) {
