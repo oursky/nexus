@@ -198,7 +198,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.LIBKRUN_BAKED_CACHE_DIR }}
-          key: libkrun-baked-v4-${{ runner.os }}-${{ hashFiles('Nexusfile', 'schemas/nexusfile.schema.json', 'packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/internal/infra/runtime/libkrun/bake_version.go', 'packages/nexus/cmd/nexus-guest-agent/main.go', 'packages/nexus/cmd/nexus-guest-agent/sysconfig.go', 'packages/nexus/cmd/nexus/nexus-libkrun-vm', 'packages/nexus/cmd/nexus/rootless_bootstrap_linux.go') }}
+          key: libkrun-baked-v4-${{ runner.os }}-${{ hashFiles('Nexusfile', 'schemas/nexusfile.schema.json', 'packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/internal/infra/runtime/libkrun/bake_version.go', 'packages/nexus/cmd/nexus-guest-agent/**', 'packages/nexus/cmd/nexus/nexus-libkrun-vm', 'packages/nexus/cmd/nexus/rootless_bootstrap_linux.go') }}
           restore-keys: |
             libkrun-baked-v4-${{ runner.os }}-
 
