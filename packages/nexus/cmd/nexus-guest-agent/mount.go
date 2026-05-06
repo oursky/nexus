@@ -221,7 +221,7 @@ func setupBlockWorkspaceMount() error {
 func tryMountHybridOverlay() error {
 	// Mount block device at /workspace-mutable; upper/ and work/ are created
 	// as siblings inside it so overlayfs sees them as separate subtrees.
-	if err := workspaceMountFunc(workspaceDevicePath, workspaceMutableMountPoint, "ext4", 0, ""); err != nil {
+	if err := workspaceMountFunc(workspaceDevicePath, workspaceMutableMountPoint, "ext4", 0, "user_xattr"); err != nil {
 		if errors.Is(err, unix.EBUSY) {
 			if !mountPointIsActive(workspaceDevicePath, workspaceMutableMountPoint) {
 				return fmt.Errorf("mount %s at %s returned EBUSY but not active", workspaceDevicePath, workspaceMutableMountPoint)
