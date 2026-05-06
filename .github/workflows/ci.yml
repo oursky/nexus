@@ -212,9 +212,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.LIBKRUN_BAKED_CACHE_DIR }}
-          key: libkrun-baked-v5-${{ runner.os }}-${{ hashFiles('Nexusfile', 'schemas/nexusfile.schema.json', 'packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/internal/infra/runtime/libkrun/bake_version.go', 'packages/nexus/cmd/nexus-guest-agent/**', 'packages/nexus/cmd/nexus/nexus-libkrun-vm', 'packages/nexus/cmd/nexus/rootless_bootstrap_linux.go') }}
+          key: libkrun-baked-v6-${{ runner.os }}-${{ hashFiles('Nexusfile', 'schemas/nexusfile.schema.json', 'packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/internal/infra/runtime/libkrun/bake_version.go', 'packages/nexus/cmd/nexus-guest-agent/**', 'packages/nexus/cmd/nexus/nexus-libkrun-vm', 'packages/nexus/cmd/nexus/rootless_bootstrap_linux.go') }}
           restore-keys: |
-            libkrun-baked-v5-${{ runner.os }}-
+            libkrun-baked-v6-${{ runner.os }}-
 
       - name: Hydrate cached VM assets to host paths
         timeout-minutes: 5
