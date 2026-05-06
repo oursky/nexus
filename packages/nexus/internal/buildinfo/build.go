@@ -6,7 +6,11 @@ package buildinfo
 //
 //	-ldflags "-X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=..."
 //	-ldflags "-X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=..."
+//	-ldflags "-X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=..."
 var (
+	// Version is the release version (e.g. "v1.2.3" or "dev").
+	Version = "dev"
+
 	// Time is the RFC-3339 UTC build timestamp (e.g. "2026-04-23T10:30:00Z").
 	Time = "dev"
 
@@ -16,5 +20,5 @@ var (
 
 // Info returns a human-readable one-line summary of the build.
 func Info() string {
-	return "nexus commit=" + Commit + " built=" + Time
+	return "nexus " + Version + " commit=" + Commit + " built=" + Time
 }

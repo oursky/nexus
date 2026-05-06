@@ -10,5 +10,6 @@ if [[ "$(uname -s)" == "Linux" ]]; then
 fi
 
 cd "$ROOT/packages/nexus"
-go test ./... -covermode=atomic -coverprofile=coverage.out
+
+go test -covermode=atomic -coverprofile=coverage.out ./...
 go tool cover -func=coverage.out | tail -n 1

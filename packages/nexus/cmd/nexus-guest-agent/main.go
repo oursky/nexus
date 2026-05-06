@@ -172,23 +172,6 @@ func isBakedMode() bool {
 	return false
 }
 
-func guestVMProfile() string {
-	data, err := os.ReadFile("/proc/cmdline")
-	if err != nil {
-		return "default"
-	}
-	for _, field := range strings.Fields(string(data)) {
-		if strings.HasPrefix(field, "nexus.profile=") {
-			v := strings.TrimSpace(strings.TrimPrefix(field, "nexus.profile="))
-			if v == "minimal" {
-				return v
-			}
-			return "default"
-		}
-	}
-	return "default"
-}
-
 // isPrimaryAgent reports whether this agent instance should behave like PID 1
 // (mounting kernel filesystems, starting sshd, starting Docker). In virtiofs
 // the agent IS PID 1. In libkrun container mode the host sets

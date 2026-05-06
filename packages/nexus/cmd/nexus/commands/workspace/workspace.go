@@ -25,6 +25,8 @@ func Command() *cobra.Command {
 		portalCommand(),
 		sshVMCommand(),
 		openEditorCommand(),
+		exportCommand(),
+		importCommand(),
 	)
 	return cmd
 }

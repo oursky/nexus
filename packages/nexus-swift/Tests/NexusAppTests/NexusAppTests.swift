@@ -334,7 +334,7 @@ private final class MockDaemonClient: DaemonClient, @unchecked Sendable {
     func listPorts(workspaceId: String) async throws -> [ForwardedPort] { [] }
     func addPortForward(workspaceId: String, localPort: Int, remotePort: Int) async throws {}
     func removePortForward(workspaceId: String, forwardId: String) async throws {}
-    func startTunnels(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
+    func startTunnels(workspaceId: String) async throws -> (status: TunnelStatus, forwards: [(localPort: Int, targetPort: Int)]) { (TunnelStatus(active: false, activeWorkspaceId: ""), []) }
     func stopTunnels(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
     func tunnelStatus(workspaceId: String) async throws -> TunnelStatus { TunnelStatus(active: false, activeWorkspaceId: "") }
     func workspaceInfo(id: String) async throws -> WorkspaceInfo {
@@ -345,6 +345,15 @@ private final class MockDaemonClient: DaemonClient, @unchecked Sendable {
     }
     func updateDaemonSandboxResourceSettings(_ settings: SandboxResourceSettings) async throws -> SandboxResourceSettings {
         settings
+    }
+    func checkVMSSH(workspaceId: String) async throws -> VMSSHCheckResult {
+        VMSSHCheckResult(ok: true, guestIP: "", whoami: "", error: "", stderr: "")
+    }
+    func workspaceSerialLog(workspaceId: String, lines: Int) async throws -> WorkspaceSerialLog {
+        WorkspaceSerialLog(lines: [], path: "", available: false)
+    }
+    func daemonLogTail(lines: Int) async throws -> DaemonLogTail {
+        DaemonLogTail(lines: [], path: "")
     }
 }
 

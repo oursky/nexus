@@ -285,8 +285,8 @@ func validateVMAssets(needsVMAssets bool, rootfsPath, kernelPath string) error {
 	}
 	if rootfsPath == "" || kernelPath == "" {
 		return fmt.Errorf(
-			"daemon start: vm driver requires --rootfs and --kernel.\n" +
-				"  Run `nexus daemon start` (auto-provisions assets) or supply the flags.",
+			"daemon start: vm driver requires --rootfs and --kernel; " +
+				"run `nexus daemon start` (auto-provisions assets) or supply the flags",
 		)
 	}
 	if _, err := os.Stat(rootfsPath); err != nil {

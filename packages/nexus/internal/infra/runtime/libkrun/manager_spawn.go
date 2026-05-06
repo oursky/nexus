@@ -20,10 +20,11 @@ import (
 // Disk layout inside the guest (assembled by the agent):
 //
 //	/dev/vda  rootfs.ext4             (reflink clone, rw)     → /  (block rootfs)
-//	/dev/vdb  workspace.ext4          (workspace clone, rw)   → overlay upper for /workspace
+//	/dev/vdb  workspace.ext4          (workspace clone, rw)   → /workspace
 //	/dev/vdc  docker-data.ext4        (sparse, Docker data)   → /var/lib/docker
-//	/dev/vdd  hostconfig.ext4         (read-only, optional)   → /run/nexus-host
-//	virtiofs "nexus-workspace"        project dir (ro lower layer)
+//	/dev/vdd  workspace-base.ext4     (read-only, optional)   → /workspace-base (fork/import only)
+//	virtiofs "nexus-host-config"      (read-only, optional)   → /run/nexus-host (host config files)
+//	virtiofs "nexus-workspace"        optional auxiliary host share
 func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) {
 	spawnStart := time.Now()
 	log.Printf("[libkrun] Spawn start: workspace=%s", spec.WorkspaceID)
@@ -55,10 +56,11 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 
 	serialLog := filepath.Join(workDir, "libkrun.log")
 	workspacePath := filepath.Join(workDir, "workspace.ext4")
+	workspaceBasePath := filepath.Join(workDir, "workspace-base.ext4")
 	dockerDataPath := filepath.Join(workDir, "docker-data.ext4")
 	rootfsPath := filepath.Join(workDir, "rootfs.ext4")
 
-	// Workspace image: restore from snapshot or clone repo base image.
+	// Workspace upperdir: restore from snapshot or create empty.
 	if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
 		log.Printf("[libkrun] workspace %s: phase=restore_workspace snapshot=%s", spec.WorkspaceID, snapID)
 		phaseStart := time.Now()
@@ -72,28 +74,47 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		log.Printf("[libkrun] workspace %s: phase_done=restore_workspace (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
 		log.Printf("[libkrun] workspace %s: restored workspace from snapshot %s", spec.WorkspaceID, snapID)
 	} else if _, err := os.Stat(workspacePath); err != nil {
-		log.Printf("[libkrun] workspace %s: workspace mount strategy=virtiofs lower + ext4 overlay upper", spec.WorkspaceID)
-		log.Printf("[libkrun] workspace %s: phase=ensure_base_image", spec.WorkspaceID)
-		basePhaseStart := time.Now()
-		phaseCtx, cancel := phaseTimeout(ctx, 3*time.Minute)
-		basePath, err := EnsureBaseImage(phaseCtx, spec.ProjectRoot, m.cfg.BasesDir, spec.ManifestHash)
-		cancel()
-		if err != nil {
-			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("ensure base workspace image: %w", err)
-		}
-		log.Printf("[libkrun] workspace %s: phase_done=ensure_base_image (%s)", spec.WorkspaceID, time.Since(basePhaseStart).Round(time.Millisecond))
-		log.Printf("[libkrun] workspace %s: phase=clone_workspace", spec.WorkspaceID)
-		clonePhaseStart := time.Now()
-		phaseCtx, cancel = phaseTimeout(ctx, 2*time.Minute)
-		if err := copyFileWithContext(phaseCtx, basePath, workspacePath); err != nil {
+		log.Printf("[libkrun] workspace %s: workspace mount strategy=hybrid overlay (empty upperdir)", spec.WorkspaceID)
+		log.Printf("[libkrun] workspace %s: phase=create_workspace_upperdir", spec.WorkspaceID)
+		upperPhaseStart := time.Now()
+		phaseCtx, cancel := phaseTimeout(ctx, 1*time.Minute)
+		if err := createWorkspaceOverlayWithContext(phaseCtx, workspacePath); err != nil {
 			cancel()
 			os.RemoveAll(workDir)
-			return nil, fmt.Errorf("clone workspace image: %w", err)
+			return nil, fmt.Errorf("create workspace upperdir: %w", err)
 		}
 		cancel()
-		log.Printf("[libkrun] workspace %s: phase_done=clone_workspace (%s)", spec.WorkspaceID, time.Since(clonePhaseStart).Round(time.Millisecond))
-		log.Printf("[libkrun] workspace %s: cloned workspace image", spec.WorkspaceID)
+		log.Printf("[libkrun] workspace %s: phase_done=create_workspace_upperdir (%s)", spec.WorkspaceID, time.Since(upperPhaseStart).Round(time.Millisecond))
+		log.Printf("[libkrun] workspace %s: created empty workspace upperdir", spec.WorkspaceID)
+	}
+
+	// Workspace base image (read-only lowerdir): only required for hybrid
+	// overlay mode (export/import flows). Regular workspace starts skip this
+	// to stay within the 16-IRQ limit imposed by libkrun.
+	if spec.UseWorkspaceBase {
+		if _, err := os.Stat(workspaceBasePath); err != nil {
+			log.Printf("[libkrun] workspace %s: phase=ensure_base_image", spec.WorkspaceID)
+			basePhaseStart := time.Now()
+			phaseCtx, cancel := phaseTimeout(ctx, 3*time.Minute)
+			basePath, err := EnsureBaseImage(phaseCtx, spec.ProjectRoot, m.cfg.BasesDir, spec.ManifestHash)
+			cancel()
+			if err != nil {
+				os.RemoveAll(workDir)
+				return nil, fmt.Errorf("ensure base workspace image: %w", err)
+			}
+			log.Printf("[libkrun] workspace %s: phase_done=ensure_base_image (%s)", spec.WorkspaceID, time.Since(basePhaseStart).Round(time.Millisecond))
+			log.Printf("[libkrun] workspace %s: phase=clone_workspace_base", spec.WorkspaceID)
+			clonePhaseStart := time.Now()
+			phaseCtx, cancel = phaseTimeout(ctx, 2*time.Minute)
+			if err := copyFileWithContext(phaseCtx, basePath, workspaceBasePath); err != nil {
+				cancel()
+				os.RemoveAll(workDir)
+				return nil, fmt.Errorf("clone workspace base image: %w", err)
+			}
+			cancel()
+			log.Printf("[libkrun] workspace %s: phase_done=clone_workspace_base (%s)", spec.WorkspaceID, time.Since(clonePhaseStart).Round(time.Millisecond))
+			log.Printf("[libkrun] workspace %s: cloned workspace base image", spec.WorkspaceID)
+		}
 	}
 
 	// Docker data image: restore from snapshot for forks, otherwise create fresh.
@@ -140,6 +161,13 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		log.Printf("[libkrun] workspace %s: phase_done=clone_rootfs (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
 		log.Printf("[libkrun] workspace %s: cloned rootfs image", spec.WorkspaceID)
 	}
+
+	// fsck is intentionally skipped here. ext4 journal replay on mount
+	// inside the VM is sufficient to recover from unclean stops — that is
+	// the entire purpose of ext4 journaling. Running e2fsck -f before every
+	// boot adds 5-15s to spawn time with no correctness benefit in the
+	// common case. Actual filesystem corruption (hardware/driver bugs) will
+	// surface as a boot failure, which is the right failure mode.
 
 	// Pick a free host TCP port for SSH forwarding (TSI maps it to guest port 22).
 	sshPort, err := pickFreePort()
@@ -202,7 +230,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		WorkspaceImage:    workspacePath,
 		WorkspaceHostPath: strings.TrimSpace(spec.ProjectRoot),
 		DockerDataImage:   dockerDataPath,
-		HostConfigDrive:   spec.HostConfigDrive,
+		HostConfigDir:     spec.HostConfigDir,
 		MemoryMiB:         spec.MemoryMiB,
 		VCPUs:             spec.VCPUs,
 		SerialLog:         serialLog,
@@ -210,6 +238,9 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		NetworkBackend:    strings.TrimSpace(m.cfg.NetworkBackend),
 		PortMap:           []string{fmt.Sprintf("%d:22", sshPort)},
 		VsockPorts:        vsockPorts,
+	}
+	if spec.UseWorkspaceBase {
+		vmSpec.WorkspaceBaseImage = workspaceBasePath
 	}
 	if vmSpec.NetworkBackend == "" {
 		vmSpec.NetworkBackend = "auto"
@@ -322,12 +353,18 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	if passtProc != nil {
 		_ = os.WriteFile(filepath.Join(workDir, passtPIDFileName), []byte(strconv.Itoa(passtProc.Pid)), 0o600)
 	}
+	// Mark the VM as "dirty": disk images may have unflushed kernel page-cache
+	// writes. The flag is removed only on clean Stop(). If the daemon crashes or
+	// the VM is killed, the flag remains, signalling to CheckpointFork /
+	// ForkWorkspaceImage that it must fsync before copying.
+	_ = os.WriteFile(filepath.Join(workDir, vmDirtyFlagFileName), []byte(strconv.Itoa(childCmd.Process.Pid)), 0o600)
 
 	inst := &Instance{
 		WorkspaceID:     spec.WorkspaceID,
 		WorkDir:         workDir,
 		WorkspaceImage:  workspacePath,
 		DockerDataImage: dockerDataPath,
+		RootfsImage:     rootfsPath,
 		SerialLog:       serialLog,
 		PasstProcess:    passtProc,
 		GuestIP:         fmt.Sprintf("127.0.0.1:%d", sshPort),

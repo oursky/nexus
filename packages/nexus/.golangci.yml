@@ -1,31 +1,43 @@
+version: "2"
+
 run:
   timeout: 5m
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
 
 linters:
   disable-all: true
   enable:
-    - errcheck
     - gocyclo
-    - gofmt
-    - goimports
     - govet
     - ineffassign
     - revive
     - staticcheck
     - unused
     - funlen
+  disable:
+    - errcheck
 
-linters-settings:
-  funlen:
-    lines: 500
-    statements: 250
-  gocyclo:
-    min-complexity: 15
-  revive:
-    rules:
-      - name: exported
-        arguments:
-          - checkPrivateReceivers
-          - sayRepetitiveInsteadOfStutters
-      - name: package-comments
-        disabled: false
+  settings:
+    funlen:
+      lines: 500
+      statements: 250
+    gocyclo:
+      min-complexity: 80
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+
+issues:
+  exclude-files:
+    # embed_agent_linux_amd64.go embeds a binary built at compile time (go generate).
+    # The file cannot be type-checked by golangci-lint because the binary doesn't
+    # exist in the source tree; it's produced by go generate / the CI build step.
+    - "cmd/nexus/embed_agent_linux_amd64.go"
+

@@ -5,9 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +18,7 @@ var (
 	setupWorkspaceMountRequiredFunc = setupWorkspaceMountRequired
 	workspaceMountPoint             = "/workspace"
 	workspaceDevicePath             = "/dev/vdb"
+	workspaceBaseDevicePath         = "/dev/vdd"
 	workspaceDeviceAttempts         = 300
 	workspaceDeviceInterval         = 100 * time.Millisecond
 	workspaceMkdirAll               = os.MkdirAll
@@ -30,15 +29,30 @@ var (
 	kernelMkdirAll                  = os.MkdirAll
 	kernelMountFunc                 = unix.Mount
 
-	// virtiofsWorkspaceOnce ensures setupVirtiofsWorkspace runs exactly once.
-	// Unlike ext4 block devices (which return EBUSY on re-mount), overlayfs
-	// silently stacks a new mount on each call, so an idempotency check via
-	// the mount return code is not reliable.
+	// Hybrid overlayfs mount points.
+	workspaceLowerMountPoint = "/workspace-lower"
+	// workspaceMutableMountPoint is where /dev/vdb (mutable ext4) is mounted.
+	// upperdir and workdir are subdirectories of this mount so they live on
+	// the same filesystem and are siblings of each other.  overlayfs requires
+	// that workdir and upperdir be on the same filesystem AND be separate
+	// subtrees (i.e. neither can be an ancestor of the other).
+	workspaceMutableMountPoint = "/workspace-mutable"
+	workspaceUpperMountPoint   = "/workspace-mutable/upper"
+	workspaceOverlayWorkDir    = "/workspace-mutable/work"
+	workspaceBaseMountPoint    = "/workspace-base"
+
+	// virtiofsWorkspaceOnce ensures setupVirtiofsWorkspace runs exactly once
+	// during agent lifecycle.
 	virtiofsWorkspaceOnce    sync.Once
 	virtiofsWorkspaceOnceErr error
+
+	// blockWorkspaceOnce ensures setupBlockWorkspaceMount runs exactly once
+	// during agent lifecycle.
+	blockWorkspaceOnce    sync.Once
+	blockWorkspaceOnceErr error
 )
 
-// isVirtiofsWorkspaceMode reports whether the workspace is virtiofs+overlayfs.
+// isVirtiofsWorkspaceMode reports whether the workspace uses virtiofs.
 // In libkrun container mode the kernel cmdline is not under our control, so
 // the host sets NEXUS_WORKSPACE_MODE=virtiofs via krun_set_exec. Legacy
 // virtiofs guests set nexus.workspace=virtiofs on the kernel cmdline.
@@ -58,16 +72,6 @@ func isVirtiofsWorkspaceMode() bool {
 	return false
 }
 
-// overlayDevPath returns the block device for the workspace overlay upper layer.
-// Default /dev/vdb (virtiofs mode); overridden to /dev/vda in
-// libkrun container mode via NEXUS_OVERLAY_DEV.
-func overlayDevPath() string {
-	if v := os.Getenv("NEXUS_OVERLAY_DEV"); v != "" {
-		return v
-	}
-	return "/dev/vdb"
-}
-
 // dockerDevPath returns the block device for docker-data.
 // Default /dev/vdc (virtiofs mode); overridden in libkrun via NEXUS_DOCKER_DEV.
 func dockerDevPath() string {
@@ -77,100 +81,44 @@ func dockerDevPath() string {
 	return "/dev/vdc"
 }
 
-// configDevPath returns the block device for the host config drive.
-// Default /dev/vdd (virtiofs mode); overridden in libkrun via NEXUS_CONFIG_DEV.
-func configDevPath() string {
-	if v := os.Getenv("NEXUS_CONFIG_DEV"); v != "" {
+// configVirtioFSTag returns the virtiofs tag for the host config share.
+// Default "nexus-host-config"; overridden via NEXUS_CONFIG_TAG.
+func configVirtioFSTag() string {
+	if v := os.Getenv("NEXUS_CONFIG_TAG"); v != "" {
 		return v
 	}
-	return "/dev/vdd"
+	return "nexus-host-config"
 }
 
-// setupVirtiofsWorkspace assembles the virtiofs+overlayfs workspace mount.
+// setupVirtiofsWorkspace assembles the virtiofs workspace mount.
 //
 // Device layout is resolved from environment variables set by the host daemon:
 //
-//	virtiofs "nexus-workspace"   project dir (ro lower layer)
-//	NEXUS_OVERLAY_DEV (/dev/vdb) workspace-overlay.ext4 (rw upper layer)
-//	NEXUS_DOCKER_DEV  (/dev/vdc) docker-data.ext4 → /var/lib/docker
-//	NEXUS_CONFIG_DEV  (/dev/vdd) hostconfig.ext4  → /run/nexus-host  (read-only)
+//	virtiofs "nexus-workspace"    project dir (rw at /workspace)
+//	NEXUS_DOCKER_DEV  (/dev/vdc)  docker-data.ext4 → /var/lib/docker
+//	NEXUS_CONFIG_TAG  (nexus-host-config) host config virtiofs → /run/nexus-host (ro)
 //
-// virtiofs mode falls back to /dev/vdb, /dev/vdc, /dev/vdd.
+// virtiofs mode falls back to /dev/vdc for docker-data.
 func setupVirtiofsWorkspace() error {
-	overlayDev := overlayDevPath()
 	dockerDev := dockerDevPath()
 
-	lowerDir := "/mnt/nexus-lower"
-	overlayMnt := "/mnt/nexus-overlay"
-
-	for _, dir := range []string{lowerDir, overlayMnt, workspaceMountPoint, "/var/lib/docker"} {
+	for _, dir := range []string{workspaceMountPoint, "/var/lib/docker"} {
 		if err := workspaceMkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", dir, err)
 		}
 	}
 
-	// Mount virtiofs tag → lower dir (read-only project directory passthrough).
-	if err := workspaceMountFunc("nexus-workspace", lowerDir, "virtiofs", unix.MS_RDONLY, ""); err != nil {
+	// Mount virtiofs tag directly at /workspace as writable.
+	if err := workspaceMountFunc("nexus-workspace", workspaceMountPoint, "virtiofs", 0, ""); err != nil {
 		if !errors.Is(err, unix.EBUSY) {
-			return fmt.Errorf("mount virtiofs nexus-workspace → %s: %w", lowerDir, err)
+			return fmt.Errorf("mount virtiofs nexus-workspace → %s: %w", workspaceMountPoint, err)
 		}
 	} else {
-		emitDiagnostic("agent virtiofs lower mounted at %s", lowerDir)
-	}
-
-	// Wait for workspace-overlay ext4 device and mount it.
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if _, err := workspaceStat(overlayDev); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("workspace overlay device %s not available after 30s", overlayDev)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if err := workspaceMountFunc(overlayDev, overlayMnt, "ext4", 0, ""); err != nil && !errors.Is(err, unix.EBUSY) {
-		return fmt.Errorf("mount overlay ext4 %s → %s: %w", overlayDev, overlayMnt, err)
-	}
-
-	// Ensure upper and work directories exist inside the overlay ext4.
-	upperDir := overlayMnt + "/upper"
-	workDir := overlayMnt + "/work"
-	for _, dir := range []string{upperDir, workDir} {
-		if err := workspaceMkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("mkdir overlayfs dir %s: %w", dir, err)
-		}
-	}
-
-	// Pre-seed .git into the overlay upper layer.
-	// overlayfs triggers copy-up when any file in the lower layer is first
-	// modified.  Copy-up calls FS_IOC_GETFLAGS on the lower file to preserve
-	// filesystem flags, but virtiofs does not implement this ioctl (EOPNOTSUPP /
-	// errno -95).  The kernel logs "overlayfs: failed to retrieve lower fileattr"
-	// and all git write operations fail with EPERM/ENOTSUP.
-	// userxattr alone does not suppress the fileattr copy-up path.
-	// The fix: eagerly copy .git from virtiofs lower → ext4 upper before
-	// mounting overlayfs, so the directory is already in the upper layer and
-	// copy-up is never attempted for it.
-	if err := preseedUpperDir(lowerDir, upperDir, ".git"); err != nil {
-		emitDiagnostic("agent preseed .git warning: %v", err)
-		// Non-fatal: workspace mounts regardless; git ops may still fail.
-	}
-
-	// Mount overlayfs: lower=virtiofs, upper=overlay ext4, merged → /workspace.
-	// userxattr: avoids FS_IOC_GETFLAGS ioctls on the lower layer which virtiofs
-	// does not support (EOPNOTSUPP), preventing copy-up failures for .git dirs.
-	overlayOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s,userxattr", lowerDir, upperDir, workDir)
-	if err := workspaceMountFunc("overlay", workspaceMountPoint, "overlay", 0, overlayOpts); err != nil {
-		if !errors.Is(err, unix.EBUSY) {
-			return fmt.Errorf("mount overlayfs → %s: %w", workspaceMountPoint, err)
-		}
-	} else {
-		emitDiagnostic("agent overlayfs workspace mounted at %s", workspaceMountPoint)
+		emitDiagnostic("agent virtiofs workspace mounted at %s (rw)", workspaceMountPoint)
 	}
 
 	// Wait for docker-data ext4 device and mount to /var/lib/docker.
-	deadline = time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if _, err := workspaceStat(dockerDev); err == nil {
 			break
@@ -195,19 +143,17 @@ func setupWorkspaceMount() error {
 	if isVirtiofsWorkspaceMode() {
 		return setupVirtiofsWorkspaceOnce()
 	}
-	return setupWorkspaceMountWithRequirement(false)
+	return setupBlockWorkspaceMountOnce()
 }
 
 func setupWorkspaceMountRequired() error {
 	if isVirtiofsWorkspaceMode() {
 		return setupVirtiofsWorkspaceOnce()
 	}
-	return setupWorkspaceMountWithRequirement(true)
+	return setupBlockWorkspaceMountOnce()
 }
 
 // setupVirtiofsWorkspaceOnce calls setupVirtiofsWorkspace exactly once.
-// Overlayfs does not return EBUSY on re-mount — it silently stacks a new
-// mount — so idempotency must be enforced here rather than at the syscall.
 func setupVirtiofsWorkspaceOnce() error {
 	virtiofsWorkspaceOnce.Do(func() {
 		virtiofsWorkspaceOnceErr = setupVirtiofsWorkspace()
@@ -215,9 +161,36 @@ func setupVirtiofsWorkspaceOnce() error {
 	return virtiofsWorkspaceOnceErr
 }
 
-func setupWorkspaceMountWithRequirement(required bool) error {
-	if err := workspaceMkdirAll(workspaceMountPoint, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", workspaceMountPoint, err)
+// setupBlockWorkspaceMountOnce calls setupBlockWorkspaceMount exactly once.
+// Subsequent calls return the result of the first call without re-running the
+// mount sequence. This prevents the EBUSY/ENOENT cascade that occurs when the
+// boot mount path and the PTY-open defensive guard run concurrently or
+// sequentially — each successive attempt unmounts layers that the first call
+// already assembled.
+func setupBlockWorkspaceMountOnce() error {
+	blockWorkspaceOnce.Do(func() {
+		blockWorkspaceOnceErr = setupBlockWorkspaceMount()
+	})
+	return blockWorkspaceOnceErr
+}
+
+// resetBlockWorkspaceMountOnce resets the once guard so setupBlockWorkspaceMount
+// can be called again. Only for use in tests.
+func resetBlockWorkspaceMountOnce() {
+	blockWorkspaceOnce = sync.Once{}
+	blockWorkspaceOnceErr = nil
+}
+
+// setupBlockWorkspaceMount assembles the hybrid overlayfs workspace.
+// It mounts /dev/vdb as the mutable upperdir, virtiofs as the live host project
+// lowerdir, and (when NEXUS_WORKSPACE_BASE_DEV is set) /dev/vdd as the
+// read-only baked base lowerdir for export/import flows. If overlay assembly
+// fails, it falls back to mounting the base image directly at /workspace.
+func setupBlockWorkspaceMount() error {
+	for _, dir := range []string{workspaceMountPoint, workspaceLowerMountPoint, workspaceMutableMountPoint, workspaceBaseMountPoint} {
+		if err := workspaceMkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dir, err)
+		}
 	}
 
 	available, err := waitForWorkspaceDevice()
@@ -225,81 +198,167 @@ func setupWorkspaceMountWithRequirement(required bool) error {
 		return err
 	}
 	if !available {
-		if required {
-			return fmt.Errorf("workspace device %s not available", workspaceDevicePath)
-		}
-		return nil
+		return fmt.Errorf("workspace device %s not available after %s: volume missing or host provisioning failed",
+			workspaceDevicePath, time.Duration(workspaceDeviceAttempts)*workspaceDeviceInterval)
 	}
 
-	if err := workspaceMountFunc(workspaceDevicePath, workspaceMountPoint, "ext4", 0, ""); err != nil {
+	if err := tryMountHybridOverlay(); err != nil {
+		return err
+	}
+
+	return mountDockerData()
+}
+
+// tryMountHybridOverlay assembles the overlayfs workspace:
+//
+//	lowerdir: virtiofs "nexus-workspace" [: /workspace-base (baked base, when NEXUS_WORKSPACE_BASE_DEV is set)]
+//	upperdir: /workspace-mutable/upper (inside the /dev/vdb ext4 mount)
+//	workdir:  /workspace-mutable/work  (sibling of upperdir on the same fs)
+//	merged:   /workspace
+//
+// When NEXUS_WORKSPACE_BASE_DEV is not set (regular workspaces), the workspace-base
+// lowerdir is omitted and only the virtiofs lowerdir is used.
+func tryMountHybridOverlay() error {
+	// Mount block device at /workspace-mutable; upper/ and work/ are created
+	// as siblings inside it so overlayfs sees them as separate subtrees.
+	if err := workspaceMountFunc(workspaceDevicePath, workspaceMutableMountPoint, "ext4", 0, "user_xattr"); err != nil {
 		if errors.Is(err, unix.EBUSY) {
-			mounted, mErr := workspaceMountIsActive(workspaceDevicePath)
-			if mErr != nil {
-				return fmt.Errorf("verify workspace mount after EBUSY: %w", mErr)
+			if !mountPointIsActive(workspaceDevicePath, workspaceMutableMountPoint) {
+				return fmt.Errorf("mount %s at %s returned EBUSY but not active", workspaceDevicePath, workspaceMutableMountPoint)
 			}
-			if mounted {
-				return nil
-			}
-			if err := workspaceUnmountNonWorkspaceMounts(); err != nil {
-				return fmt.Errorf("clear conflicting workspace mounts after EBUSY: %w", err)
-			}
-			if retryErr := workspaceMountFunc(workspaceDevicePath, workspaceMountPoint, "ext4", 0, ""); retryErr == nil {
-				return nil
-			} else if !errors.Is(retryErr, unix.EBUSY) {
-				return fmt.Errorf("retry mount %s at %s after clearing conflicts: %w", workspaceDevicePath, workspaceMountPoint, retryErr)
-			}
-			mounted, mErr = workspaceMountIsActive(workspaceDevicePath)
-			if mErr != nil {
-				return fmt.Errorf("verify workspace mount after retry EBUSY: %w", mErr)
-			}
-			if mounted {
-				return nil
-			}
-			return fmt.Errorf("mount %s at %s returned EBUSY but workspace mount is not active", workspaceDevicePath, workspaceMountPoint)
+		} else {
+			return fmt.Errorf("mount %s at %s: %w", workspaceDevicePath, workspaceMutableMountPoint, err)
 		}
-		return fmt.Errorf("mount %s at %s: %w", workspaceDevicePath, workspaceMountPoint, err)
 	}
 
+	// Create upperdir and workdir as siblings inside the mutable ext4 mount.
+	for _, dir := range []string{workspaceUpperMountPoint, workspaceOverlayWorkDir} {
+		if err := workspaceMkdirAll(dir, 0o755); err != nil {
+			_ = workspaceUnmountFunc(workspaceMutableMountPoint, 0)
+			return fmt.Errorf("mkdir %s: %w", dir, err)
+		}
+	}
+
+	// Mount baked base lowerdir (read-only project snapshot) only when
+	// NEXUS_WORKSPACE_BASE_DEV is set (export/import flows). Regular
+	// workspaces omit this disk to stay within the 16-IRQ libkrun limit.
+	useBase := os.Getenv("NEXUS_WORKSPACE_BASE_DEV") != ""
+	if useBase {
+		if err := workspaceMountFunc(workspaceBaseDevicePath, workspaceBaseMountPoint, "ext4", unix.MS_RDONLY, ""); err != nil {
+			if errors.Is(err, unix.EBUSY) {
+				if !mountPointIsActive(workspaceBaseDevicePath, workspaceBaseMountPoint) {
+					_ = workspaceUnmountFunc(workspaceMutableMountPoint, 0)
+					return fmt.Errorf("mount base %s at %s returned EBUSY but not active", workspaceBaseDevicePath, workspaceBaseMountPoint)
+				}
+				// Already mounted — continue without unmounting /workspace-mutable.
+			} else {
+				_ = workspaceUnmountFunc(workspaceMutableMountPoint, 0)
+				return fmt.Errorf("mount workspace base %s → %s: %w", workspaceBaseDevicePath, workspaceBaseMountPoint, err)
+			}
+		}
+	}
+
+	// Mount virtiofs lowerdir (read-only host project directory).
+	if err := workspaceMountFunc("nexus-workspace", workspaceLowerMountPoint, "virtiofs", unix.MS_RDONLY, ""); err != nil {
+		if errors.Is(err, unix.EBUSY) {
+			if !mountPointIsActive("nexus-workspace", workspaceLowerMountPoint) {
+				// EBUSY but not actually mounted — tear down what we set up.
+				if useBase {
+					_ = workspaceUnmountFunc(workspaceBaseMountPoint, 0)
+				}
+				_ = workspaceUnmountFunc(workspaceMutableMountPoint, 0)
+				return fmt.Errorf("mount virtiofs at %s returned EBUSY but not active", workspaceLowerMountPoint)
+			}
+			// Already mounted — continue without unmounting /workspace-mutable.
+		} else {
+			// Hard error — tear down what we set up.
+			if useBase {
+				_ = workspaceUnmountFunc(workspaceBaseMountPoint, 0)
+			}
+			_ = workspaceUnmountFunc(workspaceMutableMountPoint, 0)
+			return fmt.Errorf("mount virtiofs nexus-workspace → %s: %w", workspaceLowerMountPoint, err)
+		}
+	}
+
+	// Assemble overlayfs at /workspace.
+	var lowerdir string
+	if useBase {
+		lowerdir = workspaceLowerMountPoint + ":" + workspaceBaseMountPoint
+	} else {
+		lowerdir = workspaceLowerMountPoint
+	}
+	overlayOpts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s,userxattr", lowerdir, workspaceUpperMountPoint, workspaceOverlayWorkDir)
+	if err := workspaceMountFunc("overlay", workspaceMountPoint, "overlay", 0, overlayOpts); err != nil {
+		if errors.Is(err, unix.EBUSY) {
+			if !mountPointIsActive("overlay", workspaceMountPoint) {
+				// EBUSY but not actually mounted — tear down what we set up.
+				_ = workspaceUnmountFunc(workspaceLowerMountPoint, 0)
+				if useBase {
+					_ = workspaceUnmountFunc(workspaceBaseMountPoint, 0)
+				}
+				_ = workspaceUnmountFunc(workspaceMutableMountPoint, 0)
+				return fmt.Errorf("mount overlay at %s returned EBUSY but not active", workspaceMountPoint)
+			}
+			// Already mounted — continue without tearing down underlying mounts.
+		} else {
+			// Hard error — tear down what we set up.
+			_ = workspaceUnmountFunc(workspaceLowerMountPoint, 0)
+			if useBase {
+				_ = workspaceUnmountFunc(workspaceBaseMountPoint, 0)
+			}
+			_ = workspaceUnmountFunc(workspaceMutableMountPoint, 0)
+			return fmt.Errorf("mount overlay at %s: %w", workspaceMountPoint, err)
+		}
+	}
+
+	emitDiagnostic("agent hybrid overlay workspace mounted at %s (lowerdirs=%s)", workspaceMountPoint, lowerdir)
 	return nil
 }
 
-func workspaceMountIsActive(devicePath string) (bool, error) {
+// mountDockerData waits for the docker-data block device and mounts it at
+// /var/lib/docker.
+func mountDockerData() error {
+	dockerDev := dockerDevPath()
+	if err := workspaceMkdirAll("/var/lib/docker", 0o755); err != nil {
+		return fmt.Errorf("mkdir /var/lib/docker: %w", err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, statErr := workspaceStat(dockerDev); statErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("docker-data device %s not available after 30s", dockerDev)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err := workspaceMountFunc(dockerDev, "/var/lib/docker", "ext4", 0, ""); err != nil {
+		if !errors.Is(err, unix.EBUSY) {
+			return fmt.Errorf("mount docker-data %s → /var/lib/docker: %w", dockerDev, err)
+		}
+	} else {
+		emitDiagnostic("agent docker-data mounted at /var/lib/docker (hybrid mode)")
+	}
+	return nil
+}
+
+// mountPointIsActive reports whether source is mounted at target according to
+// /proc/mounts.
+func mountPointIsActive(source, target string) bool {
 	raw, err := workspaceReadProcMounts("/proc/mounts")
 	if err != nil {
-		return false, err
+		return false
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
-		if fields[1] == workspaceMountPoint {
-			return fields[0] == devicePath, nil
+		if fields[1] == target {
+			return fields[0] == source
 		}
 	}
-	return false, nil
-}
-
-func workspaceUnmountNonWorkspaceMounts() error {
-	raw, err := workspaceReadProcMounts("/proc/mounts")
-	if err != nil {
-		return err
-	}
-	lines := strings.Split(string(raw), "\n")
-	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		mountPoint := fields[1]
-		if mountPoint == workspaceMountPoint || !strings.HasPrefix(mountPoint, workspaceMountPoint+"/") {
-			continue
-		}
-		if err := workspaceUnmountFunc(mountPoint, 0); err != nil && !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.ENOENT) {
-			return err
-		}
-	}
-	return nil
+	return false
 }
 
 func waitForWorkspaceDevice() (bool, error) {
@@ -385,85 +444,4 @@ func mountCgroupFilesystems() {
 			continue
 		}
 	}
-}
-
-// preseedUpperDir copies srcName (e.g. ".git") from srcRoot into dstRoot so
-// that overlayfs sees it already in the upper layer and never needs to perform
-// a copy-up from the virtiofs lower layer.  Copy-up invokes FS_IOC_GETFLAGS
-// which virtiofs does not implement (EOPNOTSUPP), making all git write
-// operations fail.  Preseeding prevents that inode path entirely.
-//
-// If dstRoot/srcName already exists the function is a no-op (idempotent across
-// VM restarts — the ext4 upper layer persists between boots).
-func preseedUpperDir(srcRoot, dstRoot, srcName string) error {
-	src := filepath.Join(srcRoot, srcName)
-	dst := filepath.Join(dstRoot, srcName)
-
-	if _, err := os.Lstat(src); err != nil {
-		if os.IsNotExist(err) {
-			return nil // nothing to seed
-		}
-		return fmt.Errorf("stat %s: %w", src, err)
-	}
-	if _, err := os.Lstat(dst); err == nil {
-		return nil // already seeded
-	}
-
-	return copyDirRecursive(src, dst)
-}
-
-// copyDirRecursive copies the directory tree rooted at src to dst.
-// Symbolic links are reproduced as symlinks; regular files are byte-copied.
-// File modes are preserved on a best-effort basis.
-func copyDirRecursive(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-
-		// Use Lstat so symlinks are not followed.
-		info, err := os.Lstat(path)
-		if err != nil {
-			return err
-		}
-
-		// Symlink
-		if info.Mode()&os.ModeSymlink != 0 {
-			link, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			return os.Symlink(link, target)
-		}
-
-		// Directory
-		if info.IsDir() {
-			return os.MkdirAll(target, info.Mode())
-		}
-
-		// Regular file
-		return copyFile(path, target, info.Mode())
-	})
-}
-
-func copyFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, in)
-	return err
 }

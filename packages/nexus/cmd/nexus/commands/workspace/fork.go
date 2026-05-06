@@ -17,9 +17,6 @@ func forkCommand() *cobra.Command {
 		Short: "Fork a workspace",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if childRef == "" {
-				return fmt.Errorf("--ref is required")
-			}
 			conn, err := rpc.EnsureDaemon()
 			if err != nil {
 				return err
@@ -49,6 +46,6 @@ func forkCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&childName, "name", "", "child workspace name (default: <parent>-fork)")
-	cmd.Flags().StringVar(&childRef, "ref", "", "branch/ref for the fork (required)")
+	cmd.Flags().StringVar(&childRef, "ref", "", "branch/ref for the fork (default: parent's ref)")
 	return cmd
 }

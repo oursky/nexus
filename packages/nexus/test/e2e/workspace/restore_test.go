@@ -17,7 +17,7 @@ import (
 func TestWorkspaceRestore(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 
 	clientRepo := harness.MakeLocalGitRepo(t, "restore")
 	cfg := harness.MirrorProfileConfigHome(t)

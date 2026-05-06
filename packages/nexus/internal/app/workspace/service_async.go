@@ -159,10 +159,12 @@ func (s *Service) markWorkspaceRunning(ctx context.Context, current *workspace.W
 	if err := s.repo.Update(ctx, current); err != nil {
 		log.Printf("[workspace] runStartAsync: persist running failed for %s: %v", current.ID, err)
 	}
+	// Notify any callers blocked in WaitReady.
+	s.notifyReady(current.ID)
 }
 
 func (s *Service) autoForwardPorts(ctx context.Context, current *workspace.Workspace) {
-	if s.forwardCreator == nil || s.portDiscoverer == nil {
+	if s.forwardCreator == nil {
 		return
 	}
 	// Spotlight port forwarding only works for VM backends.
@@ -170,7 +172,7 @@ func (s *Service) autoForwardPorts(ctx context.Context, current *workspace.Works
 		return
 	}
 	discoverCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	ports, err := s.portDiscoverer.DiscoverPublishedPorts(discoverCtx, current.Repo)
+	ports, err := s.DiscoverPorts(discoverCtx, current.ID)
 	cancel()
 	if err != nil {
 		return

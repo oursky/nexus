@@ -6,9 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"testing"
-	"time"
 )
 
 var moduleRoot string
@@ -65,78 +63,24 @@ func New(t *testing.T, opts ...Option) *Harness {
 		o(cfg)
 	}
 
-	// Check VM backend availability before building the binary so that skips
-	// happen fast (no multi-second compile) on unsupported platforms / CI
-	// environments that lack VM configuration.
 	RequireVM(t)
 
 	dbPath := TempDB(t)
 	socketPath := TempSocket(t)
 	workdir := TempWorkdir(t)
 
-	binPath := os.Getenv("NEXUS_E2E_BINARY")
-	if binPath == "" {
-		tmp, err := os.MkdirTemp("", "nexus-e2e-bin-*")
-		if err != nil {
-			t.Fatalf("harness: mktemp for binary: %v", err)
-		}
-		t.Cleanup(func() { os.RemoveAll(tmp) })
+	binPath := resolveBinary(t)
 
-		binPath = filepath.Join(tmp, "nexusd")
-		build := exec.Command("go", "build", "-o", binPath, "./cmd/nexus/")
-		build.Dir = moduleRoot
-		build.Stderr = os.Stderr
-		if out, err := build.Output(); err != nil {
-			t.Fatalf("harness: build nexusd: %v\n%s", err, out)
-		}
+	dc := daemonConfig{
+		dbPath:     dbPath,
+		socketPath: socketPath,
+		workdir:    workdir,
+		vmKernel:   cfg.vmKernel,
+		vmRootfs:   cfg.vmRootfs,
+		nodeName:   cfg.nodeName,
 	}
-
-	args := []string{
-		"daemon", "start",
-		"--db", dbPath,
-		"--socket", socketPath,
-		"--workdir-root", workdir,
-		"--network=false", // tests use Unix socket only; avoids port-7777 conflicts
-		"--foreground",    // skip self-daemonize so the child is directly visible
-	}
-	if cfg.vmKernel != "" {
-		args = append(args,
-			"--kernel", cfg.vmKernel,
-			"--rootfs", cfg.vmRootfs,
-			"--driver", "libkrun",
-		)
-	}
-	if cfg.nodeName != "" {
-		args = append(args, "--node-name", cfg.nodeName)
-	}
-
-	cmd := exec.Command(binPath, args...)
-	cmd.Stdout = os.Stderr // capture parent stdout (daemon ready/error msgs)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("harness: start nexusd: %v", err)
-	}
-
-	deadline := time.Now().Add(60 * time.Second)
-	var client *Client
-	for time.Now().Before(deadline) {
-		c, err := Dial(socketPath)
-		if err != nil {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		if err := c.Call("node.info", nil, nil); err != nil {
-			c.Close()
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		client = c
-		break
-	}
-	if client == nil {
-		_ = cmd.Process.Kill()
-		t.Fatalf("harness: nexusd did not become ready within 20s")
-	}
+	args := buildDaemonArgs(dc)
+	cmd, client := launchAndWait(binPath, socketPath, args)
 
 	h := &Harness{
 		t:          t,
@@ -146,18 +90,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 
 	t.Cleanup(func() {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() {
-			_ = cmd.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			_ = cmd.Process.Kill()
-			<-done
-		}
+		stopDaemon(cmd)
 		_ = client.Close()
 	})
 
@@ -177,4 +110,42 @@ func (h *Harness) MustCall(method string, params, out any) {
 
 func (h *Harness) SocketPath() string {
 	return h.socketPath
+}
+
+// NewClient dials a fresh independent connection to the daemon socket.
+// Use this when multiple goroutines or tests need concurrent RPC access to
+// the same daemon — each call gets its own net.Conn so calls are not
+// serialized by the shared h.client mutex.
+func (h *Harness) NewClient() (*Client, error) {
+	return Dial(h.socketPath)
+}
+
+// MustNewClient is like NewClient but fails the test on error.
+// The returned client is closed automatically via t.Cleanup.
+func (h *Harness) MustNewClient(t *testing.T) *Client {
+	t.Helper()
+	c, err := h.NewClient()
+	if err != nil {
+		t.Fatalf("harness: dial new client: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// ForTest returns a test-scoped view of the shared harness.
+// It dials a fresh independent connection bound to t's lifetime,
+// and sets h.t = t so MustCall / Fatal work correctly.
+//
+// Use this in Tier-1 tests that share the suite daemon:
+//
+//	h := suite.Harness().ForTest(t)
+func (h *Harness) ForTest(t *testing.T) *Harness {
+	t.Helper()
+	c := h.MustNewClient(t)
+	return &Harness{
+		t:          t,
+		socketPath: h.socketPath,
+		client:     c,
+		cmd:        nil, // lifecycle managed by Suite, not this test
+	}
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/sshtunnel"
 	"github.com/spf13/cobra"
 )
 
@@ -36,11 +37,55 @@ func stopCommand() *cobra.Command {
 			}
 			defer conn.Close()
 
+			// Capture current daemon forwards first so we can evict local listeners on
+			// their local ports even after daemon-side stop clears the records.
+			type forward struct {
+				LocalPort int `json:"localPort"`
+			}
+			type discoveredPort struct {
+				LocalPort int `json:"localPort"`
+			}
+			var forwards struct {
+				Forwards []forward `json:"forwards"`
+			}
+			var discovered []discoveredPort
+			_ = rpc.Do(conn, "spotlight.list", map[string]any{"workspaceId": workspaceID}, &forwards)
+			_ = rpc.Do(conn, "workspace.discover-ports", map[string]any{"id": workspaceID}, &discovered)
+
 			if err := rpc.Do(conn, "spotlight.stop", map[string]any{"workspaceId": workspaceID}, nil); err != nil {
 				return fmt.Errorf("nexus spotlight stop: %w", err)
 			}
+
+			ports := make([]int, 0, len(forwards.Forwards)+len(discovered))
+			seenPorts := map[int]struct{}{}
+			for _, f := range forwards.Forwards {
+				if f.LocalPort <= 0 {
+					continue
+				}
+				if _, exists := seenPorts[f.LocalPort]; exists {
+					continue
+				}
+				seenPorts[f.LocalPort] = struct{}{}
+				ports = append(ports, f.LocalPort)
+			}
+			for _, d := range discovered {
+				if d.LocalPort <= 0 {
+					continue
+				}
+				if _, exists := seenPorts[d.LocalPort]; exists {
+					continue
+				}
+				seenPorts[d.LocalPort] = struct{}{}
+				ports = append(ports, d.LocalPort)
+			}
+			if len(ports) > 0 {
+				sshtunnel.CloseListenersOnPorts(ports)
+			}
+			pids := loadTunnelPIDsForWorkspace(workspaceID)
 			clearClientSpotlightState(workspaceID)
-			closeAllCachedTunnels()
+			for _, pid := range pids {
+				sshtunnel.CloseByPID(pid)
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "stopped spotlight for workspace %s\n", workspaceID)
 			return nil
 		},

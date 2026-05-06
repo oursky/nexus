@@ -1,4 +1,4 @@
-//go:build !(linux && libkrun)
+//go:build !linux && !darwin
 
 //nolint:unused
 package main

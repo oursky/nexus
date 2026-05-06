@@ -2,10 +2,10 @@
 set -euo pipefail
 
 for attempt in 1 2 3; do
-  if sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update -qq \
-    && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y squashfs-tools e2fsprogs rsync xfsprogs build-essential; then
+  if sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update -qq \
+    && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y squashfs-tools e2fsprogs rsync xfsprogs build-essential git gcc make; then
     # Try to install passt from repos; ignore failure (build script will fall back to static download)
-    sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y passt || true
+    sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y passt || true
     exit 0
   fi
   if [ "$attempt" -eq 3 ]; then

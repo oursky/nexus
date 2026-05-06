@@ -247,3 +247,18 @@ WS-079 | workspace.serial-log VM-only behavior.
 # Invariants
 INV-006 | workspace.list no duplicates — guaranteed by database primary key; not testable in e2e.
 INV-017 | workspace.ports.remove unknown forward — requires racing removal or specific edge case.
+
+# VM overlayfs invariants — behavior is covered by corresponding VM-PROOF E2E tests
+VM-013 | Invariant covered by VM-PROOF-011 (host-guest sync E2E test).
+VM-014 | Invariant covered by VM-PROOF-012 (guest write isolation E2E test).
+VM-015 | Invariant covered by VM-PROOF-013 (fork isolation E2E test).
+VM-016 | Invariant covered by VM-PROOF-014 and general workspace boot tests.
+
+# macOS app invariants and proof obligations — tested in Swift unit tests in packages/nexus-swift
+MACAPP-001 | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources.
+MACAPP-002 | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources.
+MACAPP-003 | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources.
+MACAPP-004 | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources.
+MACAPP-PROOF-001 | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources.
+MACAPP-PROOF-002 | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources.
+MACAPP-PROOF-003 | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources.

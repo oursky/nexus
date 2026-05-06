@@ -27,6 +27,12 @@ type NexusfileVMSection struct {
 	Profile string `json:"profile,omitempty" toml:"profile"`
 	// Image is reserved for future prebuilt image/channel resolution.
 	Image string `json:"image,omitempty" toml:"image"`
+	// CPUs sets the number of virtual CPUs for the bundle VM.
+	// Defaults to 2 when omitted or zero.
+	CPUs uint8 `json:"cpus,omitempty" toml:"cpus"`
+	// MemMiB sets the VM memory size in MiB.
+	// Defaults to 2048 when omitted or zero.
+	MemMiB uint32 `json:"mem,omitempty" toml:"mem"`
 }
 
 // NexusfileManifest is an extension point for base-layer cache invalidation.
@@ -36,12 +42,32 @@ type NexusfileManifest struct {
 	// Future fields: base image version, toolchain pins, etc.
 }
 
-// NexusfileDevSection mirrors smolvm's [dev] table for future init/volume support.
+// NexusfileDevPort declares a port to forward for the workspace.
+type NexusfileDevPort struct {
+	// Port is the host port to tunnel to.
+	Port int `json:"port" toml:"port"`
+	// Service is an optional human-readable name (e.g. "web", "api").
+	Service string `json:"service,omitempty" toml:"service"`
+	// Protocol is "tcp" or "udp". Defaults to "tcp".
+	Protocol string `json:"protocol,omitempty" toml:"protocol"`
+}
+
+// NexusfileDevSection mirrors smolvm's [dev] table for lifecycle command support.
 type NexusfileDevSection struct {
 	// Init commands run once when the workspace base layer is built.
 	Init []string `json:"init,omitempty" toml:"init"`
+	// Bake commands run when the shared base image is baked.
+	Bake []string `json:"bake,omitempty" toml:"bake"`
+	// Up commands start the workspace services (e.g. docker compose up).
+	Up []string `json:"up,omitempty" toml:"up"`
+	// Down commands stop workspace services (e.g. docker compose down).
+	Down []string `json:"down,omitempty" toml:"down"`
 	// Volumes declares host→guest mount mappings.
 	Volumes []string `json:"volumes,omitempty" toml:"volumes"`
+	// Port is the primary local port for auto-forwarding and health checks.
+	Port int `json:"port,omitempty" toml:"port"`
+	// Ports declares additional ports to forward, overriding compose auto-discovery.
+	Ports []NexusfileDevPort `json:"ports,omitempty" toml:"ports"`
 }
 
 // LoadNexusfile loads <projectRoot>/Nexusfile. Missing file is not an error.

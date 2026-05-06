@@ -1,5 +1,6 @@
 //go:build linux
 
+//nolint:unused
 package libkrun
 
 import (
@@ -8,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -16,6 +18,12 @@ func buildBaseImage(repoRoot, imagePath string) error {
 	if strings.TrimSpace(repoRoot) == "" {
 		return fmt.Errorf("repoRoot is required")
 	}
+	sourceRoot, cleanup, err := prepareBaseImageSource(context.Background(), repoRoot)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
 	size, err := directorySizeBytes(repoRoot)
 	if err != nil {
 		return fmt.Errorf("compute project size: %w", err)
@@ -24,7 +32,7 @@ func buildBaseImage(repoRoot, imagePath string) error {
 	if err := createSparseFile(tmpPath, workspaceImageSizeBytes(size)); err != nil {
 		return err
 	}
-	out, err := exec.Command("mkfs.ext4", "-F", "-d", repoRoot, tmpPath).CombinedOutput()
+	out, err := exec.Command("mkfs.ext4", "-F", "-d", sourceRoot, tmpPath).CombinedOutput()
 	if err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("mkfs.ext4 base image: %w: %s", err, strings.TrimSpace(string(out)))
@@ -50,6 +58,12 @@ func buildBaseImageWithContext(ctx context.Context, repoRoot, imagePath string) 
 	if strings.TrimSpace(repoRoot) == "" {
 		return fmt.Errorf("repoRoot is required")
 	}
+	sourceRoot, cleanup, err := prepareBaseImageSource(ctx, repoRoot)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
 	size, err := directorySizeBytes(repoRoot)
 	if err != nil {
 		return fmt.Errorf("compute project size: %w", err)
@@ -73,13 +87,13 @@ func buildBaseImageWithContext(ctx context.Context, repoRoot, imagePath string) 
 			}
 		}
 
-		cmd := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-d", repoRoot, tmpPath)
+		cmd := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-d", sourceRoot, tmpPath)
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			lastErr = nil
 			break
 		}
-		lastErr = fmt.Errorf("mkfs.ext4 base image: %w: %s", err, strings.TrimSpace(string(out)))
+		lastErr = annotateMKFSError(err, out, repoRoot, size)
 	}
 
 	if lastErr != nil {
@@ -105,6 +119,143 @@ func buildBaseImageWithContext(ctx context.Context, repoRoot, imagePath string) 
 		return fmt.Errorf("promote base image: %w", err)
 	}
 	return nil
+}
+
+func annotateMKFSError(err error, out []byte, repoRoot string, repoSize int64) error {
+	trimmed := strings.TrimSpace(string(out))
+	if strings.Contains(trimmed, "No space left on device") {
+		imageSize := workspaceImageSizeBytes(repoSize)
+		return fmt.Errorf(
+			"mkfs.ext4 base image: %w: %s (repo=%s size=%d bytes image=%d bytes); repository snapshot exceeds image capacity; trim large directories (for example .worktrees) or increase NEXUS_WORKSPACE_IMAGE_MIN_MIB",
+			err,
+			trimmed,
+			repoRoot,
+			repoSize,
+			imageSize,
+		)
+	}
+	return fmt.Errorf("mkfs.ext4 base image: %w: %s", err, trimmed)
+}
+
+func prepareBaseImageSource(ctx context.Context, repoRoot string) (string, func(), error) {
+	gitPath := filepath.Join(repoRoot, ".git")
+	info, err := os.Lstat(gitPath)
+	if err != nil || info.IsDir() {
+		return repoRoot, func() {}, nil
+	}
+
+	worktreeGitDir, ok, err := parseGitdirFile(gitPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("parse %s: %w", gitPath, err)
+	}
+	if !ok {
+		return repoRoot, func() {}, nil
+	}
+	if !filepath.IsAbs(worktreeGitDir) {
+		worktreeGitDir = filepath.Clean(filepath.Join(repoRoot, worktreeGitDir))
+	}
+
+	stagingRoot, err := os.MkdirTemp("", "nexus-base-src-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create staging root: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(stagingRoot) }
+
+	if err := copyTreeWithContext(ctx, repoRoot, stagingRoot); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+
+	commonGitDir := worktreeGitDir
+	if raw, readErr := os.ReadFile(filepath.Join(worktreeGitDir, "commondir")); readErr == nil {
+		rel := strings.TrimSpace(string(raw))
+		if rel != "" {
+			if filepath.IsAbs(rel) {
+				commonGitDir = rel
+			} else {
+				commonGitDir = filepath.Clean(filepath.Join(worktreeGitDir, rel))
+			}
+		}
+	}
+
+	stagedGitDir := filepath.Join(stagingRoot, ".git")
+	if err := os.Remove(stagedGitDir); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("remove staged .git file: %w", err)
+	}
+	if err := copyPathWithContext(ctx, commonGitDir, stagedGitDir); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("copy common git dir: %w", err)
+	}
+	_ = os.RemoveAll(filepath.Join(stagedGitDir, "worktrees"))
+
+	if err := copyOptionalFile(filepath.Join(worktreeGitDir, "HEAD"), filepath.Join(stagedGitDir, "HEAD")); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("copy worktree HEAD: %w", err)
+	}
+	if err := copyOptionalFile(filepath.Join(worktreeGitDir, "index"), filepath.Join(stagedGitDir, "index")); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("copy worktree index: %w", err)
+	}
+	if err := copyOptionalFile(filepath.Join(worktreeGitDir, "logs", "HEAD"), filepath.Join(stagedGitDir, "logs", "HEAD")); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("copy worktree logs/HEAD: %w", err)
+	}
+
+	log.Printf("[libkrun] materialized linked worktree git metadata for base image: source=%s gitdir=%s", repoRoot, worktreeGitDir)
+	return stagingRoot, cleanup, nil
+}
+
+func parseGitdirFile(path string) (string, bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", false, err
+	}
+	line := strings.TrimSpace(string(raw))
+	if !strings.HasPrefix(line, "gitdir:") {
+		return "", false, nil
+	}
+	gitDir := strings.TrimSpace(strings.TrimPrefix(line, "gitdir:"))
+	if gitDir == "" {
+		return "", false, fmt.Errorf("empty gitdir value")
+	}
+	return gitDir, true, nil
+}
+
+func copyTreeWithContext(ctx context.Context, srcDir, dstDir string) error {
+	cmd := exec.CommandContext(ctx, "cp", "-a", filepath.Join(srcDir, "."), dstDir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("copy tree %s -> %s: %w: %s", srcDir, dstDir, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func copyPathWithContext(ctx context.Context, srcPath, dstPath string) error {
+	cmd := exec.CommandContext(ctx, "cp", "-a", srcPath, dstPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("copy path %s -> %s: %w: %s", srcPath, dstPath, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func copyOptionalFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	perm := os.FileMode(0o644)
+	if info, statErr := os.Stat(src); statErr == nil {
+		perm = info.Mode().Perm()
+	}
+	return os.WriteFile(dst, data, perm)
 }
 
 // isValidExt4 does a fast superblock magic check on path.

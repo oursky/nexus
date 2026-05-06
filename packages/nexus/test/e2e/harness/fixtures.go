@@ -3,32 +3,28 @@
 package harness
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+	"strings"
 	"testing"
-	"time"
 )
 
-// RequireVM skips the test when the libkrun VM backend is not available.
-//
-//   - macOS/darwin: libkrun VM is not supported on macOS — always skip.
-//   - Linux: skip when NEXUS_VM_KERNEL or NEXUS_VM_ROOTFS are unset.
+// RequireVM gates the test on a passing preflight check for the VM backend.
+// It uses RunPreflight with the real environment reader and enforces the A1
+// preflight policy:
+//   - UNSUPPORTED_HOST → t.Skip (e.g. macOS/darwin, no /dev/kvm)
+//   - MISCONFIGURED    → t.Fatalf with actionable diagnostics
+//   - BOOTSTRAP_FAILED → t.Fatalf with actionable diagnostics
 //
 // Call this at the top of every test that needs a real VM backend.
 // Tests that work with the sandbox backend should NOT call this.
 func RequireVM(t *testing.T) {
 	t.Helper()
-	if runtime.GOOS == "darwin" {
-		t.Skip("VM backend is not supported on macOS; skipping VM-specific test")
-	}
-	kernel := os.Getenv("NEXUS_VM_KERNEL")
-	rootfs := os.Getenv("NEXUS_VM_ROOTFS")
-	if kernel == "" || rootfs == "" {
-		t.Skip("VM not configured (NEXUS_VM_KERNEL/ROOTFS not set); skipping VM-specific test")
-	}
+	r := RunPreflight(RealEnvReader{})
+	EnforcePreflightPolicy(t, r)
 }
 
 // SkipIfVMBoot skips the test when running in short mode (-short flag).
@@ -49,20 +45,77 @@ func IsVMBackend() bool {
 	return kernel != "" && rootfs != ""
 }
 
-// WaitForWorkspaceReady polls workspace.ready until it returns true or the
-// timeout is reached. It must be called after workspace.start when the test
-// intends to run workspace.exec, because the VM backend needs time to boot.
+// WaitForWorkspaceReady blocks until the workspace is running and fully
+// provisioned, or until the server-side timeout fires. It passes wait=true
+// so the daemon uses a push-based subscription internally and returns as soon
+// as markWorkspaceRunning fires — no polling required on the client side.
+//
+// On failure, it fetches the VM serial log (libkrun.log) via workspace.serial-log
+// and includes it in the test failure message to aid CI crash diagnosis.
 func WaitForWorkspaceReady(t *testing.T, h *Harness, workspaceID string) {
 	t.Helper()
-	var readyRes struct{ Ready bool `json:"ready"` }
-	for attempts := 0; attempts < 120; attempts++ {
-		h.MustCall("workspace.ready", map[string]any{"id": workspaceID}, &readyRes)
-		if readyRes.Ready {
-			return
-		}
-		time.Sleep(1 * time.Second)
+	var readyRes struct {
+		Ready bool `json:"ready"`
 	}
-	t.Fatalf("workspace %s did not become ready within 120s", workspaceID)
+	err := h.Call("workspace.ready", map[string]any{"id": workspaceID, "wait": true}, &readyRes)
+	if err != nil {
+		serialLog := fetchSerialLog(h, workspaceID)
+		t.Fatalf("workspace %s: workspace.ready error: %v\n--- VM serial log (last 100 lines) ---\n%s", workspaceID, err, serialLog)
+	}
+	if !readyRes.Ready {
+		serialLog := fetchSerialLog(h, workspaceID)
+		t.Fatalf("workspace %s: workspace.ready returned false after blocking wait\n--- VM serial log (last 100 lines) ---\n%s", workspaceID, serialLog)
+	}
+}
+
+// fetchSerialLog retrieves the last N lines of the VM serial log for a workspace.
+// Returns a best-effort string; never fails the test.
+func fetchSerialLog(h *Harness, workspaceID string) string {
+	var res struct {
+		Lines     []string `json:"lines"`
+		Path      string   `json:"path"`
+		Available bool     `json:"available"`
+	}
+	if err := h.Call("workspace.serial-log", map[string]any{"id": workspaceID, "lines": 100}, &res); err != nil {
+		return fmt.Sprintf("(serial-log fetch error: %v)", err)
+	}
+	if !res.Available && strings.TrimSpace(res.Path) == "" {
+		return "(serial log not available)"
+	}
+
+	sections := make([]string, 0, 2)
+	if len(res.Lines) > 0 {
+		sections = append(sections, strings.Join(res.Lines, "\n"))
+	}
+
+	if strings.HasSuffix(res.Path, ".hvc0") {
+		hostLogPath := strings.TrimSuffix(res.Path, ".hvc0")
+		hostLines, err := tailFileLines(hostLogPath, 100)
+		if err == nil && len(hostLines) > 0 {
+			sections = append(sections, "--- VM host log (libkrun child stdout/stderr) ---\n"+strings.Join(hostLines, "\n"))
+		}
+	}
+
+	if len(sections) == 0 {
+		return "(serial log empty)"
+	}
+	return strings.Join(sections, "\n")
+}
+
+func tailFileLines(path string, maxLines int) ([]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	text := strings.TrimRight(string(b), "\n")
+	if text == "" {
+		return []string{}, nil
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return lines, nil
 }
 
 func TempDB(t *testing.T) string {

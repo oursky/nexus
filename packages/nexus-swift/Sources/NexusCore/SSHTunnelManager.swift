@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import os
 
 public actor SSHTunnelManager {
@@ -134,22 +135,17 @@ public actor SSHTunnelManager {
 
     // MARK: - Spotlight tunnels
 
-    /// Opens an SSH port-forward from a dynamically-allocated localhost port
-    /// to `remotePort` on the SSH target. Returns the local port.
-    /// If a tunnel for `remotePort` already exists, returns its local port.
-    public func openSpotlightTunnel(remotePort: Int) async throws -> Int {
-        if let existing = spotlightTunnels[remotePort] {
+    /// Opens an SSH port-forward from `localPort` on localhost to `remotePort` on the SSH target.
+    /// If a tunnel already exists for this localPort that is still running, it is reused.
+    /// Waits up to `timeout` seconds for the local port to become connectable before returning.
+    @discardableResult
+    public func openSpotlightTunnel(localPort: Int, remotePort: Int, timeout: TimeInterval = 5) async throws -> Int {
+        if let existing = spotlightTunnels[localPort] {
             if existing.process.isRunning {
-                // Extract the local port from the existing forward.
-                // We encode it in the process arguments: "-L localPort:127.0.0.1:remotePort"
-                if let arg = existing.process.arguments?.first(where: { $0.contains(":\(remotePort)") }),
-                   let localPortStr = arg.split(separator: ":").first,
-                   let localPort = Int(localPortStr) {
-                    return localPort
-                }
+                return localPort
             }
             // Stale — clean it up
-            var stale = spotlightTunnels.removeValue(forKey: remotePort)
+            var stale = spotlightTunnels.removeValue(forKey: localPort)
             stale?.terminate()
         }
 
@@ -163,7 +159,6 @@ public actor SSHTunnelManager {
             throw TunnelError.identityRequired
         }
 
-        let localPort = try allocateLocalPort()
         let tunnel = try launchSpotlightTunnel(
             localPort: localPort,
             remotePort: remotePort,
@@ -171,22 +166,61 @@ public actor SSHTunnelManager {
             configPath: configPath,
             identityPath: identityPath
         )
-        spotlightTunnels[remotePort] = tunnel
-        AppLifecycleLog.info("ssh-tunnel", "spotlight opened remotePort=\(remotePort) localPort=\(localPort)")
+        spotlightTunnels[localPort] = tunnel
+        AppLifecycleLog.info("ssh-tunnel", "spotlight opened localPort=\(localPort) remotePort=\(remotePort)")
+
+        // Wait until the local port accepts TCP connections (phase 1: bind probe)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !tunnel.process.isRunning {
+                let exitCode = tunnel.process.terminationStatus
+                AppLifecycleLog.error("ssh-tunnel", "spotlight ssh died exitCode=\(exitCode)")
+                throw TunnelError.processDied(exitCode: exitCode, stderr: "")
+            }
+            if let _ = try? await connectTCP(host: "127.0.0.1", port: localPort) {
+                AppLifecycleLog.info("ssh-tunnel", "spotlight localPort=\(localPort) is ready")
+                return localPort
+            }
+            try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        }
+        AppLifecycleLog.warn("ssh-tunnel", "spotlight localPort=\(localPort) readiness timeout — proceeding anyway")
         return localPort
     }
 
-    /// Terminates the spotlight tunnel for `remotePort`, if it exists.
-    public func closeSpotlightTunnel(remotePort: Int) async {
-        guard var tunnel = spotlightTunnels.removeValue(forKey: remotePort) else { return }
-        tunnel.terminate()
-        AppLifecycleLog.info("ssh-tunnel", "spotlight closed remotePort=\(remotePort)")
+    /// Attempts a TCP connection to host:port and returns immediately.
+    private func connectTCP(host: String, port: Int) async throws -> Bool {
+        return try await withCheckedThrowingContinuation { continuation in
+            let conn = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(integerLiteral: UInt16(port)), using: .tcp)
+            conn.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    conn.cancel()
+                    continuation.resume(returning: true)
+                case .failed(let error):
+                    conn.cancel()
+                    continuation.resume(throwing: error)
+                case .waiting:
+                    conn.cancel()
+                    continuation.resume(throwing: TunnelError.noTarget) // port not yet open
+                default:
+                    break
+                }
+            }
+            conn.start(queue: .global())
+        }
     }
 
-    private func stopAllSpotlightTunnels() {
-        for (remotePort, var tunnel) in spotlightTunnels {
+    /// Terminates the spotlight tunnel bound to `localPort`, if it exists.
+    public func closeSpotlightTunnel(localPort: Int) async {
+        guard var tunnel = spotlightTunnels.removeValue(forKey: localPort) else { return }
+        tunnel.terminate()
+        AppLifecycleLog.info("ssh-tunnel", "spotlight closed localPort=\(localPort)")
+    }
+
+    func stopAllSpotlightTunnels() {
+        for (localPort, var tunnel) in spotlightTunnels {
             tunnel.terminate()
-            AppLifecycleLog.info("ssh-tunnel", "spotlight stopped remotePort=\(remotePort)")
+            AppLifecycleLog.info("ssh-tunnel", "spotlight stopped localPort=\(localPort)")
         }
         spotlightTunnels.removeAll()
     }

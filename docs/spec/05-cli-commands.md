@@ -374,3 +374,48 @@ Calls `project.create {"name", "repoUrl", "rootPath?"}`.
 ## `nexus deploy apply` — `CLI-111` [STUB]
 
 **`CLI-111`** — Reserved for future deploy pipeline integration. Applies resolved deploy plan. Not yet implemented.
+
+---
+
+## `nexus workspace export` / `import` / standalone runner — `CLI-120`–`CLI-131`
+
+**`CLI-120`** — `nexus workspace export <workspace> --out <path>` produces a portable workspace
+artifact (`.nxbundle`) and MAY also emit a platform runner stub next to the bundle.
+
+**`CLI-121`** — `workspace export` MUST include a manifest declaring host compatibility
+(`host os/arch`, virtualization capability requirements) and guest platform metadata.
+
+**`CLI-122`** — `nexus workspace import --from <bundle>` supports `--dry-run` compatibility
+validation and `--apply` restore. `--dry-run` MUST NOT mutate daemon workspace state.
+
+**`CLI-123`** — `workspace import` MUST fail fast on host incompatibility before guest boot,
+returning exit code 1 and a deterministic compatibility error.
+
+**`CLI-124`** — Standalone runner command set (generated from export) MUST support at minimum:
+`run`, `start`, `exec`, `stop`.
+
+**`CLI-125`** — On supported macOS hosts, standalone runner MUST perform entitlement/capability
+checks at startup and emit actionable error text when checks fail.
+
+**`CLI-126`** — `workspace export` and `workspace import` MUST NOT export raw secret values.
+Only secret references/placeholders are allowed in exported metadata.
+
+**`CLI-127`** — Export/import lifecycle is distinct from `workspace fork`/`restore`: portable
+artifact import MUST NOT require source daemon snapshot lineage IDs.
+
+**`CLI-128`** — Exported portable metadata MUST preserve Nexusfile `[workspace]` intent fields
+(`bake`, `init`, `up`, `down`) as behavioral contract data. Missing fields MUST be represented
+deterministically (for example empty/absent with explicit defaults) so importers/runners do not
+guess behavior.
+
+**`CLI-129`** — Standalone runner `start` SHOULD execute exported `workspace.up` by default (or a
+documented equivalent mode) and `stop` SHOULD execute `workspace.down` before runtime teardown.
+If either command is absent, runner behavior MUST remain deterministic and no-op safely.
+
+**`CLI-130`** — `services[].start` from Nexusfile is deploy/runtime service intent and MUST NOT be
+implicitly treated as local workspace auto-start behavior by `workspace export` or standalone
+runner `start`.
+
+**`CLI-131`** — `workspace.init` one-time semantics MUST be preserved across export/import and
+standalone execution: first-run behavior occurs once per imported runtime instance with explicit
+state tracking.

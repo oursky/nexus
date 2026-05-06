@@ -31,6 +31,10 @@ import OSLog
 ///   POST /workspace/ssh-check   { workspaceID }  → { ok, detail }
 ///   POST /workspace/open-editor { workspaceID, app? }  → { ok, detail }
 ///
+/// Spotlight:
+///   POST /spotlight/start       { workspaceID }  → { ok, output }
+///   POST /spotlight/stop        { workspaceID }  → { ok, output }
+///
 /// Daemon provisioning (simulates full fresh-host onboarding):
 ///   GET  /daemon/status
 ///   GET  /daemon/profile
@@ -59,6 +63,10 @@ public final class HeadlessRPCServer {
 
     /// Called by /daemon/check. (driver?) → (allPassed, output)
     public var daemonCheckAction: ((String?) async -> (Bool, String))?
+
+    /// Called by /spotlight/start and /spotlight/stop. (workspaceID) → (ok, output)
+    public var spotlightStartAction: ((String) async -> (Bool, String))?
+    public var spotlightStopAction:  ((String) async -> (Bool, String))?
 
     /// Returns the active daemon client (any protocol) for workspace lifecycle calls.
     public var daemonClientProvider: (() -> (any DaemonClient)?)?
@@ -241,6 +249,12 @@ public final class HeadlessRPCServer {
             return await handleSSHCheck(body: bodyString)
         case ("POST", "/workspace/open-editor"):
             return await handleOpenEditor(body: bodyString)
+
+        // ── Spotlight ─────────────────────────────────────────────────────────
+        case ("POST", "/spotlight/start"):
+            return await handleSpotlightStart(body: bodyString)
+        case ("POST", "/spotlight/stop"):
+            return await handleSpotlightStop(body: bodyString)
 
         // ── Daemon provisioning ───────────────────────────────────────────────
         case ("GET", "/daemon/status"):
@@ -441,6 +455,42 @@ public final class HeadlessRPCServer {
         Self.logger.info("rpc /workspace/open-editor workspaceID=\(workspaceID, privacy: .public) app=\(app, privacy: .public)")
         let (ok, detail) = await action(workspaceID, app, false)
         let payload: [String: Any] = ["ok": ok, "detail": detail]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (ok ? 200 : 500, str)
+    }
+
+    private func handleSpotlightStart(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let workspaceID = dict["workspaceID"] as? String else {
+            return (400, jsonError("missing workspaceID"))
+        }
+        guard let action = spotlightStartAction else {
+            return (503, jsonError("spotlight-start action not registered"))
+        }
+        Self.logger.info("rpc /spotlight/start workspaceID=\(workspaceID, privacy: .public)")
+        let (ok, output) = await action(workspaceID)
+        let payload: [String: Any] = ["ok": ok, "output": output]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (ok ? 200 : 500, str)
+    }
+
+    private func handleSpotlightStop(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let workspaceID = dict["workspaceID"] as? String else {
+            return (400, jsonError("missing workspaceID"))
+        }
+        guard let action = spotlightStopAction else {
+            return (503, jsonError("spotlight-stop action not registered"))
+        }
+        Self.logger.info("rpc /spotlight/stop workspaceID=\(workspaceID, privacy: .public)")
+        let (ok, output) = await action(workspaceID)
+        let payload: [String: Any] = ["ok": ok, "output": output]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let str = String(data: data, encoding: .utf8) else {
             return (500, jsonError("serialization failed"))

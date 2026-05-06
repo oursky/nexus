@@ -61,7 +61,7 @@ func TestProtocol_Version(t *testing.T) {
 // TestProtocol_NodeInfo verifies node.info returns a valid response with capabilities.
 func TestProtocol_NodeInfo(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 
 	var res struct {
 		Node struct {
@@ -108,7 +108,7 @@ func TestProtocol_AuthReject(t *testing.T) {
 func TestProtocol_WorkflowRoundTrip(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "proto-roundtrip")
 
 	var createRes struct {

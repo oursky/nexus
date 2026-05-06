@@ -63,65 +63,14 @@ public actor RemoteProvisioner {
 
     /// Ensure the remote host has a running nexus daemon.
     ///
-    /// Returns immediately if the daemon is already running.
-    /// Throws `ProvisionError` if provisioning fails after all retries.
+    /// Provisioning from the Mac app is currently disabled.
+    /// Install the nexus binary manually from the GitHub releases page:
+    /// https://github.com/oursky/nexus/releases
+    ///
+    /// Then start the daemon on the remote host:
+    ///   nexus daemon start --port 7777
     public func provision(progress: ProgressHandler? = nil) async throws {
-        guard let sshTarget = profile.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !sshTarget.isEmpty else {
-            throw ProvisionError.noSSHTarget
-        }
-        guard let binaryURL = bundledLinuxBinary() else {
-            throw ProvisionError.bundledBinaryMissing
-        }
-        sshScopedPaths = SSHSecurityScope.resolve(profile: profile, category: "provision")
-        defer {
-            SSHSecurityScope.stop(sshScopedPaths)
-            sshScopedPaths = .empty
-        }
-        let identityPath = sshScopedPaths.identityPath ?? profile.sshIdentity
-        guard let identityPath, !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ProvisionError.sshIdentityRequired
-        }
-
-        await progress?(.checkingHost)
-
-        // ── 0. Probe SSH connectivity — fail fast before any upload attempt ──────
-        // A simple `echo ok` will exit 255 with "Permission denied" on auth failure,
-        // throwing sshAuthFailed immediately rather than hanging in the upload pipe.
-        _ = try runSSH(sshTarget: sshTarget, script: "echo ok")
-
-        // ── 1. Check daemon health + binary freshness ───────────────────────────
-        let daemonInitiallyHealthy = await isDaemonHealthy(sshTarget: sshTarget)
-
-        // ── 2. Ensure nexus binary exists and matches bundled build ─────────────
-        let needsUpload = await binaryNeedsUpload(sshTarget: sshTarget, bundledBinaryURL: binaryURL)
-        if needsUpload {
-            logger.info("provision: updating nexus binary on \(sshTarget, privacy: .public)")
-            try await uploadNexusBinary(sshTarget: sshTarget, binaryURL: binaryURL, progress: progress)
-            // The running daemon still uses the previous executable image.
-            if daemonInitiallyHealthy {
-                try await stopDaemonIfRunning(sshTarget: sshTarget)
-            }
-        } else {
-            logger.info("provision: nexus binary already up-to-date on \(sshTarget, privacy: .public)")
-        }
-
-        // If daemon was healthy and no binary update was needed, we're done.
-        if daemonInitiallyHealthy && !needsUpload {
-            logger.info("provision: daemon already healthy on \(sshTarget, privacy: .public)")
-            await progress?(.ready)
-            return
-        }
-
-        // ── 3. Start daemon with rootless bootstrap (streaming --json events) ──
-        await progress?(.startingDaemon)
-        try await startDaemonWithPhaseEvents(sshTarget: sshTarget, progress: progress)
-
-        // ── 4. Poll until daemon healthz responds ──────────────────────────────
-        try await waitForDaemon(sshTarget: sshTarget, progress: progress)
-
-        await progress?(.ready)
-        logger.info("provision: daemon ready on \(sshTarget, privacy: .public)")
+        throw ProvisionError.provisioningDisabled
     }
 
     // MARK: - Private helpers
@@ -532,6 +481,8 @@ public enum ProvisionError: Error, LocalizedError, Sendable {
     case sshFailed(command: String, message: String)
     /// SSH authentication failed (wrong key, key not accepted). User must fix profile.
     case sshAuthFailed(message: String)
+    /// Provisioning from the Mac app is disabled. Install the binary manually.
+    case provisioningDisabled
 
     public var errorDescription: String? {
         switch self {
@@ -551,6 +502,8 @@ public enum ProvisionError: Error, LocalizedError, Sendable {
             return "SSH command failed: \(msg)"
         case .sshAuthFailed(let msg):
             return "SSH authentication failed — check your SSH key in Settings. \(msg)"
+        case .provisioningDisabled:
+            return "Automatic provisioning from the Mac app is not supported. Download the nexus binary from https://github.com/oursky/nexus/releases and install it on the remote host manually, then run: nexus daemon start"
         }
     }
 }

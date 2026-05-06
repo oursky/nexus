@@ -555,6 +555,18 @@ func TestService_Stop_Removed(t *testing.T) {
 	}
 }
 
+func TestService_Stop_AlreadyStopped(t *testing.T) {
+	svc, repo, _, _ := newTestService()
+	ctx := context.Background()
+
+	ws := createAndStore(t, repo, "ws-stop-already", workspace.StateStopped)
+
+	_, err := svc.Stop(ctx, ws.ID)
+	if err == nil {
+		t.Fatal("expected error stopping already-stopped workspace (WS-027)")
+	}
+}
+
 // ── Remove tests ─────────────────────────────────────────────────────────────
 
 func TestService_Remove_Success(t *testing.T) {
@@ -748,6 +760,114 @@ func TestService_Ready_PropagatesDriverReadinessError(t *testing.T) {
 	}
 }
 
+// ── WaitReady tests ───────────────────────────────────────────────────────────
+
+func TestService_WaitReady_AlreadyRunning(t *testing.T) {
+	svc, repo, _, _ := newTestService()
+	ctx := context.Background()
+
+	createAndStore(t, repo, "ws-already-running", workspace.StateRunning)
+
+	ready, err := svc.WaitReady(ctx, "ws-already-running")
+	if err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if !ready {
+		t.Error("expected true for already-running workspace")
+	}
+}
+
+func TestService_WaitReady_NotFound(t *testing.T) {
+	svc, _, _, _ := newTestService()
+	ctx := context.Background()
+
+	_, err := svc.WaitReady(ctx, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent workspace")
+	}
+}
+
+func TestService_WaitReady_BlocksUntilRunning(t *testing.T) {
+	svc, repo, _, _ := newTestService()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ws := createAndStore(t, repo, "ws-starting", workspace.StateStarting)
+
+	// WaitReady should block in a goroutine; we notify after a short delay.
+	doneCh := make(chan struct {
+		ready bool
+		err   error
+	}, 1)
+	go func() {
+		ready, err := svc.WaitReady(ctx, ws.ID)
+		doneCh <- struct {
+			ready bool
+			err   error
+		}{ready, err}
+	}()
+
+	// Give WaitReady time to subscribe before we notify.
+	time.Sleep(50 * time.Millisecond)
+
+	// Simulate markWorkspaceRunning: update state + notify.
+	ws.State = workspace.StateRunning
+	_ = repo.Update(context.Background(), ws)
+	svc.notifyReady(ws.ID)
+
+	select {
+	case res := <-doneCh:
+		if res.err != nil {
+			t.Fatalf("WaitReady: %v", res.err)
+		}
+		if !res.ready {
+			t.Error("expected ready=true after running notification")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("WaitReady did not unblock after notifyReady")
+	}
+}
+
+func TestService_WaitReady_CtxCancelReturns(t *testing.T) {
+	svc, repo, _, _ := newTestService()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	createAndStore(t, repo, "ws-starting-cancel", workspace.StateStarting)
+
+	doneCh := make(chan bool, 1)
+	go func() {
+		ready, _ := svc.WaitReady(ctx, "ws-starting-cancel")
+		doneCh <- ready
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case ready := <-doneCh:
+		if ready {
+			t.Error("expected false after ctx cancel")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitReady did not return after ctx cancel")
+	}
+}
+
+func TestService_WaitReady_StoppedReturnsFalse(t *testing.T) {
+	svc, repo, _, _ := newTestService()
+	ctx := context.Background()
+
+	createAndStore(t, repo, "ws-stopped", workspace.StateStopped)
+
+	ready, err := svc.WaitReady(ctx, "ws-stopped")
+	if err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if ready {
+		t.Error("expected false for stopped workspace")
+	}
+}
+
 // ── Fork tests ───────────────────────────────────────────────────────────────
 
 func TestService_Fork_Success(t *testing.T) {
@@ -831,15 +951,19 @@ func TestService_Fork_RemovedParent(t *testing.T) {
 	}
 }
 
-func TestService_Fork_MissingRef(t *testing.T) {
+func TestService_Fork_InheritsParentRef(t *testing.T) {
 	svc, repo, _, _ := newTestService()
 	ctx := context.Background()
 
 	parent := createAndStore(t, repo, "ws-fork-noref", workspace.StateRunning)
 
-	_, err := svc.Fork(ctx, parent.ID, ForkSpec{ChildRef: "  "})
-	if err == nil {
-		t.Fatal("expected error for empty childRef")
+	// Blank ChildRef should inherit the parent's ref rather than returning an error.
+	child, err := svc.Fork(ctx, parent.ID, ForkSpec{ChildRef: "  "})
+	if err != nil {
+		t.Fatalf("unexpected error for empty childRef: %v", err)
+	}
+	if child.Ref != parent.Ref {
+		t.Fatalf("expected child ref %q, got %q", parent.Ref, child.Ref)
 	}
 }
 

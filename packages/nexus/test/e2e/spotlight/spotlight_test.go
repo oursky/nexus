@@ -12,7 +12,7 @@ import (
 func TestSpotlight(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repo := harness.MakeLocalGitRepo(t, "spotlight")
 	cfg := harness.MirrorProfileConfigHome(t)
 	_, remoteRepo := harness.MirrorGitCheckoutToDaemon(t, h, cfg, repo, "proj-spotlight")
@@ -119,7 +119,7 @@ func TestSpotlight(t *testing.T) {
 // TestSpotlight_WorkspaceNotFound verifies workspace.ports.add on unknown workspace returns error.
 func TestSpotlight_WorkspaceNotFound(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	err := h.Call("workspace.ports.add", map[string]any{
 		"workspaceId": "ws-does-not-exist",
 		"spec": map[string]any{

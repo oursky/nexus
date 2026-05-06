@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/oursky/nexus/packages/nexus/internal/auth/tokenstore"
 )
@@ -72,7 +74,29 @@ func SaveDefault(p *Profile) error {
 }
 
 // LoadDefault reads the default profile and populates Token from the OS keychain.
+// If NEXUS_DAEMON_SSH_HOST is set, a synthetic profile is constructed from env vars
+// (NEXUS_DAEMON_SSH_HOST, NEXUS_DAEMON_SSH_PORT, NEXUS_DAEMON_SSH_IDENTITY, NEXUS_DAEMON_TOKEN)
+// instead of reading from disk. This allows the Mac app to inject connection details
+// when running the CLI binary from a sandboxed environment.
 func LoadDefault() (*Profile, error) {
+	if host := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_HOST")); host != "" {
+		p := &Profile{
+			Name:  "env",
+			Host:  host,
+			Port:  7777,
+			Token: strings.TrimSpace(os.Getenv("NEXUS_DAEMON_TOKEN")),
+		}
+		if portStr := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_PORT")); portStr != "" {
+			if n, err := strconv.Atoi(portStr); err == nil {
+				p.SSHPort = n
+			}
+		}
+		if id := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_IDENTITY")); id != "" {
+			p.SSHIdentityFile = id
+		}
+		return p, nil
+	}
+
 	path, err := DefaultProfilePath()
 	if err != nil {
 		return nil, err

@@ -82,7 +82,7 @@ func TestSpotlight_TCPProxyTraffic(t *testing.T) {
 	if harness.IsVMBackend() {
 		t.Skip("VM backend: spotlight uses ephemeral host ports")
 	}
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "spotlight-tcp")
 	wsID := createSpotlightWorkspace(t, h, repoPath, "spotlight-tcp-test")
 
@@ -152,7 +152,7 @@ func TestSpotlight_TCPProxyTraffic(t *testing.T) {
 func TestSpotlight_ListAndStop(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "spotlight-list")
 	wsID := createSpotlightWorkspace(t, h, repoPath, "spotlight-list-test")
 
@@ -218,7 +218,7 @@ func TestSpotlight_PortConflict(t *testing.T) {
 	if harness.IsVMBackend() {
 		t.Skip("VM backend: spotlight binds ephemeral ports, no conflict possible")
 	}
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "spotlight-conflict")
 	wsID := createSpotlightWorkspace(t, h, repoPath, "spotlight-conflict-test")
 
@@ -256,7 +256,7 @@ func TestSpotlight_PortConflict(t *testing.T) {
 func TestSpotlight_WorkspacePortsAlias(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "spotlight-alias")
 	wsID := createSpotlightWorkspace(t, h, repoPath, "spotlight-alias-test")
 

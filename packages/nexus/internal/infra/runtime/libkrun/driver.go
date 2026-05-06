@@ -227,32 +227,32 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 	memMiB := defaultMemMiB()
 
 	// Build host config drive (gitconfig, SSH keys, tool auth).
-	// Use a per-workspace path in the work dir so concurrent workspace starts
-	// don't reformat each other's drive (the old project-root path was shared).
+	// Build a host-config directory that will be shared via virtiofs.
+	// The directory lives inside the workspace workdir so it persists for
+	// the entire VM lifetime and is cleaned up with the workspace.
 	home, _ := os.UserHomeDir()
-	configDriveDir := filepath.Join(d.manager.cfg.WorkDirRoot, workspaceID)
+	configDriveDir := filepath.Join(d.manager.cfg.WorkDirRoot, workspaceID, "host-config")
 	if err := os.MkdirAll(configDriveDir, 0o755); err != nil {
-		log.Printf("[libkrun] warning: create config drive dir: %v", err)
-	}
-	configDrivePath := filepath.Join(configDriveDir, "host-config.ext4")
-	if err := buildHostConfigDriveLibkrun(home, configDrivePath); err != nil {
-		log.Printf("[libkrun] warning: host config drive: %v", err)
-		configDrivePath = ""
+		log.Printf("[libkrun] warning: create host config dir: %v", err)
+		configDriveDir = ""
+	} else if err := buildHostConfigDirLibkrun(home, configDriveDir); err != nil {
+		log.Printf("[libkrun] warning: host config dir: %v", err)
+		configDriveDir = ""
 	}
 
 	manifestHash := resolveManifestHash(root)
 	bakedRootfs := IsRootfsBaked(defaultStampDir())
 
 	spec := SpawnSpec{
-		WorkspaceID:     workspaceID,
-		ProjectRoot:     root,
-		MemoryMiB:       memMiB,
-		VCPUs:           1,
-		SnapshotID:      snapshotID,
-		HostConfigDrive: configDrivePath,
-		VMProfile:       resolveGuestVMProfile(root),
-		ManifestHash:    manifestHash,
-		BakedRootfs:     bakedRootfs,
+		WorkspaceID:   workspaceID,
+		ProjectRoot:   root,
+		MemoryMiB:     memMiB,
+		VCPUs:         1,
+		SnapshotID:    snapshotID,
+		HostConfigDir: configDriveDir,
+		VMProfile:     resolveGuestVMProfile(root),
+		ManifestHash:  manifestHash,
+		BakedRootfs:   bakedRootfs,
 	}
 
 	d.mu.Lock()
@@ -443,6 +443,26 @@ func (d *Driver) CheckpointFork(ctx context.Context, parentID, childID string) (
 		if stopErr := d.manager.Stop(ctx, parentID); stopErr != nil {
 			log.Printf("[libkrun] CheckpointFork: stop parent %s: %v (continuing)", parentID, stopErr)
 		}
+	} else {
+		// Parent is not in the instances map — it may have just crashed or been
+		// stopped concurrently (e.g. monitor goroutine removed it). Ensure any
+		// lingering VM/passt process is fully dead before we copy the disk
+		// image; the ext4 file is only consistent once the guest has unmounted
+		// it (i.e. the process has exited).
+		parentWorkDir := filepath.Join(d.manager.cfg.WorkDirRoot, parentID)
+		log.Printf("[libkrun] CheckpointFork: parent %s not running; ensuring processes stopped before copy", parentID)
+		cleanupWorkspaceRuntimeArtifacts(parentWorkDir, parentID)
+	}
+
+	if shouldPromoteWorkspaceOnFork() && strings.TrimSpace(parentRoot) != "" {
+		log.Printf("[libkrun] CheckpointFork: phase=promote_workspace parent=%s", parentID)
+		if promoteErr := d.manager.PromoteWorkspaceImageFromProjectRoot(ctx, parentID, parentRoot); promoteErr != nil {
+			if parentWasRunning && parentRoot != "" {
+				_ = d.EnsureStarted(ctx, parentID, parentRoot)
+			}
+			return "", fmt.Errorf("promote workspace image before fork: %w", promoteErr)
+		}
+		log.Printf("[libkrun] CheckpointFork: phase_done=promote_workspace parent=%s", parentID)
 	}
 
 	if err := d.manager.ForkWorkspaceImage(ctx, parentID, childID, parentRoot); err != nil {
@@ -458,6 +478,19 @@ func (d *Driver) CheckpointFork(ctx context.Context, parentID, childID string) (
 		}
 	}
 	return childID, nil
+}
+
+func shouldPromoteWorkspaceOnFork() bool {
+	raw := strings.TrimSpace(os.Getenv("NEXUS_LIBKRUN_FORK_PROMOTE"))
+	if raw == "" {
+		return false
+	}
+	switch strings.ToLower(raw) {
+	case "0", "false", "off", "no":
+		return false
+	default:
+		return true
+	}
 }
 
 // Destroy stops the VM and removes all state.

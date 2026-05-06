@@ -4,13 +4,14 @@ package workspace
 type State string
 
 const (
-	StateCreated  State = "created"
-	StateStarting State = "starting"
-	StateRunning  State = "running"
-	StatePaused   State = "paused"
-	StateStopped  State = "stopped"
-	StateRestored State = "restored"
-	StateRemoved  State = "removed"
+	StateCreated      State = "created"
+	StateStarting     State = "starting"
+	StateRunning      State = "running"
+	StateSnapshotting State = "snapshotting" // VM stopped temporarily for fork/snapshot; will resume to running.
+	StatePaused       State = "paused"
+	StateStopped      State = "stopped"
+	StateRestored     State = "restored"
+	StateRemoved      State = "removed"
 )
 
 // CanTransitionTo returns true if a transition from the current state to next is valid.
@@ -24,7 +25,9 @@ func (s State) CanTransitionTo(next State) bool {
 	case StateStarting:
 		return next == StateRunning || next == StateCreated // running on success, created on failure/rollback
 	case StateRunning:
-		return next == StatePaused || next == StateStopped
+		return next == StatePaused || next == StateStopped || next == StateSnapshotting
+	case StateSnapshotting:
+		return next == StateRunning || next == StateStopped // running on success, stopped on failure
 	case StatePaused:
 		return next == StateRunning || next == StateStopped
 	case StateStopped:

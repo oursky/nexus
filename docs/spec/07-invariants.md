@@ -101,8 +101,82 @@ forwards associated with it.
 
 ---
 
-## VM backend equivalence
+## VM Backend — `VM-001`–`VM-016`
 
-VM backend invariants and formal verification obligations are normative in:
+**`VM-001`** — For VM backends, interactive shell sessions MUST execute inside the guest VM, not on
+the daemon host.
 
-- `docs/spec/09-vm-backend-formal-verification.md`
+**`VM-002`** — For VM backends, default working directory exposed to clients MUST be `/workspace`.
+
+**`VM-003`** — Any client request for `/workspace` or `/workspace/*` MUST resolve to the guest
+workspace filesystem, not host absolute paths.
+
+**`VM-004`** — The shell prompt/user identity for VM backends MUST reflect guest identity (e.g.
+`root@...`) and MUST NOT expose daemon-host identity (e.g. `newman@engine-03`).
+
+**`VM-005`** — Runtime dispatch MUST be selected by workspace backend metadata (`workspace.backend`)
+for lifecycle (`create/start/stop/restore/fork/destroy`) and PTY/spotlight dial paths.
+
+**`VM-006`** — VM backend shell open MUST NOT fail because of stale in-memory host-root maps after
+daemon restart; required runtime state must be recoverable from persisted workspace metadata.
+
+**`VM-007`** — Workspace-local tooling bootstrap path MUST be backend-agnostic for VM backends:
+`/workspace/.nexus/tools/bin` MUST be the first-class tool path used by PTY sessions.
+
+**`VM-008`** — Node/npm and required agent CLIs (`codex`, `opencode`) MUST be installable and
+invokable via workspace-local path, independent of host mise shim PATH.
+
+**`VM-009`** — A portable workspace artifact format (`.nxbundle`) MUST declare host compatibility
+(`os/arch` and virtualization capability) and guest platform metadata. Import/run MUST fail fast
+with a deterministic compatibility error when host requirements are not met.
+
+**`VM-010`** — A standalone runner generated from a workspace export MUST support macOS execution
+when all of the following hold: matching host architecture, Hypervisor.framework availability, and
+runner binary code-signing/entitlements required by the virtualization path.
+
+**`VM-011`** — Workspace portability semantics are split by design:
+1. fork/restore snapshots are lineage-local and daemon-internal
+2. `.nxbundle` artifacts are distributable and importable across hosts that satisfy compatibility
+   constraints
+
+**`VM-012`** — Portable export/import and standalone execution MUST preserve Nexusfile workspace
+intent semantics (`workspace.bake`, `workspace.init`, `workspace.up`, `workspace.down`) with no
+implicit remapping to deploy-only service intent fields.
+
+**`VM-013` (Lowerdir Immutability)** — The baked base lowerdir (`workspace-base.ext4`) and the
+virtiofs host project root lowerdir MUST be mounted read-only inside the guest. Guest reads of
+unmodified files MUST be served directly from these lowerdirs. Host edits to files that have not
+been modified in the guest MUST become visible inside the guest without restart or remount.
+
+**`VM-014` (Copy-Up Isolation)** — Guest writes to any path under `/workspace` MUST trigger
+overlayfs copy-up into the writable upperdir (`workspace-upper`). After copy-up, the guest MUST
+read back its own modified version (shadowing the lowerdir original). The host MUST NOT observe
+guest writes; there is no guest→host writeback.
+
+**`VM-015` (Fork Snapshot Semantics)** — `CheckpointFork` MUST copy only the parent's upperdir
+(`workspace.ext4`) and `docker-data.ext4` into the child's snapshot. The baked base lowerdir
+(`workspace-base.ext4`) MUST NOT be copied; child and parent share the same read-only base image.
+Fork time and space overhead MUST be O(1) relative to mutation size (upperdir size), not project
+size (lowerdir size).
+
+**`VM-016` (Empty Upperdir Boot)** — A newly-created workspace with no prior mutations MUST boot
+with an empty upperdir. The guest MUST still see the full project tree via the virtiofs lowerdir
+(and optional baked base lowerdir). The first guest write to any file MUST succeed via copy-up.
+
+---
+
+## macOS App — `MACAPP-001`–`MACAPP-004`
+
+**`MACAPP-001`** — Daemon compatibility status shown by the app MUST be derived from `/version`
+protocol compatibility (`DaemonInfo.requiredProtocol`) with explicit dev-build exception
+(`0.0.0-dev` is treated as compatible).
+
+**`MACAPP-002`** — Outdated daemon protocol versions MUST surface as a distinct app state, not folded
+into generic offline/disconnected states.
+
+**`MACAPP-003`** — Remote auto-provisioning behavior from the app MUST be explicitly gated. When
+provisioning is disabled, the app MUST fail with actionable guidance rather than attempting partial
+host mutation.
+
+**`MACAPP-004`** — Packaged app resources that include helper CLIs MUST preserve executable
+permissions and app signing integrity requirements required for macOS launch.

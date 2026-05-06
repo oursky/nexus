@@ -8,6 +8,8 @@ vars:
   REMOTE_PORT:         '{{.REMOTE_PORT         | default "7778"}}'
   REMOTE_XDG_STATE_HOME: '{{.REMOTE_XDG_STATE_HOME | default "~/.local/state-dev"}}'
   LOCAL_BIN:           '{{.LOCAL_BIN           | default "~/.local/bin/nexus-dev"}}'
+  MAC_HOST:            '{{.MAC_HOST            | default ""}}'
+  MAC_REPO_ROOT:       '{{.MAC_REPO_ROOT       | default "~/magic/nexus"}}'
 
 tasks:
   # ── Setup ────────────────────────────────────────────────────────────────
@@ -53,6 +55,19 @@ tasks:
     cmds:
       - go test ./...
 
+  lint:
+    desc: "Run golangci-lint"
+    dir: packages/nexus
+    cmds:
+      - golangci-lint run ./...
+
+  format:
+    desc: "Format Go code (gofmt + goimports)"
+    dir: packages/nexus
+    cmds:
+      - gofmt -w .
+      - goimports -w .
+
   ci:
     desc: "Run local CI equivalent (go-fix + coverage + core)"
     cmds:
@@ -62,10 +77,51 @@ tasks:
       - ./scripts/ci/nexus-core.sh
 
   check:spec-coverage:
-    desc: "Generate formal verification coverage map and fail on unwaived missing VM proof IDs"
+    desc: "Generate formal verification coverage map and fail on unwaived missing proof IDs"
     dir: packages/nexus
     cmds:
       - go run ./test/e2e/coverage --check
+
+  test:e2e:standalone:lima:
+    desc: "Run self-contained standalone artifact proof in Lima"
+    cmds:
+      - ./scripts/e2e-standalone-lima.sh
+
+  test:e2e:cli:lima:
+    desc: "Run Go e2e CLI package in Lima with preflight"
+    cmds:
+      - ./scripts/e2e/cli-lima-test.sh
+
+  test:e2e:cli:lima:preflight:
+    desc: "Run Lima preflight checks for CLI e2e"
+    cmds:
+      - ./scripts/e2e/cli-lima-preflight.sh
+
+  test:e2e:cli:remote:
+    desc: "Run Go e2e CLI package on remote Linux host"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+    cmds:
+      - ./scripts/remote/e2e-cli.sh
+
+  test:e2e:remote:
+    desc: "Run full e2e suite (all packages) on remote Linux host"
+    preconditions:
+      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
+        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
+    env:
+      REMOTE_HOST: "{{.REMOTE_HOST}}"
+      REMOTE_BIN: "{{.REMOTE_BIN | default \"~/.local/bin/nexus\"}}"
+      E2E_P: "{{.E2E_P | default \"2\"}}"
+      E2E_PARALLEL: "{{.E2E_PARALLEL | default \"2\"}}"
+      E2E_TIMEOUT: "{{.E2E_TIMEOUT | default \"60m\"}}"
+      E2E_RUN: "{{.E2E_RUN | default \"\"}}"
+      E2E_PKG: "{{.E2E_PKG | default \"...\"}}"
+    cmds:
+      - ./scripts/remote/e2e-full.sh
 
   ci:libkrun:prep:
     desc: "Prepare libkrun VM assets for CI/e2e (host prereqs, build nexus, provision, prewarm)"
@@ -134,8 +190,18 @@ tasks:
     cmds:
       - scripts/local/rebuild-libkrun-vm.sh
 
-  kernel:rebuild:
-    desc: "Rebuild vmlinux kernel on remote Linux host and copy back to assets/vmlinux (commit result after)"
+  kernel:build:arm64:
+    desc: "Build arm64 Image kernel locally (requires aarch64 host or cross-compiler)"
+    cmds:
+      - scripts/nexus/build-kernel.sh --arch arm64 packages/nexus/cmd/nexus/assets/Image
+
+  kernel:build:x86_64:
+    desc: "Build x86_64 vmlinux kernel locally (requires x86_64 host or cross-compiler)"
+    cmds:
+      - scripts/nexus/build-kernel.sh --arch x86_64 packages/nexus/cmd/nexus/assets/vmlinux
+
+  kernel:rebuild:remote:
+    desc: "Rebuild x86_64 vmlinux kernel on remote Linux host and copy back (commit result after)"
     preconditions:
       - sh: '[ -n "{{.REMOTE_HOST}}" ]'
         msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
@@ -143,6 +209,14 @@ tasks:
       REMOTE_HOST: "{{.REMOTE_HOST}}"
     cmds:
       - scripts/remote/rebuild-kernel.sh
+
+  kernel:commit:
+    desc: "Commit rebuilt kernels to the repo"
+    cmds:
+      - |
+        git add packages/nexus/cmd/nexus/assets/vmlinux packages/nexus/cmd/nexus/assets/Image
+        git diff --cached --quiet && { echo "No kernel changes to commit"; exit 0; }
+        git commit -m "chore(kernel): rebuild kernels $(date +%Y-%m-%d)"
 
   dev:swift:
     desc: "dev:cli + stage macOS nexus binary + regenerate Swift SDK + build and open NexusApp"
@@ -163,6 +237,48 @@ tasks:
       - scripts/swift/build.sh
       - scripts/swift/open.sh
 
+  # ── Dogfooding (develop on Linux remote) ──────────────────────────────────
+  # Set MAC_HOST=user@mac-hostname in .env.local on the Linux remote.
+
+  dev:dogfood:swift:
+    desc: "Dogfood dev loop: build on Linux remote, then SSH back to Mac to build app and test headless RPC"
+    preconditions:
+      - sh: '[ -n "{{.MAC_HOST}}" ]'
+        msg: "MAC_HOST is not set. Add it to .env.local on the remote with MAC_HOST=user@mac-host."
+    env:
+      MAC_HOST: "{{.MAC_HOST}}"
+      MAC_REPO_ROOT: "{{.MAC_REPO_ROOT}}"
+      LOCAL_BIN:   "{{.LOCAL_BIN}}"
+    cmds:
+      - scripts/local/deploy.sh
+      - task: stage:nexus-macos
+      - task: stage:nexus-linux
+      - scripts/generate-sdk.sh
+      - scripts/remote/mac-build-app.sh
+      - scripts/remote/mac-test-headless.sh
+
+  dev:mac:build:
+    desc: "SSH from Linux remote back to Mac to build NexusApp"
+    preconditions:
+      - sh: '[ -n "{{.MAC_HOST}}" ]'
+        msg: "MAC_HOST is not set. Add it to .env.local on the remote with MAC_HOST=user@mac-host."
+    env:
+      MAC_HOST: "{{.MAC_HOST}}"
+      MAC_REPO_ROOT: "{{.MAC_REPO_ROOT}}"
+    cmds:
+      - scripts/remote/mac-build-app.sh
+
+  dev:mac:test-headless:
+    desc: "SSH from Linux remote back to Mac to start NexusApp headless RPC and verify connection"
+    preconditions:
+      - sh: '[ -n "{{.MAC_HOST}}" ]'
+        msg: "MAC_HOST is not set. Add it to .env.local on the remote with MAC_HOST=user@mac-host."
+    env:
+      MAC_HOST: "{{.MAC_HOST}}"
+      MAC_REPO_ROOT: "{{.MAC_REPO_ROOT}}"
+    cmds:
+      - scripts/remote/mac-test-headless.sh
+
   stage:nexus-macos:
     desc: "Build macOS arm64 nexus CLI and stage to packages/nexus-swift/Resources/nexus"
     cmds:
@@ -178,6 +294,11 @@ tasks:
           -o ../../packages/nexus-swift/Resources/nexus \
           ./cmd/nexus
         chmod +x packages/nexus-swift/Resources/nexus
+        if [ "$(uname -s)" = "Darwin" ] && [ -f packages/nexus/nexus.entitlements ]; then
+          codesign --sign - --force --entitlements packages/nexus/nexus.entitlements packages/nexus-swift/Resources/nexus 2>/dev/null && \
+            echo "✓ Codesigned with hypervisor entitlements" || \
+            echo "Warning: codesign failed"
+        fi
         echo "✓ Staged $(ls -lh packages/nexus-swift/Resources/nexus | awk '{print $5}')"
 
   stage:nexus-linux:
@@ -190,6 +311,20 @@ tasks:
     desc: "Regenerate NexusRPC.swift from Go RPC types"
     cmds:
       - scripts/generate-sdk.sh
+
+  release:publish:
+    desc: "Tag and push a new release to trigger the GitHub Actions release workflow"
+    vars:
+      VERSION: '{{.VERSION | default ""}}'
+    preconditions:
+      - sh: '[ -n "{{.VERSION}}" ]'
+        msg: "VERSION is required. Usage: task release:publish VERSION=v1.2.3"
+      - sh: 'echo "{{.VERSION}}" | grep -qE "^v[0-9]+\.[0-9]+\.[0-9]"'
+        msg: "VERSION must be a semver tag like v1.2.3 or v1.2.3-rc1"
+    cmds:
+      - git tag -a "{{.VERSION}}" -m "Release {{.VERSION}}"
+      - git push origin "{{.VERSION}}"
+      - 'echo "Tagged and pushed {{.VERSION}} — GitHub Actions will build and publish the release assets."'
 
   showcase:rerecord:
     desc: "Re-record showcase flow by controlling NexusApp through headless RPC, then render remotion"

@@ -90,13 +90,12 @@ func (a *Adapter) Fork(ctx context.Context, parent *workspace.Workspace, child *
 	if parentRoot == "" {
 		return "", fmt.Errorf("parent workspace %s has no project root", parent.ID)
 	}
-	if err := a.d.manager.ForkWorkspaceImage(ctx, parent.ID, child.ID, parentRoot); err != nil {
-		return "", fmt.Errorf("fork workspace image: %w", err)
+	if _, err := a.d.CheckpointFork(ctx, parent.ID, child.ID); err != nil {
+		return "", fmt.Errorf("checkpoint fork: %w", err)
 	}
 	if err := a.d.ForkWithRoot(ctx, parent.ID, child.ID, parentRoot); err != nil {
 		return "", err
 	}
-	// Return "" — child.Repo stays as parent.Repo; no new host path is needed.
 	return "", nil
 }
 

@@ -13,10 +13,11 @@ package libkrun
 // Guest disk layout (hybrid mode):
 //
 //	/dev/vda  rootfs.{raw,qcow2}     → /  (via krun_set_root_disk_remount)
-//	/dev/vdb  workspace.ext4         → overlay upper for /workspace
+//	/dev/vdb  workspace.ext4         → /workspace-upper (overlay upperdir)
 //	/dev/vdc  docker-data.ext4       → /var/lib/docker
-//	/dev/vdd  hostconfig.ext4        → /run/nexus-host (optional, ro)
-//	virtiofs "nexus-workspace"        → project dir (ro lower layer)
+//	/dev/vdd  workspace-base.ext4    → /workspace-base (optional, ro fallback lowerdir)
+//	virtiofs "nexus-workspace"        → /workspace-lower (overlay lowerdir)
+//	virtiofs "nexus-host-config"      → /run/nexus-host (optional, ro host config files)
 type VMSpec struct {
 	WorkspaceID string `json:"workspace_id"`
 	// WorkspaceMode selects guest assembly path. Current production path is
@@ -44,10 +45,18 @@ type VMSpec struct {
 	// can skip the heavy apt-get/npm install path.
 	BakedRootfs bool `json:"baked_rootfs,omitempty"`
 
-	// WorkspaceImage is the per-workspace ext4 image mounted at /workspace.
+	// WorkspaceImage is the per-workspace ext4 image used as the overlayfs
+	// upperdir in hybrid mode. It holds mutations (uncommitted changes,
+	// node_modules, build artifacts) and is used for snapshot/fork lineage.
+	// In the optimal path this is an empty sparse image; in the legacy path it
+	// contains a full baked project snapshot.
 	WorkspaceImage string `json:"workspace_image"`
+	// WorkspaceBaseImage is a baked read-only ext4 image of the project used as
+	// a fallback lowerdir in hybrid overlay mode. When set, WorkspaceImage should
+	// be an empty or mutation-only upperdir.
+	WorkspaceBaseImage string `json:"workspace_base_image,omitempty"`
 	// WorkspaceHostPath is the daemon-host project path used for virtiofs share
-	// in experimental workspace mode.
+	// when attached as an optional auxiliary host share.
 	WorkspaceHostPath string `json:"workspace_host_path,omitempty"`
 
 	// DockerDataImage is a sparse ext4 image for Docker's data-root
@@ -55,10 +64,10 @@ type VMSpec struct {
 	// native kernel filesystem; it cannot run on virtiofs.
 	DockerDataImage string `json:"docker_data_image"`
 
-	HostConfigDrive string `json:"host_config_drive,omitempty"`
-	MemoryMiB       int    `json:"memory_mib"`
-	VCPUs           int    `json:"vcpus"`
-	SerialLog       string `json:"serial_log"`
+	HostConfigDir string `json:"host_config_dir,omitempty"`
+	MemoryMiB     int    `json:"memory_mib"`
+	VCPUs         int    `json:"vcpus"`
+	SerialLog     string `json:"serial_log"`
 
 	// SSHHostPort is the host-side TCP port that libkrun TSI maps to guest port 22.
 	SSHHostPort int `json:"ssh_host_port,omitempty"`

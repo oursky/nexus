@@ -95,6 +95,8 @@ packages/nexus/workspace-daemon
 packages/nexus/daemon
 packages/nexus/nexus
 packages/nexus/nexus-daemon
+packages/nexus/nexus-dev
+packages/nexus/nexus-test
 packages/nexus/.air-tmp/
 packages/nexus/.air.toml
 
@@ -111,6 +113,7 @@ nexus/nexus/
 .nexus/boulder-loop.state.json
 .nexus/CONTINUATION_REQUIRED.txt
 *.log
+crash.log.*
 
 # Unused nexus files
 .nexus/CLAUDE.md
@@ -131,3 +134,12 @@ packages/enforcer/src/boulder/*.sh
 # Fixture repos and generated env
 scripts/fixtures/repos/
 scripts/fixtures/.env
+
+# Playwright MCP logs
+.playwright-mcp/
+
+# Backend artifacts
+backend/
+
+# Session files
+session-*.md

@@ -23,6 +23,8 @@ set -euo pipefail
 
 REMOTE_HOST="${REMOTE_HOST:?REMOTE_HOST is not set}"
 REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin/nexus-dev}"
+REMOTE_PORT="${REMOTE_PORT:-}"
+REMOTE_XDG_STATE_HOME="${REMOTE_XDG_STATE_HOME:-}"
 # v0.5.20 libkrun is built without virtio-net symbols.
 # v0.5.19 exports krun_add_net_unixstream and krun_set_passt_fd.
 SMOLVM_VERSION="${SMOLVM_VERSION:-v0.5.19}"
@@ -175,7 +177,7 @@ echo "  → run: git add packages/nexus/cmd/nexus/nexus-libkrun-vm && git commit
 
 echo ""
 echo "==> Deploying to ${REMOTE_HOST}:${REMOTE_BIN} ..."
-ssh "${REMOTE_HOST}" "~/.local/bin/nexus daemon stop 2>/dev/null || true; sleep 1"
+ssh "${REMOTE_HOST}" "${REMOTE_BIN} daemon stop 2>/dev/null || true; sleep 1"
 ssh "${REMOTE_HOST}" "\
   rm -f ${REMOTE_BIN} && \
   cp ~/magic/nexus/packages/nexus/tmp/nexus ${REMOTE_BIN} && \
@@ -190,7 +192,11 @@ echo "  → nexus-linux-amd64 updated ($(du -sh ${SWIFT_RES}/nexus-linux-amd64 |
 
 echo ""
 echo "==> Starting daemon (libkrun) on ${REMOTE_HOST} ..."
-ssh "${REMOTE_HOST}" "bash -l -c '${REMOTE_BIN} daemon start --driver=libkrun'" &
+DAEMON_CMD="${REMOTE_BIN} daemon start --driver=libkrun"
+[[ -n "${REMOTE_PORT}" ]] && DAEMON_CMD="${DAEMON_CMD} --port ${REMOTE_PORT}"
+DAEMON_ENV=""
+[[ -n "${REMOTE_XDG_STATE_HOME}" ]] && DAEMON_ENV="XDG_STATE_HOME=${REMOTE_XDG_STATE_HOME} "
+ssh "${REMOTE_HOST}" "bash -l -c '${DAEMON_ENV}${DAEMON_CMD}'" &
 START_PID=$!
 sleep 5
 kill "${START_PID}" 2>/dev/null || true  # background start fires and detaches

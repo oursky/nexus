@@ -48,7 +48,7 @@ var tunnelCache struct {
 const envE2EDaemonWebSocket = "NEXUS_E2E_DAEMON_WEBSOCKET"
 
 func EnsureDaemon() (*websocket.Conn, error) {
-	return EnsureDaemonVerbose(true)
+	return EnsureDaemonVerbose(false)
 }
 
 func EnsureDaemonVerbose(verbose bool) (*websocket.Conn, error) {
@@ -85,7 +85,10 @@ func EnsureDaemonVerbose(verbose bool) (*websocket.Conn, error) {
 	if verbose {
 		fmt.Fprintf(os.Stderr, "[nexus] connecting to daemon: %s\n", url)
 	}
-	conn, _, err := websocket.DefaultDialer.Dial(url, header)
+	dialer := &websocket.Dialer{
+		HandshakeTimeout: 15 * time.Second,
+	}
+	conn, _, err := dialer.Dial(url, header)
 	if err != nil {
 		return nil, fmt.Errorf("connect to daemon: %w", err)
 	}
@@ -99,7 +102,10 @@ func dialDaemonWebSocket(wsURL string) (*websocket.Conn, error) {
 	}
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+tok)
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+	dialer := &websocket.Dialer{
+		HandshakeTimeout: 15 * time.Second,
+	}
+	conn, _, err := dialer.Dial(wsURL, header)
 	if err != nil {
 		return nil, fmt.Errorf("connect to daemon websocket: %w", err)
 	}

@@ -489,6 +489,7 @@ func TestSetupWorkspaceMountNoDevice(t *testing.T) {
 		workspaceMkdirAll = origMkdir
 		workspaceStat = origStat
 		workspaceMountFunc = origMountFunc
+		resetBlockWorkspaceMountOnce()
 	})
 
 	workspaceDevicePath = "/test/missing-dev"
@@ -512,8 +513,12 @@ func TestSetupWorkspaceMountNoDevice(t *testing.T) {
 		return nil
 	}
 
-	if err := setupWorkspaceMount(); err != nil {
-		t.Fatalf("expected missing device to be non-fatal, got %v", err)
+	err := setupWorkspaceMount()
+	if err == nil {
+		t.Fatal("expected error when workspace device is missing; got nil")
+	}
+	if !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("expected 'not available' in error, got: %v", err)
 	}
 	if !calledStat {
 		t.Fatal("expected workspace device stat to be called")
@@ -525,7 +530,13 @@ func TestSetupWorkspaceMountNoDevice(t *testing.T) {
 
 func TestSetupWorkspaceMountSuccess(t *testing.T) {
 	origDevice := workspaceDevicePath
+	origBaseDev := workspaceBaseDevicePath
 	origMount := workspaceMountPoint
+	origLower := workspaceLowerMountPoint
+	origMutable := workspaceMutableMountPoint
+	origUpper := workspaceUpperMountPoint
+	origWorkDir := workspaceOverlayWorkDir
+	origBase := workspaceBaseMountPoint
 	origAttempts := workspaceDeviceAttempts
 	origInterval := workspaceDeviceInterval
 	origMkdir := workspaceMkdirAll
@@ -533,204 +544,240 @@ func TestSetupWorkspaceMountSuccess(t *testing.T) {
 	origMountFunc := workspaceMountFunc
 	t.Cleanup(func() {
 		workspaceDevicePath = origDevice
+		workspaceBaseDevicePath = origBaseDev
 		workspaceMountPoint = origMount
+		workspaceLowerMountPoint = origLower
+		workspaceMutableMountPoint = origMutable
+		workspaceUpperMountPoint = origUpper
+		workspaceOverlayWorkDir = origWorkDir
+		workspaceBaseMountPoint = origBase
 		workspaceDeviceAttempts = origAttempts
 		workspaceDeviceInterval = origInterval
 		workspaceMkdirAll = origMkdir
 		workspaceStat = origStat
 		workspaceMountFunc = origMountFunc
+		resetBlockWorkspaceMountOnce()
 	})
+	// Simulate export/import flow with workspace_base disk present.
+	t.Setenv("NEXUS_WORKSPACE_BASE_DEV", "/test/vdd")
 
 	workspaceDevicePath = "/test/vdb"
+	workspaceBaseDevicePath = "/test/vdd"
 	workspaceMountPoint = "/test/workspace"
+	workspaceLowerMountPoint = "/test/workspace-lower"
+	workspaceMutableMountPoint = "/test/workspace-mutable"
+	workspaceUpperMountPoint = "/test/workspace-mutable/upper"
+	workspaceOverlayWorkDir = "/test/workspace-mutable/work"
+	workspaceBaseMountPoint = "/test/workspace-base"
 	workspaceDeviceAttempts = 1
 	workspaceDeviceInterval = 0
 
-	mkdirCalled := false
-	mountCalled := false
+	mkdirCalls := []string{}
 	workspaceMkdirAll = func(path string, mode os.FileMode) error {
-		mkdirCalled = true
-		if path != workspaceMountPoint {
-			t.Fatalf("unexpected mkdir path %q", path)
-		}
-		if mode != 0o755 {
-			t.Fatalf("unexpected mkdir mode %v", mode)
-		}
+		mkdirCalls = append(mkdirCalls, path)
 		return nil
 	}
+	// Accept stat for both workspace device and docker device (mountDockerData).
 	workspaceStat = func(path string) (os.FileInfo, error) {
-		if path != workspaceDevicePath {
-			t.Fatalf("unexpected stat path %q", path)
-		}
 		return fakeFileInfo{name: "vdb"}, nil
 	}
+
+	mountCalls := []struct{ source, target, fstype string }{}
 	workspaceMountFunc = func(source, target, fstype string, flags uintptr, data string) error {
-		mountCalled = true
-		if source != workspaceDevicePath || target != workspaceMountPoint || fstype != "ext4" {
-			t.Fatalf("unexpected mount args source=%q target=%q fstype=%q", source, target, fstype)
-		}
+		mountCalls = append(mountCalls, struct{ source, target, fstype string }{source, target, fstype})
 		return nil
 	}
 
 	if err := setupWorkspaceMount(); err != nil {
 		t.Fatalf("expected setupWorkspaceMount success, got %v", err)
 	}
-	if !mkdirCalled {
-		t.Fatal("expected workspace mkdir to be called")
+
+	// Should mkdir top-level overlay mount points (mutable is the ext4 mount point).
+	expectedMkdirs := map[string]bool{
+		"/test/workspace":         false,
+		"/test/workspace-lower":   false,
+		"/test/workspace-mutable": false,
+		"/test/workspace-base":    false,
 	}
-	if !mountCalled {
-		t.Fatal("expected workspace mount to be called")
+	for _, p := range mkdirCalls {
+		if _, ok := expectedMkdirs[p]; ok {
+			expectedMkdirs[p] = true
+		}
+	}
+	for p, found := range expectedMkdirs {
+		if !found {
+			t.Fatalf("expected mkdir to be called for %s", p)
+		}
+	}
+
+	// Should mount: ext4 mutable (→ /workspace-mutable), ext4 base lowerdir (ro),
+	// virtiofs lowerdir (ro), overlay merged, then docker-data at /var/lib/docker.
+	if len(mountCalls) != 5 {
+		t.Fatalf("expected 5 mount calls, got %d: %+v", len(mountCalls), mountCalls)
+	}
+	if mountCalls[0].source != "/test/vdb" || mountCalls[0].target != "/test/workspace-mutable" || mountCalls[0].fstype != "ext4" {
+		t.Fatalf("unexpected first mount args %+v", mountCalls[0])
+	}
+	if mountCalls[1].source != "/test/vdd" || mountCalls[1].target != "/test/workspace-base" || mountCalls[1].fstype != "ext4" {
+		t.Fatalf("unexpected second mount args %+v", mountCalls[1])
+	}
+	if mountCalls[2].source != "nexus-workspace" || mountCalls[2].target != "/test/workspace-lower" || mountCalls[2].fstype != "virtiofs" {
+		t.Fatalf("unexpected third mount args %+v", mountCalls[2])
+	}
+	if mountCalls[3].source != "overlay" || mountCalls[3].target != "/test/workspace" || mountCalls[3].fstype != "overlay" {
+		t.Fatalf("unexpected fourth mount args %+v", mountCalls[3])
+	}
+	if mountCalls[4].target != "/var/lib/docker" || mountCalls[4].fstype != "ext4" {
+		t.Fatalf("unexpected fifth mount args (docker-data) %+v", mountCalls[4])
 	}
 }
 
-func TestSetupWorkspaceMountBusyIsIgnored(t *testing.T) {
+// TestSetupWorkspaceMountSuccessNoBase verifies the regular workspace flow
+// where NEXUS_WORKSPACE_BASE_DEV is not set. The workspace-base disk is
+// absent and must not be mounted (IRQ budget: 4 block disks + net device).
+func TestSetupWorkspaceMountSuccessNoBase(t *testing.T) {
 	origDevice := workspaceDevicePath
+	origBaseDev := workspaceBaseDevicePath
 	origMount := workspaceMountPoint
+	origLower := workspaceLowerMountPoint
+	origMutable := workspaceMutableMountPoint
+	origUpper := workspaceUpperMountPoint
+	origWorkDir := workspaceOverlayWorkDir
+	origBase := workspaceBaseMountPoint
 	origAttempts := workspaceDeviceAttempts
 	origInterval := workspaceDeviceInterval
 	origMkdir := workspaceMkdirAll
 	origStat := workspaceStat
 	origMountFunc := workspaceMountFunc
-	origUnmountFunc := workspaceUnmountFunc
-	origReadProcMounts := workspaceReadProcMounts
 	t.Cleanup(func() {
 		workspaceDevicePath = origDevice
+		workspaceBaseDevicePath = origBaseDev
 		workspaceMountPoint = origMount
+		workspaceLowerMountPoint = origLower
+		workspaceMutableMountPoint = origMutable
+		workspaceUpperMountPoint = origUpper
+		workspaceOverlayWorkDir = origWorkDir
+		workspaceBaseMountPoint = origBase
 		workspaceDeviceAttempts = origAttempts
 		workspaceDeviceInterval = origInterval
 		workspaceMkdirAll = origMkdir
 		workspaceStat = origStat
 		workspaceMountFunc = origMountFunc
-		workspaceUnmountFunc = origUnmountFunc
-		workspaceReadProcMounts = origReadProcMounts
+		resetBlockWorkspaceMountOnce()
 	})
+	// NEXUS_WORKSPACE_BASE_DEV is intentionally NOT set → regular workspace.
 
 	workspaceDevicePath = "/test/vdb"
+	workspaceBaseDevicePath = "/test/vdd"
 	workspaceMountPoint = "/test/workspace"
+	workspaceLowerMountPoint = "/test/workspace-lower"
+	workspaceMutableMountPoint = "/test/workspace-mutable"
+	workspaceUpperMountPoint = "/test/workspace-mutable/upper"
+	workspaceOverlayWorkDir = "/test/workspace-mutable/work"
+	workspaceBaseMountPoint = "/test/workspace-base"
+	workspaceDeviceAttempts = 1
+	workspaceDeviceInterval = 0
+
+	workspaceMkdirAll = func(string, os.FileMode) error { return nil }
+	workspaceStat = func(string) (os.FileInfo, error) { return fakeFileInfo{name: "vdb"}, nil }
+
+	mountCalls := []struct{ source, target, fstype string }{}
+	workspaceMountFunc = func(source, target, fstype string, flags uintptr, data string) error {
+		mountCalls = append(mountCalls, struct{ source, target, fstype string }{source, target, fstype})
+		return nil
+	}
+
+	if err := setupWorkspaceMount(); err != nil {
+		t.Fatalf("expected setupWorkspaceMount success (no base), got %v", err)
+	}
+
+	// Without workspace_base: ext4 mutable, virtiofs lowerdir, overlay merged, docker-data.
+	if len(mountCalls) != 4 {
+		t.Fatalf("expected 4 mount calls (no base disk), got %d: %+v", len(mountCalls), mountCalls)
+	}
+	if mountCalls[0].source != "/test/vdb" || mountCalls[0].target != "/test/workspace-mutable" || mountCalls[0].fstype != "ext4" {
+		t.Fatalf("unexpected first mount args %+v", mountCalls[0])
+	}
+	// No workspace-base mount — second call must be virtiofs.
+	if mountCalls[1].source != "nexus-workspace" || mountCalls[1].target != "/test/workspace-lower" || mountCalls[1].fstype != "virtiofs" {
+		t.Fatalf("unexpected second mount args (expected virtiofs) %+v", mountCalls[1])
+	}
+	if mountCalls[2].source != "overlay" || mountCalls[2].target != "/test/workspace" || mountCalls[2].fstype != "overlay" {
+		t.Fatalf("unexpected third mount args %+v", mountCalls[2])
+	}
+	if mountCalls[3].target != "/var/lib/docker" || mountCalls[3].fstype != "ext4" {
+		t.Fatalf("unexpected fourth mount args (docker-data) %+v", mountCalls[3])
+	}
+
+	// Confirm workspace-base device was never touched.
+	for _, c := range mountCalls {
+		if c.source == "/test/vdd" || c.target == "/test/workspace-base" {
+			t.Fatalf("workspace-base was mounted but NEXUS_WORKSPACE_BASE_DEV not set: %+v", c)
+		}
+	}
+}
+
+func TestSetupWorkspaceMountBusyOverlayIsIgnored(t *testing.T) {
+	origDevice := workspaceDevicePath
+	origBaseDev := workspaceBaseDevicePath
+	origMount := workspaceMountPoint
+	origLower := workspaceLowerMountPoint
+	origMutable := workspaceMutableMountPoint
+	origUpper := workspaceUpperMountPoint
+	origBase := workspaceBaseMountPoint
+	origOverlayWorkDir := workspaceOverlayWorkDir
+	origAttempts := workspaceDeviceAttempts
+	origInterval := workspaceDeviceInterval
+	origMkdir := workspaceMkdirAll
+	origStat := workspaceStat
+	origMountFunc := workspaceMountFunc
+	origReadProcMounts := workspaceReadProcMounts
+	t.Cleanup(func() {
+		workspaceDevicePath = origDevice
+		workspaceBaseDevicePath = origBaseDev
+		workspaceMountPoint = origMount
+		workspaceLowerMountPoint = origLower
+		workspaceMutableMountPoint = origMutable
+		workspaceUpperMountPoint = origUpper
+		workspaceBaseMountPoint = origBase
+		workspaceOverlayWorkDir = origOverlayWorkDir
+		workspaceDeviceAttempts = origAttempts
+		workspaceDeviceInterval = origInterval
+		workspaceMkdirAll = origMkdir
+		workspaceStat = origStat
+		workspaceMountFunc = origMountFunc
+		workspaceReadProcMounts = origReadProcMounts
+		resetBlockWorkspaceMountOnce()
+	})
+	// Simulate export/import flow with workspace_base disk present.
+	t.Setenv("NEXUS_WORKSPACE_BASE_DEV", "/test/vdd")
+
+	workspaceDevicePath = "/test/vdb"
+	workspaceBaseDevicePath = "/test/vdd"
+	workspaceMountPoint = "/test/workspace"
+	workspaceLowerMountPoint = "/test/workspace-lower"
+	workspaceMutableMountPoint = "/test/workspace-mutable"
+	workspaceUpperMountPoint = "/test/workspace-mutable/upper"
+	workspaceOverlayWorkDir = "/test/workspace-mutable/work"
+	workspaceBaseMountPoint = "/test/workspace-base"
 	workspaceDeviceAttempts = 1
 	workspaceDeviceInterval = 0
 	workspaceMkdirAll = func(string, os.FileMode) error { return nil }
 	workspaceStat = func(string) (os.FileInfo, error) { return fakeFileInfo{name: "vdb"}, nil }
 	workspaceMountFunc = func(string, string, string, uintptr, string) error { return unix.EBUSY }
+	// Provide all mount entries so every EBUSY is treated as "already mounted".
 	workspaceReadProcMounts = func(string) ([]byte, error) {
-		return []byte("/test/vdb /test/workspace ext4 rw,relatime 0 0\n"), nil
+		return []byte(
+			"/test/vdb /test/workspace-mutable ext4 rw,relatime 0 0\n" +
+				"/test/vdd /test/workspace-base ext4 rw,relatime 0 0\n" +
+				"nexus-workspace /test/workspace-lower virtiofs rw,relatime 0 0\n" +
+				"overlay /test/workspace overlay rw,relatime 0 0\n" +
+				"/dev/vdc /var/lib/docker ext4 rw,relatime 0 0\n",
+		), nil
 	}
 
 	if err := setupWorkspaceMount(); err != nil {
 		t.Fatalf("expected EBUSY to be ignored, got %v", err)
-	}
-}
-
-func TestSetupWorkspaceMountBusyWithoutActiveMountFails(t *testing.T) {
-	origDevice := workspaceDevicePath
-	origMount := workspaceMountPoint
-	origAttempts := workspaceDeviceAttempts
-	origInterval := workspaceDeviceInterval
-	origMkdir := workspaceMkdirAll
-	origStat := workspaceStat
-	origMountFunc := workspaceMountFunc
-	origReadProcMounts := workspaceReadProcMounts
-	t.Cleanup(func() {
-		workspaceDevicePath = origDevice
-		workspaceMountPoint = origMount
-		workspaceDeviceAttempts = origAttempts
-		workspaceDeviceInterval = origInterval
-		workspaceMkdirAll = origMkdir
-		workspaceStat = origStat
-		workspaceMountFunc = origMountFunc
-		workspaceReadProcMounts = origReadProcMounts
-	})
-
-	workspaceDevicePath = "/test/vdb"
-	workspaceMountPoint = "/test/workspace"
-	workspaceDeviceAttempts = 1
-	workspaceDeviceInterval = 0
-	workspaceMkdirAll = func(string, os.FileMode) error { return nil }
-	workspaceStat = func(string) (os.FileInfo, error) { return fakeFileInfo{name: "vdb"}, nil }
-	workspaceMountFunc = func(string, string, string, uintptr, string) error { return unix.EBUSY }
-	workspaceReadProcMounts = func(string) ([]byte, error) {
-		return []byte("/dev/vda / ext4 rw,relatime 0 0\n"), nil
-	}
-	workspaceUnmountFunc = func(target string, flags int) error {
-		if target == "/test/workspace/.nexus-docker" {
-			return nil
-		}
-		return unix.ENOENT
-	}
-
-	err := setupWorkspaceMountRequired()
-	if err == nil {
-		t.Fatal("expected error when EBUSY but /workspace is not mounted")
-	}
-	if !strings.Contains(err.Error(), "workspace mount is not active") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestSetupWorkspaceMountBusyUnmountsNestedAndRetries(t *testing.T) {
-	origDevice := workspaceDevicePath
-	origMount := workspaceMountPoint
-	origAttempts := workspaceDeviceAttempts
-	origInterval := workspaceDeviceInterval
-	origMkdir := workspaceMkdirAll
-	origStat := workspaceStat
-	origMountFunc := workspaceMountFunc
-	origUnmountFunc := workspaceUnmountFunc
-	origReadProcMounts := workspaceReadProcMounts
-	t.Cleanup(func() {
-		workspaceDevicePath = origDevice
-		workspaceMountPoint = origMount
-		workspaceDeviceAttempts = origAttempts
-		workspaceDeviceInterval = origInterval
-		workspaceMkdirAll = origMkdir
-		workspaceStat = origStat
-		workspaceMountFunc = origMountFunc
-		workspaceUnmountFunc = origUnmountFunc
-		workspaceReadProcMounts = origReadProcMounts
-	})
-
-	workspaceDevicePath = "/test/vdb"
-	workspaceMountPoint = "/test/workspace"
-	workspaceDeviceAttempts = 1
-	workspaceDeviceInterval = 0
-	workspaceMkdirAll = func(string, os.FileMode) error { return nil }
-	workspaceStat = func(string) (os.FileInfo, error) { return fakeFileInfo{name: "vdb"}, nil }
-
-	mountedActive := false
-	workspaceReadProcMounts = func(string) ([]byte, error) {
-		if mountedActive {
-			return []byte("/test/vdb /test/workspace ext4 rw,relatime 0 0\n"), nil
-		}
-		return []byte("/dev/vda /test/workspace/.nexus-docker ext4 rw,relatime 0 0\n"), nil
-	}
-
-	unmounted := false
-	workspaceUnmountFunc = func(target string, flags int) error {
-		if target == "/test/workspace/.nexus-docker" {
-			unmounted = true
-			return nil
-		}
-		return unix.ENOENT
-	}
-
-	mountCalls := 0
-	workspaceMountFunc = func(source, target, fstype string, flags uintptr, data string) error {
-		mountCalls++
-		if mountCalls == 1 {
-			return unix.EBUSY
-		}
-		mountedActive = true
-		return nil
-	}
-
-	if err := setupWorkspaceMountRequired(); err != nil {
-		t.Fatalf("expected mount recovery success, got: %v", err)
-	}
-	if !unmounted {
-		t.Fatal("expected nested workspace mount to be unmounted during recovery")
-	}
-	if mountCalls < 2 {
-		t.Fatalf("expected mount to be retried after unmounting conflicts, got %d calls", mountCalls)
 	}
 }
 

@@ -16,7 +16,7 @@ import (
 // Spec: CLI-080, CLI-081, CLI-082, CLI-083
 func TestCLI_ProjectCreateListGetRemove(t *testing.T) {
 	t.Parallel()
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 	root := t.TempDir()
 	base := filepath.Base(root)
 	if len(base) > 8 {
@@ -62,7 +62,7 @@ func TestCLI_ProjectCreateListGetRemove(t *testing.T) {
 func TestCLI_WorkspaceShellAndExec(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 	clientRepo := harness.MakeLocalGitRepo(t, "shell")
 	_, daemonRepo := h.MirrorGitToDaemon(t, clientRepo, "proj-cli-shell")
 
@@ -135,7 +135,7 @@ func TestCLI_WorkspaceShellAndExec(t *testing.T) {
 // TestCLI_UnknownSubcommand verifies unknown subcommands exit with code 2.
 func TestCLI_UnknownSubcommand(t *testing.T) {
 	t.Parallel()
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 	root := t.TempDir()
 
 	out, err := h.Run(t, root, "nonexistent-command")
@@ -154,7 +154,7 @@ func TestCLI_DaemonUnreachable(t *testing.T) {
 	root := t.TempDir()
 
 	// Run CLI with a non-existent socket so the daemon is unreachable.
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 	badSocket := filepath.Join(root, "nonexistent.sock")
 	env := append(os.Environ(), "NEXUS_SOCKET="+badSocket)
 

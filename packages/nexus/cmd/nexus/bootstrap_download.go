@@ -1,5 +1,6 @@
 //go:build linux
 
+//nolint:unused
 package main
 
 import (
@@ -22,9 +23,9 @@ const (
 func vmSquashfsURL() string {
 	switch runtime.GOARCH {
 	case "arm64":
-		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64-root.tar.xz"
+		return "https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-arm64-root.tar.xz"
 	default:
-		return "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64-root.tar.xz"
+		return "https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-amd64-root.tar.xz"
 	}
 }
 
@@ -62,9 +63,6 @@ func downloadAndExtractTarGz(url, innerPath string) ([]byte, error) {
 		return nil, err
 	}
 
-	gr, err := gzip.NewReader(strings.NewReader(""))
-	_ = gr
-	// Use io.NopCloser pattern
 	gzReader, err := gzip.NewReader(
 		func() io.Reader {
 			return &readerBytes{data: data}

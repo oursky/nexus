@@ -170,7 +170,7 @@ func TestPTY_ShellNonInteractiveScript(t *testing.T) {
 func TestPTY_ListSession(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "pty-list")
 	var wsRes struct {
 		Workspace struct {

@@ -20,7 +20,7 @@ import (
 func TestCLI_WorkspaceShellPTY(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.NewCLIHarness(t)
+	h := cliSuite.NewCLIHarness(t)
 	clientRepo := harness.MakeLocalGitRepo(t, "pty-interactive")
 	_, daemonRepo := h.MirrorGitToDaemon(t, clientRepo, "proj-pty-interactive")
 

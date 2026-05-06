@@ -7,8 +7,8 @@ on:
     branches: [main, develop]
 
 jobs:
-  go-fix:
-    name: Go Fix Check
+  lint:
+    name: Lint (nexus)
     runs-on: [self-hosted, linux, x64, v1]
 
     steps:
@@ -18,7 +18,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.x'
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
 
       - name: Verify go tool fix produces no diff
         shell: bash
@@ -31,15 +32,27 @@ jobs:
           fi
 
           tmp_diff="$(mktemp)"
-          go tool fix -go=go1.24 -diff "${go_files[@]}" >"$tmp_diff"
+          go_fix_version="go$(go env GOVERSION | sed 's/^go//')"
+          go tool fix -go="$go_fix_version" -diff "${go_files[@]}" >"$tmp_diff"
           if [ -s "$tmp_diff" ]; then
-            echo "go tool fix reported changes. Please run: go tool fix -go=go1.24 <files>"
+            echo "go tool fix reported changes. Please run: go tool fix -go=$go_fix_version <files>"
             cat "$tmp_diff"
             exit 1
           fi
 
-  coverage:
-    name: Go Coverage (nexus)
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.1
+
+      - name: Build embedded guest-agent binary (required for embed directive)
+        working-directory: packages/nexus
+        run: go generate ./cmd/nexus/
+
+      - name: Run golangci-lint
+        working-directory: packages/nexus
+        run: golangci-lint run ./...
+
+  unit-tests:
+    name: Unit Tests (nexus)
     runs-on: [self-hosted, linux, x64, v1]
 
     steps:
@@ -49,7 +62,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.x'
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
 
       - name: Install Task
         run: go install github.com/go-task/task/v3/cmd/task@v3.42.0
@@ -58,23 +72,107 @@ jobs:
         working-directory: packages/nexus
         run: go generate ./cmd/nexus/
 
-      - name: Run full Go test coverage
+      # Build cross-platform nexus binary for fat bundle tests.
+      - name: Build cross-platform nexus binary (darwin/arm64)
         working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+          GOARCH: arm64
         run: |
-          set -euo pipefail
-          go test ./... -covermode=atomic -coverprofile=coverage.out
-          go tool cover -func=coverage.out | tail -n 1
+          mkdir -p "${GITHUB_WORKSPACE}/packages/nexus-swift/Resources"
+          go build -trimpath -ldflags "-s -w" \
+            -o "${GITHUB_WORKSPACE}/packages/nexus-swift/Resources/nexus-darwin-arm64" \
+            ./cmd/nexus
+          echo "NEXUS_CROSS_BINARY_DIR=${GITHUB_WORKSPACE}/packages/nexus-swift/Resources" >> "$GITHUB_ENV"
+
+      - name: Run unit tests with coverage
+        env:
+          GOTOOLCHAIN: local
+        run: scripts/ci/coverage.sh
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: nexus-go-coverage
           path: packages/nexus/coverage.out
-          retention-days: 7
+          retention-days: 1
 
-  ci:
-    name: Core CI (linux)
+  e2e:
+    name: E2E Tests (linux / ${{ matrix.shard.name }})
     runs-on: [self-hosted, linux, x64, v1]
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard:
+          - name: auth-daemon-fs
+            packages: ./test/e2e/auth ./test/e2e/daemon ./test/e2e/fs
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
+            go_timeout: 10m
+            step_timeout_minutes: 15
+          - name: project
+            packages: ./test/e2e/project
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
+            go_timeout: 10m
+            step_timeout_minutes: 15
+          - name: pty
+            packages: ./test/e2e/pty
+            go_p: 1
+            go_parallel: 1
+            go_run: ""
+            go_timeout: 10m
+            step_timeout_minutes: 15
+          - name: spotlight
+            packages: ./test/e2e/spotlight
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
+            go_timeout: 10m
+            step_timeout_minutes: 15
+          - name: vmproof
+            packages: ./test/e2e/vmproof
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
+            go_timeout: 15m
+            step_timeout_minutes: 20
+          - name: workspace
+            packages: ./test/e2e/workspace
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
+            go_timeout: 15m
+            step_timeout_minutes: 20
+          - name: cli-basic
+            packages: ./test/e2e/cli
+            go_p: 2
+            go_parallel: 2
+            go_run: "TestCLI_ProjectCreateListGetRemove|TestCLI_WorkspaceShellAndExec|TestCLI_UnknownSubcommand|TestCLI_DaemonUnreachable|TestCLI_WorkspaceForkAndRestore|TestCLI_WorkspaceShellPTY|TestCLI_WorkspaceCreate_EndToEnd"
+            go_timeout: 15m
+            step_timeout_minutes: 20
+          - name: cli-bundle
+            packages: ./test/e2e/cli
+            go_p: 1
+            go_parallel: 1
+            go_run: "TestCLI_WorkspaceExportImport_EndToEnd|TestCLI_WorkspaceBundleRunner_MacOSCompatibility|TestCLI_WorkspaceBundleRunner_IntentExecution"
+            go_timeout: 20m
+            step_timeout_minutes: 30
+    env:
+      CI: true
+      NEXUS_LIBKRUN_SKIP_BAKE: "1"
+      NEXUS_LIBKRUN_BAKE_TIMEOUT: "120s"
+      NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "1"
+      NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
+      NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
+      NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
+      NEXUS_RUNNER_ROOTFS_MIN_MIB: "512"
+      NEXUS_LIBKRUN_MEM_MIB: "256"
+      NEXUS_PASST_PATH: /tmp/passt-patched
 
     steps:
       - name: Checkout code
@@ -83,7 +181,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.x'
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
 
       - name: Install Task
         run: go install github.com/go-task/task/v3/cmd/task@v3.42.0
@@ -109,14 +208,16 @@ jobs:
 
       - name: Restore pre-baked libkrun VM assets
         id: libkrun-baked-cache
+        timeout-minutes: 5
         uses: actions/cache@v4
         with:
           path: ${{ env.LIBKRUN_BAKED_CACHE_DIR }}
-          key: libkrun-baked-v4-${{ runner.os }}-${{ hashFiles('Nexusfile', 'schemas/nexusfile.schema.json', 'packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/internal/infra/runtime/libkrun/bake_version.go', 'packages/nexus/cmd/nexus-guest-agent/main.go', 'packages/nexus/cmd/nexus-guest-agent/sysconfig.go', 'packages/nexus/cmd/nexus/nexus-libkrun-vm', 'packages/nexus/cmd/nexus/rootless_bootstrap_linux.go') }}
+          key: libkrun-baked-v6-${{ runner.os }}-${{ hashFiles('Nexusfile', 'schemas/nexusfile.schema.json', 'packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/internal/infra/runtime/libkrun/bake_version.go', 'packages/nexus/cmd/nexus-guest-agent/**', 'packages/nexus/cmd/nexus/nexus-libkrun-vm', 'packages/nexus/cmd/nexus/rootless_bootstrap_linux.go') }}
           restore-keys: |
-            libkrun-baked-v4-${{ runner.os }}-
+            libkrun-baked-v6-${{ runner.os }}-
 
       - name: Hydrate cached VM assets to host paths
+        timeout-minutes: 5
         run: scripts/ci/hydrate-libkrun-cache.sh
 
       - name: Verify pre-baked VM assets (cache hint)
@@ -126,13 +227,28 @@ jobs:
       # embed_agent_linux_amd64.go is satisfied before compiling nexus.
       # This step also builds the kernel ELF (if cache miss) and embeds it.
       - name: Build embedded guest-agent binary
+        timeout-minutes: 5
         run: scripts/ci/build-nexus-libkrun.sh
 
+      # Build cross-platform nexus binary for fat bundle tests.
+      # The bundle exporter embeds both linux-amd64 and darwin-arm64 binaries.
+      - name: Build cross-platform nexus binary (darwin/arm64)
+        working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/packages/nexus-swift/Resources"
+          go build -trimpath -ldflags "-s -w" \
+            -o "${GITHUB_WORKSPACE}/packages/nexus-swift/Resources/nexus-darwin-arm64" \
+            ./cmd/nexus
+          echo "NEXUS_CROSS_BINARY_DIR=${GITHUB_WORKSPACE}/packages/nexus-swift/Resources" >> "$GITHUB_ENV"
+
       - name: Build patched passt for containerized CI
+        timeout-minutes: 5
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq git gcc make
           git clone --depth 1 https://passt.top/passt /tmp/passt
           cd /tmp/passt
           python3 << 'PYEOF'
@@ -173,6 +289,7 @@ jobs:
           make CFLAGS="-static -DGLIBC_NO_STATIC_NSS" passt
           chmod +x passt
           cp passt /tmp/passt-patched
+          /tmp/passt-patched --help >/dev/null
           echo "NEXUS_PASST_PATH=/tmp/passt-patched" >> "$GITHUB_ENV"
 
       # Pre-provision libkrun host infrastructure once before the test suite.
@@ -180,6 +297,7 @@ jobs:
       # it so that every per-test daemon start finds everything already in place
       # and skips the slow setup path.
       - name: Provision libkrun host (kernel + rootfs)
+        timeout-minutes: 5
         run: scripts/ci/provision-libkrun-host.sh
 
       - name: Verify VM assets after provisioning
@@ -193,50 +311,62 @@ jobs:
       - name: Prewarm default-profile baked rootfs (best effort, bounded)
         if: steps.runner-network-probe.outcome == 'success'
         continue-on-error: true
+        timeout-minutes: 5
         run: scripts/ci/prewarm-default-profile.sh
         env:
           NEXUS_PASST_PATH: /tmp/passt-patched
 
       - name: Refresh baked VM cache contents
         if: always()
+        timeout-minutes: 5
         run: scripts/ci/refresh-libkrun-cache.sh
 
-      - name: Run CI pipeline
-        run: task ci
-        env:
-          CI: true
-          NEXUS_LIBKRUN_SKIP_BAKE: "1"
-          NEXUS_LIBKRUN_BAKE_TIMEOUT: "120s"
-          NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "1"
-          NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
-          NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
-          # Use a small workspace image so mkfs.ext4 finishes in seconds on CI.
-          NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
-          # Limit VM memory to reduce peak RSS when tests run in parallel.
-          NEXUS_LIBKRUN_MEM_MIB: "256"
-
-      - name: Run full VM e2e tests
+      - name: Bootstrap e2e SSH profile
+        timeout-minutes: 5
         working-directory: packages/nexus
         run: |
           set -euo pipefail
           source ../../scripts/ci/e2e-ssh-bootstrap.sh
-          # Run without -short so VM tests execute.
-          # -p 1 -parallel 1 prevents concurrent VM boots which exhaust host resources.
-          #
-          # Run as root via sudo because the containerized runner lacks unprivileged
-          # namespace creation. The patched passt (NEXUS_PASST_PATH) tolerates EPERM
-          # from unshare() and prctl(PR_SET_SECCOMP).
-          sudo -E env "PATH=$PATH" "HOME=$HOME" "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" go test -tags e2e -count=1 -timeout=30m -v -p 1 -parallel 1 ./test/e2e/...
-        env:
-          CI: true
-          NEXUS_LIBKRUN_SKIP_BAKE: "1"
-          NEXUS_LIBKRUN_BAKE_TIMEOUT: "120s"
-          NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "1"
-          NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
-          NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
-          NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
-          NEXUS_LIBKRUN_MEM_MIB: "256"
-          NEXUS_PASST_PATH: /tmp/passt-patched
+
+      - name: Run e2e tests (${{ matrix.shard.name }})
+        timeout-minutes: ${{ matrix.shard.step_timeout_minutes }}
+        working-directory: packages/nexus
+        run: |
+          set -euo pipefail
+          go_run_args=()
+          if [ -n "${{ matrix.shard.go_run }}" ]; then
+            go_run_args=(-run "${{ matrix.shard.go_run }}")
+          fi
+          sudo -E env \
+            "PATH=$PATH" \
+            "HOME=$HOME" \
+            "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
+            "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
+            "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
+            "NEXUS_E2E_REMOTE_PROFILE=${NEXUS_E2E_REMOTE_PROFILE:-}" \
+            "NEXUS_E2E_SSH_IDENTITY=${NEXUS_E2E_SSH_IDENTITY:-}" \
+            go test -tags e2e -count=1 -timeout=${{ matrix.shard.go_timeout }} -v -p ${{ matrix.shard.go_p }} -parallel ${{ matrix.shard.go_parallel }} \
+            "${go_run_args[@]}" \
+            ${{ matrix.shard.packages }}
+      - name: Dump VM diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== ldd nexus-libkrun-vm ==="
+          ldd "$HOME/.local/share/nexus/bin/nexus-libkrun-vm" 2>&1 || true
+          echo "=== libs in $HOME/.local/share/nexus/lib/ ==="
+          ls -la "$HOME/.local/share/nexus/lib/" 2>&1 || true
+          echo "=== libkrun.log files ==="
+          find /data/nexus/libkrun-vms-e2e -name "libkrun.log" 2>/dev/null | while read -r f; do
+            echo "--- $f ---"
+            cat "$f" 2>/dev/null || echo "(empty or unreadable)"
+          done
+          echo "=== passt.log files ==="
+          find /data/nexus/libkrun-vms-e2e -name "passt.log" 2>/dev/null | while read -r f; do
+            echo "--- $f ---"
+            cat "$f" 2>/dev/null || echo "(empty or unreadable)"
+          done
+          echo "=== /data/nexus/libkrun-vms-e2e directory listing ==="
+          find /data/nexus/libkrun-vms-e2e -maxdepth 2 2>/dev/null | head -60 || true
 
       - name: Upload test results on failure
         if: failure()
@@ -246,7 +376,7 @@ jobs:
           path: |
             **/test-results/
             **/coverage/
-          retention-days: 7
+          retention-days: 1
 
   # Matches hkfc-style macOS builds: use repository variable NEXUS_MACOS_DEVELOPER_DIR
   # (e.g. /Applications/Xcode_16.2.app/Contents/Developer) on self-hosted runners
@@ -276,4 +406,3 @@ jobs:
 
       - name: Build NexusApp (Debug)
         run: scripts/swift/build.sh
-

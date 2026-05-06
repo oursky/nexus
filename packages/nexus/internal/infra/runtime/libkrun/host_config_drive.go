@@ -9,18 +9,17 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
 
-// buildHostConfigDriveLibkrun creates a 32 MiB ext4 image with the host user's
-// config files injected (gitconfig, SSH keys, tool auth, DNS resolver).
-// Uses mke2fs -d to build from a staging directory, which produces a kernel-readable
-// ext4 image with correct checksums (unlike debugfs -w which skips metadata_csum).
-func buildHostConfigDriveLibkrun(home, destPath string) error {
-	const sizeMiB = 32
-
+// buildHostConfigDirLibkrun populates destDir with the host user's config files
+// (gitconfig, SSH keys, tool auth, DNS resolver) for use as a virtiofs share.
+// destDir must already exist; files are written directly into it.
+// This replaces the old ext4 image approach: by exposing the directory via
+// virtiofs we save one IRQ line (block disks each consume an IRQ; virtiofs
+// shares are multiplexed on a single device).
+func buildHostConfigDirLibkrun(home, destDir string) error {
 	type entry struct{ src, dst string }
 	var files []entry
 
@@ -70,22 +69,15 @@ func buildHostConfigDriveLibkrun(home, destPath string) error {
 		}
 	}
 
-	// Build a staging directory to pass to mke2fs -d.
-	stagingDir, err := os.MkdirTemp("", "nexus-host-config-*")
-	if err != nil {
-		return fmt.Errorf("create staging dir: %w", err)
-	}
-	defer os.RemoveAll(stagingDir)
-
 	for _, f := range files {
-		dstFull := filepath.Join(stagingDir, f.dst)
+		dstFull := filepath.Join(destDir, f.dst)
 		if err := os.MkdirAll(filepath.Dir(dstFull), 0o755); err != nil {
-			log.Printf("[libkrun] host config drive: mkdir %s: %v", filepath.Dir(f.dst), err)
+			log.Printf("[libkrun] host config dir: mkdir %s: %v", filepath.Dir(f.dst), err)
 			continue
 		}
 		data, err := os.ReadFile(f.src)
 		if err != nil {
-			log.Printf("[libkrun] host config drive: read %s: %v", f.src, err)
+			log.Printf("[libkrun] host config dir: read %s: %v", f.src, err)
 			continue
 		}
 		// Preserve source permissions but ensure files are readable.
@@ -95,32 +87,8 @@ func buildHostConfigDriveLibkrun(home, destPath string) error {
 			perm = info.Mode().Perm()
 		}
 		if err := os.WriteFile(dstFull, data, perm); err != nil {
-			log.Printf("[libkrun] host config drive: write %s: %v", f.dst, err)
+			log.Printf("[libkrun] host config dir: write %s: %v", f.dst, err)
 		}
-	}
-
-	// Create the ext4 image from the staging directory.
-	// mke2fs -d properly updates directory entries and checksums.
-	szBytes := int64(sizeMiB) * 1024 * 1024
-	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o664)
-	if err != nil {
-		return fmt.Errorf("create config drive file: %w", err)
-	}
-	if err := f.Truncate(szBytes); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("size config drive: %w", err)
-	}
-	_ = f.Close()
-
-	args := []string{
-		"-t", "ext4",
-		"-L", "nexus-host-config",
-		"-d", stagingDir,
-		destPath,
-		fmt.Sprintf("%dk", sizeMiB*1024),
-	}
-	if out, err := exec.Command("mke2fs", args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("mke2fs: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

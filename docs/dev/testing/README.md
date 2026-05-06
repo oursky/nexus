@@ -26,7 +26,8 @@ func TestCLI_WorkspaceForkAndRestore(t *testing.T) {
 
 Rules:
 
-- Use canonical IDs from `docs/spec/*` exactly (e.g. `VM-PROOF-004`).
+- Use canonical IDs from `docs/spec/*` or `docs/dev/testing/formal-verification-matrix.md`
+  exactly (e.g. `VM-PROOF-004`).
 - Keep IDs narrowly scoped to what the test actually proves.
 - If an obligation has no reliable automated test yet, add an explicit waiver in
   `packages/nexus/test/e2e/coverage/waivers.txt` with rationale.

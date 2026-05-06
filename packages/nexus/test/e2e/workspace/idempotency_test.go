@@ -14,7 +14,7 @@ import (
 // old ID).
 func TestWorkspaceIdempotency(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "idempotency")
 
 	var createRes struct {
@@ -82,7 +82,7 @@ func TestWorkspaceIdempotency(t *testing.T) {
 // but different name returns the existing project (repo deduplication).
 func TestProjectRepoDedup(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "dedup")
 
 	var createRes struct {

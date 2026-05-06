@@ -12,7 +12,7 @@ import (
 // TestErrors_WorkspaceNotFound verifies workspace operations on unknown IDs return 404.
 func TestErrors_WorkspaceNotFound(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	const unknownID = "ws-does-not-exist-00000"
 
 	cases := []struct {
@@ -46,7 +46,7 @@ func TestErrors_WorkspaceNotFound(t *testing.T) {
 // TestErrors_CreateMissingRequiredFields verifies workspace.create rejects missing fields.
 func TestErrors_CreateMissingRequiredFields(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 
 	// Missing repo.
 	err := h.Call("workspace.create", map[string]any{
@@ -69,7 +69,7 @@ func TestErrors_CreateMissingRequiredFields(t *testing.T) {
 // TestErrors_MissingIDParam verifies methods that require id reject empty/missing id.
 func TestErrors_MissingIDParam(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 
 	cases := []struct {
 		method string
@@ -95,7 +95,7 @@ func TestErrors_MissingIDParam(t *testing.T) {
 // TestErrors_SpotlightStopMissingWorkspaceID verifies spotlight.stop with no workspaceId returns 400.
 func TestErrors_SpotlightStopMissingWorkspaceID(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	err := h.Call("spotlight.stop", map[string]any{}, nil)
 	if err == nil {
 		t.Fatal("spotlight.stop with empty workspaceId: expected error, got nil")
@@ -107,7 +107,7 @@ func TestErrors_SpotlightStopMissingWorkspaceID(t *testing.T) {
 // active forwards succeeds (idempotent — nothing to stop is not an error).
 func TestErrors_SpotlightStopUnknownWorkspace(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	err := h.Call("spotlight.stop", map[string]any{"workspaceId": "ws-does-not-exist"}, nil)
 	if err != nil {
 		t.Fatalf("spotlight.stop on workspace with no forwards: expected nil, got %v", err)
@@ -118,7 +118,7 @@ func TestErrors_SpotlightStopUnknownWorkspace(t *testing.T) {
 // TestErrors_MethodNotFound verifies calling an unregistered method returns an error.
 func TestErrors_MethodNotFound(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	err := h.Call("workspace.no_such_method", nil, nil)
 	if err == nil {
 		t.Fatal("unknown method: expected error, got nil")
@@ -129,7 +129,7 @@ func TestErrors_MethodNotFound(t *testing.T) {
 // TestErrors_PTYCreateMissingWorkspace verifies pty.create with unknown workspace returns an error.
 func TestErrors_PTYCreateMissingWorkspace(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	err := h.Call("pty.create", map[string]any{
 		"workspaceId": "ws-does-not-exist",
 		"name":        "test",
@@ -145,7 +145,7 @@ func TestErrors_PTYCreateMissingWorkspace(t *testing.T) {
 // TestErrors_DuplicateWorkspaceName verifies workspace.create rejects duplicate names.
 func TestErrors_DuplicateWorkspaceName(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "dup-name")
 
 	var res struct {
@@ -171,7 +171,7 @@ func TestErrors_DuplicateWorkspaceName(t *testing.T) {
 func TestErrors_InvalidStateTransitions(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "invalid-sm")
 
 	var res struct {
@@ -212,7 +212,7 @@ func TestErrors_InvalidStateTransitions(t *testing.T) {
 // TestErrors_RemoveAlreadyRemoved verifies removing an already-removed workspace returns not-found.
 func TestErrors_RemoveAlreadyRemoved(t *testing.T) {
 	t.Parallel()
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "remove-twice")
 
 	var res struct {

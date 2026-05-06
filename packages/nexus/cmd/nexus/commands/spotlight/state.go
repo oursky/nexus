@@ -16,6 +16,46 @@ type spotlightClientState struct {
 
 type spotlightProfileState struct {
 	WorkspaceID string `json:"workspaceId"`
+	// TunnelPID is the PID of the single SSH process managing all forwards (new format).
+	TunnelPID int `json:"tunnelPid,omitempty"`
+	// TunnelPIDs is the legacy multi-PID format (one SSH per port). Read-only for migration.
+	TunnelPIDs []int `json:"tunnelPids,omitempty"`
+}
+
+// allTunnelPIDs returns all PIDs to kill for this entry, handling both old and new formats.
+func (s spotlightProfileState) allTunnelPIDs() []int {
+	if s.TunnelPID > 0 {
+		return []int{s.TunnelPID}
+	}
+	return s.TunnelPIDs
+}
+
+// loadTunnelPIDsForWorkspace returns all tunnel PIDs associated with the
+// workspace across all stored profile entries. This handles both the new
+// single-PID and legacy multi-PID formats.
+func loadTunnelPIDsForWorkspace(workspaceID string) []int {
+	state, err := loadSpotlightClientState()
+	if err != nil {
+		return nil
+	}
+	seen := map[int]struct{}{}
+	var pids []int
+	for _, entry := range state.Profiles {
+		if entry.WorkspaceID != workspaceID {
+			continue
+		}
+		for _, pid := range entry.allTunnelPIDs() {
+			if pid <= 0 {
+				continue
+			}
+			if _, ok := seen[pid]; ok {
+				continue
+			}
+			seen[pid] = struct{}{}
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }
 
 func spotlightStatePath() (string, error) {

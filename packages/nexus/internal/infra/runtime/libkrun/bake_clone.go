@@ -1,8 +1,10 @@
 //go:build linux
 
+//nolint:unused
 package libkrun
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -28,10 +30,14 @@ func createWorkspaceImage(projectRoot, imagePath string) error {
 }
 
 func createWorkspaceOverlay(overlayPath string) error {
+	return createWorkspaceOverlayWithContext(context.Background(), overlayPath)
+}
+
+func createWorkspaceOverlayWithContext(ctx context.Context, overlayPath string) error {
 	if err := createSparseFile(overlayPath, workspaceOverlaySizeBytes); err != nil {
 		return err
 	}
-	out, err := exec.Command("mkfs.ext4", "-F", overlayPath).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "mkfs.ext4", "-F", overlayPath).CombinedOutput()
 	if err != nil {
 		_ = os.Remove(overlayPath)
 		return fmt.Errorf("mkfs.ext4 overlay: %w: %s", err, strings.TrimSpace(string(out)))

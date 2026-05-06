@@ -89,6 +89,7 @@ type Daemon struct {
 	registry        *rpcregistry.MapRegistry
 	listener        *transport.Listener
 	networkListener *transport.NetworkListener
+	spotlightSvc    *appspotlight.Service
 }
 
 // New constructs a Daemon by wiring all layers.
@@ -160,7 +161,7 @@ func New(cfg Config) (*Daemon, error) {
 	log.Printf("daemon: default backend=%s", registry.DefaultBackend())
 
 	// Reconcile workspace states for all backends that need it.
-	reconcileWorkspaceStates(context.Background(), wsStore)
+	reconcileWorkspaceStates(context.Background(), wsStore, fwdStore)
 
 	// ── Workspace handler with optional serial log provider ────────────────
 	wsHandlerOpts := []rpcworkspace.HandlerOption{}
@@ -203,10 +204,11 @@ func New(cfg Config) (*Daemon, error) {
 	lst := transport.NewListener(cfg.SocketPath, reg)
 
 	d := &Daemon{
-		cfg:      cfg,
-		db:       db,
-		registry: reg,
-		listener: lst,
+		cfg:          cfg,
+		db:           db,
+		registry:     reg,
+		listener:     lst,
+		spotlightSvc: spotlightSvc,
 	}
 
 	if cfg.Network.Enabled {
@@ -230,7 +232,9 @@ func New(cfg Config) (*Daemon, error) {
 
 // reconcileWorkspaceStates resets stale workspace states after daemon restart.
 // Both VM and process workspaces lose their runtime when the daemon restarts.
-func reconcileWorkspaceStates(ctx context.Context, wsStore *store.WorkspaceStore) {
+// All spotlight forward records are also deleted because their in-memory listeners
+// are gone after a restart; the CLI will recreate them when spotlight is restarted.
+func reconcileWorkspaceStates(ctx context.Context, wsStore *store.WorkspaceStore, fwdStore *store.ForwardStore) {
 	all, err := wsStore.List(ctx)
 	if err != nil {
 		log.Printf("daemon: workspace state reconcile skipped: %v", err)
@@ -243,7 +247,7 @@ func reconcileWorkspaceStates(ctx context.Context, wsStore *store.WorkspaceStore
 		switch ws.State {
 		case domainws.StateRunning:
 			ws.State = domainws.StateStopped
-		case domainws.StateStarting:
+		case domainws.StateStarting, domainws.StateSnapshotting:
 			ws.State = domainws.StateCreated
 		default:
 			continue
@@ -252,6 +256,11 @@ func reconcileWorkspaceStates(ctx context.Context, wsStore *store.WorkspaceStore
 		if err := wsStore.Update(ctx, ws); err != nil {
 			log.Printf("daemon: workspace state reconcile %s: %v", ws.ID, err)
 		}
+	}
+	if err := fwdStore.DeleteAll(ctx); err != nil {
+		log.Printf("daemon: spotlight forward reconcile: %v", err)
+	} else {
+		log.Printf("daemon: cleared stale spotlight forward records on restart")
 	}
 }
 
@@ -276,6 +285,11 @@ func (d *Daemon) Start(ctx context.Context) error {
 // Stop shuts down the daemon, closing transport and database.
 func (d *Daemon) Stop() error {
 	var errs []error
+	if d.spotlightSvc != nil {
+		if err := d.spotlightSvc.StopAll(context.Background()); err != nil {
+			errs = append(errs, fmt.Errorf("stop spotlight: %w", err))
+		}
+	}
 	if err := d.listener.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close listener: %w", err))
 	}

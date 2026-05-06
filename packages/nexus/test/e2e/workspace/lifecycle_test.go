@@ -12,7 +12,7 @@ import (
 func TestWorkspaceLifecycle(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
-	h := harness.New(t)
+	h := suite.Harness().ForTest(t)
 	clientRepo := harness.MakeLocalGitRepo(t, "lifecycle")
 	cfg := harness.MirrorProfileConfigHome(t)
 	_, remoteRepo := harness.MirrorGitCheckoutToDaemon(t, h, cfg, clientRepo, "proj-lifecycle")
