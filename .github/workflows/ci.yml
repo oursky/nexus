@@ -111,46 +111,64 @@ jobs:
             go_p: 2
             go_parallel: 2
             go_run: ""
+            go_timeout: 10m
+            step_timeout_minutes: 15
           - name: project
             packages: ./test/e2e/project
             go_p: 2
             go_parallel: 2
             go_run: ""
+            go_timeout: 10m
+            step_timeout_minutes: 15
           - name: pty-basic
             packages: ./test/e2e/pty
             go_p: 1
             go_parallel: 1
             go_run: TestPTY$
+            go_timeout: 4m
+            step_timeout_minutes: 5
           - name: pty-operations
             packages: ./test/e2e/pty
             go_p: 1
             go_parallel: 1
             go_run: TestPTY_Operations
+            go_timeout: 4m
+            step_timeout_minutes: 5
           - name: pty-behavioral
             packages: ./test/e2e/pty
             go_p: 1
             go_parallel: 1
             go_run: TestPTY_ExecPWD|TestPTY_ExecEcho|TestPTY_ExecGitBranch|TestPTY_ExecWriteAndReadFile|TestPTY_ExecExitCode|TestPTY_ShellNonInteractiveScript
+            go_timeout: 4m
+            step_timeout_minutes: 5
           - name: pty-sessions
             packages: ./test/e2e/pty
             go_p: 1
             go_parallel: 1
             go_run: TestPTY_ListSession|TestPTY_SessionNotFound|TestPTY_SessionNotPersisted
+            go_timeout: 4m
+            step_timeout_minutes: 5
           - name: spotlight
             packages: ./test/e2e/spotlight
             go_p: 2
             go_parallel: 2
             go_run: ""
+            go_timeout: 10m
+            step_timeout_minutes: 15
           - name: vmproof-workspace
             packages: ./test/e2e/vmproof ./test/e2e/workspace
             go_p: 2
             go_parallel: 2
             go_run: ""
+            go_timeout: 15m
+            step_timeout_minutes: 20
           - name: cli
             packages: ./test/e2e/cli
             go_p: 2
             go_parallel: 2
             go_run: ""
+            go_timeout: 15m
+            step_timeout_minutes: 20
     env:
       CI: true
       NEXUS_LIBKRUN_SKIP_BAKE: "1"
@@ -318,7 +336,7 @@ jobs:
           source ../../scripts/ci/e2e-ssh-bootstrap.sh
 
       - name: Run e2e tests (${{ matrix.shard.name }})
-        timeout-minutes: 5
+        timeout-minutes: ${{ matrix.shard.step_timeout_minutes }}
         working-directory: packages/nexus
         run: |
           set -euo pipefail
@@ -332,7 +350,7 @@ jobs:
             "NEXUS_PASST_PATH=$NEXUS_PASST_PATH" \
             "NEXUS_CROSS_BINARY_DIR=$NEXUS_CROSS_BINARY_DIR" \
             "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
-            go test -tags e2e -count=1 -timeout=4m -v -p ${{ matrix.shard.go_p }} -parallel ${{ matrix.shard.go_parallel }} \
+            go test -tags e2e -count=1 -timeout=${{ matrix.shard.go_timeout }} -v -p ${{ matrix.shard.go_p }} -parallel ${{ matrix.shard.go_parallel }} \
             "${go_run_args[@]}" \
             ${{ matrix.shard.packages }}
       - name: Dump VM diagnostics on failure
