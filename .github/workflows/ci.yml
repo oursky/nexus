@@ -106,12 +106,51 @@ jobs:
       max-parallel: 4
       matrix:
         shard:
-          # TEMP: only pty-basic enabled for fast CI iteration
+          - name: auth-daemon-fs
+            packages: ./test/e2e/auth ./test/e2e/daemon ./test/e2e/fs
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
+          - name: project
+            packages: ./test/e2e/project
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
           - name: pty-basic
             packages: ./test/e2e/pty
             go_p: 1
             go_parallel: 1
             go_run: TestPTY$
+          - name: pty-operations
+            packages: ./test/e2e/pty
+            go_p: 1
+            go_parallel: 1
+            go_run: TestPTY_Operations
+          - name: pty-behavioral
+            packages: ./test/e2e/pty
+            go_p: 1
+            go_parallel: 1
+            go_run: TestPTY_ExecPWD|TestPTY_ExecEcho|TestPTY_ExecGitBranch|TestPTY_ExecWriteAndReadFile|TestPTY_ExecExitCode|TestPTY_ShellNonInteractiveScript
+          - name: pty-sessions
+            packages: ./test/e2e/pty
+            go_p: 1
+            go_parallel: 1
+            go_run: TestPTY_ListSession|TestPTY_SessionNotFound|TestPTY_SessionNotPersisted
+          - name: spotlight
+            packages: ./test/e2e/spotlight
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
+          - name: vmproof-workspace
+            packages: ./test/e2e/vmproof ./test/e2e/workspace
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
+          - name: cli
+            packages: ./test/e2e/cli
+            go_p: 2
+            go_parallel: 2
+            go_run: ""
     env:
       CI: true
       NEXUS_LIBKRUN_SKIP_BAKE: "1"
