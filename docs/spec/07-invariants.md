@@ -171,6 +171,50 @@ writes MUST be immediately reflected on the host filesystem (no upperdir isolati
 unmodified files MUST be visible inside the guest without restart or remount. No overlayfs is used;
 there is no copy-up or snapshot isolation.
 
+**`VM-018` (Fork Workspace Tooling Availability)** — A forked workspace running in hybrid-overlay
+mode MUST have docker, node, make, and git available and executable inside the guest at workspace
+start.
+
+**`VM-019` (Fork Workspace Mount Correctness)** — In hybrid-overlay mode, `/workspace` MUST be
+correctly mounted and accessible inside the forked workspace guest. File reads and writes under
+`/workspace` MUST succeed without errors.
+
+**`VM-020` (Docker Compose Multi-Service)** — A Docker Compose stack with multiple services (e.g.
+nginx + sidecar) started inside a VM workspace MUST: bring all services up, serve HTTP responses on
+the expected port, and tear down cleanly without leaving orphaned containers.
+
+**`VM-021` (Host Config Drive)** — The host config drive MUST be mounted at `/run/nexus-host/`
+inside the VM. `/root/.ssh/` MUST be present and accessible. Environment variable injection from
+the config drive MUST be active in guest shell sessions.
+
+**`VM-022b` (SSH Agent Proxy Lifecycle Robustness)** — The SSH agent proxy socket MUST be
+re-created after a workspace stop/start cycle. After restart, `/tmp/ssh-agent.sock` MUST exist as
+a socket, `SSH_AUTH_SOCK` MUST point to it, and the proxy MUST respond without connection errors.
+
+**`VM-023` (NX Bundle Workspace Tooling)** — A workspace created via NX bundle export→import→start
+cycle MUST have docker, node, make, and git available inside the guest. `/workspace` MUST be
+accessible with correct content.
+
+**`VM-024` (Spotlight Survives Stop/Restart)** — A spotlight forward MUST survive a workspace
+stop/restart cycle. After restart, the spotlight network path MUST be re-established and HTTP
+traffic MUST flow through the forward without manual intervention.
+
+**`VM-024b` (Fork Workspace Spotlight Independence)** — Parent and child (forked) workspaces MUST
+each have independent spotlight servers. Both HTTP servers listening on the same port (one per
+workspace) MUST be reachable independently and MUST NOT interfere with each other.
+
+**`VM-025` (SSH Agent Proxy Socket Exists)** — The SSH agent proxy socket MUST exist at
+`/tmp/ssh-agent.sock` inside the guest. The `SSH_AUTH_SOCK` environment variable MUST be set to
+this path in guest shell sessions.
+
+**`VM-025b` (SSH Agent Proxy Liveness)** — The SSH agent proxy socket MUST be live. Running
+`ssh-add -l` inside the guest MUST respond without connection errors (exit code may reflect
+empty agent, but MUST NOT fail with a connection-refused or socket-not-found error).
+
+**`VM-026` (Fork Workspace SSH Agent Independence)** — Each forked workspace MUST receive its own
+independent SSH agent proxy socket. A forked workspace's SSH agent MUST NOT share state with the
+parent workspace's SSH agent.
+
 ---
 
 ## macOS App — `MACAPP-001`–`MACAPP-004`
