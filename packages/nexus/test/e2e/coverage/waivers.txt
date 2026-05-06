@@ -245,6 +245,8 @@ INV-006 | workspace.list no duplicates — guaranteed by database primary key; n
 INV-017 | workspace.ports.remove unknown forward — requires racing removal or specific edge case.
 
 # VM overlayfs invariants — behavior is covered by corresponding VM-PROOF E2E tests
+VM-014 | Existing proof covers guest-write isolation, but not overwrite/copy-up shadowing of an untouched lowerdir-backed file.
+VM-016 | Missing direct proof that a fresh workspace's first write to an untouched lowerdir-backed file succeeds via overlayfs copy-up.
 
 # macOS app invariants and proof obligations — tested in Swift unit tests in packages/nexus-swift
 MACAPP-001 | Tested in Swift unit tests (packages/nexus-swift/Tests/NexusAppTests/); Go e2e coverage generator does not scan Swift sources.

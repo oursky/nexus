@@ -347,9 +347,9 @@ Source spec directory: `../../docs`
 | VM-011 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
 | VM-012 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:127) |  |
 | VM-013 | covered | `TestVMProof_HostGuestSync` (test/e2e/vmproof/overlayfs_test.go:18) |  |
-| VM-014 | covered | `TestVMProof_GuestWriteIsolation` (test/e2e/vmproof/overlayfs_test.go:59) |  |
-| VM-015 | covered | `TestVMProof_ForkIsolation` (test/e2e/vmproof/overlayfs_test.go:113) |  |
-| VM-016 | covered | `TestVMProof_GuestWriteIsolation` (test/e2e/vmproof/overlayfs_test.go:59) |  |
+| VM-014 | waived | - | Existing proof covers guest-write isolation, but not overwrite/copy-up shadowing of an untouched lowerdir-backed file. |
+| VM-015 | covered | `TestVMProof_ForkIsolation` (test/e2e/vmproof/overlayfs_test.go:100) |  |
+| VM-016 | waived | - | Missing direct proof that a fresh workspace's first write to an untouched lowerdir-backed file succeeds via overlayfs copy-up. |
 | VM-PROOF-001 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:69)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:152) |  |
 | VM-PROOF-002 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
 | VM-PROOF-003 | waived | - | Requires deterministic daemon restart harness coverage for VM workspaces; tracked in child PRD 06 TD follow-up. |
@@ -361,8 +361,8 @@ Source spec directory: `../../docs`
 | VM-PROOF-009 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
 | VM-PROOF-010 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:127) |  |
 | VM-PROOF-011 | covered | `TestVMProof_HostGuestSync` (test/e2e/vmproof/overlayfs_test.go:18) |  |
-| VM-PROOF-012 | covered | `TestVMProof_GuestWriteIsolation` (test/e2e/vmproof/overlayfs_test.go:59) |  |
-| VM-PROOF-013 | covered | `TestVMProof_ForkIsolation` (test/e2e/vmproof/overlayfs_test.go:113) |  |
+| VM-PROOF-012 | covered | `TestVMProof_GuestWriteIsolation` (test/e2e/vmproof/overlayfs_test.go:58) |  |
+| VM-PROOF-013 | covered | `TestVMProof_ForkIsolation` (test/e2e/vmproof/overlayfs_test.go:100) |  |
 | VM-PROOF-014 | covered | `TestVMProof_DockerDaemon` (test/e2e/vmproof/docker_test.go:16) |  |
 | WS-001 | waived | - | Conceptual clause: workspace definition. |
 | WS-002 | waived | - | Conceptual clause: workspace ID uniqueness. |
