@@ -26,7 +26,7 @@ func launchVM(spec libkrun.VMSpec) error {
 		fmt.Fprintf(os.Stderr, "[libkrun-vm] "+format+"\n", args...)
 	}
 
-	logLevel := uint32(4) // default: debug
+	logLevel := uint32(1) // default: errors only (suppress DEBUG interrupt flood)
 	if spec.LibkrunLogLevel > 0 {
 		logLevel = uint32(spec.LibkrunLogLevel)
 	}
