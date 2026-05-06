@@ -25,15 +25,20 @@ Remote scripts (same `REMOTE_HOST` / `REMOTE_BIN` as Taskfile): `scripts/remote/
 
 ## Dev/prod isolation
 
-Dev and prod daemons are fully separated by binary name, port, and state directory so they never collide on the same remote host.
+Dev and prod daemons are fully separated by binary name, port, state directory, and data directory so they never collide on the same host.
 
-| Resource | Prod | Dev (default) |
-|---|---|---|
-| Remote binary | `~/.local/bin/nexus` | `~/.local/bin/nexus-dev` |
-| Remote port | `7777` | `7778` |
-| Remote state dir | `~/.local/state/nexus/` | `~/.local/state-dev/nexus/` |
-| Local CLI | `~/.local/bin/nexus` | `~/.local/bin/nexus-dev` |
-| Mac app profile | connects to prod daemon | connects to dev daemon (separate `nexus-dev daemon connect`) |
+| Resource | Prod | Dev (default) | Named instance |
+|---|---|---|---|
+| Binary | `~/.local/bin/nexus` | `~/.local/bin/nexus-dev` | same as dev binary |
+| Port | `7777` | `7778` | `7780+` (auto or explicit) |
+| State dir | `~/.local/state/nexus/` | `~/.local/state-dev/nexus/` | `~/.local/state-nexus-<name>/nexus/` |
+| Data dir (XDG_DATA_HOME) | `~/.local/share/nexus/` | `~/.local/share-dev/nexus/` | `~/.local/share/nexus-<name>/` |
+| VM workdir (libkrun images) | `/data/nexus/libkrun-vms` | `/data/nexus-dev` | `~/.local/share/nexus-<name>/libkrun-vms` |
+| Unix socket | `~/.local/state/nexus/nexusd.sock` | `~/.local/state-dev/nexus/nexusd.sock` | `~/.local/state-nexus-<name>/nexus/nexusd.sock` |
+| Local CLI | `~/.local/bin/nexus` | `~/.local/bin/nexus-dev` | same as dev binary |
+| Mac app profile | connects to prod daemon | connects to dev daemon (separate `nexus-dev daemon connect`) | separate profile per port |
+
+> **Known gap — macOS Keychain token**: both `nexus` and `nexus-dev` write to the same Keychain entry (`service="nexus"`, `account="daemon-token"`). If both run on the same Mac simultaneously, the last `daemon connect` call wins. Workaround: avoid running prod and dev Mac daemons concurrently on the same Mac. A Swift fix to scope by binary name is tracked but not yet shipped.
 
 Configure in `.env.local` (copy from `.env.local.example`). Defaults are already set to dev values — no file needed to start dev work. Prod daemon is never touched by any `task dev:*` command.
 
@@ -71,6 +76,129 @@ nexus daemon status       # prod daemon status
 | Headless RPC — Debug build          | `127.0.0.1:7778` — activate with `touch ~/.nexus-headless-rpc`                                           |
 | Headless RPC — Release/TestFlight   | `127.0.0.1:7779` — same sentinel; port set via `#if DEBUG` in `HeadlessRPCServer.swift`                  |
 
+
+---
+
+## Dogfood flow (Linux-first, reversed direction)
+
+The canonical dev flow is now **Linux-first**: you develop on this Linux machine and SSH *back* to the Mac (`newman@minion`) to build and test the app. This eliminates the friction of onboarding users via the Mac app — you can self-host the daemon installation on nexus itself.
+
+### Architecture
+
+```
+Linux host (you are here)
+  ├─ nexus daemon(s) running with process sandbox
+  │    port 7780, 7781, … — one per test scenario
+  │    state: ~/.local/state-nexus-<name>/nexus/
+  ├─ source code at ~/magic/nexus  (inside a nexus workspace)
+  └─ rsync → Mac  (scripts/workspace-sync.sh)
+                   ↓
+Mac (newman@minion)
+  ├─ ~/magic/nexus  (receives rsync'd source)
+  ├─ builds NexusApp via scripts/swift/build.sh
+  └─ headless RPC :7778 tunnelled back to Linux for testing
+```
+
+### Setup (one-time)
+
+Add to `.env.local` on the Linux host:
+
+```bash
+MAC_HOST=newman@minion
+MAC_REPO_ROOT=~/magic/nexus
+```
+
+Ensure the Linux → Mac SSH key is set up:
+
+```bash
+ssh newman@minion echo ok
+```
+
+### Day-to-day dev loop
+
+```bash
+# 1. Build local CLI and stage binaries
+task dev:cli
+task stage:nexus-macos    # cross-compile darwin/arm64 nexus CLI
+task stage:nexus-linux    # cross-compile linux/amd64 embedded binary
+scripts/generate-sdk.sh   # regenerate NexusRPC.swift
+
+# 2. Rsync repo to Mac + build + open app (all in one)
+task dev:local:swift
+
+# OR just sync + build without opening:
+task dev:mac:build
+
+# 3. Verify headless RPC is active on Mac
+task dev:mac:test-headless
+```
+
+### Volume sync (workspace → Mac)
+
+When you edit source inside a nexus process-sandbox workspace, sync it to the Mac before building:
+
+```bash
+# One-shot sync
+WORKSPACE_PATH=~/.local/state-nexus-test1/nexus/workspaces/ws-xxx/workspace \
+  task dev:workspace:sync
+
+# Watch mode (re-syncs on every file change using inotifywait or 3s polling)
+WORKSPACE_PATH=... WATCH=true task dev:workspace:sync
+
+# Or call the script directly
+MAC_HOST=newman@minion WORKSPACE_PATH=/path/to/workspace \
+  scripts/workspace-sync.sh --watch
+```
+
+### Multiple named daemon instances
+
+Dogfood by running multiple isolated nexus daemons — each with its own port, state dir, and data dir:
+
+```bash
+# Start instances (ports auto-assigned from 7780+)
+task dev:daemon:start NAME=test1                    # → port 7780, driver=sandbox
+task dev:daemon:start NAME=test2 PORT=7781          # explicit port
+task dev:daemon:start NAME=libkrun1 DRIVER=libkrun  # libkrun driver
+
+# List all instances
+task dev:daemon:list
+
+# Connect the Mac app to a specific instance
+nexus-dev daemon connect <this-linux-host> --port 7780
+
+# Stop
+task dev:daemon:stop NAME=test1
+
+# Or use the script directly for full options
+scripts/local/daemon-named.sh start  mytest --port 7790 --driver sandbox
+scripts/local/daemon-named.sh status mytest
+scripts/local/daemon-named.sh logs   mytest --follow
+scripts/local/daemon-named.sh list
+scripts/local/daemon-named.sh stop   mytest
+```
+
+**Isolation per named instance** (`--name foo`):
+
+| Resource | Path |
+|---|---|
+| State dir | `~/.local/state-nexus-<name>/nexus/` |
+| Data dir  | `~/.local/share/nexus-<name>/` |
+| Socket    | `~/.local/state-nexus-<name>/nexus/nexusd.sock` |
+| Port      | user-specified or auto-assigned from 7780+ |
+
+### Connect Mac app to a Linux daemon via headless RPC tunnel
+
+To interact with the Mac app from Linux via the headless RPC, tunnel through SSH:
+
+```bash
+# Mac headless RPC is at 127.0.0.1:7778 on the Mac
+# Forward it to Linux's 127.0.0.1:17778
+ssh -fN -L 17778:127.0.0.1:7778 newman@minion
+
+curl -sf http://127.0.0.1:17778/status
+# Use LOCAL_TUNNEL_PORT env var to control the local port:
+LOCAL_TUNNEL_PORT=17778 MAC_HOST=newman@minion scripts/remote/mac-test-headless.sh
+```
 
 ---
 
@@ -128,14 +256,14 @@ REMOTE_HOST=user@host scripts/remote/daemon-logs.sh
 Use when validating repos with `isolation.level: "process"`.
 
 ```bash
-PATH="/tmp/nexus-dogfood-bin:$PATH" nexus daemon start
-PATH="/tmp/nexus-dogfood-bin:$PATH" nexus daemon status --json
-PATH="/tmp/nexus-dogfood-bin:$PATH" nexus sandbox create --repo "$PWD" --fresh
-PATH="/tmp/nexus-dogfood-bin:$PATH" nexus sandbox start <workspace-id>
-PATH="/tmp/nexus-dogfood-bin:$PATH" nexus sandbox exec <workspace-id> -- docker compose ps
+PATH="$HOME/.local/bin:$PATH" nexus daemon start
+PATH="$HOME/.local/bin:$PATH" nexus daemon status --json
+PATH="$HOME/.local/bin:$PATH" nexus sandbox create --repo "$PWD" --fresh
+PATH="$HOME/.local/bin:$PATH" nexus sandbox start <workspace-id>
+PATH="$HOME/.local/bin:$PATH" nexus sandbox exec <workspace-id> -- docker compose ps
 ```
 
-For local dogfood, use the default profile (`nexus daemon connect` / stored profile) so the app picks up SSH + tunnel + token. The app does not use `NEXUS_DAEMON_URL` for routing.
+For local process-sandbox dev, use the default profile (`nexus daemon connect` / stored profile) so the app picks up SSH + tunnel + token. The app does not use `NEXUS_DAEMON_URL` for routing.
 
 ### If the app is stuck at "Connecting..."
 

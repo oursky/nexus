@@ -240,8 +240,8 @@ tasks:
   # ── Dogfooding (develop on Linux remote) ──────────────────────────────────
   # Set MAC_HOST=user@mac-hostname in .env.local on the Linux remote.
 
-  dev:dogfood:swift:
-    desc: "Dogfood dev loop: build on Linux remote, then SSH back to Mac to build app and test headless RPC"
+  dev:local:swift:
+    desc: "Linux-first dev loop: build locally, sync to Mac, build app and test headless RPC"
     preconditions:
       - sh: '[ -n "{{.MAC_HOST}}" ]'
         msg: "MAC_HOST is not set. Add it to .env.local on the remote with MAC_HOST=user@mac-host."
@@ -325,6 +325,70 @@ tasks:
       - git tag -a "{{.VERSION}}" -m "Release {{.VERSION}}"
       - git push origin "{{.VERSION}}"
       - 'echo "Tagged and pushed {{.VERSION}} — GitHub Actions will build and publish the release assets."'
+
+  # ── Multi-daemon (multiple isolated nexus instances on this Linux host) ───────
+  # Set MAC_HOST=newman@minion in .env.local to SSH back to the Mac for builds.
+  # Each named daemon gets its own port, state dir, and data dir.
+
+  dev:daemon:start:
+    desc: "Start a named nexus daemon instance (NAME required, auto-assigns port)"
+    vars:
+      NAME: '{{.NAME | default ""}}'
+      PORT: '{{.PORT | default ""}}'
+      DRIVER: '{{.DRIVER | default "sandbox"}}'
+    preconditions:
+      - sh: '[ -n "{{.NAME}}" ]'
+        msg: "NAME is required. Usage: task dev:daemon:start NAME=myinstance [PORT=7780] [DRIVER=sandbox]"
+    env:
+      LOCAL_BIN: "{{.LOCAL_BIN}}"
+      BASE_PORT: '{{if .PORT}}{{.PORT}}{{else}}7780{{end}}'
+    cmds:
+      - |
+        ARGS="{{.NAME}}"
+        {{if .PORT}}ARGS="$ARGS --port {{.PORT}}"{{end}}
+        ARGS="$ARGS --driver {{.DRIVER}}"
+        scripts/local/daemon-named.sh start $ARGS
+
+  dev:daemon:stop:
+    desc: "Stop a named nexus daemon instance"
+    vars:
+      NAME: '{{.NAME | default ""}}'
+    preconditions:
+      - sh: '[ -n "{{.NAME}}" ]'
+        msg: "NAME is required. Usage: task dev:daemon:stop NAME=myinstance"
+    env:
+      LOCAL_BIN: "{{.LOCAL_BIN}}"
+    cmds:
+      - scripts/local/daemon-named.sh stop {{.NAME}}
+
+  dev:daemon:list:
+    desc: "List all named nexus daemon instances and their status"
+    env:
+      LOCAL_BIN: "{{.LOCAL_BIN}}"
+    cmds:
+      - scripts/local/daemon-named.sh list
+
+  dev:workspace:sync:
+    desc: "Sync a workspace directory to the Mac (volume sync)"
+    vars:
+      WORKSPACE_PATH: '{{.WORKSPACE_PATH | default ""}}'
+      WATCH: '{{.WATCH | default "false"}}'
+    preconditions:
+      - sh: '[ -n "{{.MAC_HOST}}" ]'
+        msg: "MAC_HOST is not set. Add MAC_HOST=user@mac-hostname to .env.local"
+      - sh: '[ -n "{{.WORKSPACE_PATH}}" ]'
+        msg: "WORKSPACE_PATH is required. Usage: task dev:workspace:sync WORKSPACE_PATH=/path/to/workspace [WATCH=true]"
+    env:
+      MAC_HOST: "{{.MAC_HOST}}"
+      MAC_TARGET_PATH: "{{.MAC_REPO_ROOT}}"
+      WORKSPACE_PATH: "{{.WORKSPACE_PATH}}"
+    cmds:
+      - |
+        if [ "{{.WATCH}}" = "true" ]; then
+          scripts/workspace-sync.sh --watch
+        else
+          scripts/workspace-sync.sh
+        fi
 
   showcase:rerecord:
     desc: "Re-record showcase flow by controlling NexusApp through headless RPC, then render remotion"
