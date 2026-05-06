@@ -278,39 +278,19 @@ func (s *Service) WaitReady(ctx context.Context, id string) (bool, error) {
 
 	switch ws.State {
 	case workspace.StateRunning:
-		// Already running — check driver readiness. If the VM was just
-		// restarted (e.g. after fork), the agent may not be reachable yet
-		// even though the service-layer state is StateRunning. Poll until
-		// ready or ctx is done rather than returning false on the first miss.
+		// Already running — check driver readiness immediately.
 		driver := s.driverFor(ws)
 		checker, ok := driver.(runtimeReadinessDriver)
 		if !ok || checker == nil {
 			return true, nil
 		}
-		ready, err := checker.WorkspaceReady(ctx, ws)
-		if ready || err != nil {
-			return ready, err
-		}
-		// Not ready yet — poll with a ticker until ctx is done.
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return false, nil
-			case <-ticker.C:
-				ready, err = checker.WorkspaceReady(ctx, ws)
-				if ready || err != nil {
-					return ready, err
-				}
-			}
-		}
+		return checker.WorkspaceReady(ctx, ws)
 	case workspace.StateCreated, workspace.StateStopped, workspace.StateRestored:
 		// Not starting and not running — will never become ready without another start.
 		return false, nil
 	}
 
-	// State is StateStarting — block until running or ctx done.
+	// State is StateStarting or StateSnapshotting — block until running or ctx done.
 	select {
 	case <-ctx.Done():
 		return false, nil

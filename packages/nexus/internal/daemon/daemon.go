@@ -247,7 +247,7 @@ func reconcileWorkspaceStates(ctx context.Context, wsStore *store.WorkspaceStore
 		switch ws.State {
 		case domainws.StateRunning:
 			ws.State = domainws.StateStopped
-		case domainws.StateStarting:
+		case domainws.StateStarting, domainws.StateSnapshotting:
 			ws.State = domainws.StateCreated
 		default:
 			continue

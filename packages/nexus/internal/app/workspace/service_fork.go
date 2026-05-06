@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -75,23 +76,88 @@ func (s *Service) Fork(ctx context.Context, parentID string, spec ForkSpec) (*wo
 		return nil, fmt.Errorf("persist child workspace: %w", err)
 	}
 
-	if driver := s.driverFor(parent); driver != nil {
-		childRoot, err := driver.Fork(ctx, parent, child)
-		if err != nil {
-			_ = s.repo.Delete(ctx, child.ID)
-			return nil, fmt.Errorf("runtime fork: %w", err)
-		}
-		// Persist the child's project root when the backend created a new
-		// path (for example process backend git worktree). libkrun fork
-		// correctness is volume-based; child.Repo remains metadata.
-		if childRoot != "" && childRoot != child.Repo {
-			child.Repo = childRoot
-			child.UpdatedAt = time.Now().UTC()
-			_ = s.repo.Update(ctx, child)
+	driver := s.driverFor(parent)
+	if driver == nil {
+		return child, nil
+	}
+
+	// Transition the parent to StateSnapshotting so that concurrent
+	// workspace.ready callers know the VM is temporarily stopped and will
+	// block (via WaitReady's subscription channel) until we signal running.
+	parentWasRunning := parent.State == workspace.StateRunning
+	if parentWasRunning {
+		parent.State = workspace.StateSnapshotting
+		parent.UpdatedAt = time.Now().UTC()
+		if updateErr := s.repo.Update(ctx, parent); updateErr != nil {
+			log.Printf("[workspace] Fork: persist snapshotting state for %s: %v", parentID, updateErr)
 		}
 	}
 
+	childRoot, forkErr := driver.Fork(ctx, parent, child)
+	if forkErr != nil {
+		// Restore parent to running if we moved it to snapshotting.
+		if parentWasRunning {
+			s.markWorkspaceRunning(ctx, parent)
+		}
+		_ = s.repo.Delete(ctx, child.ID)
+		return nil, fmt.Errorf("runtime fork: %w", forkErr)
+	}
+
+	// Persist the child's project root when the backend created a new
+	// path (for example process backend git worktree). libkrun fork
+	// correctness is volume-based; child.Repo remains metadata.
+	if childRoot != "" && childRoot != child.Repo {
+		child.Repo = childRoot
+		child.UpdatedAt = time.Now().UTC()
+		_ = s.repo.Update(ctx, child)
+	}
+
+	// The driver has restarted the parent VM in the background. Wait for it
+	// to become ready asynchronously so we don't block the fork RPC, then
+	// transition it back to StateRunning and notify any waiters.
+	if parentWasRunning {
+		go s.waitAndMarkParentRunning(parent)
+	}
+
 	return child, nil
+}
+
+// waitAndMarkParentRunning polls the driver until the parent VM is reachable
+// after a fork restart, then marks it StateRunning and notifies WaitReady subscribers.
+func (s *Service) waitAndMarkParentRunning(parent *workspace.Workspace) {
+	ctx, cancel := context.WithTimeout(s.bgCtx, runStartAsyncTimeout)
+	defer cancel()
+
+	driver := s.driverFor(parent)
+	checker, ok := driver.(runtimeReadinessDriver)
+	if !ok || checker == nil {
+		// Driver doesn't support readiness probing — mark running immediately.
+		s.markWorkspaceRunning(ctx, parent)
+		return
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("[workspace] Fork: parent %s did not become ready within timeout; marking running anyway", parent.ID)
+			s.markWorkspaceRunning(ctx, parent)
+			return
+		case <-ticker.C:
+			ready, err := checker.WorkspaceReady(ctx, parent)
+			if err != nil {
+				log.Printf("[workspace] Fork: parent %s readiness probe error: %v; marking running", parent.ID, err)
+				s.markWorkspaceRunning(ctx, parent)
+				return
+			}
+			if ready {
+				s.markWorkspaceRunning(ctx, parent)
+				return
+			}
+		}
+	}
 }
 
 func (s *Service) Checkout(ctx context.Context, id string, spec CheckoutSpec) (*workspace.Workspace, error) {
