@@ -194,8 +194,8 @@ jobs:
         run: scripts/ci/enable-kvm.sh
 
       # Tools required for rootfs and e2e tests.
-      #   squashfs-tools  → unsquashfs (squashfs → rootfs tree)
-      #   e2fsprogs       → mkfs.ext4, debugfs (create and modify rootfs image)
+      #   genext2fs       → build ext4 images from the Ubuntu minimal tar.xz rootfs
+      #   e2fsprogs       → mkfs.ext4 and fallback image tooling
       #   rsync           → copy rootfs tree into ext4 image
       - name: Install host prerequisites
         run: scripts/ci/install-host-prereqs.sh

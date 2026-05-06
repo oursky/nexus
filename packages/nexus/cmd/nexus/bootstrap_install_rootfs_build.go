@@ -80,8 +80,9 @@ func buildRootlessRootfs(w io.Writer, dest string) error {
 		)
 	}
 
-	// Build ext4 image from directory tree — try genext2fs first (preferred,
-	// faster), fall back to mke2fs -d (slower but always correct).
+	// Build ext4 image from directory tree — prefer genext2fs for the current
+	// Ubuntu minimal tar.xz archive. The mke2fs -d path remains as a slower
+	// fallback for environments where genext2fs is unavailable.
 	fmt.Fprintf(w, "  building ext4 rootfs image...\n")
 	// 8 GB gives the guest agent room to apt-get install the full developer
 	// toolchain (docker.io, nodejs, build-essential, etc.) on first boot.
