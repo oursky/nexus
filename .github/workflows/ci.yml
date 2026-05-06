@@ -120,34 +120,13 @@ jobs:
             go_run: ""
             go_timeout: 10m
             step_timeout_minutes: 15
-          - name: pty-basic
+          - name: pty
             packages: ./test/e2e/pty
             go_p: 1
             go_parallel: 1
-            go_run: TestPTY$
-            go_timeout: 4m
-            step_timeout_minutes: 5
-          - name: pty-operations
-            packages: ./test/e2e/pty
-            go_p: 1
-            go_parallel: 1
-            go_run: TestPTY_Operations
-            go_timeout: 4m
-            step_timeout_minutes: 5
-          - name: pty-behavioral
-            packages: ./test/e2e/pty
-            go_p: 1
-            go_parallel: 1
-            go_run: TestPTY_ExecPWD|TestPTY_ExecEcho|TestPTY_ExecGitBranch|TestPTY_ExecWriteAndReadFile|TestPTY_ExecExitCode|TestPTY_ShellNonInteractiveScript
-            go_timeout: 4m
-            step_timeout_minutes: 5
-          - name: pty-sessions
-            packages: ./test/e2e/pty
-            go_p: 1
-            go_parallel: 1
-            go_run: TestPTY_ListSession|TestPTY_SessionNotFound|TestPTY_SessionNotPersisted
-            go_timeout: 4m
-            step_timeout_minutes: 5
+            go_run: ""
+            go_timeout: 10m
+            step_timeout_minutes: 15
           - name: spotlight
             packages: ./test/e2e/spotlight
             go_p: 2
