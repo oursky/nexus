@@ -90,13 +90,22 @@ public struct SSHClientArgs {
         baseArgs + [sshTarget] + remoteCommand
     }
 
-    /// Args for a one-shot remote shell script: `ssh <base> <target> /bin/bash -c '<script>'`
+    /// Args for a one-shot remote shell script: `ssh <base> <target> '/bin/bash -c '\''<script>'\'''`
     ///
     /// Uses the absolute path `/bin/bash` so the script runs under bash regardless of
     /// the user's login shell (fish, zsh, etc.) and regardless of whether `bash` is on
     /// PATH in the remote non-interactive SSH environment.
+    ///
+    /// The entire `/bin/bash -c '<script>'` command is passed as a **single** SSH argument
+    /// so that spaces, redirections, and other shell metacharacters in `script` are
+    /// preserved exactly. Without this, SSH concatenates separate arguments with spaces
+    /// and the remote shell receives a broken command (e.g. `>/dev/null` becomes a
+    /// separate argument instead of a redirection).
     public func shellArgs(script: String) -> [String] {
-        baseArgs + [sshTarget, "/bin/bash", "-c", script]
+        // Escape single quotes in the script: ' -> '\''
+        let escaped = script.replacingOccurrences(of: "'", with: "'\\''")
+        let remoteCommand = "/bin/bash -c '\(escaped)'"
+        return baseArgs + [sshTarget, remoteCommand]
     }
 
     /// Args for a background port-forward tunnel: `ssh -v -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 -L ...`
