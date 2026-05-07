@@ -164,6 +164,9 @@ func TestVMProof_SSHAgentProxy_ForkIsolation(t *testing.T) {
 	t.Cleanup(func() { _ = h.Call("workspace.remove", map[string]any{"id": childID}, nil) })
 	h.MustCall("workspace.start", map[string]any{"id": childID}, nil)
 	harness.WaitForWorkspaceReady(t, h.Harness, childID)
+	// After fork, CheckpointFork stops+restarts the parent VM asynchronously.
+	// Wait for the parent to be ready again before exec-ing into it.
+	harness.WaitForWorkspaceReady(t, h.Harness, parentID)
 
 	parentSock, err := h.Run(t, repoPath, "workspace", "exec", parentID, "--", "sh", "-c",
 		"echo $SSH_AUTH_SOCK; sleep 0.05")
