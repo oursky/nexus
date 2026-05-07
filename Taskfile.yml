@@ -107,6 +107,19 @@ tasks:
     cmds:
       - ./scripts/remote/e2e-cli.sh
 
+  test:e2e:local:
+    desc: "Run full e2e suite locally on Linux (SSH bootstrap + host config fixtures + sudo)"
+    env:
+      E2E_P: "{{.E2E_P | default \"2\"}}"
+      E2E_PARALLEL: "{{.E2E_PARALLEL | default \"2\"}}"
+      E2E_TIMEOUT: "{{.E2E_TIMEOUT | default \"60m\"}}"
+      E2E_RUN: "{{.E2E_RUN | default \"\"}}"
+      E2E_PKG: "{{.E2E_PKG | default \"...\"}}"
+      SKIP_FIXTURES: "{{.SKIP_FIXTURES | default \"0\"}}"
+      SKIP_BOOTSTRAP: "{{.SKIP_BOOTSTRAP | default \"0\"}}"
+    cmds:
+      - ./scripts/local/e2e-local.sh
+
   test:e2e:remote:
     desc: "Run full e2e suite (all packages) on remote Linux host"
     preconditions:
