@@ -64,7 +64,7 @@ func TestVMProof_HostConfigDrive(t *testing.T) {
 	// Verify the host config drive has content — CI must provision fixture files
 	// via scripts/ci/setup-host-config-fixtures.sh.
 	out, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-c",
-		"ls /run/nexus-host/ | wc -l; sleep 0.05")
+		"ls -A /run/nexus-host/ | wc -l; sleep 0.05")
 	if err != nil {
 		t.Fatalf("host config mount check: %v\noutput: %s", err, out)
 	}
@@ -86,7 +86,7 @@ func TestVMProof_HostConfigDrive(t *testing.T) {
 	}
 
 	// Verify the sentinel var is active in a login shell (sources .profile → sources .nexus-env).
-	envOut, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-l", "-c",
+	envOut, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "bash", "-l", "-c",
 		"echo $OPENAI_API_KEY; sleep 0.05")
 	if err != nil {
 		t.Fatalf("check OPENAI_API_KEY in login shell: %v\noutput: %s", err, envOut)
