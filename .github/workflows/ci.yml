@@ -106,15 +106,9 @@ jobs:
       max-parallel: 4
       matrix:
         shard:
-          - name: auth-daemon-fs
-            packages: ./test/e2e/auth ./test/e2e/daemon ./test/e2e/fs
-            go_p: 2
-            go_parallel: 2
-            go_run: ""
-            go_timeout: 10m
-            step_timeout_minutes: 15
-          - name: project
-            packages: ./test/e2e/project
+          # ── Lightweight shards (merged low-test-count groups) ──────────
+          - name: auth-daemon-fs-project
+            packages: ./test/e2e/auth ./test/e2e/daemon ./test/e2e/fs ./test/e2e/project
             go_p: 2
             go_parallel: 2
             go_run: ""
@@ -122,8 +116,8 @@ jobs:
             step_timeout_minutes: 15
           - name: pty
             packages: ./test/e2e/pty
-            go_p: 1
-            go_parallel: 1
+            go_p: 2
+            go_parallel: 2
             go_run: ""
             go_timeout: 10m
             step_timeout_minutes: 15
@@ -134,34 +128,42 @@ jobs:
             go_run: ""
             go_timeout: 10m
             step_timeout_minutes: 15
+          # ── VM-integration shard (all vmproof tests in one shard) ──────
+          # Merged from vmproof-core + vmproof-heavy to avoid running two
+          # shard jobs concurrently: parallel shards double the active VM
+          # count, causing resource exhaustion on CI machines and making
+          # WaitForWorkspaceReady block indefinitely. A single shard with
+          # p=2 keeps at most 2 VMs live at once.
           - name: vmproof
             packages: ./test/e2e/vmproof
             go_p: 2
             go_parallel: 2
             go_run: ""
+            go_timeout: 10m
+            step_timeout_minutes: 15
+          # ── Workspace shards (split by fork vs core) ───────────────────
+          - name: workspace-core
+            packages: ./test/e2e/workspace
+            go_p: 2
+            go_parallel: 2
+            go_run: "TestWorkspaceIdempotency|TestProjectRepoDedup|TestWorkspaceLifecycle|TestProtocol_|TestErrors_|TestLifecycle_"
+            go_timeout: 10m
+            step_timeout_minutes: 15
+          - name: workspace-fork
+            packages: ./test/e2e/workspace
+            go_p: 2
+            go_parallel: 2
+            go_run: "TestWorkspaceRestore|TestWorkspaceFork|TestFork_"
             go_timeout: 15m
             step_timeout_minutes: 20
-          - name: workspace
-            packages: ./test/e2e/workspace
+          # ── CLI shard (merged; parallelism replaces serial bottleneck) ──
+          - name: cli
+            packages: ./test/e2e/cli
             go_p: 2
             go_parallel: 2
             go_run: ""
             go_timeout: 15m
             step_timeout_minutes: 20
-          - name: cli-basic
-            packages: ./test/e2e/cli
-            go_p: 2
-            go_parallel: 2
-            go_run: "TestCLI_ProjectCreateListGetRemove|TestCLI_WorkspaceShellAndExec|TestCLI_UnknownSubcommand|TestCLI_DaemonUnreachable|TestCLI_WorkspaceForkAndRestore|TestCLI_WorkspaceShellPTY|TestCLI_WorkspaceCreate_EndToEnd"
-            go_timeout: 15m
-            step_timeout_minutes: 20
-          - name: cli-bundle
-            packages: ./test/e2e/cli
-            go_p: 1
-            go_parallel: 1
-            go_run: "TestCLI_WorkspaceExportImport_EndToEnd|TestCLI_WorkspaceBundleRunner_MacOSCompatibility|TestCLI_WorkspaceBundleRunner_IntentExecution"
-            go_timeout: 20m
-            step_timeout_minutes: 30
     env:
       CI: true
       NEXUS_LIBKRUN_SKIP_BAKE: "1"
@@ -194,8 +196,8 @@ jobs:
         run: scripts/ci/enable-kvm.sh
 
       # Tools required for rootfs and e2e tests.
-      #   squashfs-tools  → unsquashfs (squashfs → rootfs tree)
-      #   e2fsprogs       → mkfs.ext4, debugfs (create and modify rootfs image)
+      #   genext2fs       → build ext4 images from the Ubuntu minimal tar.xz rootfs
+      #   e2fsprogs       → mkfs.ext4 and fallback image tooling
       #   rsync           → copy rootfs tree into ext4 image
       - name: Install host prerequisites
         run: scripts/ci/install-host-prereqs.sh
@@ -328,6 +330,17 @@ jobs:
           set -euo pipefail
           source ../../scripts/ci/e2e-ssh-bootstrap.sh
 
+      - name: Setup host config drive fixtures
+        run: scripts/ci/setup-host-config-fixtures.sh
+
+      - name: Start SSH agent (vmproof only)
+        if: matrix.shard.name == 'vmproof'
+        run: |
+          set -euo pipefail
+          eval $(ssh-agent -s)
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+
       - name: Run e2e tests (${{ matrix.shard.name }})
         timeout-minutes: ${{ matrix.shard.step_timeout_minutes }}
         working-directory: packages/nexus
@@ -345,6 +358,7 @@ jobs:
             "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
             "NEXUS_E2E_REMOTE_PROFILE=${NEXUS_E2E_REMOTE_PROFILE:-}" \
             "NEXUS_E2E_SSH_IDENTITY=${NEXUS_E2E_SSH_IDENTITY:-}" \
+            "SSH_AUTH_SOCK=${SSH_AUTH_SOCK:-}" \
             go test -tags e2e -count=1 -timeout=${{ matrix.shard.go_timeout }} -v -p ${{ matrix.shard.go_p }} -parallel ${{ matrix.shard.go_parallel }} \
             "${go_run_args[@]}" \
             ${{ matrix.shard.packages }}
@@ -367,6 +381,13 @@ jobs:
           done
           echo "=== /data/nexus/libkrun-vms-e2e directory listing ==="
           find /data/nexus/libkrun-vms-e2e -maxdepth 2 2>/dev/null | head -60 || true
+          echo "=== host-config dir contents ==="
+          find /data/nexus/libkrun-vms-e2e -name "host-config" -type d 2>/dev/null | while read -r d; do
+            echo "--- $d ---"
+            find "$d" -maxdepth 3 2>/dev/null || echo "(empty or unreadable)"
+          done
+          echo "=== HOME fixtures ==="
+          ls -la "$HOME/.gitconfig" "$HOME/.ssh/" "$HOME/.config/nexus/" 2>/dev/null || true
 
       - name: Upload test results on failure
         if: failure()

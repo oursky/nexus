@@ -178,11 +178,6 @@ This command is typically invoked automatically by the bundle's shell stub:
 				}
 			}
 
-			// If caller passed explicit args (non-subcommand), run those inside the VM.
-			if len(runArgs) > 0 {
-				return r.Run(ctx, eb, runArgs)
-			}
-
 			// No args: run workspace.up intent inside the VM.
 			// Guard: if Up is empty, print a clear message and exit cleanly.
 			if len(normalizedUp) == 0 {

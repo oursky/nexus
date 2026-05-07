@@ -8,7 +8,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
-// Spec: ERR-011
+// Spec: WS-059, ERR-011
 // TestErrors_WorkspaceNotFound verifies workspace operations on unknown IDs return 404.
 func TestErrors_WorkspaceNotFound(t *testing.T) {
 	t.Parallel()
@@ -149,7 +149,9 @@ func TestErrors_DuplicateWorkspaceName(t *testing.T) {
 	repoPath := harness.MakeLocalGitRepo(t, "dup-name")
 
 	var res struct {
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{"repo": repoPath, "ref": "main", "workspaceName": "dup-test"},
@@ -175,7 +177,9 @@ func TestErrors_InvalidStateTransitions(t *testing.T) {
 	repoPath := harness.MakeLocalGitRepo(t, "invalid-sm")
 
 	var res struct {
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{"repo": repoPath, "ref": "main", "workspaceName": "invalid-sm-test"},
@@ -216,7 +220,9 @@ func TestErrors_RemoveAlreadyRemoved(t *testing.T) {
 	repoPath := harness.MakeLocalGitRepo(t, "remove-twice")
 
 	var res struct {
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{"repo": repoPath, "ref": "main", "workspaceName": "remove-twice-test"},

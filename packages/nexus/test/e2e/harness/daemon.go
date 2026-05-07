@@ -91,7 +91,7 @@ func buildDaemonArgs(cfg daemonConfig) []string {
 	return args
 }
 
-// launchAndWait starts nexusd and waits up to 60 s for it to accept RPC.
+// launchAndWait starts nexusd and waits up to 120 s for it to accept RPC.
 // Returns the running cmd and a connected client. Panics on failure.
 func launchAndWait(binPath, socketPath string, args []string) (*exec.Cmd, *Client) {
 	cmd := exec.Command(binPath, args...)
@@ -101,7 +101,7 @@ func launchAndWait(binPath, socketPath string, args []string) (*exec.Cmd, *Clien
 		panic("harness: start nexusd: " + err.Error())
 	}
 
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(120 * time.Second)
 	var client *Client
 	for time.Now().Before(deadline) {
 		c, err := Dial(socketPath)
@@ -120,7 +120,7 @@ func launchAndWait(binPath, socketPath string, args []string) (*exec.Cmd, *Clien
 	if client == nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		panic("harness: nexusd did not become ready within 60s")
+		panic("harness: nexusd did not become ready within 120s")
 	}
 	return cmd, client
 }

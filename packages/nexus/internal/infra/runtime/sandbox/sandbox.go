@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+
+	"github.com/oursky/nexus/packages/nexus/internal/infra/config"
 )
 
 const strictSeatbeltProfile = `(version 1)
@@ -65,9 +67,11 @@ func internalProcessSandboxEnabled(repoRoot string) bool {
 		}
 		root = abs
 	}
-	// TODO(p-daemon): replace with internal/daemon/config.LoadWorkspaceConfig once implemented.
-	_ = root
-	return false
+	cfg, found, err := config.LoadNexusfile(root)
+	if err != nil || !found {
+		return false
+	}
+	return cfg.Sandbox.Relaxed
 }
 
 func darwinSeatbeltCommand(shell, workDir string, relaxed bool) (*exec.Cmd, error) {
@@ -111,12 +115,18 @@ func linuxBubblewrapCommand(shell, workDir string, relaxed bool) (*exec.Cmd, err
 		"--dev", "/dev",
 		"--die-with-parent",
 		"--new-session",
-		"--unshare-pid",
 		"--chdir", "/workspace",
 	}
 	if !relaxed {
-		args = append(args, "--unshare-net")
+		// Strict mode: isolate network and PID namespace.
+		// Processes cannot bind to host-visible ports and cannot outlive the
+		// terminal session (PID 1 exit kills the namespace).
+		args = append(args, "--unshare-pid", "--unshare-net")
 	}
+	// Relaxed mode (sandbox.relaxed = true in Nexusfile): host network and PID
+	// namespaces are shared. This allows spawning long-lived daemons (e.g. a
+	// nexus daemon for self-hosted development) that bind to host ports and
+	// survive after the workspace terminal session closes.
 	args = append(args, shell)
 	cmd := exec.Command("bwrap", args...)
 	cmd.Dir = workDir

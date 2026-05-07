@@ -8,7 +8,6 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -27,22 +26,6 @@ func vmSquashfsURL() string {
 	default:
 		return "https://cloud-images.ubuntu.com/minimal/releases/resolute/release/ubuntu-26.04-minimal-cloudimg-amd64-root.tar.xz"
 	}
-}
-
-// vmRootfsIsSquashfs reports whether the cached rootfs archive is squashfs
-// (legacy squashfs CI format) rather than a tar.xz (Ubuntu CDN format).
-func vmRootfsIsSquashfs(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	var magic [4]byte
-	if _, err := f.Read(magic[:]); err != nil {
-		return false
-	}
-	// squashfs magic: 'sqsh' (0x73717368) or 'hsqs' (0x68737173)
-	return magic == [4]byte{0x73, 0x71, 0x73, 0x68} || magic == [4]byte{0x68, 0x73, 0x71, 0x73}
 }
 
 func passtDownloadURL() string {

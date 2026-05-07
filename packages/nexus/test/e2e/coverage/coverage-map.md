@@ -161,12 +161,10 @@ Source spec directory: `../../docs`
 | ERR-004 | covered | `TestErrors_MissingIDParam` (test/e2e/workspace/errors_test.go:70)<br>`TestErrors_SpotlightStopMissingWorkspaceID` (test/e2e/workspace/errors_test.go:96)<br>`TestErrors_MethodNotFound` (test/e2e/workspace/errors_test.go:119) |  |
 | ERR-005 | waived | - | General rule: all application errors use -32000 with data.kind — verified structurally. |
 | ERR-010 | covered | `TestErrors_DuplicateWorkspaceName` (test/e2e/workspace/errors_test.go:146) |  |
-| ERR-011 | covered | `TestErrors_WorkspaceNotFound` (test/e2e/workspace/errors_test.go:13)<br>`TestErrors_PTYCreateMissingWorkspace` (test/e2e/workspace/errors_test.go:130)<br>`TestLifecycle_NotFound` (test/e2e/workspace/lifecycle_sm_test.go:177)<br>`TestLifecycle_StartNotFound` (test/e2e/workspace/lifecycle_sm_test.go:192) |  |
+| ERR-011 | covered | `TestErrors_WorkspaceNotFound` (test/e2e/workspace/errors_test.go:13)<br>`TestErrors_PTYCreateMissingWorkspace` (test/e2e/workspace/errors_test.go:130)<br>`TestLifecycle_NotFound` (test/e2e/workspace/lifecycle_sm_test.go:195)<br>`TestLifecycle_StartNotFound` (test/e2e/workspace/lifecycle_sm_test.go:210) |  |
 | ERR-012 | waived | - | workspace.invalid_state — partially covered by invalid transition tests but exact error code mapping requires deeper assertion. |
 | ERR-013 | covered | `TestErrors_CreateMissingRequiredFields` (test/e2e/workspace/errors_test.go:47) |  |
-| ERR-014 | n/a | - | workspace.fork_missing_ref — no longer applicable; empty childRef now inherits parent ref (WS-034 updated). |
 | ERR-015 | waived | - | workspace.no_snapshot — requires a workspace with no snapshot on restore; edge case. |
-| ERR-022 | n/a | - | workspace.fork_missing_ref — no longer applicable; empty childRef inherits parent ref per updated WS-034. |
 | ERR-023 | waived | - | workspace.restore no snapshot — same as ERR-015. |
 | ERR-025 | waived | - | Workspace error not explicitly triggered in e2e. |
 | ERR-040 | covered | `TestProject_DuplicateName` (test/e2e/project/project_test.go:97) |  |
@@ -193,14 +191,14 @@ Source spec directory: `../../docs`
 | INV-004 | covered | `TestProject` (test/e2e/project/project_test.go:12)<br>`TestProject_DuplicateName` (test/e2e/project/project_test.go:97) |  |
 | INV-005 | covered | `TestSpotlight` (test/e2e/spotlight/spotlight_test.go:12) |  |
 | INV-006 | waived | - | workspace.list no duplicates — guaranteed by database primary key; not testable in e2e. |
-| INV-007 | covered | `TestIntegration_CreateAndGetLifecycle` (internal/app/workspace/integration_test.go:29)<br>`TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:62)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
-| INV-008 | covered | `TestIntegration_CreateAndGetLifecycle` (internal/app/workspace/integration_test.go:29)<br>`TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:62)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
-| INV-009 | covered | `TestIntegration_CreateAndGetLifecycle` (internal/app/workspace/integration_test.go:29)<br>`TestLifecycle_RemoveNotInList` (test/e2e/workspace/lifecycle_sm_test.go:146)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
+| INV-007 | covered | `TestIntegration_CreateAndGetLifecycle` (internal/app/workspace/integration_test.go:29)<br>`TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:64)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
+| INV-008 | covered | `TestIntegration_CreateAndGetLifecycle` (internal/app/workspace/integration_test.go:29)<br>`TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:64)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
+| INV-009 | covered | `TestIntegration_CreateAndGetLifecycle` (internal/app/workspace/integration_test.go:29)<br>`TestLifecycle_RemoveNotInList` (test/e2e/workspace/lifecycle_sm_test.go:158)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
 | INV-010 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
 | INV-011 | covered | `TestIntegration_CreateAndGetLifecycle` (internal/app/workspace/integration_test.go:29)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
-| INV-012 | covered | `TestErrors_InvalidStateTransitions` (test/e2e/workspace/errors_test.go:171) |  |
-| INV-013 | covered | `TestErrors_InvalidStateTransitions` (test/e2e/workspace/errors_test.go:171) |  |
-| INV-014 | covered | `TestErrors_RemoveAlreadyRemoved` (test/e2e/workspace/errors_test.go:213) |  |
+| INV-012 | covered | `TestErrors_InvalidStateTransitions` (test/e2e/workspace/errors_test.go:173) |  |
+| INV-013 | covered | `TestErrors_InvalidStateTransitions` (test/e2e/workspace/errors_test.go:173) |  |
+| INV-014 | covered | `TestErrors_RemoveAlreadyRemoved` (test/e2e/workspace/errors_test.go:217) |  |
 | INV-015 | covered | `TestProject` (test/e2e/project/project_test.go:12) |  |
 | INV-016 | covered | `TestSpotlight_ListAndStop` (test/e2e/spotlight/spotlight_behavioral_test.go:152)<br>`TestErrors_SpotlightStopUnknownWorkspace` (test/e2e/workspace/errors_test.go:108) |  |
 | INV-017 | waived | - | workspace.ports.remove unknown forward — requires racing removal or specific edge case. |
@@ -348,10 +346,11 @@ Source spec directory: `../../docs`
 | VM-010 | covered | `TestCLI_WorkspaceBundleRunner_MacOSCompatibility` (test/e2e/cli/workspace_bundle_test.go:77) |  |
 | VM-011 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
 | VM-012 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:127) |  |
-| VM-013 | waived | - | Invariant covered by VM-PROOF-011 (host-guest sync E2E test). |
-| VM-014 | waived | - | Invariant covered by VM-PROOF-012 (guest write isolation E2E test). |
-| VM-015 | waived | - | Invariant covered by VM-PROOF-013 (fork isolation E2E test). |
-| VM-016 | waived | - | Invariant covered by VM-PROOF-014 and general workspace boot tests. |
+| VM-013 | covered | `TestVMProof_HostGuestSync` (test/e2e/vmproof/overlayfs_test.go:18) |  |
+| VM-014 | covered | `TestVMProof_GuestWriteIsolation` (test/e2e/vmproof/overlayfs_test.go:59) |  |
+| VM-015 | covered | `TestVMProof_ForkIsolation` (test/e2e/vmproof/overlayfs_test.go:167) |  |
+| VM-016 | covered | `TestVMProof_GuestWriteIsolation` (test/e2e/vmproof/overlayfs_test.go:59)<br>`TestVMProof_ForkIsolation` (test/e2e/vmproof/overlayfs_test.go:167) |  |
+| VM-017 | covered | `TestVMProof_VirtiofsHostGuestSync` (test/e2e/vmproof/virtiofs_test.go:19) |  |
 | VM-PROOF-001 | covered | `TestCLI_WorkspaceShellAndExec` (test/e2e/cli/cli_test.go:62)<br>`TestPTY_ExecEcho` (test/e2e/pty/pty_behavioral_test.go:69)<br>`TestPTY_ShellNonInteractiveScript` (test/e2e/pty/pty_behavioral_test.go:152) |  |
 | VM-PROOF-002 | covered | `TestSpotlight_TCPProxyTraffic` (test/e2e/spotlight/spotlight_behavioral_test.go:79)<br>`TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
 | VM-PROOF-003 | waived | - | Requires deterministic daemon restart harness coverage for VM workspaces; tracked in child PRD 06 TD follow-up. |
@@ -363,8 +362,8 @@ Source spec directory: `../../docs`
 | VM-PROOF-009 | covered | `TestCLI_WorkspaceExportImport_EndToEnd` (test/e2e/cli/workspace_bundle_test.go:16) |  |
 | VM-PROOF-010 | covered | `TestCLI_WorkspaceBundleRunner_IntentExecution` (test/e2e/cli/workspace_bundle_test.go:127) |  |
 | VM-PROOF-011 | covered | `TestVMProof_HostGuestSync` (test/e2e/vmproof/overlayfs_test.go:18) |  |
-| VM-PROOF-012 | covered | `TestVMProof_GuestWriteIsolation` (test/e2e/vmproof/overlayfs_test.go:58) |  |
-| VM-PROOF-013 | covered | `TestVMProof_ForkIsolation` (test/e2e/vmproof/overlayfs_test.go:97) |  |
+| VM-PROOF-012 | covered | `TestVMProof_GuestWriteIsolation` (test/e2e/vmproof/overlayfs_test.go:59) |  |
+| VM-PROOF-013 | covered | `TestVMProof_ForkIsolation` (test/e2e/vmproof/overlayfs_test.go:167) |  |
 | VM-PROOF-014 | covered | `TestVMProof_DockerDaemon` (test/e2e/vmproof/docker_test.go:16) |  |
 | WS-001 | waived | - | Conceptual clause: workspace definition. |
 | WS-002 | waived | - | Conceptual clause: workspace ID uniqueness. |
@@ -382,32 +381,32 @@ Source spec directory: `../../docs`
 | WS-014 | waived | - | Conceptual clause: stopped state definition. |
 | WS-015 | waived | - | Conceptual clause: restored state definition. |
 | WS-016 | waived | - | Conceptual clause: state exclusivity. |
-| WS-017 | covered | `TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:62) |  |
-| WS-018 | covered | `TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:62) |  |
+| WS-017 | covered | `TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:64) |  |
+| WS-018 | covered | `TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:64) |  |
 | WS-019 | waived | - | starting -> created failure transition is an internal implementation detail. |
-| WS-020 | covered | `TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:62) |  |
-| WS-021 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:116) |  |
-| WS-022 | covered | `TestLifecycle_RemoveNotInList` (test/e2e/workspace/lifecycle_sm_test.go:146) |  |
-| WS-023 | covered | `TestLifecycle_RemoveNotInList` (test/e2e/workspace/lifecycle_sm_test.go:146) |  |
+| WS-020 | covered | `TestLifecycle_StartAndStop` (test/e2e/workspace/lifecycle_sm_test.go:64) |  |
+| WS-021 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:124) |  |
+| WS-022 | covered | `TestLifecycle_RemoveNotInList` (test/e2e/workspace/lifecycle_sm_test.go:158) |  |
+| WS-023 | covered | `TestLifecycle_RemoveNotInList` (test/e2e/workspace/lifecycle_sm_test.go:158) |  |
 | WS-024 | waived | - | restored -> running transition requires restored state setup. |
 | WS-025 | waived | - | restored -> removed transition requires restored state setup. |
-| WS-026 | covered | `TestErrors_InvalidStateTransitions` (test/e2e/workspace/errors_test.go:171) |  |
-| WS-027 | covered | `TestErrors_InvalidStateTransitions` (test/e2e/workspace/errors_test.go:171) |  |
-| WS-028 | covered | `TestErrors_InvalidStateTransitions` (test/e2e/workspace/errors_test.go:171) |  |
+| WS-026 | covered | `TestErrors_InvalidStateTransitions` (test/e2e/workspace/errors_test.go:173) |  |
+| WS-027 | covered | `TestErrors_InvalidStateTransitions` (test/e2e/workspace/errors_test.go:173) |  |
+| WS-028 | covered | `TestErrors_InvalidStateTransitions` (test/e2e/workspace/errors_test.go:173) |  |
 | WS-029 | waived | - | General illegal transition rule covered by specific transition tests. |
 | WS-030 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
 | WS-031 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
 | WS-032 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
 | WS-033 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
-| WS-034 | covered | `TestLifecycle_ForkEmptyChildRefInheritsParent` (test/e2e/workspace/lifecycle_sm_test.go) |  |
+| WS-034 | covered | `TestLifecycle_ForkEmptyChildRefInheritsParent` (test/e2e/workspace/lifecycle_sm_test.go:226) |  |
 | WS-040 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12)<br>`TestProtocol_WorkflowRoundTrip` (test/e2e/workspace/protocol_test.go:108) |  |
 | WS-041 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
 | WS-042 | waived | - | workspace.create unique name pre-condition is covered by TestErrors_DuplicateWorkspaceName but the exact spec clause mapping is implicit. |
 | WS-043 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12)<br>`TestProtocol_WorkflowRoundTrip` (test/e2e/workspace/protocol_test.go:108) |  |
 | WS-044 | covered | `TestErrors_CreateMissingRequiredFields` (test/e2e/workspace/errors_test.go:47) |  |
 | WS-045 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12) |  |
-| WS-046 | covered | `TestLifecycle_NotFound` (test/e2e/workspace/lifecycle_sm_test.go:177) |  |
-| WS-047 | covered | `TestLifecycle_NotFound` (test/e2e/workspace/lifecycle_sm_test.go:177) |  |
+| WS-046 | covered | `TestLifecycle_NotFound` (test/e2e/workspace/lifecycle_sm_test.go:195) |  |
+| WS-047 | covered | `TestLifecycle_NotFound` (test/e2e/workspace/lifecycle_sm_test.go:195) |  |
 | WS-048 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12)<br>`TestProtocol_WorkflowRoundTrip` (test/e2e/workspace/protocol_test.go:108) |  |
 | WS-049 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12)<br>`TestProtocol_WorkflowRoundTrip` (test/e2e/workspace/protocol_test.go:108) |  |
 | WS-050 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12)<br>`TestProtocol_WorkflowRoundTrip` (test/e2e/workspace/protocol_test.go:108) |  |
@@ -418,17 +417,17 @@ Source spec directory: `../../docs`
 | WS-055 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12)<br>`TestProtocol_WorkflowRoundTrip` (test/e2e/workspace/protocol_test.go:108) |  |
 | WS-056 | covered | `TestWorkspaceLifecycle` (test/e2e/workspace/lifecycle_test.go:12)<br>`TestProtocol_WorkflowRoundTrip` (test/e2e/workspace/protocol_test.go:108) |  |
 | WS-057 | waived | - | workspace.fork request shape. |
-| WS-058 | waived | - | workspace.fork childRef required. |
-| WS-059 | waived | - | workspace.fork pre-condition (source running). |
+| WS-058 | covered | `TestLifecycle_ForkEmptyChildRefInheritsParent` (test/e2e/workspace/lifecycle_sm_test.go:226) |  |
+| WS-059 | covered | `TestErrors_WorkspaceNotFound` (test/e2e/workspace/errors_test.go:13)<br>`TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
 | WS-060 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
-| WS-061 | waived | - | workspace.fork auto-generated name. |
+| WS-061 | covered | `TestLifecycle_ForkEmptyChildRefInheritsParent` (test/e2e/workspace/lifecycle_sm_test.go:226) |  |
 | WS-062 | covered | `TestWorkspaceFork` (test/e2e/workspace/fork_test.go:13) |  |
-| WS-063 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:116)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
-| WS-064 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:116)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
-| WS-065 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:116)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
-| WS-066 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:116)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
-| WS-067 | covered | `TestLifecycle_ReadyState` (test/e2e/workspace/lifecycle_sm_test.go:93) |  |
-| WS-068 | covered | `TestLifecycle_ReadyState` (test/e2e/workspace/lifecycle_sm_test.go:93) |  |
+| WS-063 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:124)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
+| WS-064 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:124)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
+| WS-065 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:124)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
+| WS-066 | covered | `TestLifecycle_RestoreFromStopped` (test/e2e/workspace/lifecycle_sm_test.go:124)<br>`TestWorkspaceRestore` (test/e2e/workspace/restore_test.go:17) |  |
+| WS-067 | covered | `TestLifecycle_ReadyState` (test/e2e/workspace/lifecycle_sm_test.go:99) |  |
+| WS-068 | covered | `TestLifecycle_ReadyState` (test/e2e/workspace/lifecycle_sm_test.go:99) |  |
 | WS-069 | waived | - | workspace.discover-ports request shape. |
 | WS-070 | waived | - | workspace.discover-ports response shape. |
 | WS-071 | waived | - | DiscoveredPort object shape. |

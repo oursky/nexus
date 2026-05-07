@@ -231,28 +231,33 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 	// The directory lives inside the workspace workdir so it persists for
 	// the entire VM lifetime and is cleaned up with the workspace.
 	home, _ := os.UserHomeDir()
+	log.Printf("[libkrun] host config drive: home=%q workdir=%s", home, d.manager.cfg.WorkDirRoot)
 	configDriveDir := filepath.Join(d.manager.cfg.WorkDirRoot, workspaceID, "host-config")
 	if err := os.MkdirAll(configDriveDir, 0o755); err != nil {
 		log.Printf("[libkrun] warning: create host config dir: %v", err)
 		configDriveDir = ""
-	} else if err := buildHostConfigDirLibkrun(home, configDriveDir); err != nil {
+	} else if n, err := buildHostConfigDirLibkrun(home, configDriveDir); err != nil {
 		log.Printf("[libkrun] warning: host config dir: %v", err)
 		configDriveDir = ""
+	} else {
+		log.Printf("[libkrun] host config drive: populated %d files into %s", n, configDriveDir)
 	}
 
 	manifestHash := resolveManifestHash(root)
 	bakedRootfs := IsRootfsBaked(defaultStampDir())
 
 	spec := SpawnSpec{
-		WorkspaceID:   workspaceID,
-		ProjectRoot:   root,
-		MemoryMiB:     memMiB,
-		VCPUs:         1,
-		SnapshotID:    snapshotID,
-		HostConfigDir: configDriveDir,
-		VMProfile:     resolveGuestVMProfile(root),
-		ManifestHash:  manifestHash,
-		BakedRootfs:   bakedRootfs,
+		WorkspaceID:      workspaceID,
+		ProjectRoot:      root,
+		MemoryMiB:        memMiB,
+		VCPUs:            1,
+		SnapshotID:       snapshotID,
+		HostConfigDir:    configDriveDir,
+		VMProfile:        resolveGuestVMProfile(root),
+		ManifestHash:     manifestHash,
+		BakedRootfs:      bakedRootfs,
+		ForkRestore:      snapshotID != "", // fork/restore workspaces use hybrid-overlay mode
+		UseWorkspaceBase: snapshotID != "", // fork/restore needs snapshot as base lowerdir
 	}
 
 	d.mu.Lock()

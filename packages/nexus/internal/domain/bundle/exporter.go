@@ -172,34 +172,6 @@ func WriteNXPackBundle(dst string, assetsBlob []byte) error {
 	return nil
 }
 
-// WriteNXPackBundleWithBinary writes a self-executing NXPACK bundle embedding
-// the provided nexus binary bytes instead of reading os.Executable().
-// Use this when you need to embed a specific binary (e.g. in tests or tooling).
-func WriteNXPackBundleWithBinary(dst string, assetsBlob, nexusBin []byte) error {
-	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755) //nolint:gosec
-	if err != nil {
-		return fmt.Errorf("bundle: create output file: %w", err)
-	}
-	defer f.Close()
-
-	stub := nxpackShellStub(len(nexusBin))
-	preamble := append(stub, nexusBin...) //nolint:gocritic
-
-	if err := WriteNXPack(f, assetsBlob, preamble); err != nil {
-		return err
-	}
-	if err := f.Chmod(0o755); err != nil { //nolint:gosec
-		return fmt.Errorf("bundle: chmod bundle: %w", err)
-	}
-	return nil
-}
-
-// BuildAssetsTar is the exported version of buildAssetsTar for use by the CLI.
-// It builds a single-platform assets tar without meta.json (for legacy use).
-func BuildAssetsTar(archiveBytes []byte, ociLayers []OCILayer) ([]byte, error) {
-	return buildAssetsTar(archiveBytes, map[string][]OCILayer{"": ociLayers}, nil, BundleMeta{})
-}
-
 // buildAssetsTar constructs the uncompressed tar archive with a rigid directory structure:
 //
 //	layers/arm64.tar
@@ -209,7 +181,6 @@ func BuildAssetsTar(archiveBytes []byte, ociLayers []OCILayer) ([]byte, error) {
 //	meta.json
 //
 // platformLibs maps "darwin-arm64" → {libkrun.dylib, libkrunfw.dylib}, etc.
-// If nil, falls back to discoverLibkrunAssets for single-platform behavior.
 func buildAssetsTar(archiveBytes []byte, multiArchLayers map[string][]OCILayer, platformLibs map[string][]string, meta BundleMeta) ([]byte, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -229,30 +200,13 @@ func buildAssetsTar(archiveBytes []byte, multiArchLayers map[string][]OCILayer, 
 		}
 	}
 
-	if platformLibs != nil {
-		for platform, paths := range platformLibs {
-			for _, p := range paths {
-				data, readErr := os.ReadFile(p)
-				if readErr != nil {
-					return nil, fmt.Errorf("bundle: read lib asset %s for %s: %w", p, platform, readErr)
-				}
-				name := "lib/" + platform + "/" + filepath.Base(p)
-				if err := writeTarEntry(tw, name, data); err != nil {
-					return nil, err
-				}
-			}
-		}
-	} else {
-		libPaths, libErr := discoverLibkrunAssets()
-		if libErr != nil {
-			return nil, libErr
-		}
-		for _, p := range libPaths {
+	for platform, paths := range platformLibs {
+		for _, p := range paths {
 			data, readErr := os.ReadFile(p)
 			if readErr != nil {
-				return nil, fmt.Errorf("bundle: read lib asset %s: %w", p, readErr)
+				return nil, fmt.Errorf("bundle: read lib asset %s for %s: %w", p, platform, readErr)
 			}
-			name := "lib/" + filepath.Base(p)
+			name := "lib/" + platform + "/" + filepath.Base(p)
 			if err := writeTarEntry(tw, name, data); err != nil {
 				return nil, err
 			}

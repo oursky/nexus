@@ -52,3 +52,19 @@ if sudo test -f "$ROOT_HASH"; then
   mkdir -p "$(dirname "$USER_HASH")"
   sudo cat "$ROOT_HASH" > "$USER_HASH"
 fi
+
+# Install VM assets to the runner user's XDG data dir so that subsequent
+# daemon starts (which run as root with HOME=$HOME) find rootfs.ext4 and
+# vmlinux.bin already present and skip the expensive download+build step.
+ROOT_VM=/root/.local/share/nexus/vm
+USER_VM="$HOME/.local/share/nexus/vm"
+if sudo test -d "$ROOT_VM"; then
+  mkdir -p "$USER_VM"
+  for f in vmlinux.bin rootfs.ext4; do
+    SRC="/var/lib/nexus/$f"
+    DST="$USER_VM/$f"
+    if [ -f "$SRC" ] && [ ! -e "$DST" ]; then
+      ln "$SRC" "$DST" 2>/dev/null || cp "$SRC" "$DST"
+    fi
+  done
+fi

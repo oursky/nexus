@@ -33,12 +33,10 @@ func (imp *Importer) Import(ctx context.Context, bundlePath string, dryRun bool)
 
 	// Detect format by trying to read the NXPACK footer.
 	footer, footerErr := ReadNXPackFooter(f)
-	if footerErr == nil {
-		return imp.importNXPack(ctx, f, footer, bundlePath, dryRun)
+	if footerErr != nil {
+		return &InvalidBundle{Reason: fmt.Sprintf("not a valid NXPACK bundle: %v", footerErr)}
 	}
-
-	// Fall back to legacy gzip-tar format.
-	return imp.importLegacyTarGz(ctx, f, dryRun)
+	return imp.importNXPack(ctx, f, footer, bundlePath, dryRun)
 }
 
 // importNXPack handles NXPACK v2 bundles.
@@ -87,29 +85,6 @@ func (imp *Importer) importNXPack(_ context.Context, f *os.File, footer PackFoot
 
 	fmt.Printf("import complete: bundle cached at %s\n", cacheDir)
 	return nil
-}
-
-// importLegacyTarGz handles the legacy gzip-tar v1 format (read/validate only).
-func (imp *Importer) importLegacyTarGz(_ context.Context, f *os.File, dryRun bool) error {
-	_ = dryRun
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("bundle: rewind file: %w", err)
-	}
-
-	// Try gzip.
-	gr, err := gzip.NewReader(f)
-	if err != nil {
-		return &InvalidBundle{Reason: fmt.Sprintf("not a valid bundle (not NXPACK, not gzip): %v", err)}
-	}
-	defer gr.Close()
-
-	tr := tar.NewReader(gr)
-	_, _, err = scanBundleLegacy(tr)
-	if err != nil {
-		return err
-	}
-
-	return &InvalidBundle{Reason: "legacy bundle format not supported"}
 }
 
 // ExtractBundle extracts an NXPACK bundle to the default cache location and
@@ -325,34 +300,6 @@ func hasAssetEntry(tarBytes []byte, name string) bool {
 			return true
 		}
 	}
-}
-
-// scanBundleLegacy reads the tar archive and returns the bytes of manifest.json
-// and whether payload/workspace.tar.gz is present.
-func scanBundleLegacy(tr *tar.Reader) (manifestBytes []byte, hasWorkspacePayload bool, err error) {
-	for {
-		hdr, hdrErr := tr.Next()
-		if hdrErr == io.EOF {
-			break
-		}
-		if hdrErr != nil {
-			return nil, false, &InvalidBundle{Reason: fmt.Sprintf("read archive: %v", hdrErr)}
-		}
-		switch hdr.Name {
-		case "manifest.json":
-			data, readErr := io.ReadAll(tr)
-			if readErr != nil {
-				return nil, false, &InvalidBundle{Reason: fmt.Sprintf("read manifest.json: %v", readErr)}
-			}
-			manifestBytes = data
-		case "payload/workspace.tar.gz":
-			hasWorkspacePayload = true
-		}
-	}
-	if manifestBytes == nil {
-		return nil, false, &InvalidBundle{Reason: "manifest.json not found in bundle"}
-	}
-	return manifestBytes, hasWorkspacePayload, nil
 }
 
 // checkCompatibilityMeta returns IncompatibleHost if the current arch is not listed.

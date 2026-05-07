@@ -1,0 +1,7 @@
+"$schema" = "./packages/nexus/schemas/nexusfile.schema.json"
+
+[sandbox]
+# Relaxed mode: shares host network and PID namespaces so that a nexus daemon
+# started from inside this workspace can bind to host-visible ports and survive
+# after the terminal session closes. Required for self-hosted nexus development.
+relaxed = true

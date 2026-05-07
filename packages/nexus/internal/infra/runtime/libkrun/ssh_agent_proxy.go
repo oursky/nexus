@@ -60,15 +60,28 @@ func proxySSHAgent(guest net.Conn, authSock string) {
 	}
 	defer agent.Close()
 
+	// closeAll closes both connections exactly once. Called when either copy
+	// direction finishes so the other goroutine is unblocked. The host
+	// ssh-agent may never close its write end after a half-close, which
+	// would leave io.Copy(guest, agent) blocked forever without this.
+	var once sync.Once
+	closeAll := func() {
+		once.Do(func() {
+			_ = guest.Close()
+			_ = agent.Close()
+		})
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		defer closeAll()
 		_, _ = io.Copy(agent, guest)
-		_ = agent.(*net.UnixConn).CloseWrite()
 	}()
 	go func() {
 		defer wg.Done()
+		defer closeAll()
 		_, _ = io.Copy(guest, agent)
 	}()
 	wg.Wait()

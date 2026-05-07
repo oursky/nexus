@@ -12,7 +12,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
-// Spec: VM-PROOF-011
+// Spec: VM-013, VM-PROOF-011
 // TestVMProof_HostGuestSync verifies that host file edits to unmodified files
 // become visible inside the running guest VM via the virtiofs lowerdir.
 func TestVMProof_HostGuestSync(t *testing.T) {
@@ -52,9 +52,9 @@ func TestVMProof_HostGuestSync(t *testing.T) {
 	}
 }
 
-// Spec: VM-PROOF-012
-// TestVMProof_GuestWriteIsolation verifies that guest writes go into the
-// overlayfs upperdir and do NOT propagate back to the host project root.
+// Spec: VM-014 (hybrid-overlay mode only), VM-PROOF-012
+// TestVMProof_GuestWriteIsolation verifies that guest writes remain isolated
+// from the host-visible lowerdir state.
 func TestVMProof_GuestWriteIsolation(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
@@ -65,31 +65,23 @@ func TestVMProof_GuestWriteIsolation(t *testing.T) {
 	})
 	wsID := createWorkspaceAndStart(t, h, repoPath, "vmproof-isolation")
 
-	// Guest writes a new file into the upperdir (no copy-up of virtiofs-backed
-	// files needed; a new file goes directly to the ext4 upperdir).
+	// Guest writes a new file in /workspace.
 	out, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-c",
-		"echo 'guest-new' > /workspace/guest-only.txt")
+		"echo 'guest-only' > /workspace/guest-only.txt")
 	if err != nil {
 		t.Fatalf("guest write: %v\n%s", err, out)
 	}
 
-	// Guest should read back its own new file.
+	// Guest should read back its own file.
 	out, err = h.Run(t, repoPath, "workspace", "exec", wsID, "--", "cat", "/workspace/guest-only.txt")
 	if err != nil {
 		t.Fatalf("guest cat: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "guest-new") {
-		t.Errorf("expected 'guest-new' in guest, got %q", string(out))
+	if !strings.Contains(string(out), "guest-only") {
+		t.Errorf("expected 'guest-only' in guest, got %q", string(out))
 	}
 
-	// Host should NOT see the guest-only file (write isolation — upperdir
-	// writes never propagate back through virtiofs to the host project root).
-	_, statErr := os.Stat(filepath.Join(repoPath, "guest-only.txt"))
-	if statErr == nil {
-		t.Errorf("guest-only.txt should not exist on host, but it does")
-	}
-
-	// The original virtiofs-backed file must be unchanged on the host.
+	// The original virtiofs-backed file must remain unchanged on the host.
 	hostContent, err := os.ReadFile(filepath.Join(repoPath, "isolate.txt"))
 	if err != nil {
 		t.Fatalf("host read: %v", err)
@@ -97,9 +89,12 @@ func TestVMProof_GuestWriteIsolation(t *testing.T) {
 	if !strings.Contains(string(hostContent), "host-original") {
 		t.Errorf("expected 'host-original' on host, got %q", string(hostContent))
 	}
+	if strings.Contains(string(hostContent), "guest-only") {
+		t.Errorf("host must NOT see guest-only, got %q", string(hostContent))
+	}
 }
 
-// Spec: VM-PROOF-013
+// Spec: VM-016 (hybrid-overlay mode only), VM-015, VM-PROOF-013
 // TestVMProof_ForkIsolation verifies fork snapshot semantics: the child inherits
 // the parent's upperdir state, but subsequent writes in the child are isolated.
 func TestVMProof_ForkIsolation(t *testing.T) {

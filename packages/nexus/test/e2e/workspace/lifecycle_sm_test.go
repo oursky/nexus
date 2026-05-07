@@ -220,9 +220,9 @@ func TestLifecycle_StartNotFound(t *testing.T) {
 	}
 }
 
-// Spec: WS-034
+// Spec: WS-034, WS-058, WS-061
 // TestLifecycle_ForkEmptyChildRefInheritsParent verifies workspace.fork with empty childRef
-// inherits the parent's ref instead of rejecting the request.
+// inherits the parent's ref and auto-generates a child name when one is not supplied.
 func TestLifecycle_ForkEmptyChildRefInheritsParent(t *testing.T) {
 	t.Parallel()
 	h := suite.Harness().ForTest(t)
@@ -231,8 +231,9 @@ func TestLifecycle_ForkEmptyChildRefInheritsParent(t *testing.T) {
 	var res struct {
 		Forked    bool `json:"forked"`
 		Workspace struct {
-			ID  string `json:"id"`
-			Ref string `json:"ref"`
+			ID            string `json:"id"`
+			Ref           string `json:"ref"`
+			WorkspaceName string `json:"workspaceName"`
 		} `json:"workspace"`
 	}
 	if err := h.Call("workspace.fork", map[string]any{"id": id, "childRef": ""}, &res); err != nil {
@@ -240,6 +241,9 @@ func TestLifecycle_ForkEmptyChildRefInheritsParent(t *testing.T) {
 	}
 	if res.Workspace.Ref != "main" {
 		t.Errorf("child ref=%q, want main (inherited from parent)", res.Workspace.Ref)
+	}
+	if res.Workspace.WorkspaceName != "sm-fork-noref-fork" {
+		t.Errorf("child workspaceName=%q, want sm-fork-noref-fork", res.Workspace.WorkspaceName)
 	}
 	t.Cleanup(func() { _ = h.Call("workspace.remove", map[string]any{"id": res.Workspace.ID}, nil) })
 }

@@ -6,22 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 )
 
 // NodeConfig describes the capabilities and identity of a Nexus node (host machine).
 // It is stored at $XDG_CONFIG_HOME/nexus/node.json (default ~/.nexus/node.json) and is separate from workspace
 // config which only declares what a workspace requires.
 type NodeConfig struct {
-	Schema        string            `json:"$schema,omitempty"`
-	Version       int               `json:"version"`
-	Node          NodeIdentity      `json:"node,omitempty"`
-	Capabilities  NodeCapabilities  `json:"capabilities,omitempty"`
-	Compatibility NodeCompatibility `json:"compatibility,omitempty"`
-}
-
-type NodeCompatibility struct {
-	MinimumDaemonVersion string `json:"minimumDaemonVersion,omitempty"`
+	Schema       string           `json:"$schema,omitempty"`
+	Version      int              `json:"version"`
+	Node         NodeIdentity     `json:"node,omitempty"`
+	Capabilities NodeCapabilities `json:"capabilities,omitempty"`
 }
 
 // NodeIdentity holds human-readable metadata about the node.
@@ -112,15 +106,6 @@ func DefaultNodeConfig() *NodeConfig {
 func (c *NodeConfig) ValidateBasic() error {
 	if c.Version < 1 {
 		return fmt.Errorf("node config version must be >= 1")
-	}
-	if v := c.Compatibility.MinimumDaemonVersion; v != "" {
-		matched, err := regexp.MatchString(`^v?\d+\.\d+\.\d+$`, v)
-		if err != nil {
-			return fmt.Errorf("validate minimumDaemonVersion: %w", err)
-		}
-		if !matched {
-			return fmt.Errorf("minimumDaemonVersion must be semver-like (e.g. v0.3.0): %q", v)
-		}
 	}
 	return nil
 }

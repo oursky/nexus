@@ -116,6 +116,7 @@ type SpawnSpec struct {
 	ManifestHash     string // derived from base+project Nexusfile contents
 	BakedRootfs      bool   // true when the host rootfs bake stamp is present
 	UseWorkspaceBase bool   // true → hybrid overlay with workspace-base.ext4 (export/import flows only)
+	ForkRestore      bool   // true → workspace is a fork/restore and should use hybrid-overlay mode with ext4 base lowerdir
 }
 
 // spawnTimeout is the maximum time allowed for the entire Spawn operation.
@@ -233,8 +234,7 @@ func (m *Manager) snapshotDockerPath(snapshotID string) string {
 // the current host project root state.
 //
 // In the hybrid overlay model this updates workspace-base.ext4 (the read-only
-// baked lowerdir). For legacy workspaces without a base image it falls back to
-// updating workspace.ext4 directly.
+// baked lowerdir).
 //
 // Callers should stop the parent VM first to establish a clear snapshot boundary.
 func (m *Manager) PromoteWorkspaceImageFromProjectRoot(ctx context.Context, workspaceID, projectRoot string) error {

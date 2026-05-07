@@ -151,9 +151,8 @@ func stopClientActiveSpotlight(conn *rpc.MuxConn, p *profile.Profile, out io.Wri
 		fmt.Fprintf(out, "warning: failed to stop previous spotlight for %s: %v\n", active.WorkspaceID, err)
 	}
 	delete(state.Profiles, key)
-	// Gracefully shut down all persisted SSH tunnel processes (handles old + new format).
-	for _, pid := range active.allTunnelPIDs() {
-		sshtunnel.CloseByPID(pid)
+	if active.TunnelPID > 0 {
+		sshtunnel.CloseByPID(active.TunnelPID)
 	}
 	return saveSpotlightClientState(state)
 }

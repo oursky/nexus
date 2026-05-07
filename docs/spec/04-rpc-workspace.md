@@ -105,16 +105,19 @@ starting state returns `ERR-013`.
 {
   "id":                 "string (source workspace ID, required)",
   "childWorkspaceName": "string (optional — daemon generates name if omitted)",
-  "childRef":           "string (required)"
+  "childRef":           "string (optional)"
 }
 ```
 Response: `{"forked": bool, "workspace"?: <Workspace>}`.
 
-**`WS-058`** — `childRef` is REQUIRED. Omitting it or sending an empty string MUST return
-`ERR-022`.
+**`WS-058`** — `childRef` is OPTIONAL. Omitting it or sending an empty string inherits the
+parent's ref. This matters for process-sandbox backends that materialize a child git worktree.
+For libkrun, the fork call does not reject an empty `childRef`; the daemon tracks the current ref
+via the git-hook path in realtime instead of requiring fork-time validation here.
 
-**`WS-059`** — Pre-condition: source workspace MUST be in state `running`. Any other state returns
-`ERR-011`.
+**`WS-059`** — Pre-condition: source workspace MUST exist. A missing source workspace returns
+`ERR-011`. Forking is allowed from a freshly created workspace; when the parent is already
+`running`, backends may snapshot or restart it as part of the fork flow.
 
 **`WS-060`** — Post-condition: the forked workspace is in state `created`, with `parentWorkspaceId`
 set to the source ID and `lineageRootId` computed per `WS-033`.
