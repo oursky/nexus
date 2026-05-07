@@ -15,10 +15,20 @@ import (
 // NexusfileConfig is a lightweight project config loaded from Nexusfile.
 // It is intentionally small and user-facing.
 type NexusfileConfig struct {
-	Schema   string              `json:"$schema,omitempty" toml:"$schema"`
-	VM       NexusfileVMSection  `json:"vm,omitempty" toml:"vm"`
-	Manifest NexusfileManifest   `json:"manifest,omitempty" toml:"manifest"`
-	Dev      NexusfileDevSection `json:"dev,omitempty" toml:"dev"`
+	Schema   string                  `json:"$schema,omitempty" toml:"$schema"`
+	VM       NexusfileVMSection      `json:"vm,omitempty" toml:"vm"`
+	Manifest NexusfileManifest       `json:"manifest,omitempty" toml:"manifest"`
+	Dev      NexusfileDevSection     `json:"dev,omitempty" toml:"dev"`
+	Sandbox  NexusfileSandboxSection `json:"sandbox,omitempty" toml:"sandbox"`
+}
+
+// NexusfileSandboxSection configures process-sandbox isolation for the workspace.
+type NexusfileSandboxSection struct {
+	// Relaxed disables network and PID isolation so that processes spawned
+	// inside the workspace (e.g. a nexus daemon for self-hosted development)
+	// can bind to host-visible ports and survive past the terminal session.
+	// Only enable this for trusted internal repos.
+	Relaxed bool `json:"relaxed,omitempty" toml:"relaxed"`
 }
 
 type NexusfileVMSection struct {
