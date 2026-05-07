@@ -12,6 +12,9 @@ struct DaemonSettingsPanel: View {
     @State private var daemonLog: DaemonLogTail = DaemonLogTail()
     @State private var appLifecycleLogLines: [String] = []
     @State private var startupTraceLogLines: [String] = []
+    @State private var isProvisionLogLoading = false
+    @State private var provisionLogEntries: [ProvisionLogEntry] = []
+    @State private var isProvisionLogPresented = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -34,6 +37,9 @@ struct DaemonSettingsPanel: View {
         .transaction { $0.animation = nil }
         .sheet(item: $checkResult) { result in
             DaemonCheckResultSheet(result: result)
+        }
+        .sheet(isPresented: $isProvisionLogPresented) {
+            ProvisionLogSheet(entries: provisionLogEntries)
         }
     }
 
@@ -100,6 +106,24 @@ struct DaemonSettingsPanel: View {
                 .foregroundColor(canProvision ? Theme.label : Theme.labelTertiary)
                 .disabled(!canProvision)
                 Spacer()
+                Button {
+                    Task { await loadProvisionLog() }
+                } label: {
+                    if isProvisionLogLoading {
+                        HStack(spacing: 4) {
+                            ProgressView().scaleEffect(0.6).frame(width: 12, height: 12)
+                            Text("Loading…")
+                        }
+                    } else {
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 11))
+                    }
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 11))
+                .foregroundColor(Theme.labelSecondary)
+                .disabled(isProvisionLogLoading)
+                .help("View provision log")
             }
         }
         .padding(.horizontal, 12)
@@ -250,6 +274,44 @@ struct DaemonSettingsPanel: View {
         defer { isCheckRunning = false }
         let (ok, output) = await appState.runDaemonCheckViaCLI()
         checkResult = DaemonCheckResult(id: UUID(), passed: ok, output: output)
+    }
+
+    private func loadProvisionLog() async {
+        guard !isProvisionLogLoading else { return }
+        isProvisionLogLoading = true
+        defer { isProvisionLogLoading = false }
+
+        let logURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("nexus/provision.log")
+
+        guard let url = logURL, FileManager.default.fileExists(atPath: url.path) else {
+            provisionLogEntries = []
+            isProvisionLogPresented = true
+            return
+        }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let lines = String(data: data, encoding: .utf8)?.split(separator: "\n") ?? []
+            provisionLogEntries = lines.compactMap { line -> ProvisionLogEntry? in
+                guard let data = line.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    return nil
+                }
+                return ProvisionLogEntry(
+                    timestamp: json["timestamp"] as? String ?? "",
+                    step: json["step"] as? String ?? "",
+                    phase: json["phase"] as? String,
+                    message: json["message"] as? String,
+                    progress: json["progress"] as? Double,
+                    attempt: json["attempt"] as? Int
+                )
+            }
+        } catch {
+            provisionLogEntries = [ProvisionLogEntry(timestamp: "", step: "error", phase: nil, message: "Failed to read provision log: \(error.localizedDescription)", progress: nil, attempt: nil)]
+        }
+
+        isProvisionLogPresented = true
     }
 
     // MARK: - Computed helpers
@@ -529,5 +591,167 @@ private final class ConnectionLogWindowDelegate: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         onClose()
+    }
+}
+
+// MARK: - Provision Log Entry
+
+struct ProvisionLogEntry: Identifiable {
+    let id = UUID()
+    let timestamp: String
+    let step: String
+    let phase: String?
+    let message: String?
+    let progress: Double?
+    let attempt: Int?
+
+    var displayTime: String {
+        guard let date = ISO8601DateFormatter().date(from: timestamp) else {
+            return timestamp
+        }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .medium
+        return formatter.string(from: date)
+    }
+
+    var displayText: String {
+        var parts: [String] = []
+        if let phase = phase {
+            parts.append("[\(phase)]")
+        }
+        if let message = message {
+            parts.append(message)
+        }
+        if let progress = progress {
+            parts.append(String(format: "%.0f%%", progress * 100))
+        }
+        if let attempt = attempt {
+            parts.append("(attempt \(attempt))")
+        }
+        return parts.isEmpty ? step : parts.joined(separator: " ")
+    }
+
+    var stepIcon: String {
+        switch step {
+        case "checking-host": return "magnifyingglass"
+        case "uploading-binary": return "arrow.up.circle"
+        case "starting-daemon": return "play.circle"
+        case "bootstrap": return "gear"
+        case "waiting": return "clock"
+        case "ready": return "checkmark.circle.fill"
+        case "error": return "exclamationmark.triangle.fill"
+        default: return "circle"
+        }
+    }
+
+    var stepColor: Color {
+        switch step {
+        case "ready": return Theme.green
+        case "error": return .red
+        case "uploading-binary": return .blue
+        case "starting-daemon": return .orange
+        default: return Theme.labelSecondary
+        }
+    }
+}
+
+// MARK: - Provision Log Sheet
+
+struct ProvisionLogSheet: View {
+    let entries: [ProvisionLogEntry]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceMd) {
+            HStack {
+                Image(systemName: "doc.text")
+                    .foregroundColor(Theme.labelSecondary)
+                Text("Provision Log")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    let text = entries.map { "[\($0.displayTime)] \($0.displayText)" }.joined(separator: "\n")
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                .font(.system(size: 12))
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+
+            Divider()
+
+            if entries.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 32))
+                        .foregroundColor(Theme.labelTertiary)
+                    Text("No provision log found")
+                        .font(.system(size: 13))
+                        .foregroundColor(Theme.labelSecondary)
+                    Text("Run 'Provision Daemon' to generate a log.")
+                        .font(.system(size: 11))
+                        .foregroundColor(Theme.labelTertiary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(40)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(entries) { entry in
+                                HStack(spacing: 8) {
+                                    Image(systemName: entry.stepIcon)
+                                        .font(.system(size: 10))
+                                        .foregroundColor(entry.stepColor)
+                                        .frame(width: 16)
+                                    Text(entry.displayTime)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(Theme.labelTertiary)
+                                        .frame(width: 70, alignment: .leading)
+                                    Text(entry.displayText)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundColor(Theme.label)
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 2)
+                            }
+                            Color.clear.frame(height: 1).id("end")
+                        }
+                    }
+                    .onAppear {
+                        proxy.scrollTo("end", anchor: .bottom)
+                    }
+                }
+                .frame(maxHeight: 480)
+                .background(Theme.bgElevated)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Theme.separator)
+                )
+            }
+        }
+        .padding(Theme.spaceLg)
+        .frame(
+            minWidth: 520,
+            idealWidth: 640,
+            maxWidth: 820,
+            minHeight: 300,
+            idealHeight: 480,
+            maxHeight: 760
+        )
+        .background(Theme.bgElevated)
+        .onAppear {
+            DispatchQueue.main.async {
+                NSApp.keyWindow?.center()
+            }
+        }
     }
 }
