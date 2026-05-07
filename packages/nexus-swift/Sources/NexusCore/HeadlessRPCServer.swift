@@ -789,7 +789,21 @@ public final class HeadlessRPCServer {
             }
             return (200, str)
         } catch {
-            let payload: [String: Any] = ["ok": false, "error": error.localizedDescription, "phases": phases]
+            var payload: [String: Any] = ["ok": false, "error": error.localizedDescription, "phases": phases]
+
+            // Extract observed phases and timeout from ProvisionError if available
+            if let provisionError = error as? ProvisionError {
+                switch provisionError {
+                case .daemonReadyTimeout(let seconds, let observedPhases):
+                    payload["observedPhases"] = observedPhases
+                    payload["timeoutSeconds"] = seconds
+                case .daemonStalled(let phase):
+                    payload["stalledAtPhase"] = phase
+                default:
+                    break
+                }
+            }
+
             guard let data = try? JSONSerialization.data(withJSONObject: payload),
                   let str = String(data: data, encoding: .utf8) else {
                 return (500, jsonError(error.localizedDescription))
