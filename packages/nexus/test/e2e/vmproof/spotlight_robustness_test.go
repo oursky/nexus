@@ -136,6 +136,17 @@ func TestVMProof_Spotlight_AcrossFork(t *testing.T) {
 	h.MustCall("workspace.start", map[string]any{"id": childID}, nil)
 	harness.WaitForWorkspaceReady(t, h.Harness, childID)
 
+	// Re-establish parent's HTTP server after fork: CheckpointFork stops then
+	// restarts the parent VM to ensure filesystem consistency, which kills all
+	// in-guest processes and clears /tmp (tmpfs). The parent restarts
+	// asynchronously, so we must wait for it to be ready before exec-ing.
+	harness.WaitForWorkspaceReady(t, h.Harness, parentID)
+	out, err = h.Run(t, repoPath, "workspace", "exec", parentID, "--", "sh", "-c",
+		"echo 'parent-content' > /tmp/probe.txt && nohup python3 -m http.server 18888 --directory /tmp >/tmp/httpd.log 2>&1 & sleep 1")
+	if err != nil {
+		t.Fatalf("parent: restart HTTP server after fork: %v\n%s", err, out)
+	}
+
 	// Start HTTP server in fork with fork-specific content on the same port.
 	out, err = h.Run(t, repoPath, "workspace", "exec", childID, "--", "sh", "-c",
 		"echo 'fork-content' > /tmp/probe.txt && nohup python3 -m http.server 18888 --directory /tmp >/tmp/httpd.log 2>&1 & sleep 1")
