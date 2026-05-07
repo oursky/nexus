@@ -63,18 +63,21 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 	// Workspace upperdir: restore from snapshot or create empty.
 	if snapID := strings.TrimSpace(spec.SnapshotID); snapID != "" {
 		if spec.ForkRestore {
-			// Fork/restore: the snapshot becomes the base lowerdir.
-			// Copy it to workspace-base.ext4 and create a fresh empty upperdir.
-			log.Printf("[libkrun] workspace %s: phase=restore_base snapshot=%s", spec.WorkspaceID, snapID)
+			// Fork/restore: build a flat ext4 lowerdir that merges the project
+			// root source tree with the parent's overlay writes (from snapshot
+			// upper/). A direct copy of the snapshot would expose the overlay
+			// internal directory structure (upper/, work/) to overlayfs as
+			// regular directories, hiding the actual workspace files.
+			log.Printf("[libkrun] workspace %s: phase=build_fork_lowerdir snapshot=%s", spec.WorkspaceID, snapID)
 			phaseStart := time.Now()
-			phaseCtx, cancel := phaseTimeout(ctx, 2*time.Minute)
-			if err := copyFileWithContext(phaseCtx, m.snapshotWorkspacePath(snapID), workspaceBasePath); err != nil {
+			phaseCtx, cancel := phaseTimeout(ctx, 5*time.Minute)
+			if err := buildForkLowerdirWithContext(phaseCtx, m.snapshotWorkspacePath(snapID), spec.ProjectRoot, workspaceBasePath); err != nil {
 				cancel()
 				os.RemoveAll(workDir)
-				return nil, fmt.Errorf("restore base from snapshot: %w", err)
+				return nil, fmt.Errorf("build fork lowerdir: %w", err)
 			}
 			cancel()
-			log.Printf("[libkrun] workspace %s: phase_done=restore_base (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
+			log.Printf("[libkrun] workspace %s: phase_done=build_fork_lowerdir (%s)", spec.WorkspaceID, time.Since(phaseStart).Round(time.Millisecond))
 
 			// Create fresh empty upperdir for child mutations.
 			log.Printf("[libkrun] workspace %s: phase=create_fork_upperdir", spec.WorkspaceID)
