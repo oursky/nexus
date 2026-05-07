@@ -82,6 +82,7 @@ public actor RemoteProvisioner {
         }
 
         await progress?(.checkingHost)
+        writeProvisionLog(step: "checking-host", message: "SSH target: \(sshTarget)")
 
         // Fast path: daemon already healthy.
         if await isDaemonHealthy(sshTarget: sshTarget) {
@@ -107,11 +108,48 @@ public actor RemoteProvisioner {
 
         // Start daemon and stream bootstrap phases.
         await progress?(.startingDaemon)
-        try await startDaemonWithPhaseEvents(sshTarget: sshTarget, progress: progress)
+        writeProvisionLog(step: "starting-daemon", message: "Launching daemon with phase events")
+        let phaseTracker = PhaseTracker()
+        try await startDaemonWithPhaseEvents(sshTarget: sshTarget, progress: progress, phaseTracker: phaseTracker)
 
         // Wait for healthz.
-        try await waitForDaemon(sshTarget: sshTarget, progress: progress)
+        try await waitForDaemon(sshTarget: sshTarget, progress: progress, phaseTracker: phaseTracker)
         await progress?(.ready)
+        writeProvisionLog(step: "ready", message: "Daemon healthy and ready")
+    }
+
+    private class PhaseTracker {
+        private var observedPhases: Set<String> = []
+        private var lastPhaseTime: Date = Date()
+        private(set) var lastPhase: String = ""
+
+        func observe(phase: String) {
+            observedPhases.insert(phase)
+            lastPhase = phase
+            lastPhaseTime = Date()
+        }
+
+        var hasObservedRootfsBake: Bool {
+            observedPhases.contains("rootfs-bake")
+        }
+
+        var timeSinceLastPhase: TimeInterval {
+            Date().timeIntervalSince(lastPhaseTime)
+        }
+
+        var baseTimeout: TimeInterval {
+            // First boot with rootfs bake can take 5-6 minutes total
+            // (bake ~40s + daemon launch + prewarm base images + healthz ready)
+            hasObservedRootfsBake ? 360 : 60
+        }
+
+        var allObservedPhases: [String] {
+            Array(observedPhases)
+        }
+        
+        var hasObservedDaemonLaunch: Bool {
+            observedPhases.contains("daemon-launch")
+        }
     }
 
     // MARK: - Private helpers
@@ -176,6 +214,7 @@ public actor RemoteProvisioner {
         let totalBytes = (try? FileManager.default.attributesOfItem(atPath: binaryURL.path)[.size] as? Int64) ?? 0
         logger.info("provision: uploading \(binaryURL.lastPathComponent, privacy: .public) (\(totalBytes, privacy: .public) bytes) to \(sshTarget, privacy: .public)")
         await progress?(.uploadingBinary(progress: 0.0))
+        writeProvisionLog(step: "uploading-binary", message: "Starting binary upload", progress: 0.0)
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -272,6 +311,7 @@ public actor RemoteProvisioner {
 
         logger.info("provision: upload complete (\(bytesWritten, privacy: .public) bytes)")
         await progress?(.uploadingBinary(progress: 1.0))
+        writeProvisionLog(step: "uploading-binary", message: "Binary upload complete", progress: 1.0)
     }
 
     private static func writeAll(_ data: Data, to fd: Int32) throws {
@@ -311,7 +351,7 @@ public actor RemoteProvisioner {
     /// (streaming JSON events), then re-execs the daemon in the background and
     /// exits once the socket is ready.  The SSH session ends naturally at that
     /// point, so no nohup/disown is needed.
-    private func startDaemonWithPhaseEvents(sshTarget: String, progress: ProgressHandler?) async throws {
+    private func startDaemonWithPhaseEvents(sshTarget: String, progress: ProgressHandler?, phaseTracker: PhaseTracker) async throws {
         let remotePort = profile.port
 
         let cmd = """
@@ -344,12 +384,14 @@ public actor RemoteProvisioner {
         proc.standardError = errPipe
 
         try proc.run()
-        let stdoutTask = Task { [logger] () -> String in
+        let stdoutTask = Task { [logger, self] () -> String in
             let raw = await Self.readProcessLines(from: outPipe.fileHandleForReading) { line in
                 guard let event = Self.parsePhaseEvent(line) else { return }
                 logger.info("provision: phase \(event.phase, privacy: .public) \(event.status, privacy: .public) \(event.message, privacy: .public)")
+                phaseTracker.observe(phase: event.phase)
                 let msg = event.message.isEmpty ? event.phase : "\(event.phase): \(event.message)"
                 await progress?(.bootstrapPhase(phase: event.phase, message: msg))
+                await self.writeProvisionLog(step: "bootstrap", phase: event.phase, message: event.message)
             }
             return raw
         }
@@ -430,24 +472,65 @@ public actor RemoteProvisioner {
     }
 
     /// Poll the daemon's healthz endpoint via SSH until it responds 200 or we time out.
-    private func waitForDaemon(sshTarget: String, progress: ProgressHandler?, timeout: TimeInterval = 120) async throws {
+    private func waitForDaemon(sshTarget: String, progress: ProgressHandler?, phaseTracker: PhaseTracker) async throws {
+        let timeout = phaseTracker.baseTimeout
         let deadline = Date().addingTimeInterval(timeout)
         var attempt = 0
 
         while Date() < deadline {
             attempt += 1
             await progress?(.waitingForDaemon(attempt: attempt))
+            writeProvisionLog(step: "waiting", message: "Polling healthz", attempt: attempt)
 
             if await isDaemonHealthy(sshTarget: sshTarget) {
-                logger.info("provision: daemon healthy after \(attempt, privacy: .public) poll attempts")
+                logger.info("provision: daemon healthy after \(attempt) poll attempts")
                 return
+            }
+
+            // If no phase has been seen for 60s AND we haven't seen daemon-launch yet, something is wrong.
+            // daemon-launch is the last bootstrap phase; after that the daemon just needs time to start.
+            if phaseTracker.timeSinceLastPhase > 60 && !phaseTracker.hasObservedDaemonLaunch {
+                throw ProvisionError.daemonStalled(phase: phaseTracker.lastPhase)
             }
 
             let delay = min(Double(attempt) * 0.5, 3.0)
             try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
         }
 
-        throw ProvisionError.daemonReadyTimeout(seconds: timeout)
+        throw ProvisionError.daemonReadyTimeout(seconds: timeout, observedPhases: phaseTracker.allObservedPhases)
+    }
+
+    // MARK: - Provision log
+
+    private func writeProvisionLog(step: String, phase: String? = nil, message: String? = nil, progress: Double? = nil, attempt: Int? = nil) {
+        let logDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("nexus", isDirectory: true)
+        let logURL = logDir?.appendingPathComponent("provision.log")
+
+        guard let url = logURL else { return }
+
+        // Ensure directory exists
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        var entry: [String: Any] = [
+            "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "step": step
+        ]
+        if let phase = phase { entry["phase"] = phase }
+        if let message = message { entry["message"] = message }
+        if let progress = progress { entry["progress"] = progress }
+        if let attempt = attempt { entry["attempt"] = attempt }
+
+        guard let data = try? JSONSerialization.data(withJSONObject: entry),
+              let line = String(data: data, encoding: .utf8) else { return }
+
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write((line + "\n").data(using: .utf8)!)
+            handle.closeFile()
+        } else {
+            try? (line + "\n").write(to: url, atomically: true, encoding: .utf8)
+        }
     }
 
     // MARK: - Binary bundling
@@ -461,11 +544,10 @@ public actor RemoteProvisioner {
         }
         for name in candidates {
             let devPath = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("packages/nexus-swift/Resources/\(name)")
+                .deletingLastPathComponent()  // NexusCore
+                .deletingLastPathComponent()  // Sources
+                .deletingLastPathComponent()  // nexus-swift
+                .appendingPathComponent("Resources/\(name)")
             if FileManager.default.fileExists(atPath: devPath.path) {
                 logger.info("provision: using dev binary at \(devPath.path, privacy: .public)")
                 return devPath
@@ -518,7 +600,8 @@ public enum ProvisionError: Error, LocalizedError, Sendable {
     case bundledBinaryMissing
     case uploadFailed(message: String)
     case daemonStartFailed(message: String)
-    case daemonReadyTimeout(seconds: TimeInterval)
+    case daemonReadyTimeout(seconds: TimeInterval, observedPhases: [String])
+    case daemonStalled(phase: String)
     case sshFailed(command: String, message: String)
     /// SSH authentication failed (wrong key, key not accepted). User must fix profile.
     case sshAuthFailed(message: String)
@@ -537,8 +620,11 @@ public enum ProvisionError: Error, LocalizedError, Sendable {
             return "Failed to upload nexus binary to remote host: \(msg)"
         case .daemonStartFailed(let msg):
             return "Failed to start nexus daemon: \(msg)"
-        case .daemonReadyTimeout(let secs):
-            return "Nexus daemon did not become ready within \(Int(secs)) seconds."
+        case .daemonReadyTimeout(let secs, let phases):
+            let phasesStr = phases.isEmpty ? "none" : phases.joined(separator: ", ")
+            return "Nexus daemon did not become ready within \(Int(secs)) seconds. Observed phases: \(phasesStr)."
+        case .daemonStalled(let phase):
+            return "Daemon appears stalled at phase '\(phase)' — no progress for 60 seconds."
         case .sshFailed(_, let msg):
             return "SSH command failed: \(msg)"
         case .sshAuthFailed(let msg):
