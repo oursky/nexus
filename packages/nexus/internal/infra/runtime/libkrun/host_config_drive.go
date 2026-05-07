@@ -16,10 +16,11 @@ import (
 // buildHostConfigDirLibkrun populates destDir with the host user's config files
 // (gitconfig, SSH keys, tool auth, DNS resolver) for use as a virtiofs share.
 // destDir must already exist; files are written directly into it.
+// Returns the number of files written.
 // This replaces the old ext4 image approach: by exposing the directory via
 // virtiofs we save one IRQ line (block disks each consume an IRQ; virtiofs
 // shares are multiplexed on a single device).
-func buildHostConfigDirLibkrun(home, destDir string) error {
+func buildHostConfigDirLibkrun(home, destDir string) (int, error) {
 	type entry struct{ src, dst string }
 	var files []entry
 
@@ -69,6 +70,7 @@ func buildHostConfigDirLibkrun(home, destDir string) error {
 		}
 	}
 
+	written := 0
 	for _, f := range files {
 		dstFull := filepath.Join(destDir, f.dst)
 		if err := os.MkdirAll(filepath.Dir(dstFull), 0o755); err != nil {
@@ -88,9 +90,11 @@ func buildHostConfigDirLibkrun(home, destDir string) error {
 		}
 		if err := os.WriteFile(dstFull, data, perm); err != nil {
 			log.Printf("[libkrun] host config dir: write %s: %v", f.dst, err)
+			continue
 		}
+		written++
 	}
-	return nil
+	return written, nil
 }
 
 // hostSSHAuthorizedKeysMaterial returns the SSH public key material for the host user.

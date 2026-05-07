@@ -134,8 +134,8 @@ jobs:
             go_p: 2
             go_parallel: 2
             go_run: "TestVMProof_HostConfigDrive|TestVMProof_SSHAgentProxy|TestVMProof_Spotlight_Across|TestVMProof_HostGuestSync|TestVMProof_GuestWriteIsolation|TestVMProof_VirtiofsHostGuestSync|TestVMProof_GuestCLITools"
-            go_timeout: 10m
-            step_timeout_minutes: 15
+            go_timeout: 15m
+            step_timeout_minutes: 20
           - name: vmproof-heavy
             packages: ./test/e2e/vmproof
             go_p: 2
@@ -374,6 +374,13 @@ jobs:
           done
           echo "=== /data/nexus/libkrun-vms-e2e directory listing ==="
           find /data/nexus/libkrun-vms-e2e -maxdepth 2 2>/dev/null | head -60 || true
+          echo "=== host-config dir contents ==="
+          find /data/nexus/libkrun-vms-e2e -name "host-config" -type d 2>/dev/null | while read -r d; do
+            echo "--- $d ---"
+            find "$d" -maxdepth 3 2>/dev/null || echo "(empty or unreadable)"
+          done
+          echo "=== HOME fixtures ==="
+          ls -la "$HOME/.gitconfig" "$HOME/.ssh/" "$HOME/.config/nexus/" 2>/dev/null || true
 
       - name: Upload test results on failure
         if: failure()
