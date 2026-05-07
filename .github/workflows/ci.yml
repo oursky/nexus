@@ -128,21 +128,19 @@ jobs:
             go_run: ""
             go_timeout: 10m
             step_timeout_minutes: 15
-          # ── VM-integration shards (vmproof split by cost) ──────────────
-          - name: vmproof-core
+          # ── VM-integration shard (all vmproof tests in one shard) ──────
+          # Merged from vmproof-core + vmproof-heavy to avoid running two
+          # shard jobs concurrently: parallel shards double the active VM
+          # count, causing resource exhaustion on CI machines and making
+          # WaitForWorkspaceReady block indefinitely. A single shard with
+          # p=2 keeps at most 2 VMs live at once.
+          - name: vmproof
             packages: ./test/e2e/vmproof
             go_p: 2
             go_parallel: 2
-            go_run: "TestVMProof_HostConfigDrive|TestVMProof_SSHAgentProxy|TestVMProof_Spotlight_Across|TestVMProof_HostGuestSync|TestVMProof_GuestWriteIsolation|TestVMProof_VirtiofsHostGuestSync|TestVMProof_GuestCLITools"
-            go_timeout: 15m
-            step_timeout_minutes: 20
-          - name: vmproof-heavy
-            packages: ./test/e2e/vmproof
-            go_p: 2
-            go_parallel: 2
-            go_run: "TestVMProof_DockerDaemon|TestVMProof_DockerCompose|TestVMProof_ForkToolchain|TestVMProof_ForkIsolation"
-            go_timeout: 15m
-            step_timeout_minutes: 20
+            go_run: ""
+            go_timeout: 10m
+            step_timeout_minutes: 15
           # ── Workspace shards (split by fork vs core) ───────────────────
           - name: workspace-core
             packages: ./test/e2e/workspace
