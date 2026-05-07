@@ -333,6 +333,14 @@ jobs:
       - name: Setup host config drive fixtures
         run: scripts/ci/setup-host-config-fixtures.sh
 
+      - name: Start SSH agent (vmproof only)
+        if: matrix.shard.name == 'vmproof'
+        run: |
+          set -euo pipefail
+          eval $(ssh-agent -s)
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+
       - name: Run e2e tests (${{ matrix.shard.name }})
         timeout-minutes: ${{ matrix.shard.step_timeout_minutes }}
         working-directory: packages/nexus
@@ -350,6 +358,7 @@ jobs:
             "NEXUS_E2E_BINARY=$NEXUS_E2E_BINARY" \
             "NEXUS_E2E_REMOTE_PROFILE=${NEXUS_E2E_REMOTE_PROFILE:-}" \
             "NEXUS_E2E_SSH_IDENTITY=${NEXUS_E2E_SSH_IDENTITY:-}" \
+            "SSH_AUTH_SOCK=${SSH_AUTH_SOCK:-}" \
             go test -tags e2e -count=1 -timeout=${{ matrix.shard.go_timeout }} -v -p ${{ matrix.shard.go_p }} -parallel ${{ matrix.shard.go_parallel }} \
             "${go_run_args[@]}" \
             ${{ matrix.shard.packages }}
