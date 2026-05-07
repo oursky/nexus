@@ -119,7 +119,7 @@ fi
 # The guest agent binary is embedded in nexus and extracted automatically by
 # the daemon on first start (resolveGuestAgentBinary) — no separate deploy needed.
 echo "Deploying to ${REMOTE_HOST}:${REMOTE_BIN} (dev env)..."
-ssh "$REMOTE_HOST" "BIN=${REMOTE_BIN}; mkdir -p \"\$(dirname \"\$BIN\")\"; rm -f \"\$BIN\""
+ssh "$REMOTE_HOST" "mkdir -p \$(dirname ${REMOTE_BIN}) && rm -f ${REMOTE_BIN}"
 scp "$NEXUS_PKG/tmp/nexus-linux" "${REMOTE_HOST}:${REMOTE_BIN}"
 ssh "$REMOTE_HOST" "chmod +x ${REMOTE_BIN}"
 

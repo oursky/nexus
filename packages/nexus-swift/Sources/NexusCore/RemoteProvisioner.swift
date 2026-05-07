@@ -63,14 +63,55 @@ public actor RemoteProvisioner {
 
     /// Ensure the remote host has a running nexus daemon.
     ///
-    /// Provisioning from the Mac app is currently disabled.
-    /// Install the nexus binary manually from the GitHub releases page:
-    /// https://github.com/oursky/nexus/releases
-    ///
-    /// Then start the daemon on the remote host:
-    ///   nexus daemon start --port 7777
+    /// Flow:
+    ///   1. Check if daemon is already healthy (fast-path)
+    ///   2. Check if nexus binary exists and matches bundled binary
+    ///   3. If missing or mismatched: upload bundled Linux binary
+    ///   4. Start daemon with phase event streaming
+    ///   5. Poll healthz until ready
     public func provision(progress: ProgressHandler? = nil) async throws {
-        throw ProvisionError.provisioningDisabled
+        guard let sshTarget = profile.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sshTarget.isEmpty else {
+            throw ProvisionError.noSSHTarget
+        }
+
+        sshScopedPaths = SSHSecurityScope.resolve(profile: profile, category: "provision")
+        defer {
+            SSHSecurityScope.stop(sshScopedPaths)
+            sshScopedPaths = .empty
+        }
+
+        await progress?(.checkingHost)
+
+        // Fast path: daemon already healthy.
+        if await isDaemonHealthy(sshTarget: sshTarget) {
+            logger.info("provision: daemon already healthy")
+            await progress?(.ready)
+            return
+        }
+
+        // Resolve bundled binary.
+        guard let binaryURL = bundledLinuxBinary() else {
+            throw ProvisionError.bundledBinaryMissing
+        }
+
+        // Upload if missing or checksum mismatch.
+        if await binaryNeedsUpload(sshTarget: sshTarget, bundledBinaryURL: binaryURL) {
+            try await uploadNexusBinary(sshTarget: sshTarget, binaryURL: binaryURL, progress: progress)
+        } else {
+            logger.info("provision: remote binary matches bundled; skipping upload")
+        }
+
+        // Stop any running daemon so the new binary takes effect.
+        try await stopDaemonIfRunning(sshTarget: sshTarget)
+
+        // Start daemon and stream bootstrap phases.
+        await progress?(.startingDaemon)
+        try await startDaemonWithPhaseEvents(sshTarget: sshTarget, progress: progress)
+
+        // Wait for healthz.
+        try await waitForDaemon(sshTarget: sshTarget, progress: progress)
+        await progress?(.ready)
     }
 
     // MARK: - Private helpers

@@ -19,16 +19,19 @@ final class MacAppFormalVerificationTests: XCTestCase {
     }
 
     // Spec: MACAPP-003, MACAPP-PROOF-002
-    func testRemoteProvisionerIsExplicitlyDisabled() async {
-        let profile = DaemonProfile(profileId: "p1", name: "Remote", port: 7777, isDefault: true, sshTarget: "dev@host")
-        let provisioner = RemoteProvisioner(profile: profile)
+    // Provisioning is enabled but auto-provision on app start is disabled.
+    // Users must manually trigger provisioning via Settings.
+    func testRemoteProvisionerRequiresValidSSHTarget() async {
+        // Profile with no SSH target should fail with noSSHTarget
+        let profileNoTarget = DaemonProfile(profileId: "p1", name: "Remote", port: 7777, isDefault: true, sshTarget: nil)
+        let provisionerNoTarget = RemoteProvisioner(profile: profileNoTarget)
 
         do {
-            try await provisioner.provision()
-            XCTFail("expected provisioningDisabled error")
+            try await provisionerNoTarget.provision()
+            XCTFail("expected noSSHTarget error")
         } catch let err as ProvisionError {
-            guard case .provisioningDisabled = err else {
-                XCTFail("expected provisioningDisabled, got: \(err)")
+            guard case .noSSHTarget = err else {
+                XCTFail("expected noSSHTarget, got: \(err)")
                 return
             }
         } catch {

@@ -868,63 +868,9 @@ public final class AppState: ObservableObject {
         connectionState = .connecting
         StartupTrace.checkpoint("remote.tunnel.start", "sshTarget=\(sshTarget) port=\(profile.port)")
 
-        // ── Auto-provision: ensure the remote has a running nexus daemon ──
-        // provision() returns only when daemon is provably ready (healthz passes).
-        let provisioner = RemoteProvisioner(profile: profile)
-        do {
-            try await provisioner.provision { [weak self] step in
-                guard let self else { return }
-                let msg: String
-                switch step {
-                case .checkingHost:
-                    msg = "Checking remote host…"
-                case .uploadingBinary(let pct):
-                    msg = String(format: "Uploading Nexus (%.0f%%)…", pct * 100)
-                case .startingDaemon:
-                    msg = "Starting daemon…"
-                case .bootstrapPhase(let phase, let message):
-                    msg = Self.provisioningStatusMessage(phase: phase, message: message)
-                case .waitingForDaemon(let attempt):
-                    msg = attempt <= 1 ? "Waiting for daemon…" : "Waiting for daemon (attempt \(attempt))…"
-                case .ready:
-                    msg = "Daemon ready"
-                }
-                await MainActor.run { [weak self] in
-                    self?.connectionState = .provisioning(step: msg)
-                    self?.provisioningMessage = msg
-                    AppLifecycleLog.info("provision", msg)
-                }
-            }
-            Self.logger.info("connectRemoteAndLoad: provisioning complete for \(sshTarget, privacy: .public)")
-        } catch let provErr as ProvisionError where {
-            switch provErr {
-            case .sshAuthFailed: return true
-            case .uploadFailed(let msg) where msg.contains("Permission denied"): return true
-            case .sshFailed(_, let msg) where msg.contains("Permission denied"): return true
-            // Hard failures — daemon can't start, retrying the tunnel won't help.
-            case .daemonStartFailed: return true
-            case .daemonReadyTimeout: return true
-            case .bundledBinaryMissing: return true
-            case .sshIdentityRequired: return true
-            default: return false
-            }
-        }() {
-            // Provisioning failed in a way that tunnel start cannot recover from.
-            // Surface the error directly so the user knows what to fix.
-            Self.logger.warning("connectRemoteAndLoad: provisioning hard failure, bailing early: \(provErr.localizedDescription, privacy: .public)")
-            AppLifecycleLog.error("provision", "failed: \(provErr.localizedDescription)")
-            connectionState = .disconnected
-            self.error = provErr.localizedDescription
-            needsSetup = true
-            return
-        } catch {
-            // Transient / unknown provision errors — attempt connection anyway in case
-            // the daemon is already running (e.g. provision check itself failed).
-            Self.logger.warning("connectRemoteAndLoad: provision step failed (\(error.localizedDescription, privacy: .public)); attempting connection anyway")
-            AppLifecycleLog.warn("provision", "transient failure, attempting connection anyway: \(error.localizedDescription)")
-        }
-        provisioningMessage = nil
-
+        // ── Skip auto-provision on start; user must manually provision via Settings ──
+        // Provisioning is available via the "Provision Daemon" button in Daemon Settings.
+        // This avoids unexpected binary uploads / daemon restarts on every app launch.
         let mgr = SSHTunnelManager(profile: profile)
         self.tunnelManager = mgr
         startTunnelStateObserver(mgr)
