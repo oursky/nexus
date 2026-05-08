@@ -25,6 +25,26 @@ type SyncStopResponse struct {
 	Message string `json:"message,omitempty"`
 }
 
+// PauseSyncRequest is the request payload for workspace.sync-pause.
+type PauseSyncRequest struct {
+	SessionID string `json:"sessionId"`
+}
+
+// PauseSyncResponse is the response for workspace.sync-pause.
+type PauseSyncResponse struct {
+	Success bool `json:"success"`
+}
+
+// ResumeSyncRequest is the request payload for workspace.sync-resume.
+type ResumeSyncRequest struct {
+	SessionID string `json:"sessionId"`
+}
+
+// ResumeSyncResponse is the response for workspace.sync-resume.
+type ResumeSyncResponse struct {
+	Success bool `json:"success"`
+}
+
 // SyncStatusRequest is the request payload for workspace.sync-status.
 type SyncStatusRequest struct {
 	SessionID   string `json:"sessionId"`
@@ -63,4 +83,27 @@ type SyncStatusResponse struct {
 // SyncListResponse is the response for workspace.sync-list.
 type SyncListResponse struct {
 	Sessions []SyncStatusResponse `json:"sessions"`
+}
+
+// GetSyncStatusRequest is the request payload for workspace.get-sync-status.
+type GetSyncStatusRequest struct {
+	SessionID   string `json:"sessionId"`
+	WorkspaceID string `json:"workspaceId"`
+}
+
+// GetSyncProgressRequest is the request payload for workspace.get-sync-progress.
+type GetSyncProgressRequest struct {
+	SessionID string `json:"sessionId"`
+}
+
+// SyncProgressResponse is the response for workspace.get-sync-progress.
+type SyncProgressResponse struct {
+	SessionID         string `json:"sessionId"`
+	Status            string `json:"status"`
+	TotalSyncs        int64  `json:"totalSyncs"`
+	BytesSent         int64  `json:"bytesSent"`
+	BytesReceived     int64  `json:"bytesReceived"`
+	FilesSent         int64  `json:"filesSent"`
+	FilesReceived     int64  `json:"filesReceived"`
+	ConflictsResolved int64  `json:"conflictsResolved"`
 }

@@ -44,8 +44,6 @@ type MutagenClientInterface interface {
 	SessionStatus(ctx context.Context, sessionID string) (string, error)
 }
 
-// SyncDriver is defined in driver.go.
-
 // Service manages volume sync sessions via MutagenClient.
 // It implements the SyncStarter interface consumed by the RPC handler.
 // mc may be nil, in which case mutagen operations return errors gracefully.
@@ -55,6 +53,7 @@ type Service struct {
 	wsLookup   WorkspaceLookup
 	sshManager *SSHManager
 	driver     SyncDriver
+	store      *SessionStore
 }
 
 // NewService returns a Service backed by the given MutagenClient and Repository.
@@ -79,50 +78,9 @@ func (s *Service) SetDriver(driver SyncDriver) {
 	s.driver = driver
 }
 
-// StartVolumeSync starts sync for a volume with explicit alpha/beta paths.
-func (s *Service) StartVolumeSync(ctx context.Context, workspaceID, alphaPath, betaPath, direction string) (string, error) {
-	dir := domainsync.SyncDirection(direction)
-	mode, err := directionToMode(dir)
-	if err != nil {
-		return "", err
-	}
-
-	alpha := alphaPath
-	beta := betaPath
-	if dir == domainsync.SyncDirectionDown {
-		alpha, beta = beta, alpha
-	}
-
-	mutagenID := ""
-	if s.mutagen != nil {
-		mutagenID, err = s.mutagen.CreateSession(ctx, alpha, beta, mode)
-		if err != nil {
-			return "", fmt.Errorf("sync: create session: %w", err)
-		}
-	}
-
-	id := mutagenID
-	if id == "" {
-		id = uuid.New().String()
-	}
-
-	sess := &domainsync.SyncSession{
-		ID:          id,
-		WorkspaceID: workspaceID,
-		LocalPath:   alphaPath,
-		Status:      domainsync.SyncStatusActive,
-		Direction:   dir,
-		Alpha:       alpha,
-		Beta:        beta,
-		MutagenID:   mutagenID,
-		StartedAt:   time.Now().UTC(),
-	}
-
-	if err := s.repo.Create(ctx, sess); err != nil {
-		return "", fmt.Errorf("sync: store session: %w", err)
-	}
-
-	return id, nil
+// SetStore sets the session store for persistence.
+func (s *Service) SetStore(store *SessionStore) {
+	s.store = store
 }
 
 // StartSync starts a new sync session for workspaceID/localPath in the given direction.
@@ -137,11 +95,7 @@ func (s *Service) StartSync(ctx context.Context, workspaceID, localPath, directi
 	if err != nil {
 		return nil, fmt.Errorf("sync: workspace %q not found: %w", workspaceID, err)
 	}
-	if ws.GuestIP == "" && ws.RootPath != "" {
-		// Allow local-only sync (for tests) when GuestIP is empty but RootPath is set
-	} else if ws.GuestIP == "" {
-		return nil, fmt.Errorf("sync: workspace %q is not running (no guest IP)", workspaceID)
-	}
+
 	// Check if workspace already has an active sync.
 	existing, _ := s.repo.GetByWorkspace(ctx, workspaceID)
 	if existing != nil && existing.Status != domainsync.SyncStatusStopped {
@@ -156,15 +110,25 @@ func (s *Service) StartSync(ctx context.Context, workspaceID, localPath, directi
 		return nil, fmt.Errorf("sync: local path %q is not accessible: %w", localPath, err)
 	}
 
-	var beta string
-	if ws.GuestIP == "" || ws.GuestIP == "local" {
-		// For local-only sync (tests), use RootPath directly as beta
-		beta = ws.RootPath
+	var alpha, beta string
+	if s.driver != nil && s.driver.IsAvailable(workspaceID) {
+		alpha, beta, err = s.driver.GetSyncPaths(workspaceID)
+		if err != nil {
+			return nil, fmt.Errorf("sync: driver failed for workspace %q: %w", workspaceID, err)
+		}
 	} else {
-		beta = fmt.Sprintf("user@%s:%s", ws.GuestIP, ws.RootPath)
+		// Fall back to workspace-based path resolution
+		if ws.GuestIP == "" && ws.RootPath == "" {
+			return nil, fmt.Errorf("sync: workspace %q is not running (no guest IP)", workspaceID)
+		}
+		alpha = localPath
+		if ws.GuestIP == "" || ws.GuestIP == "local" {
+			beta = ws.RootPath
+		} else {
+			beta = fmt.Sprintf("user@%s:%s", ws.GuestIP, ws.RootPath)
+		}
 	}
 
-	alpha := localPath
 	if dir == domainsync.SyncDirectionDown {
 		alpha, beta = beta, alpha
 	}
@@ -196,6 +160,12 @@ func (s *Service) StartSync(ctx context.Context, workspaceID, localPath, directi
 
 	if err := s.repo.Create(ctx, sess); err != nil {
 		return nil, fmt.Errorf("sync: store session: %w", err)
+	}
+
+	if s.store != nil {
+		if err := s.store.Add(sess); err != nil {
+			return nil, fmt.Errorf("sync: persist session: %w", err)
+		}
 	}
 
 	return s.toDTO(sess), nil
@@ -282,7 +252,15 @@ func (s *Service) terminate(ctx context.Context, sess *domainsync.SyncSession) e
 	now := time.Now().UTC()
 	sess.Status = domainsync.SyncStatusStopped
 	sess.StoppedAt = &now
-	return s.repo.Update(ctx, sess)
+	if err := s.repo.Update(ctx, sess); err != nil {
+		return err
+	}
+	if s.store != nil {
+		if err := s.store.Update(sess); err != nil {
+			return fmt.Errorf("sync: persist terminated session: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Service) toDTO(sess *domainsync.SyncSession) *SyncSessionDTO {
@@ -322,4 +300,98 @@ func directionToMode(dir domainsync.SyncDirection) (SyncDirection, error) {
 	default:
 		return 0, fmt.Errorf("sync: unknown direction %q", dir)
 	}
+}
+
+// RestoreSessions loads persisted sessions from disk and recreates them in the repository.
+func (s *Service) RestoreSessions(ctx context.Context) error {
+	if s.store == nil {
+		return nil
+	}
+	if err := s.store.Load(); err != nil {
+		return fmt.Errorf("sync: load persisted sessions: %w", err)
+	}
+	for _, sess := range s.store.List() {
+		if sess.Status == domainsync.SyncStatusStopped {
+			continue
+		}
+		// Mark as error since we can't verify mutagen state after restart
+		sess.Status = domainsync.SyncStatusError
+		if err := s.repo.Create(ctx, sess); err != nil {
+			return fmt.Errorf("sync: restore session %q: %w", sess.ID, err)
+		}
+		if err := s.store.Update(sess); err != nil {
+			return fmt.Errorf("sync: persist restored session %q: %w", sess.ID, err)
+		}
+	}
+	return nil
+}
+
+// PauseSync pauses an active sync session.
+func (s *Service) PauseSync(ctx context.Context, sessionID string) error {
+	// TODO: Implement pause functionality
+	return fmt.Errorf("sync: pause not yet implemented")
+}
+
+// ResumeSync resumes a paused sync session.
+func (s *Service) ResumeSync(ctx context.Context, sessionID string) error {
+	// TODO: Implement resume functionality
+	return fmt.Errorf("sync: resume not yet implemented")
+}
+
+// StartVolumeSync starts sync for a volume with explicit alpha/beta paths.
+func (s *Service) StartVolumeSync(ctx context.Context, workspaceID, alphaPath, betaPath, direction string) (string, error) {
+	dir := domainsync.SyncDirection(direction)
+	mode, err := directionToMode(dir)
+	if err != nil {
+		return "", err
+	}
+
+	// Check if workspace already has an active sync.
+	existing, _ := s.repo.GetByWorkspace(ctx, workspaceID)
+	if existing != nil && existing.Status != domainsync.SyncStatusStopped {
+		return "", fmt.Errorf("sync: workspace %q already has an active sync session %q", workspaceID, existing.ID)
+	}
+
+	alpha := alphaPath
+	beta := betaPath
+	if dir == domainsync.SyncDirectionDown {
+		alpha, beta = beta, alpha
+	}
+
+	mutagenID := ""
+	if s.mutagen != nil {
+		mutagenID, err = s.mutagen.CreateSession(ctx, alpha, beta, mode)
+		if err != nil {
+			return "", fmt.Errorf("sync: create session: %w", err)
+		}
+	}
+
+	id := mutagenID
+	if id == "" {
+		id = uuid.New().String()
+	}
+
+	sess := &domainsync.SyncSession{
+		ID:          id,
+		WorkspaceID: workspaceID,
+		LocalPath:   alphaPath,
+		Status:      domainsync.SyncStatusActive,
+		Direction:   dir,
+		Alpha:       alpha,
+		Beta:        beta,
+		MutagenID:   mutagenID,
+		StartedAt:   time.Now().UTC(),
+	}
+
+	if err := s.repo.Create(ctx, sess); err != nil {
+		return "", fmt.Errorf("sync: store session: %w", err)
+	}
+
+	if s.store != nil {
+		if err := s.store.Add(sess); err != nil {
+			return "", fmt.Errorf("sync: persist session: %w", err)
+		}
+	}
+
+	return id, nil
 }

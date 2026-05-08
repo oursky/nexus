@@ -378,7 +378,6 @@ func (h *Handler) handleUnmount(ctx context.Context, params json.RawMessage) (an
 	}
 	return map[string]any{"ok": true}, nil
 }
-
 func toSyncConfigDTO(cfg *domain.SyncConfig) *SyncConfigDTO {
 	if cfg == nil {
 		return nil

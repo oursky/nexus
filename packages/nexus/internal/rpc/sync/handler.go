@@ -21,6 +21,8 @@ type SyncStarter interface {
 	StopSync(ctx context.Context, sessionID, workspaceID string) error
 	SyncStatus(ctx context.Context, sessionID, workspaceID string) (*appsync.SyncSessionDTO, error)
 	ListSyncs(ctx context.Context, workspaceID string) ([]*appsync.SyncSessionDTO, error)
+	PauseSync(ctx context.Context, sessionID string) error
+	ResumeSync(ctx context.Context, sessionID string) error
 }
 
 // NewHandler creates a new sync RPC handler.
@@ -34,6 +36,10 @@ func (h *Handler) Register(reg registry.Registry) {
 	reg.Register("workspace.sync-stop", h.handleSyncStop)
 	reg.Register("workspace.sync-status", h.handleSyncStatus)
 	reg.Register("workspace.sync-list", h.handleSyncList)
+	reg.Register("workspace.sync-pause", h.handlePauseSync)
+	reg.Register("workspace.sync-resume", h.handleResumeSync)
+	reg.Register("workspace.get-sync-status", h.handleGetSyncStatus)
+	reg.Register("workspace.get-sync-progress", h.handleGetSyncProgress)
 }
 
 func (h *Handler) handleSyncStart(ctx context.Context, params json.RawMessage) (any, error) {
@@ -115,6 +121,85 @@ func (h *Handler) handleSyncList(ctx context.Context, params json.RawMessage) (a
 	}
 
 	return SyncListResponse{Sessions: responses}, nil
+}
+
+func (h *Handler) handlePauseSync(ctx context.Context, params json.RawMessage) (any, error) {
+	var req PauseSyncRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if req.SessionID == "" {
+		return nil, fmt.Errorf("sessionId is required")
+	}
+
+	if err := h.svc.PauseSync(ctx, req.SessionID); err != nil {
+		return nil, err
+	}
+
+	return PauseSyncResponse{Success: true}, nil
+}
+
+func (h *Handler) handleResumeSync(ctx context.Context, params json.RawMessage) (any, error) {
+	var req ResumeSyncRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if req.SessionID == "" {
+		return nil, fmt.Errorf("sessionId is required")
+	}
+
+	if err := h.svc.ResumeSync(ctx, req.SessionID); err != nil {
+		return nil, err
+	}
+
+	return ResumeSyncResponse{Success: true}, nil
+}
+
+func (h *Handler) handleGetSyncStatus(ctx context.Context, params json.RawMessage) (any, error) {
+	var req GetSyncStatusRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if req.SessionID == "" && req.WorkspaceID == "" {
+		return nil, fmt.Errorf("sessionId or workspaceId is required")
+	}
+
+	session, err := h.svc.SyncStatus(ctx, req.SessionID, req.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	return toSyncStatusResponse(session), nil
+}
+
+func (h *Handler) handleGetSyncProgress(ctx context.Context, params json.RawMessage) (any, error) {
+	var req GetSyncProgressRequest
+	if err := json.Unmarshal(params, &req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	if req.SessionID == "" {
+		return nil, fmt.Errorf("sessionId is required")
+	}
+
+	session, err := h.svc.SyncStatus(ctx, req.SessionID, "")
+	if err != nil {
+		return nil, err
+	}
+
+	return SyncProgressResponse{
+		SessionID:         session.ID,
+		Status:            session.Status,
+		TotalSyncs:        session.TotalSyncs,
+		BytesSent:         session.BytesSent,
+		BytesReceived:     session.BytesReceived,
+		FilesSent:         session.FilesSent,
+		FilesReceived:     session.FilesReceived,
+		ConflictsResolved: session.ConflictsResolved,
+	}, nil
 }
 
 func toSyncStatusResponse(s *appsync.SyncSessionDTO) SyncStatusResponse {

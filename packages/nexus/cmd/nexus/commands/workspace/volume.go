@@ -24,8 +24,8 @@ type volumeDTO struct {
 
 func volumeCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "volume",
-		Short: "Manage volumes",
+		Use:     "volume",
+		Short:   "Manage volumes",
 		Aliases: []string{"vol"},
 	}
 	cmd.AddCommand(

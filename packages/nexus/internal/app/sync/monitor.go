@@ -38,30 +38,30 @@ type MonitorEventHandler func(event MonitorEvent)
 
 // sessionState tracks the internal monitoring state for a single session.
 type sessionState struct {
-	nexusID      string
-	mutagenID    string
-	lastStatus   string
-	lastCheckAt  time.Time
-	retryCount   int
-	lastError    error
-	isHealthy    bool
+	nexusID     string
+	mutagenID   string
+	lastStatus  string
+	lastCheckAt time.Time
+	retryCount  int
+	lastError   error
+	isHealthy   bool
 }
 
 // SyncMonitor periodically checks the health of active sync sessions and
 // handles error recovery with exponential backoff.
 type SyncMonitor struct {
-	mu            sync.RWMutex
-	sessionMgr    *SessionManager
-	mutagen       MutagenClientInterface
-	interval      time.Duration
-	stopCh        chan struct{}
-	wg            sync.WaitGroup
-	handler       MonitorEventHandler
-	handlerMu     sync.RWMutex // separate mutex for handler to avoid deadlock
-	states        map[string]*sessionState // key: nexusID
-	maxRetries    int
-	baseBackoff   time.Duration
-	maxBackoff    time.Duration
+	mu          sync.RWMutex
+	sessionMgr  *SessionManager
+	mutagen     MutagenClientInterface
+	interval    time.Duration
+	stopCh      chan struct{}
+	wg          sync.WaitGroup
+	handler     MonitorEventHandler
+	handlerMu   sync.RWMutex             // separate mutex for handler to avoid deadlock
+	states      map[string]*sessionState // key: nexusID
+	maxRetries  int
+	baseBackoff time.Duration
+	maxBackoff  time.Duration
 }
 
 // NewSyncMonitor creates a new SyncMonitor.
@@ -77,6 +77,7 @@ func NewSyncMonitor(sessionManager *SessionManager, mutagenClient MutagenClientI
 		sessionMgr:  sessionManager,
 		mutagen:     mutagenClient,
 		interval:    interval,
+		stopCh:      make(chan struct{}),
 		states:      make(map[string]*sessionState),
 		maxRetries:  10,
 		baseBackoff: 1 * time.Second,
@@ -94,9 +95,6 @@ func (m *SyncMonitor) SetEventHandler(handler MonitorEventHandler) {
 
 // Start begins monitoring sessions in a background goroutine.
 func (m *SyncMonitor) Start(ctx context.Context) {
-	m.mu.Lock()
-	m.stopCh = make(chan struct{})
-	m.mu.Unlock()
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
@@ -106,12 +104,7 @@ func (m *SyncMonitor) Start(ctx context.Context) {
 
 // Stop stops the monitor and waits for the background goroutine to finish.
 func (m *SyncMonitor) Stop() {
-	m.mu.RLock()
-	ch := m.stopCh
-	m.mu.RUnlock()
-	if ch != nil {
-		close(ch)
-	}
+	close(m.stopCh)
 	m.wg.Wait()
 }
 

@@ -17,6 +17,8 @@ func syncCommand() *cobra.Command {
 		syncStopCommand(),
 		syncStatusCommand(),
 		syncListCommand(),
+		syncPauseCommand(),
+		syncResumeCommand(),
 	)
 	return cmd
 }
@@ -171,6 +173,78 @@ func syncStatusCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&sessionID, "session-id", "", "Show a specific session by ID")
 	cmd.Flags().StringVar(&workspaceID, "workspace-id", "", "Show sessions for a workspace")
+	return cmd
+}
+
+func syncPauseCommand() *cobra.Command {
+	var sessionID string
+
+	cmd := &cobra.Command{
+		Use:   "pause",
+		Short: "Pause a sync session",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			conn, err := rpc.EnsureDaemon()
+			if err != nil {
+				return fmt.Errorf("nexus workspace sync pause: %w", err)
+			}
+			defer conn.Close()
+
+			if sessionID == "" {
+				return fmt.Errorf("--session-id is required")
+			}
+
+			var result struct {
+				Success bool `json:"success"`
+			}
+
+			if err := rpc.Do(conn, "workspace.sync-pause", map[string]any{
+				"sessionId": sessionID,
+			}, &result); err != nil {
+				return fmt.Errorf("nexus workspace sync pause: %w", err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Sync session paused\n")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&sessionID, "session-id", "", "Session ID to pause (required)")
+	cmd.MarkFlagRequired("session-id")
+	return cmd
+}
+
+func syncResumeCommand() *cobra.Command {
+	var sessionID string
+
+	cmd := &cobra.Command{
+		Use:   "resume",
+		Short: "Resume a sync session",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			conn, err := rpc.EnsureDaemon()
+			if err != nil {
+				return fmt.Errorf("nexus workspace sync resume: %w", err)
+			}
+			defer conn.Close()
+
+			if sessionID == "" {
+				return fmt.Errorf("--session-id is required")
+			}
+
+			var result struct {
+				Success bool `json:"success"`
+			}
+
+			if err := rpc.Do(conn, "workspace.sync-resume", map[string]any{
+				"sessionId": sessionID,
+			}, &result); err != nil {
+				return fmt.Errorf("nexus workspace sync resume: %w", err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "Sync session resumed\n")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&sessionID, "session-id", "", "Session ID to resume (required)")
+	cmd.MarkFlagRequired("session-id")
 	return cmd
 }
 
