@@ -25,6 +25,11 @@ type Capability struct {
 	Available bool   `json:"available"`
 }
 
+// SSHKeyProvider supplies the daemon's SSH public key for cross-host sync.
+type SSHKeyProvider interface {
+	PublicKey() (string, error)
+}
+
 // Option configures optional Handler dependencies.
 type Option func(*Handler)
 
@@ -33,10 +38,16 @@ func WithLogPath(path string) Option {
 	return func(h *Handler) { h.logPath = path }
 }
 
+// WithSSHKeyProvider sets the SSH key provider for daemon.sync-ssh-key.
+func WithSSHKeyProvider(p SSHKeyProvider) Option {
+	return func(h *Handler) { h.sshKey = p }
+}
+
 // Handler exposes daemon.* and node.* RPC methods.
 type Handler struct {
 	node    NodeInfoProvider
 	logPath string
+	sshKey  SSHKeyProvider
 }
 
 // New creates a Handler backed by the given NodeInfoProvider.
@@ -53,6 +64,7 @@ func New(node NodeInfoProvider, opts ...Option) *Handler {
 func (h *Handler) Register(reg registry.Registry) {
 	reg.Register("node.info", h.nodeInfo)
 	reg.Register("daemon.log.tail", h.daemonLogTail)
+	reg.Register("daemon.sync-ssh-key", h.syncSSHKey)
 }
 
 // ── DTOs ─────────────────────────────────────────────────────────────────────
@@ -129,6 +141,21 @@ func (h *Handler) daemonLogTail(_ context.Context, raw json.RawMessage) (any, er
 
 // tailLines reads up to maxLines lines from the end of a file.
 // It reads at most 256 KB from the end to avoid loading large files.
+type syncSSHKeyRes struct {
+	PublicKey string `json:"publicKey"`
+}
+
+func (h *Handler) syncSSHKey(_ context.Context, raw json.RawMessage) (any, error) {
+	if h.sshKey == nil {
+		return nil, rpce.Internal("daemon.ssh_not_configured", "SSH key management not configured")
+	}
+	pubKey, err := h.sshKey.PublicKey()
+	if err != nil {
+		return nil, rpce.Internal("daemon.ssh_key_error", "failed to get SSH public key: "+err.Error())
+	}
+	return &syncSSHKeyRes{PublicKey: pubKey}, nil
+}
+
 func tailLines(path string, maxLines int) ([]string, error) {
 	const bufCap = 256 * 1024
 	f, err := os.Open(path)

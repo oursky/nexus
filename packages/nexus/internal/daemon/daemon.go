@@ -13,9 +13,13 @@ import (
 
 	apppty "github.com/oursky/nexus/packages/nexus/internal/app/pty"
 	appspotlight "github.com/oursky/nexus/packages/nexus/internal/app/spotlight"
+	appsync "github.com/oursky/nexus/packages/nexus/internal/app/sync"
+	appvol "github.com/oursky/nexus/packages/nexus/internal/app/volume"
 	appworkspace "github.com/oursky/nexus/packages/nexus/internal/app/workspace"
 	"github.com/oursky/nexus/packages/nexus/internal/creds/relay"
 	domainruntime "github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
+	domainsync "github.com/oursky/nexus/packages/nexus/internal/domain/sync"
+	domainvol "github.com/oursky/nexus/packages/nexus/internal/domain/volume"
 	domainws "github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/dockercompose"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/sandbox"
@@ -26,7 +30,9 @@ import (
 	rpcproject "github.com/oursky/nexus/packages/nexus/internal/rpc/project"
 	rpcpty "github.com/oursky/nexus/packages/nexus/internal/rpc/pty"
 	rpcregistry "github.com/oursky/nexus/packages/nexus/internal/rpc/registry"
+	rpcsync "github.com/oursky/nexus/packages/nexus/internal/rpc/sync"
 	rpcspotlight "github.com/oursky/nexus/packages/nexus/internal/rpc/spotlight"
+	rpcvolume "github.com/oursky/nexus/packages/nexus/internal/rpc/volume"
 	rpcworkspace "github.com/oursky/nexus/packages/nexus/internal/rpc/workspace"
 	"github.com/oursky/nexus/packages/nexus/internal/transport"
 )
@@ -76,6 +82,9 @@ type Config struct {
 	Driver string
 	// DriverCategory is the user-facing category: "vm" or "process".
 	DriverCategory string
+	// MutagenSocket is the path to the mutagen daemon's gRPC socket.
+	// When non-empty, the sync RPC handler is registered.
+	MutagenSocket string
 	// EmbeddedAgentFn returns the embedded guest-agent binary bytes.
 	// When set, the libkrun driver injects the current agent into each VM's rootfs
 	// on spawn so the agent stays in sync with the nexus binary.
@@ -175,7 +184,13 @@ func New(cfg Config) (*Daemon, error) {
 	}
 	spotlightSvc := appspotlight.New(fwdStore, wsStore, spotlightOpts...)
 
-	wsSvc := appworkspace.NewService(wsStore, projStore, registry, dockercomposePortDiscoverer{}, spotlightSvc, context.Background())
+	// ── Volume service ────────────────────────────────────────────────────────
+	volRepo := domainvol.NewMemoryRepository()
+	volRoot := filepath.Join(filepath.Dir(cfg.SocketPath), "volumes")
+	volSvc := appvol.NewService(volRepo, volRoot)
+	// Note: syncStarter will be wired below after syncSvc is created
+
+	wsSvc := appworkspace.NewService(wsStore, projStore, registry, dockercomposePortDiscoverer{}, spotlightSvc, volSvc, volSvc, context.Background())
 	ptyReg := apppty.NewRegistry()
 	broker := relay.NewBroker()
 
@@ -197,9 +212,55 @@ func New(cfg Config) (*Daemon, error) {
 	rpcpty.New(ptyReg, ptyHandlerOpts...).Register(reg)
 	rpcfs.New("/").Register(reg)
 	daemonLogPath := filepath.Join(filepath.Dir(cfg.SocketPath), "daemon.log")
-	rpcdaemon.New(newNodeInfo(cfg, registry), rpcdaemon.WithLogPath(daemonLogPath)).Register(reg)
+
+	// ── SSH key manager for cross-host sync ───────────────────────────────────
+	sshManager := appsync.NewSSHManager(filepath.Dir(cfg.SocketPath))
+	if err := sshManager.EnsureKeys(); err != nil {
+		log.Printf("daemon: ssh key setup failed: %v", err)
+	} else {
+		pubKey, _ := sshManager.PublicKey()
+		log.Printf("daemon: ssh public key ready (%d bytes)", len(pubKey))
+	}
+
+	// Register daemon handler with optional SSH key provider
+	daemonOpts := []rpcdaemon.Option{rpcdaemon.WithLogPath(daemonLogPath)}
+	if sshManager != nil {
+		daemonOpts = append(daemonOpts, rpcdaemon.WithSSHKeyProvider(sshManager))
+	}
+	rpcdaemon.New(newNodeInfo(cfg, registry), daemonOpts...).Register(reg)
+
 	rpcproject.New(projStore, rpcproject.WithWorkspaceRepo(wsStore), rpcproject.WithWorkspaceService(wsSvc)).Register(reg)
 	rpcauth.New(wsStore, broker).Register(reg)
+
+	// ── Sync handler (embedded mutagen, no external daemon required) ──────────
+	var syncSvc *appsync.Service
+	embeddedMutagen, mutagenErr := appsync.NewEmbeddedMutagenClient()
+	if mutagenErr != nil {
+		log.Printf("daemon: embedded mutagen init failed, sync disabled: %v", mutagenErr)
+	} else {
+		syncRepo := domainsync.NewMemoryRepository()
+		syncSvc = appsync.NewService(embeddedMutagen, syncRepo, wsStore)
+		syncSvc.SetSSHManager(sshManager)
+		// Register platform-specific sync drivers.
+		processDriver := appsync.NewProcessDriver(wsStore)
+		libkrunDriver := appsync.NewLibkrunDriver(wsStore)
+		// Use a composite driver that selects the appropriate backend.
+		syncSvc.SetDriver(&compositeSyncDriver{
+			drivers: []appsync.SyncDriver{processDriver, libkrunDriver},
+		})
+		rpcsync.NewHandler(syncSvc).Register(reg)
+		log.Printf("daemon: sync handler registered (embedded mutagen)")
+	}
+
+	// Wire sync service into volume service for auto-sync on volume operations
+	if syncSvc != nil {
+		volSvc.SetSyncStarter(&syncStarterAdapter{svc: syncSvc})
+		log.Printf("daemon: volume sync wired to sync service")
+	}
+
+	// ── Volume handler ────────────────────────────────────────────────────────
+	rpcvolume.NewHandler(volSvc).Register(reg)
+	log.Printf("daemon: volume handler registered")
 
 	lst := transport.NewListener(cfg.SocketPath, reg)
 
@@ -366,4 +427,52 @@ func (dockercomposePortDiscoverer) DiscoverPublishedPorts(ctx context.Context, r
 		}
 	}
 	return result, nil
+}
+
+// syncStarterAdapter adapts appsync.Service to appvol.SyncStarter.
+type syncStarterAdapter struct {
+	svc *appsync.Service
+}
+
+func (a *syncStarterAdapter) StartSync(ctx context.Context, workspaceID, localPath, direction string) (string, error) {
+	dto, err := a.svc.StartSync(ctx, workspaceID, localPath, direction)
+	if err != nil {
+		return "", err
+	}
+	return dto.ID, nil
+}
+
+func (a *syncStarterAdapter) StartVolumeSync(ctx context.Context, workspaceID, alphaPath, betaPath, direction string) (string, error) {
+	sessionID, err := a.svc.StartVolumeSync(ctx, workspaceID, alphaPath, betaPath, direction)
+	if err != nil {
+		return "", err
+	}
+	return sessionID, nil
+}
+
+func (a *syncStarterAdapter) StopSync(ctx context.Context, sessionID, workspaceID string) error {
+	return a.svc.StopSync(ctx, sessionID, workspaceID)
+}
+
+// compositeSyncDriver tries multiple drivers in order and uses the first available one.
+type compositeSyncDriver struct {
+	drivers []appsync.SyncDriver
+}
+
+func (c *compositeSyncDriver) IsAvailable(workspaceID string) bool {
+	for _, d := range c.drivers {
+		if d.IsAvailable(workspaceID) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *compositeSyncDriver) GetSyncPaths(workspaceID string) (alpha, beta string, err error) {
+	for _, d := range c.drivers {
+		if d.IsAvailable(workspaceID) {
+			return d.GetSyncPaths(workspaceID)
+		}
+	}
+	return "", "", fmt.Errorf("no sync driver available for workspace %q", workspaceID)
 }

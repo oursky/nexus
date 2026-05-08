@@ -61,6 +61,24 @@ func EnsureDaemonVerbose(verbose bool) (*websocket.Conn, error) {
 		return nil, err
 	}
 
+	// For localhost connections, skip SSH tunnel and connect directly
+	if isLocalhost(p.Host) {
+		url := fmt.Sprintf("ws://localhost:%d/", p.Port)
+		header := http.Header{}
+		header.Set("Authorization", "Bearer "+p.Token)
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[nexus] connecting to local daemon: %s\n", url)
+		}
+		dialer := &websocket.Dialer{
+			HandshakeTimeout: 15 * time.Second,
+		}
+		conn, _, err := dialer.Dial(url, header)
+		if err != nil {
+			return nil, fmt.Errorf("connect to local daemon: %w", err)
+		}
+		return conn, nil
+	}
+
 	tunnelCache.Do(func() {
 		tm := sshtunnel.NewWithOptions(p.Host, p.Port, p.SSHPort, sshtunnel.Options{
 			Verbose:      verbose,
@@ -93,6 +111,18 @@ func EnsureDaemonVerbose(verbose bool) (*websocket.Conn, error) {
 		return nil, fmt.Errorf("connect to daemon: %w", err)
 	}
 	return conn, nil
+}
+
+// isLocalhost checks if the host is a local address (no SSH tunnel needed)
+func isLocalhost(host string) bool {
+	localhostNames := []string{"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+	lower := strings.ToLower(strings.TrimSpace(host))
+	for _, name := range localhostNames {
+		if lower == name {
+			return true
+		}
+	}
+	return false
 }
 
 func dialDaemonWebSocket(wsURL string) (*websocket.Conn, error) {

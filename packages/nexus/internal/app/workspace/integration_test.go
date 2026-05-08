@@ -31,7 +31,7 @@ func TestIntegration_CreateAndGetLifecycle(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil, nil, nil, context.Background()) // no runtime driver for integration
+	svc := NewService(wsStore, projStore, nil, nil, nil, nil, nil, context.Background()) // no runtime driver for integration
 	ctx := context.Background()
 
 	ws := createWorkspaceAndVerify(t, svc, wsStore, ctx)
@@ -124,7 +124,7 @@ func TestIntegration_ForkWithRealPersistence(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil, nil, nil, context.Background())
+	svc := NewService(wsStore, projStore, nil, nil, nil, nil, nil, context.Background())
 	ctx := context.Background()
 
 	// Create parent
@@ -176,7 +176,7 @@ func TestIntegration_PortsPersistence(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil, nil, nil, context.Background())
+	svc := NewService(wsStore, projStore, nil, nil, nil, nil, nil, context.Background())
 	ctx := context.Background()
 
 	ws, _ := svc.Create(ctx, workspace.CreateSpec{
@@ -220,7 +220,7 @@ func TestIntegration_CheckoutPersistence(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil, nil, nil, context.Background())
+	svc := NewService(wsStore, projStore, nil, nil, nil, nil, nil, context.Background())
 	ctx := context.Background()
 
 	ws, _ := svc.Create(ctx, workspace.CreateSpec{
@@ -250,7 +250,7 @@ func TestIntegration_WithProject(t *testing.T) {
 
 	wsStore := store.NewWorkspaceStore(db)
 	projStore := store.NewProjectStore(db)
-	svc := NewService(wsStore, projStore, nil, nil, nil, context.Background())
+	svc := NewService(wsStore, projStore, nil, nil, nil, nil, nil, context.Background())
 	ctx := context.Background()
 
 	// Create a project first

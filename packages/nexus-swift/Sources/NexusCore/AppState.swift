@@ -391,6 +391,50 @@ public final class AppState: ObservableObject {
             AppLifecycleLog.info("rpc", "reconnect requested via headless rpc")
             return (true, "reconnected")
         }
+        server.daemonDisconnectAction = { [weak self] in
+            guard let self else { return (false, "AppState deallocated") }
+            await self.tunnelManager?.stop()
+            self.tunnelManager = nil
+            self.connectionState = .disconnected
+            self.error = nil
+            AppLifecycleLog.info("rpc", "disconnected via headless rpc")
+            return (true, "disconnected")
+        }
+        server.daemonProfileDeleteAction = { [weak self] profileId in
+            guard let self else { return (false, "AppState deallocated") }
+            let store = DaemonProfileStore()
+            var profiles = store.load()
+            let before = profiles.count
+            profiles.removeAll { $0.profileId == profileId }
+            guard profiles.count < before else {
+                return (false, "profile not found: \(profileId)")
+            }
+            store.save(profiles)
+            // If we deleted the active profile, disconnect.
+            if self.cachedProfile?.profileId == profileId {
+                await self.tunnelManager?.stop()
+                self.tunnelManager = nil
+                self.connectionState = .disconnected
+                self.cachedProfile = nil
+            }
+            AppLifecycleLog.info("rpc", "deleted profile via headless rpc id=\(profileId)")
+            return (true, "deleted")
+        }
+        server.daemonProfileSetActiveAction = { [weak self] profileId in
+            guard let self else { return (false, "AppState deallocated") }
+            let store = DaemonProfileStore()
+            var profiles = store.load()
+            guard let idx = profiles.firstIndex(where: { $0.profileId == profileId }) else {
+                return (false, "profile not found: \(profileId)")
+            }
+            // Clear all defaults, set the target.
+            for i in profiles.indices { profiles[i].isDefault = false }
+            profiles[idx].isDefault = true
+            store.save(profiles)
+            AppLifecycleLog.info("rpc", "set active profile via headless rpc id=\(profileId)")
+            await self.reconnect()
+            return (true, "set active and reconnected")
+        }
         server.appLogTailProvider = { lines in
             Self.tailFile(path: Self.appLifecycleLogPath(), lines: lines)
         }

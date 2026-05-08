@@ -8,6 +8,7 @@ import OSLog
 ///
 /// Terminal endpoints:
 ///   GET  /status
+///   GET  /version
 ///   GET  /terminal/tabs
 ///   POST /terminal/open         { workspaceID, name? }
 ///   POST /terminal/write        { tabID, text }
@@ -42,6 +43,9 @@ import OSLog
 ///   POST /daemon/reconnect
 ///   POST /daemon/provision      { sshTarget, port?, sshIdentity? }
 ///   POST /daemon/connect        { sshTarget, port?, sshIdentity? }
+///   POST /daemon/disconnect
+///   POST /daemon/profile/delete  { profileId }
+///   POST /daemon/profile/set-active { profileId }
 ///
 /// Logs:
 ///   GET  /logs/app?lines=200
@@ -76,6 +80,12 @@ public final class HeadlessRPCServer {
     public var daemonProfilesProvider: (() -> [DaemonProfile])?
     public var daemonProfilesSaveAction: ((DaemonProfile) async -> (Bool, String))?
     public var daemonReconnectAction: (() async -> (Bool, String))?
+    /// Disconnect from the current daemon without reconnecting.
+    public var daemonDisconnectAction: (() async -> (Bool, String))?
+    /// Delete a profile by profileId.
+    public var daemonProfileDeleteAction: ((String) async -> (Bool, String))?
+    /// Set a profile as the active default and reconnect.
+    public var daemonProfileSetActiveAction: ((String) async -> (Bool, String))?
     public var appLogTailProvider: ((Int) -> String)?
     /// Returns connection diagnostics for the hosting app instance.
     public var connectionSnapshotProvider: (() -> [String: Any])?
@@ -209,6 +219,8 @@ public final class HeadlessRPCServer {
         switch (method, path) {
         case ("GET", "/status"):
             return handleStatus()
+        case ("GET", "/version"):
+            return handleVersion()
 
         // ── Terminal ──────────────────────────────────────────────────────────
         case ("GET", "/terminal/tabs"):
@@ -269,6 +281,12 @@ public final class HeadlessRPCServer {
             return await handleDaemonProvision(body: bodyString)
         case ("POST", "/daemon/connect"):
             return await handleDaemonConnect(body: bodyString)
+        case ("POST", "/daemon/disconnect"):
+            return await handleDaemonDisconnect()
+        case ("POST", "/daemon/profile/delete"):
+            return await handleDaemonProfileDelete(body: bodyString)
+        case ("POST", "/daemon/profile/set-active"):
+            return await handleDaemonProfileSetActive(body: bodyString)
         case ("POST", "/daemon/check"):
             return await handleDaemonCheck(body: bodyString)
 
@@ -297,6 +315,22 @@ public final class HeadlessRPCServer {
         if let snapshot = connectionSnapshotProvider?() {
             payload["connection"] = snapshot
         }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (200, str)
+    }
+
+    private func handleVersion() -> (Int, String) {
+        let payload: [String: Any] = [
+            "appVersion": BuildInfo.appVersion,
+            "gitCommit": BuildInfo.gitCommit,
+            "gitCommitFull": BuildInfo.gitCommitFull,
+            "buildTime": BuildInfo.buildTime,
+            "bundleIdentifier": BuildInfo.bundleIdentifier,
+            "pid": ProcessInfo.processInfo.processIdentifier,
+        ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let str = String(data: data, encoding: .utf8) else {
             return (500, jsonError("serialization failed"))
@@ -935,7 +969,53 @@ public final class HeadlessRPCServer {
 
     // MARK: - Daemon health-check handler
 
-    /// Runs `nexus daemon check [--driver <driver>]` and returns all check results.
+    private func handleDaemonDisconnect() async -> (Int, String) {
+        guard let action = daemonDisconnectAction else {
+            return (503, jsonError("daemon disconnect action not registered"))
+        }
+        let (ok, detail) = await action()
+        let payload: [String: Any] = ["ok": ok, "detail": detail]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (ok ? 200 : 500, str)
+    }
+
+    private func handleDaemonProfileDelete(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let profileId = dict["profileId"] as? String else {
+            return (400, jsonError("missing profileId"))
+        }
+        guard let action = daemonProfileDeleteAction else {
+            return (503, jsonError("profile delete action not registered"))
+        }
+        let (ok, detail) = await action(profileId)
+        let payload: [String: Any] = ["ok": ok, "detail": detail]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (ok ? 200 : 400, str)
+    }
+
+    private func handleDaemonProfileSetActive(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let profileId = dict["profileId"] as? String else {
+            return (400, jsonError("missing profileId"))
+        }
+        guard let action = daemonProfileSetActiveAction else {
+            return (503, jsonError("profile set-active action not registered"))
+        }
+        let (ok, detail) = await action(profileId)
+        let payload: [String: Any] = ["ok": ok, "detail": detail]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return (500, jsonError("serialization failed"))
+        }
+        return (ok ? 200 : 400, str)
+    }
+
     ///   POST /daemon/check  { driver? }  → { ok, output }
     private func handleDaemonCheck(body: String) async -> (Int, String) {
         let dict = parseJSON(body)
