@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	apppty "github.com/oursky/nexus/packages/nexus/internal/app/pty"
@@ -99,6 +100,31 @@ type Daemon struct {
 	listener        *transport.Listener
 	networkListener *transport.NetworkListener
 	spotlightSvc    *appspotlight.Service
+
+	// Mac reverse tunnel state (set by Mac app via RPC)
+	mu              sync.RWMutex
+	macTunnelPort   int
+	macUser         string
+	macPath         string
+}
+
+// GetMacTunnelConfig returns the Mac reverse tunnel configuration.
+func (d *Daemon) GetMacTunnelConfig() (port int, macUser, macPath string, ok bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.macTunnelPort == 0 {
+		return 0, "", "", false
+	}
+	return d.macTunnelPort, d.macUser, d.macPath, true
+}
+
+// SetMacTunnelConfig stores the Mac reverse tunnel configuration.
+func (d *Daemon) SetMacTunnelConfig(port int, macUser, macPath string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.macTunnelPort = port
+	d.macUser = macUser
+	d.macPath = macPath
 }
 
 // New constructs a Daemon by wiring all layers.
@@ -252,24 +278,34 @@ func New(cfg Config) (*Daemon, error) {
 		log.Printf("daemon: sync handler registered (embedded mutagen)")
 	}
 
-	// Wire sync service into volume service for auto-sync on volume operations
-	if syncSvc != nil {
-		volSvc.SetSyncStarter(&syncStarterAdapter{svc: syncSvc})
-		log.Printf("daemon: volume sync wired to sync service")
-	}
-
 	// ── Volume handler ────────────────────────────────────────────────────────
 	rpcvolume.NewHandler(volSvc).Register(reg)
 	log.Printf("daemon: volume handler registered")
 
+	// Create Daemon struct early so we can pass it to the daemon handler for tunnel config.
+	preDaemon := &Daemon{}
+
+	daemonOpts = append(daemonOpts,
+		rpcdaemon.WithMacTunnelConfig(preDaemon.SetMacTunnelConfig),
+		rpcdaemon.WithMacTunnelGetter(preDaemon),
+	)
+
 	lst := transport.NewListener(cfg.SocketPath, reg)
 
-	d := &Daemon{
-		cfg:          cfg,
-		db:           db,
-		registry:     reg,
-		listener:     lst,
-		spotlightSvc: spotlightSvc,
+	preDaemon.cfg = cfg
+	preDaemon.db = db
+	preDaemon.registry = reg
+	preDaemon.listener = lst
+	preDaemon.spotlightSvc = spotlightSvc
+	d := preDaemon
+
+	// Wire sync service into volume service for auto-sync on volume operations
+	if syncSvc != nil {
+		volSvc.SetSyncStarter(&syncStarterAdapter{
+			svc:             syncSvc,
+			macTunnelGetter: d.GetMacTunnelConfig,
+		})
+		log.Printf("daemon: volume sync wired to sync service")
 	}
 
 	if cfg.Network.Enabled {
@@ -431,7 +467,8 @@ func (dockercomposePortDiscoverer) DiscoverPublishedPorts(ctx context.Context, r
 
 // syncStarterAdapter adapts appsync.Service to appvol.SyncStarter.
 type syncStarterAdapter struct {
-	svc *appsync.Service
+	svc            *appsync.Service
+	macTunnelGetter func() (port int, macUser, macPath string, ok bool)
 }
 
 func (a *syncStarterAdapter) StartSync(ctx context.Context, workspaceID, localPath, direction string) (string, error) {
@@ -443,7 +480,14 @@ func (a *syncStarterAdapter) StartSync(ctx context.Context, workspaceID, localPa
 }
 
 func (a *syncStarterAdapter) StartVolumeSync(ctx context.Context, workspaceID, alphaPath, betaPath, direction string) (string, error) {
-	sessionID, err := a.svc.StartVolumeSync(ctx, workspaceID, alphaPath, betaPath, direction)
+	beta := betaPath
+	if a.macTunnelGetter != nil {
+		if port, macUser, macPath, ok := a.macTunnelGetter(); ok {
+			// Use reverse SSH tunnel to sync to Mac
+			beta = fmt.Sprintf("ssh://%s@127.0.0.1:%d%s", macUser, port, macPath)
+		}
+	}
+	sessionID, err := a.svc.StartVolumeSync(ctx, workspaceID, alphaPath, beta, direction)
 	if err != nil {
 		return "", err
 	}

@@ -43,11 +43,28 @@ func WithSSHKeyProvider(p SSHKeyProvider) Option {
 	return func(h *Handler) { h.sshKey = p }
 }
 
+// WithMacTunnelConfig sets the callback invoked when daemon.set-mac-tunnel is called.
+func WithMacTunnelConfig(fn func(port int, macUser, macPath string)) Option {
+	return func(h *Handler) { h.setMacTunnelConfig = fn }
+}
+
+// MacTunnelGetter allows the handler to read stored tunnel config for status responses.
+type MacTunnelGetter interface {
+	GetMacTunnelConfig() (port int, macUser, macPath string, ok bool)
+}
+
+// WithMacTunnelGetter sets the getter used to include tunnel info in daemon.status.
+func WithMacTunnelGetter(g MacTunnelGetter) Option {
+	return func(h *Handler) { h.macTunnelGetter = g }
+}
+
 // Handler exposes daemon.* and node.* RPC methods.
 type Handler struct {
-	node    NodeInfoProvider
-	logPath string
-	sshKey  SSHKeyProvider
+	node               NodeInfoProvider
+	logPath            string
+	sshKey             SSHKeyProvider
+	setMacTunnelConfig func(port int, macUser, macPath string)
+	macTunnelGetter    MacTunnelGetter
 }
 
 // New creates a Handler backed by the given NodeInfoProvider.
@@ -65,6 +82,8 @@ func (h *Handler) Register(reg registry.Registry) {
 	reg.Register("node.info", h.nodeInfo)
 	reg.Register("daemon.log.tail", h.daemonLogTail)
 	reg.Register("daemon.sync-ssh-key", h.syncSSHKey)
+	reg.Register("daemon.set-mac-tunnel", h.setMacTunnel)
+	reg.Register("daemon.status", h.daemonStatus)
 }
 
 // ── DTOs ─────────────────────────────────────────────────────────────────────
@@ -156,8 +175,50 @@ func (h *Handler) syncSSHKey(_ context.Context, raw json.RawMessage) (any, error
 	return &syncSSHKeyRes{PublicKey: pubKey}, nil
 }
 
-func tailLines(path string, maxLines int) ([]string, error) {
-	const bufCap = 256 * 1024
+// ── daemon.set-mac-tunnel ────────────────────────────────────────────────────
+
+type setMacTunnelReq struct {
+	ReversePort int    `json:"reversePort"`
+	MacUser     string `json:"macUser"`
+	MacPath     string `json:"macPath"`
+}
+
+type setMacTunnelRes struct {
+	OK   bool `json:"ok"`
+	Port int  `json:"port"`
+}
+
+func (h *Handler) setMacTunnel(_ context.Context, raw json.RawMessage) (any, error) {
+	req, err := decode[setMacTunnelReq](raw)
+	if err != nil {
+		return nil, err
+	}
+	if req.ReversePort == 0 {
+		return nil, rpce.InvalidParams("daemon.missing_reverse_port", "missing reversePort")
+	}
+	if h.setMacTunnelConfig != nil {
+		h.setMacTunnelConfig(req.ReversePort, req.MacUser, req.MacPath)
+	}
+	return &setMacTunnelRes{OK: true, Port: req.ReversePort}, nil
+}
+
+// ── daemon.status ─────────────────────────────────────────────────────────────
+
+func (h *Handler) daemonStatus(_ context.Context, _ json.RawMessage) (any, error) {
+	result := map[string]any{}
+	if h.macTunnelGetter != nil {
+		if port, user, path, ok := h.macTunnelGetter.GetMacTunnelConfig(); ok {
+			result["macTunnel"] = map[string]any{
+				"port":    port,
+				"macUser": user,
+				"macPath": path,
+			}
+		}
+	}
+	return result, nil
+}
+
+func tailLines(path string, maxLines int) ([]string, error) {	const bufCap = 256 * 1024
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err

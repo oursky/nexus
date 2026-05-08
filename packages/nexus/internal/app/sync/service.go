@@ -11,15 +11,6 @@ import (
 	domainws "github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 )
 
-// SyncDirection represents the direction of a sync session.
-type SyncDirection int
-
-const (
-	SyncDirectionBidirectional SyncDirection = iota
-	SyncDirectionUp
-	SyncDirectionDown
-)
-
 // SyncSessionDTO is the data-transfer object for a sync session.
 type SyncSessionDTO struct {
 	ID                string
@@ -53,11 +44,7 @@ type MutagenClientInterface interface {
 	SessionStatus(ctx context.Context, sessionID string) (string, error)
 }
 
-// SyncDriver provides platform-specific sync path resolution.
-type SyncDriver interface {
-	IsAvailable(workspaceID string) bool
-	GetSyncPaths(workspaceID string) (alpha, beta string, err error)
-}
+// SyncDriver is defined in driver.go.
 
 // Service manages volume sync sessions via MutagenClient.
 // It implements the SyncStarter interface consumed by the RPC handler.

@@ -63,6 +63,9 @@ public final class AppState: ObservableObject {
     /// Bearer token for the active daemon connection.
     private var daemonToken: String?
 
+    /// Reverse SSH tunnel port (set once after tunnel established).
+    private var reverseTunnelPort: Int = 0
+
     private var refreshTask: Task<Void, Never>?
     private var tunnelStateTask: Task<Void, Never>?
     private var isLoadInProgress = false
@@ -464,6 +467,7 @@ public final class AppState: ObservableObject {
                 "daemonWebSocketURL": self.daemonWebSocketURL?.absoluteString as Any,
                 "daemonToken": self.daemonToken != nil ? "set(\(self.daemonToken!.count)chars)" : "nil",
                 "sshTarget": self.cachedProfile?.sshTarget as Any,
+                "reverseTunnelPort": self.reverseTunnelPort,
             ]
         }
         rpcServer = server
@@ -922,7 +926,8 @@ public final class AppState: ObservableObject {
         let resolvedToken: String
         do {
             let localPort = try await mgr.start()
-            StartupTrace.checkpoint("remote.tunnel.ok", "localPort=\(localPort)")
+            reverseTunnelPort = await mgr.reversePort
+            StartupTrace.checkpoint("remote.tunnel.ok", "localPort=\(localPort) reversePort=\(reverseTunnelPort)")
             resolvedToken = try await mgr.fetchRemoteToken()
             StartupTrace.checkpoint("remote.token.ok", "tokenLen=\(resolvedToken.count)")
             guard let url = URL(string: "ws://127.0.0.1:\(localPort)") else {
@@ -984,6 +989,21 @@ public final class AppState: ObservableObject {
                 }
             }
             self.updateProfileStatus(profileId: profile.profileId, status: .connected)
+
+            // Notify the daemon about the reverse tunnel port so it can use it for sync
+            let rp = await mgr.reversePort
+            if rp > 0, let wsClient = self.client as? WebSocketDaemonClient {
+                Task {
+                    let macUser = NSUserName()
+                    let macPath = "~/magic/nexus"
+                    _ = try? await wsClient.call("daemon.set-mac-tunnel", params: [
+                        "reversePort": rp,
+                        "macUser": macUser,
+                        "macPath": macPath,
+                    ] as [String: Any])
+                    Self.logger.info("Notified daemon of reverse tunnel port=\(rp)")
+                }
+            }
         } catch {
             if connectionState != .connected {
                 connectionState = .disconnected
