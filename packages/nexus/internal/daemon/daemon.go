@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -248,8 +249,15 @@ func New(cfg Config) (*Daemon, error) {
 		log.Printf("daemon: ssh public key ready (%d bytes)", len(pubKey))
 	}
 
+	// Create Daemon struct early so we can pass it to the daemon handler for tunnel config.
+	preDaemon := &Daemon{}
+
 	// Register daemon handler with optional SSH key provider
-	daemonOpts := []rpcdaemon.Option{rpcdaemon.WithLogPath(daemonLogPath)}
+	daemonOpts := []rpcdaemon.Option{
+		rpcdaemon.WithLogPath(daemonLogPath),
+		rpcdaemon.WithMacTunnelConfig(preDaemon.SetMacTunnelConfig),
+		rpcdaemon.WithMacTunnelGetter(preDaemon),
+	}
 	if sshManager != nil {
 		daemonOpts = append(daemonOpts, rpcdaemon.WithSSHKeyProvider(sshManager))
 	}
@@ -281,14 +289,6 @@ func New(cfg Config) (*Daemon, error) {
 	// ── Volume handler ────────────────────────────────────────────────────────
 	rpcvolume.NewHandler(volSvc).Register(reg)
 	log.Printf("daemon: volume handler registered")
-
-	// Create Daemon struct early so we can pass it to the daemon handler for tunnel config.
-	preDaemon := &Daemon{}
-
-	daemonOpts = append(daemonOpts,
-		rpcdaemon.WithMacTunnelConfig(preDaemon.SetMacTunnelConfig),
-		rpcdaemon.WithMacTunnelGetter(preDaemon),
-	)
 
 	lst := transport.NewListener(cfg.SocketPath, reg)
 
@@ -483,8 +483,13 @@ func (a *syncStarterAdapter) StartVolumeSync(ctx context.Context, workspaceID, a
 	beta := betaPath
 	if a.macTunnelGetter != nil {
 		if port, macUser, macPath, ok := a.macTunnelGetter(); ok {
-			// Use reverse SSH tunnel to sync to Mac
-			beta = fmt.Sprintf("ssh://%s@127.0.0.1:%d%s", macUser, port, macPath)
+			// Expand ~ to full home directory path for mutagen
+			macPathExpanded := macPath
+			if strings.HasPrefix(macPath, "~/") {
+				macPathExpanded = "/Users/" + macUser + macPath[1:]
+			}
+			// Use reverse SSH tunnel to sync to Mac (SCP-style format for mutagen)
+			beta = fmt.Sprintf("%s@127.0.0.1:%d:%s", macUser, port, macPathExpanded)
 		}
 	}
 	sessionID, err := a.svc.StartVolumeSync(ctx, workspaceID, alphaPath, beta, direction)
