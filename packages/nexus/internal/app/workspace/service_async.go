@@ -156,6 +156,19 @@ func (s *Service) markWorkspaceRunning(ctx context.Context, current *workspace.W
 	if current.Backend == "" && s.registry != nil {
 		current.Backend = s.registry.DefaultBackend()
 	}
+
+	// Populate RootPath so sync drivers can resolve the workspace filesystem path.
+	// This is the authoritative source for "where does this workspace's code live?".
+	if current.RootPath == "" {
+		if workspace.UsesGuestVM(current.Backend) {
+			// VM backends (libkrun) mount the project at /workspace inside the guest.
+			current.RootPath = "/workspace"
+		} else {
+			// Process/sandbox backends use the local repo path as the workspace root.
+			current.RootPath = current.Repo
+		}
+	}
+
 	current.State = workspace.StateRunning
 	current.UpdatedAt = time.Now().UTC()
 	if err := s.repo.Update(ctx, current); err != nil {

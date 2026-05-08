@@ -1,3 +1,4 @@
+import AppKit
 import NexusCore
 import SwiftUI
 
@@ -9,8 +10,8 @@ struct BottomPanelView: View {
     @State private var selectedTab: InspectorTab = .ports
 
     enum InspectorTab: String, CaseIterable {
-        case ports  = "Ports"
-        case vmLog  = "VM Log"
+        case ports    = "Ports"
+        case vmLog    = "Log"
     }
 
     var body: some View {
@@ -514,3 +515,5 @@ private struct LogRow: View {
         .padding(.vertical, 5)
     }
 }
+
+

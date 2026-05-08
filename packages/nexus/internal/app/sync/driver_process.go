@@ -22,8 +22,8 @@ func (d *ProcessDriver) IsAvailable(workspaceID string) bool {
 	if err != nil {
 		return false
 	}
-	// Process sandbox: backend is "sandbox" or empty.
-	return ws.Backend == "sandbox" || ws.Backend == ""
+	// Process sandbox: backend is "process", "sandbox", or empty.
+	return ws.Backend == "process" || ws.Backend == "sandbox" || ws.Backend == ""
 }
 
 // GetSyncPaths returns alpha (local) and beta (workspace root) paths.

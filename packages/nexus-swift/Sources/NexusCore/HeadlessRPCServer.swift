@@ -268,6 +268,20 @@ public final class HeadlessRPCServer {
         case ("POST", "/spotlight/stop"):
             return await handleSpotlightStop(body: bodyString)
 
+        // ── Sync ──────────────────────────────────────────────────────────────
+        case ("POST", "/sync/start"):
+            return await handleSyncStart(body: bodyString)
+        case ("POST", "/sync/stop"):
+            return await handleSyncStop(body: bodyString)
+        case ("POST", "/sync/pause"):
+            return await handleSyncPause(body: bodyString)
+        case ("POST", "/sync/resume"):
+            return await handleSyncResume(body: bodyString)
+        case ("GET", "/sync/list"):
+            return await handleSyncList(query: query)
+        case ("GET", "/sync/status"):
+            return await handleSyncStatus(query: query)
+
         // ── Daemon provisioning ───────────────────────────────────────────────
         case ("GET", "/daemon/status"):
             return await handleDaemonStatus()
@@ -1145,6 +1159,145 @@ public final class HeadlessRPCServer {
             return (500, jsonError("serialization failed"))
         }
         return (200, str)
+    }
+
+    // MARK: - Sync handlers
+
+    private func handleSyncStart(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let workspaceID = dict["workspaceID"] as? String,
+              let localPath = dict["localPath"] as? String else {
+            return (400, jsonError("missing workspaceID or localPath"))
+        }
+        let direction = dict["direction"] as? String ?? "bidirectional"
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        do {
+            let session = try await client.startSync(workspaceID: workspaceID, localPath: localPath, direction: direction)
+            let payload = syncSessionDict(session)
+            guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                  let str = String(data: data, encoding: .utf8) else {
+                return (500, jsonError("serialization failed"))
+            }
+            return (200, str)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    private func handleSyncStop(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let sessionID = dict["sessionID"] as? String,
+              let workspaceID = dict["workspaceID"] as? String else {
+            return (400, jsonError("missing sessionID or workspaceID"))
+        }
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        do {
+            try await client.stopSync(sessionID: sessionID, workspaceID: workspaceID)
+            return (200, #"{"ok":true}"#)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    private func handleSyncPause(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let sessionID = dict["sessionID"] as? String else {
+            return (400, jsonError("missing sessionID"))
+        }
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        do {
+            try await client.pauseSync(sessionID: sessionID)
+            return (200, #"{"ok":true}"#)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    private func handleSyncResume(body: String) async -> (Int, String) {
+        guard let dict = parseJSON(body),
+              let sessionID = dict["sessionID"] as? String else {
+            return (400, jsonError("missing sessionID"))
+        }
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        do {
+            try await client.resumeSync(sessionID: sessionID)
+            return (200, #"{"ok":true}"#)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    private func handleSyncList(query: String) async -> (Int, String) {
+        let params = parseQuery(query)
+        guard let workspaceID = params["workspaceID"] else {
+            return (400, jsonError("missing workspaceID query param"))
+        }
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        do {
+            let sessions = try await client.listSyncs(workspaceID: workspaceID)
+            let list = sessions.map { syncSessionDict($0) }
+            guard let data = try? JSONSerialization.data(withJSONObject: ["sessions": list]),
+                  let str = String(data: data, encoding: .utf8) else {
+                return (500, jsonError("serialization failed"))
+            }
+            return (200, str)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    private func handleSyncStatus(query: String) async -> (Int, String) {
+        let params = parseQuery(query)
+        guard let sessionID = params["sessionID"],
+              let workspaceID = params["workspaceID"] else {
+            return (400, jsonError("missing sessionID or workspaceID query param"))
+        }
+        guard let client = daemonClientProvider?() else {
+            return (503, jsonError("daemon client unavailable"))
+        }
+        do {
+            let session = try await client.syncStatus(sessionID: sessionID, workspaceID: workspaceID)
+            let payload = syncSessionDict(session)
+            guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                  let str = String(data: data, encoding: .utf8) else {
+                return (500, jsonError("serialization failed"))
+            }
+            return (200, str)
+        } catch {
+            return (500, jsonError(error.localizedDescription))
+        }
+    }
+
+    private func syncSessionDict(_ session: SyncSession) -> [String: Any] {
+        var dict: [String: Any] = [
+            "id": session.id,
+            "workspaceId": session.workspaceID,
+            "localPath": session.localPath,
+            "status": session.status,
+            "direction": session.direction,
+            "startedAt": session.startedAt,
+            "stats": [
+                "totalSyncs": session.stats.totalSyncs,
+                "bytesSent": session.stats.bytesSent,
+                "bytesReceived": session.stats.bytesReceived,
+                "filesSent": session.stats.filesSent,
+                "filesReceived": session.stats.filesReceived,
+                "conflictsResolved": session.stats.conflictsResolved,
+            ],
+        ]
+        if let stoppedAt = session.stoppedAt { dict["stoppedAt"] = stoppedAt }
+        if let lastSyncAt = session.lastSyncAt { dict["lastSyncAt"] = lastSyncAt }
+        return dict
     }
 
     // MARK: - Helpers

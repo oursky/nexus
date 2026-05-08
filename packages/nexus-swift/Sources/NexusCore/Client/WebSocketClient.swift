@@ -729,6 +729,59 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
         return DaemonLogTail(lines: logLines, path: path)
     }
 
+    // MARK: - Sync
+
+    public func startSync(workspaceID: String, localPath: String, direction: String) async throws -> SyncSession {
+        let result = try await call("workspace.sync-start", params: [
+            "workspaceId": workspaceID,
+            "localPath": localPath,
+            "direction": direction,
+        ])
+        guard let dict = result as? [String: Any] else {
+            throw RPCError(message: "unexpected workspace.sync-start response")
+        }
+        return parseSyncSession(dict)
+    }
+
+    public func stopSync(sessionID: String, workspaceID: String) async throws {
+        _ = try await call("workspace.sync-stop", params: [
+            "sessionId": sessionID,
+            "workspaceId": workspaceID,
+        ])
+    }
+
+    public func syncStatus(sessionID: String, workspaceID: String) async throws -> SyncSession {
+        let result = try await call("workspace.sync-status", params: [
+            "sessionId": sessionID,
+            "workspaceId": workspaceID,
+        ])
+        guard let dict = result as? [String: Any] else {
+            throw RPCError(message: "unexpected workspace.sync-status response")
+        }
+        return parseSyncSession(dict)
+    }
+
+    public func listSyncs(workspaceID: String) async throws -> [SyncSession] {
+        let result = try await call("workspace.sync-list", params: [
+            "workspaceId": workspaceID,
+        ])
+        guard let dict = result as? [String: Any],
+              let arr = dict["sessions"] as? [[String: Any]] else { return [] }
+        return arr.map { parseSyncSession($0) }
+    }
+
+    public func pauseSync(sessionID: String) async throws {
+        _ = try await call("workspace.sync-pause", params: [
+            "sessionId": sessionID,
+        ])
+    }
+
+    public func resumeSync(sessionID: String) async throws {
+        _ = try await call("workspace.sync-resume", params: [
+            "sessionId": sessionID,
+        ])
+    }
+
     private func parseSpotlightForwards(from raw: Any?) -> [ForwardedPort] {
         guard let items = raw as? [[String: Any]] else { return [] }
         return items.compactMap { item in
@@ -772,6 +825,30 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
             maxVCPUs: maxVCPUs
         )
     }
+
+    private func parseSyncSession(_ dict: [String: Any]) -> SyncSession {
+        let statsDict = dict["stats"] as? [String: Any] ?? [:]
+        let stats = SyncStats(
+            totalSyncs: (statsDict["totalSyncs"] as? NSNumber)?.int64Value ?? 0,
+            bytesSent: (statsDict["bytesSent"] as? NSNumber)?.int64Value ?? 0,
+            bytesReceived: (statsDict["bytesReceived"] as? NSNumber)?.int64Value ?? 0,
+            filesSent: (statsDict["filesSent"] as? NSNumber)?.int64Value ?? 0,
+            filesReceived: (statsDict["filesReceived"] as? NSNumber)?.int64Value ?? 0,
+            conflictsResolved: (statsDict["conflictsResolved"] as? NSNumber)?.int64Value ?? 0
+        )
+        return SyncSession(
+            id: dict["id"] as? String ?? "",
+            workspaceID: dict["workspaceId"] as? String ?? "",
+            localPath: dict["localPath"] as? String ?? "",
+            status: dict["status"] as? String ?? "",
+            direction: dict["direction"] as? String ?? "",
+            startedAt: dict["startedAt"] as? String ?? "",
+            stoppedAt: dict["stoppedAt"] as? String,
+            lastSyncAt: dict["lastSyncAt"] as? String,
+            stats: stats
+        )
+    }
+
     // MARK: - PTY
 
     /// Opens a PTY session in the workspace. Returns the session ID (`pty.create`).

@@ -50,6 +50,10 @@ public final class AppState: ObservableObject {
     @Published public var workspaceOps: [String: WorkspaceOpState] = [:]
     /// Live profile for the most recently created/forked workspace.
     @Published public var workspaceCreateProgress: WorkspaceCreateProgress?
+    /// Per-workspace sync sessions (key = workspaceID).
+    @Published public var syncSessions: [String: [SyncSession]] = [:]
+    /// In-flight sync operation state.
+    @Published public var syncOps: [String: SyncOpState] = [:]
 
     // MARK: - Client
     public private(set) var client: any DaemonClient
@@ -1321,6 +1325,61 @@ public final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Sync actions
+
+    public func startSync(workspaceID: String, localPath: String, direction: String) async {
+        await performSync(workspaceID: workspaceID, opState: .starting) {
+            let session = try await self.client.startSync(workspaceID: workspaceID, localPath: localPath, direction: direction)
+            await self.refreshSyncs(workspaceID: workspaceID)
+            return session
+        }
+    }
+
+    public func stopSync(sessionID: String, workspaceID: String) async {
+        await performSync(workspaceID: workspaceID, opState: .stopping) {
+            try await self.client.stopSync(sessionID: sessionID, workspaceID: workspaceID)
+            await self.refreshSyncs(workspaceID: workspaceID)
+        }
+    }
+
+    public func pauseSync(sessionID: String, workspaceID: String) async {
+        await performSync(workspaceID: workspaceID, opState: .pausing) {
+            try await self.client.pauseSync(sessionID: sessionID)
+            await self.refreshSyncs(workspaceID: workspaceID)
+        }
+    }
+
+    public func resumeSync(sessionID: String, workspaceID: String) async {
+        await performSync(workspaceID: workspaceID, opState: .resuming) {
+            try await self.client.resumeSync(sessionID: sessionID)
+            await self.refreshSyncs(workspaceID: workspaceID)
+        }
+    }
+
+    public func refreshSyncs(workspaceID: String) async {
+        do {
+            let sessions = try await client.listSyncs(workspaceID: workspaceID)
+            syncSessions[workspaceID] = sessions
+        } catch {
+            Self.logger.error("refreshSyncs failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    // MARK: - Sync helper
+
+    @discardableResult
+    private func performSync<T>(workspaceID: String, opState: SyncOpState, _ op: @escaping () async throws -> T) async -> T? {
+        syncOps[workspaceID] = opState
+        defer { syncOps.removeValue(forKey: workspaceID) }
+        do {
+            let result = try await op()
+            return result
+        } catch {
+            self.error = error.localizedDescription
+            return nil
+        }
+    }
+
     /// Removes a daemon project record and refreshes lists.
     /// The daemon cascades: stops and removes all associated workspaces (and their VMs)
     /// before deleting the project record.
@@ -1713,6 +1772,13 @@ public final class AppState: ObservableObject {
         }
         return normalizedMessage
     }
+}
+
+public enum SyncOpState: Equatable {
+    case starting
+    case stopping
+    case pausing
+    case resuming
 }
 
 public enum ConnectionState: Equatable {
