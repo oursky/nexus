@@ -116,6 +116,10 @@ func (s *Service) StartSync(ctx context.Context, workspaceID, localPath, directi
 		if err != nil {
 			return nil, fmt.Errorf("sync: driver failed for workspace %q: %w", workspaceID, err)
 		}
+		// Drivers may leave alpha empty to indicate the caller should supply it.
+		if alpha == "" {
+			alpha = localPath
+		}
 	} else {
 		// Fall back to workspace-based path resolution
 		if ws.GuestIP == "" && ws.RootPath == "" {

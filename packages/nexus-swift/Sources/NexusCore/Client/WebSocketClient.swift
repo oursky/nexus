@@ -837,7 +837,7 @@ public final class WebSocketDaemonClient: DaemonClient, @unchecked Sendable {
             conflictsResolved: (statsDict["conflictsResolved"] as? NSNumber)?.int64Value ?? 0
         )
         return SyncSession(
-            id: dict["id"] as? String ?? "",
+            id: dict["sessionId"] as? String ?? dict["id"] as? String ?? "",
             workspaceID: dict["workspaceId"] as? String ?? "",
             localPath: dict["localPath"] as? String ?? "",
             status: dict["status"] as? String ?? "",
