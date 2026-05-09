@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 // DefaultLinuxFilePath returns the fallback file path for headless Linux daemons
@@ -18,29 +17,14 @@ func DefaultLinuxFilePath() string {
 	return filepath.Join(os.Getenv("HOME"), ".config", "nexus", "daemon-token")
 }
 
-// probe selects the appropriate Store for the current platform:
-//   - macOS  → KeychainStore (system Keychain via `security` CLI)
-//   - Linux with D-Bus session → SecretServiceStore (GNOME Keyring / KWallet)
-//   - Linux headless (no D-Bus) → FileStore at DefaultLinuxFilePath (0600)
+// probe selects the appropriate Store for the current platform.
+// This function is implemented in platform-specific files:
+//   - probe_darwin.go        → macOS prod builds (KeychainStore)
+//   - probe_darwin_dev.go    → macOS dev builds (FileStore, enabled via `dev` build tag)
+//   - probe.go               → Linux and other platforms
 //
-// FileStore is intentionally never used on macOS; Keychain is always available.
-func probe() Store {
-	switch runtime.GOOS {
-	case "darwin":
-		return NewKeychainStore()
-	case "linux":
-		if secretServiceAvailable() {
-			if ss, err := NewSecretServiceStore(); err == nil {
-				return ss
-			}
-		}
-		// Headless server: no D-Bus session. File store is acceptable here
-		// (same security model as SSH host keys — 0600, owner-only).
-		return NewFileStore(DefaultLinuxFilePath())
-	default:
-		return NewFileStore(DefaultLinuxFilePath())
-	}
-}
+// FileStore is intentionally never used on macOS prod builds; Keychain is always available.
+// Dev builds may opt into FileStore via the `dev` build tag for CI/headless environments.
 
 // LoadOrGenerate loads the daemon token from the best available store.
 // If no token exists, it generates a cryptographically random 32-byte hex token,

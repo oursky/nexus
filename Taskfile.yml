@@ -299,6 +299,7 @@ tasks:
         echo "Staging nexus (darwin/arm64) → packages/nexus-swift/Resources/nexus (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
         GOOS=darwin GOARCH=arm64 go build \
           -C packages/nexus \
+          -tags dev \
           -ldflags "$LDFLAGS" \
           -o ../../packages/nexus-swift/Resources/nexus \
           ./cmd/nexus

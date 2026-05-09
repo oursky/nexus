@@ -13,7 +13,8 @@ LDFLAGS="-X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUI
          -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT}"
 
 echo "Building nexus for $(go env GOOS)/$(go env GOARCH) (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
-go build -C "$NEXUS_PKG" -ldflags "$LDFLAGS" -o ./tmp/nexus-local ./cmd/nexus
+# Dev build: enable file-based token storage and headless RPC
+go build -C "$NEXUS_PKG" -tags dev -ldflags "$LDFLAGS" -o ./tmp/nexus-local ./cmd/nexus
 
 mkdir -p "$(dirname "$LOCAL_BIN")"
 rm -f "$LOCAL_BIN"
