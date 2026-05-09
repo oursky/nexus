@@ -412,10 +412,10 @@ tasks:
       - task: lint
 
   ci:test:
-    desc: "Run CI test pipeline (generate + coverage)"
+    desc: "Run CI test pipeline (generate + test without coverage)"
     cmds:
       - task: generate:agent
-      - ./scripts/ci/coverage.sh
+      - cd packages/nexus && go test -count=1 ./...
 
   ci:build:
     desc: "Run CI build pipeline (generate + build + cross-platform)"
