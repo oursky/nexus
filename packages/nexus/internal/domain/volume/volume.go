@@ -28,12 +28,12 @@ const (
 
 // SyncConfig holds optional sync configuration for a volume.
 type SyncConfig struct {
-	Enabled     bool   `json:"enabled"`
-	LocalPath   string `json:"localPath,omitempty"`   // local directory to sync with
-	SessionID   string `json:"sessionId,omitempty"`   // active mutagen session ID
-	Direction   string `json:"direction,omitempty"`   // up, down, bidirectional
-	LastSyncAt  *time.Time `json:"lastSyncAt,omitempty"`
-	Status      string `json:"status,omitempty"`      // idle, syncing, error
+	Enabled    bool       `json:"enabled"`
+	LocalPath  string     `json:"localPath,omitempty"` // local directory to sync with
+	SessionID  string     `json:"sessionId,omitempty"` // active mutagen session ID
+	Direction  string     `json:"direction,omitempty"` // up, down, bidirectional
+	LastSyncAt *time.Time `json:"lastSyncAt,omitempty"`
+	Status     string     `json:"status,omitempty"` // idle, syncing, error
 }
 
 // Volume is the core domain entity for managed storage.
@@ -42,14 +42,14 @@ type Volume struct {
 	Name        string      `json:"name"`
 	Type        VolumeType  `json:"type"`
 	State       VolumeState `json:"state"`
-	Size        int64       `json:"size"`     // bytes used (best effort)
-	Capacity    int64       `json:"capacity"` // max bytes (advisory in v1)
+	Size        int64       `json:"size"`                  // bytes used (best effort)
+	Capacity    int64       `json:"capacity"`              // max bytes (advisory in v1)
 	WorkspaceID string      `json:"workspaceId,omitempty"` // for workspace-bound volumes
 	MountPath   string      `json:"mountPath,omitempty"`   // current mount point
 	CreatedAt   time.Time   `json:"createdAt"`
 	UpdatedAt   time.Time   `json:"updatedAt"`
 	Snapshots   []Snapshot  `json:"snapshots,omitempty"`
-	Sync        *SyncConfig `json:"sync,omitempty"`        // optional sync configuration
+	Sync        *SyncConfig `json:"sync,omitempty"` // optional sync configuration
 }
 
 // CanDelete reports whether the volume can be safely deleted.

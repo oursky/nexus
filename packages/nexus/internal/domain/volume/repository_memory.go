@@ -12,7 +12,7 @@ type MemoryRepository struct {
 	mu          sync.RWMutex
 	volumes     map[string]*Volume
 	attachments map[string]*VolumeAttachment // key: volumeID+workspaceID
-	snapshots   map[string]*Snapshot          // key: volumeID+snapshotID
+	snapshots   map[string]*Snapshot         // key: volumeID+snapshotID
 }
 
 // NewMemoryRepository creates a new in-memory repository.

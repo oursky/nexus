@@ -221,10 +221,7 @@ func (m *SyncMonitor) shouldCheckNow(state *sessionState) bool {
 	}
 
 	backoff := m.calculateBackoff(state.retryCount)
-	if time.Since(state.lastCheckAt) < backoff {
-		return false
-	}
-	return true
+	return time.Since(state.lastCheckAt) >= backoff
 }
 
 // calculateBackoff computes the exponential backoff duration.

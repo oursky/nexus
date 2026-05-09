@@ -349,10 +349,7 @@ func TestIntegration_StartWithMismatchedBackend(t *testing.T) {
 	sandboxAdapter := sandbox.NewAdapter(sandbox.NewDriver())
 	registry.Register(sandboxAdapter)
 	// Deliberately set the wrong default — the old bug.
-	if !registry.SetDefaultBackend("sandbox") {
-		// "sandbox" is not registered; the driver is keyed as "process".
-		// This is expected — the test documents this mismatch.
-	}
+	registry.SetDefaultBackend("sandbox")
 
 	svc := NewService(wsStore, projStore, registry, nil, nil, nil, nil, context.Background())
 	ctx := context.Background()

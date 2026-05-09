@@ -3,7 +3,6 @@ package workspace
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	"github.com/spf13/cobra"
@@ -681,15 +680,4 @@ func volumeUnmountCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&delete, "delete", false, "Delete volume after unmount")
 	return cmd
-}
-
-// formatDuration formats a duration in a human-readable way.
-func formatDuration(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%.0fs", d.Seconds())
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%.0fm", d.Minutes())
-	}
-	return fmt.Sprintf("%.1fh", d.Hours())
 }

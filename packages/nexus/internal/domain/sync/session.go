@@ -17,8 +17,8 @@ const (
 type SyncDirection string
 
 const (
-	SyncDirectionDown         SyncDirection = "down"         // remote → local
-	SyncDirectionUp           SyncDirection = "up"           // local → remote
+	SyncDirectionDown          SyncDirection = "down"          // remote → local
+	SyncDirectionUp            SyncDirection = "up"            // local → remote
 	SyncDirectionBidirectional SyncDirection = "bidirectional" // two-way safe
 )
 
