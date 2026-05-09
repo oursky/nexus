@@ -11,9 +11,9 @@ import (
 
 // mockMutagenClient is a test double for MutagenClientInterface.
 type mockMutagenClient struct {
-	mu       sync.Mutex
-	statuses map[string]string
-	errors   map[string]error
+	mu        sync.Mutex
+	statuses  map[string]string
+	errors    map[string]error
 	callCount map[string]int
 }
 

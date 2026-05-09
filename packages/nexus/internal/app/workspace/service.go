@@ -46,13 +46,13 @@ type VolumeSyncStarter interface {
 
 // Service orchestrates workspace lifecycle operations.
 type Service struct {
-	repo           workspace.Repository
-	projectRepo    project.Repository
-	registry       RegistryResolver
-	portDiscoverer workspace.PortDiscoverer
-	forwardCreator     ForwardCreator
-	volumeMounter      VolumeMounter
-	volumeSyncStarter  VolumeSyncStarter
+	repo              workspace.Repository
+	projectRepo       project.Repository
+	registry          RegistryResolver
+	portDiscoverer    workspace.PortDiscoverer
+	forwardCreator    ForwardCreator
+	volumeMounter     VolumeMounter
+	volumeSyncStarter VolumeSyncStarter
 	// bgCtx is a long-lived context used for async workspace starts so they
 	// are not cancelled when the originating RPC request context expires.
 	bgCtx context.Context

@@ -218,7 +218,8 @@ func (h *Handler) daemonStatus(_ context.Context, _ json.RawMessage) (any, error
 	return result, nil
 }
 
-func tailLines(path string, maxLines int) ([]string, error) {	const bufCap = 256 * 1024
+func tailLines(path string, maxLines int) ([]string, error) {
+	const bufCap = 256 * 1024
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err

@@ -32,8 +32,8 @@ import (
 	rpcproject "github.com/oursky/nexus/packages/nexus/internal/rpc/project"
 	rpcpty "github.com/oursky/nexus/packages/nexus/internal/rpc/pty"
 	rpcregistry "github.com/oursky/nexus/packages/nexus/internal/rpc/registry"
-	rpcsync "github.com/oursky/nexus/packages/nexus/internal/rpc/sync"
 	rpcspotlight "github.com/oursky/nexus/packages/nexus/internal/rpc/spotlight"
+	rpcsync "github.com/oursky/nexus/packages/nexus/internal/rpc/sync"
 	rpcvolume "github.com/oursky/nexus/packages/nexus/internal/rpc/volume"
 	rpcworkspace "github.com/oursky/nexus/packages/nexus/internal/rpc/workspace"
 	"github.com/oursky/nexus/packages/nexus/internal/transport"
@@ -103,10 +103,10 @@ type Daemon struct {
 	spotlightSvc    *appspotlight.Service
 
 	// Mac reverse tunnel state (set by Mac app via RPC)
-	mu              sync.RWMutex
-	macTunnelPort   int
-	macUser         string
-	macPath         string
+	mu            sync.RWMutex
+	macTunnelPort int
+	macUser       string
+	macPath       string
 }
 
 // GetMacTunnelConfig returns the Mac reverse tunnel configuration.
@@ -467,7 +467,7 @@ func (dockercomposePortDiscoverer) DiscoverPublishedPorts(ctx context.Context, r
 
 // syncStarterAdapter adapts appsync.Service to appvol.SyncStarter.
 type syncStarterAdapter struct {
-	svc            *appsync.Service
+	svc             *appsync.Service
 	macTunnelGetter func() (port int, macUser, macPath string, ok bool)
 }
 

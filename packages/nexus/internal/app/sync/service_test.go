@@ -386,8 +386,16 @@ func (m *mockSyncMutagen) ResumeSession(_ context.Context, sessionID string) err
 	return m.resumeErr
 }
 
-func (m *mockSyncMutagen) PauseCallCount() int  { m.mu.Lock(); defer m.mu.Unlock(); return len(m.pauseCalls) }
-func (m *mockSyncMutagen) ResumeCallCount() int { m.mu.Lock(); defer m.mu.Unlock(); return len(m.resumeCalls) }
+func (m *mockSyncMutagen) PauseCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.pauseCalls)
+}
+func (m *mockSyncMutagen) ResumeCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.resumeCalls)
+}
 
 // createActiveSessionWithMutagen creates an active session with a MutagenID for pause/resume tests.
 func createActiveSessionWithMutagen(t *testing.T, repo domainsync.Repository, wsID string) *domainsync.SyncSession {

@@ -136,7 +136,9 @@ func TestProtocol_WorkflowRoundTrip(t *testing.T) {
 	harness.WaitForWorkspaceReady(t, h, id)
 	h.MustCall("workspace.stop", map[string]any{"id": id}, nil)
 
-	var removeRes struct{ Removed bool `json:"removed"` }
+	var removeRes struct {
+		Removed bool `json:"removed"`
+	}
 	h.MustCall("workspace.remove", map[string]any{"id": id}, &removeRes)
 	if !removeRes.Removed {
 		t.Error("remove: expected removed=true")

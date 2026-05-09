@@ -20,17 +20,17 @@ type SessionStore struct {
 
 // persistedSession is the JSON-serializable representation of a sync session.
 type persistedSession struct {
-	ID          string    `json:"id"`
-	WorkspaceID string    `json:"workspace_id"`
-	LocalPath   string    `json:"local_path"`
-	Status      string    `json:"status"`
-	Direction   string    `json:"direction"`
-	Alpha       string    `json:"alpha"`
-	Beta        string    `json:"beta"`
-	MutagenID   string    `json:"mutagen_id"`
-	StartedAt   time.Time `json:"started_at"`
-	StoppedAt   *time.Time `json:"stopped_at,omitempty"`
-	LastSyncAt  *time.Time `json:"last_sync_at,omitempty"`
+	ID          string               `json:"id"`
+	WorkspaceID string               `json:"workspace_id"`
+	LocalPath   string               `json:"local_path"`
+	Status      string               `json:"status"`
+	Direction   string               `json:"direction"`
+	Alpha       string               `json:"alpha"`
+	Beta        string               `json:"beta"`
+	MutagenID   string               `json:"mutagen_id"`
+	StartedAt   time.Time            `json:"started_at"`
+	StoppedAt   *time.Time           `json:"stopped_at,omitempty"`
+	LastSyncAt  *time.Time           `json:"last_sync_at,omitempty"`
 	Stats       domainsync.SyncStats `json:"stats"`
 }
 

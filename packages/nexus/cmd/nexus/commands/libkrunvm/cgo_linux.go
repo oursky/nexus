@@ -105,11 +105,11 @@ func krunSetPasstFD(ctx uint32, fd int) error {
 func krunAddNetUnixStream(ctx uint32, fd int) error {
 	ret := C.krun_add_net_unixstream(
 		C.uint32_t(ctx),
-		nil,           // c_path: NULL means use fd
+		nil, // c_path: NULL means use fd
 		C.int(fd),
-		nil,           // c_mac: NULL = auto
+		nil, // c_mac: NULL = auto
 		C.uint32_t(C.COMPAT_FEATURES),
-		0,             // flags
+		0, // flags
 	)
 	if ret != 0 {
 		return fmt.Errorf("krun_add_net_unixstream: %w", syscall.Errno(-ret))
