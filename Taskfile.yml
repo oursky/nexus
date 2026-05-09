@@ -452,6 +452,49 @@ tasks:
     cmds:
       - task: check:spec-coverage
 
+  ci:passt:build:
+    desc: "Build patched passt binary for CI"
+    cmds:
+      - scripts/ci/build-passt.sh
+
+  ci:e2e:prep:
+    desc: "Prepare environment for e2e tests in CI"
+    cmds:
+      - ./scripts/ci/enable-kvm.sh
+      - ./scripts/ci/install-host-prereqs.sh
+      - ./scripts/ci/setup-xfs-reflink.sh
+      - ./scripts/ci/prepare-libkrun-cache-env.sh
+      - ./scripts/ci/build-nexus-libkrun.sh
+      - ./scripts/ci/provision-libkrun-host.sh
+      - ./scripts/ci/setup-host-config-fixtures.sh
+
+  ci:e2e:run:
+    desc: "Run e2e tests in CI"
+    vars:
+      E2E_TIMEOUT: '{{.E2E_TIMEOUT | default "60m"}}'
+      E2E_P: '{{.E2E_P | default "2"}}'
+      E2E_PARALLEL: '{{.E2E_PARALLEL | default "2"}}'
+      E2E_RUN: '{{.E2E_RUN | default ""}}'
+      E2E_PKG: '{{.E2E_PKG | default "./test/e2e/..."}}'
+    env:
+      CI: "true"
+      NEXUS_LIBKRUN_SKIP_BAKE: "1"
+      NEXUS_LIBKRUN_BAKE_TIMEOUT: "120s"
+      NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "1"
+      NEXUS_VM_KERNEL: "/var/lib/nexus/vmlinux.bin"
+      NEXUS_VM_ROOTFS: "/var/lib/nexus/rootfs.ext4"
+      NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
+      NEXUS_RUNNER_ROOTFS_MIN_MIB: "512"
+      NEXUS_LIBKRUN_MEM_MIB: "256"
+      NEXUS_PASST_PATH: "/tmp/passt-patched"
+    cmds:
+      - |
+        RUN_FLAG=""
+        if [ -n "{{.E2E_RUN}}" ]; then
+          RUN_FLAG="-run {{.E2E_RUN}}"
+        fi
+        go test -tags e2e -count=1 -timeout={{.E2E_TIMEOUT}} -v -p {{.E2E_P}} -parallel {{.E2E_PARALLEL}} $RUN_FLAG {{.E2E_PKG}}
+
   showcase:rerecord:
     desc: "Re-record showcase flow by controlling NexusApp through headless RPC, then render remotion"
     cmds:

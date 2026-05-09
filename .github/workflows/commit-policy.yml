@@ -14,31 +14,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      - name: Install Task
+        run: go install github.com/go-task/task/v3/cmd/task@latest
+
       - name: Validate PR commit messages
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          TYPES="feat|fix|docs|chore|refactor|test|ci|build|perf|revert"
-          CONVENTIONAL_PATTERN="^(${TYPES})(\(.+\))?(!)?: .+"
-          # Accept Lore-protocol intent lines (sentence-style, no conventional prefix).
-          LORE_INTENT_PATTERN="^[A-Z][A-Za-z0-9 ,._()'/-]{12,}$"
-          ERRORS=0
-          while IFS= read -r msg; do
-            if ! echo "$msg" | grep -qP "$CONVENTIONAL_PATTERN" && ! echo "$msg" | grep -qP "$LORE_INTENT_PATTERN"; then
-              echo "FAIL: $msg"
-              ERRORS=$((ERRORS + 1))
-            fi
-          done < <(git log --format="%s" "$BASE_SHA".."$HEAD_SHA")
-          if [ "$ERRORS" -gt 0 ]; then
-            echo ""
-            echo "Commit messages must follow either Conventional Commits or Lore intent-line format:"
-            echo "  Conventional: <type>(<scope>): <description>"
-            echo "  Lore intent: Sentence-style intent line (capitalized, descriptive)"
-            echo "  Allowed conventional types: ${TYPES//|/, }"
-            exit 1
-          fi
-          echo "All commit messages are valid."
+        run: task ci:commits

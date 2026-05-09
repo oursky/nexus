@@ -1,4 +1,7 @@
+# Source of truth for CI-critical tool versions is .tool-versions
+# This file extends it with dev-only tools that don't need pinning.
 [tools]
-go = "1.24"
+go = "1.25.0"
+golangci-lint = "2.12.1"
+task = "3.42.0"
 air = "latest"
-task = "latest"
