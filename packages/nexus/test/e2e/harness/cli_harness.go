@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
@@ -170,7 +171,9 @@ func NewCLIHarness(t *testing.T) *CLIHarness {
 // Run executes the nexus CLI with args, with cwd dir and env wired for this harness.
 func (c *CLIHarness) Run(t *testing.T, dir string, args ...string) ([]byte, error) {
 	t.Helper()
-	cmd := exec.Command(c.binPath, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.binPath, args...)
 	cmd.Dir = dir
 	cmd.Env = c.cliEnv(c.configHomeFor(t))
 	return cmd.CombinedOutput()
@@ -191,7 +194,9 @@ func (c *CLIHarness) DaemonToken() string { return c.token }
 // RunWithStdin runs the CLI with stdin set (e.g. non-interactive workspace shell).
 func (c *CLIHarness) RunWithStdin(t *testing.T, dir, stdin string, args ...string) ([]byte, error) {
 	t.Helper()
-	cmd := exec.Command(c.binPath, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, c.binPath, args...)
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Env = c.cliEnv(c.configHomeFor(t))

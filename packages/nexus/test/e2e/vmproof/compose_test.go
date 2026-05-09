@@ -46,7 +46,7 @@ func TestVMProof_DockerCompose(t *testing.T) {
 
 	// docker compose up -d
 	out, err = h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-c",
-		"cd /tmp/compose-test && docker compose up -d; sleep 0.1")
+		"cd /tmp/compose-test && timeout 120 docker compose up -d; sleep 0.1")
 	if err != nil {
 		t.Fatalf("docker compose up: %v\noutput: %s", err, out)
 	}
@@ -79,7 +79,7 @@ func TestVMProof_DockerCompose(t *testing.T) {
 
 	// docker compose down — clean shutdown.
 	out, err = h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-c",
-		"cd /tmp/compose-test && docker compose down; sleep 0.05")
+		"cd /tmp/compose-test && timeout 60 docker compose down; sleep 0.05")
 	if err != nil {
 		t.Fatalf("docker compose down: %v\noutput: %s", err, out)
 	}
