@@ -12,6 +12,7 @@ struct BottomPanelView: View {
     enum InspectorTab: String, CaseIterable {
         case ports    = "Ports"
         case vmLog    = "Log"
+        case sync     = "Sync"
     }
 
     var body: some View {
@@ -64,6 +65,8 @@ struct BottomPanelView: View {
                     PortsPane(workspace: workspace)
                 case .vmLog:
                     VMLogPane(workspace: workspace)
+                case .sync:
+                    SyncPane(workspace: workspace)
                 }
             }
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
@@ -516,4 +519,389 @@ private struct LogRow: View {
     }
 }
 
+// MARK: - Sync pane
 
+private struct SyncPane: View {
+    let workspace: Workspace
+    @EnvironmentObject var appState: AppState
+    @State private var showStartSheet = false
+    @State private var localPath = ""
+    @State private var refreshTask: Task<Void, Never>?
+
+    private var allSessions: [SyncSession] {
+        appState.syncSessions[workspace.id] ?? []
+    }
+
+    private var sessions: [SyncSession] {
+        allSessions.filter { $0.status == "active" || $0.status == "paused" }
+    }
+
+    private var activeSession: SyncSession? {
+        sessions.first { $0.status == "active" || $0.status == "paused" }
+    }
+
+    private var lastUsedPath: String {
+        allSessions.last?.localPath ?? ""
+    }
+
+    private var isBusy: Bool {
+        appState.syncOps[workspace.id] != nil
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack(spacing: 8) {
+                if isBusy {
+                    ProgressView()
+                        .scaleEffect(0.6)
+                        .frame(width: 12, height: 12)
+                }
+                Text("Sync Sessions")
+                    .font(Theme.fontSm)
+                    .foregroundColor(Theme.labelSecondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button {
+                    Task { await appState.refreshSyncs(workspaceID: workspace.id) }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.labelSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Refresh")
+                .disabled(isBusy)
+
+                if activeSession == nil {
+                    Button("Start") {
+                        if localPath.isEmpty, !lastUsedPath.isEmpty {
+                            localPath = lastUsedPath
+                        }
+                        showStartSheet = true
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .medium))
+                    .disabled(isBusy)
+                }
+            }
+            .frame(minHeight: 22)
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
+            Divider().overlay(Theme.separator)
+
+            // Error display
+            if let error = appState.error, !error.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(.red)
+                    Text(error)
+                        .font(.system(size: 10))
+                        .foregroundColor(.red)
+                        .lineLimit(2)
+                    Spacer()
+                    Button {
+                        appState.error = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.labelSecondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.red.opacity(0.1))
+            }
+
+            // Content
+            if sessions.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 20, weight: .ultraLight))
+                        .foregroundColor(Theme.labelTertiary)
+                    Text("No sync sessions")
+                        .font(Theme.fontSm)
+                        .foregroundColor(Theme.labelTertiary)
+                    Text("Start sync to keep workspace files in sync with a local path")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.labelTertiary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                    Button("Start Sync") {
+                        if localPath.isEmpty, !lastUsedPath.isEmpty {
+                            localPath = lastUsedPath
+                        }
+                        showStartSheet = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .padding(.top, 4)
+                    .disabled(isBusy)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(sessions) { session in
+                            SyncSessionRow(session: session, workspace: workspace)
+                            Divider().overlay(Theme.separator).padding(.leading, 12)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            }
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
+        .task(id: workspace.id) {
+            await startPolling()
+        }
+        .onAppear {
+            Task {
+                await appState.refreshSyncs(workspaceID: workspace.id)
+            }
+        }
+        .onDisappear {
+            refreshTask?.cancel()
+            refreshTask = nil
+        }
+        .onChange(of: showStartSheet) { _, isShowing in
+            if !isShowing {
+                Task {
+                    await appState.refreshSyncs(workspaceID: workspace.id)
+                }
+            }
+        }
+        .sheet(isPresented: $showStartSheet) {
+            SyncStartSheet(
+                workspace: workspace,
+                localPath: $localPath,
+                isBusy: isBusy
+            )
+            .environmentObject(appState)
+        }
+    }
+
+    private func startPolling() async {
+        refreshTask?.cancel()
+        await appState.refreshSyncs(workspaceID: workspace.id)
+        refreshTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                await appState.refreshSyncs(workspaceID: workspace.id)
+            }
+        }
+    }
+}
+
+private struct SyncSessionRow: View {
+    let session: SyncSession
+    let workspace: Workspace
+    @EnvironmentObject var appState: AppState
+
+    private var isBusy: Bool {
+        appState.syncOps[workspace.id] != nil
+    }
+
+    private var statusColor: Color {
+        switch session.status {
+        case "active": return Theme.green
+        case "paused": return Theme.orange
+        case "error": return .red
+        default: return Theme.labelTertiary
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Status line
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 6, height: 6)
+                Text(session.status.capitalized)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(statusColor)
+                Spacer()
+                Text(session.direction)
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.labelTertiary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Theme.badgeMutedBg)
+                    )
+            }
+
+            // Local path
+            Text(session.localPath)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(Theme.labelSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            // Stats
+            if session.stats.totalSyncs > 0 {
+                HStack(spacing: 12) {
+                    StatItem(label: "Sent", value: formatBytes(session.stats.bytesSent))
+                    StatItem(label: "Recv", value: formatBytes(session.stats.bytesReceived))
+                    StatItem(label: "Files", value: "\(session.stats.filesSent + session.stats.filesReceived)")
+                }
+            }
+
+            // Action buttons
+            HStack(spacing: 8) {
+                switch session.status {
+                case "active":
+                    Button("Pause") {
+                        Task { await appState.pauseSync(sessionID: session.id, workspaceID: workspace.id) }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(Theme.accent)
+                    .disabled(isBusy)
+
+                    Button("Stop") {
+                        Task { await appState.stopSync(sessionID: session.id, workspaceID: workspace.id) }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.red)
+                    .disabled(isBusy)
+
+                case "paused":
+                    Button("Resume") {
+                        Task { await appState.resumeSync(sessionID: session.id, workspaceID: workspace.id) }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(Theme.green)
+                    .disabled(isBusy)
+
+                    Button("Stop") {
+                        Task { await appState.stopSync(sessionID: session.id, workspaceID: workspace.id) }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.red)
+                    .disabled(isBusy)
+
+                default:
+                    EmptyView()
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .binary
+        return formatter.string(fromByteCount: bytes)
+    }
+}
+
+private struct StatItem: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(label)
+                .font(.system(size: 9))
+                .foregroundColor(Theme.labelTertiary)
+            Text(value)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundColor(Theme.labelSecondary)
+        }
+    }
+}
+
+private struct SyncStartSheet: View {
+    let workspace: Workspace
+    @Binding var localPath: String
+    let isBusy: Bool
+    @EnvironmentObject var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Start Sync")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(Theme.label)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Local Folder")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(Theme.labelSecondary)
+
+                HStack(spacing: 8) {
+                    Text(localPath.isEmpty ? "Select a folder…" : localPath)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(localPath.isEmpty ? Theme.labelTertiary : Theme.label)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button("Choose…") {
+                        chooseFolder()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(Theme.separator, lineWidth: 1)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(Theme.bgElevated))
+                )
+            }
+
+            HStack(spacing: 12) {
+                Button("Cancel") {
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Start") {
+                    Task {
+                        await appState.startSync(
+                            workspaceID: workspace.id,
+                            localPath: localPath,
+                            direction: "bidirectional"
+                        )
+                        dismiss()
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(localPath.isEmpty || isBusy)
+            }
+        }
+        .padding(20)
+        .frame(width: 400)
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.message = "Select local folder to sync with workspace"
+        panel.prompt = "Select"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+
+        if panel.runModal() == .OK, let url = panel.url {
+            localPath = url.path
+        }
+    }
+}
