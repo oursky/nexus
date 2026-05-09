@@ -186,12 +186,12 @@ func New(cfg Config) (*Daemon, error) {
 			return nil, fmt.Errorf("daemon: requested driver %q is not available on this node", cfg.Driver)
 		}
 	case "sandbox", "process":
-		registry.SetDefaultBackend("sandbox")
+		registry.SetDefaultBackend("process")
 	default:
 		if runtime.GOOS == "linux" && registry.HasBackend("libkrun") {
 			registry.SetDefaultBackend("libkrun")
 		} else {
-			registry.SetDefaultBackend("sandbox")
+			registry.SetDefaultBackend("process")
 		}
 	}
 	log.Printf("daemon: default backend=%s", registry.DefaultBackend())

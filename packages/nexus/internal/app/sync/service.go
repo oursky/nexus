@@ -42,6 +42,8 @@ type MutagenClientInterface interface {
 	CreateSession(ctx context.Context, alpha, beta string, mode SyncDirection) (string, error)
 	TerminateSession(ctx context.Context, sessionID string) error
 	SessionStatus(ctx context.Context, sessionID string) (string, error)
+	PauseSession(ctx context.Context, sessionID string) error
+	ResumeSession(ctx context.Context, sessionID string) error
 }
 
 // Service manages volume sync sessions via MutagenClient.
@@ -332,14 +334,65 @@ func (s *Service) RestoreSessions(ctx context.Context) error {
 
 // PauseSync pauses an active sync session.
 func (s *Service) PauseSync(ctx context.Context, sessionID string) error {
-	// TODO: Implement pause functionality
-	return fmt.Errorf("sync: pause not yet implemented")
+	sess, err := s.repo.Get(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("sync: session %q not found", sessionID)
+	}
+	if sess.Status == domainsync.SyncStatusPaused {
+		return fmt.Errorf("sync: session %q is already paused", sessionID)
+	}
+	if sess.Status != domainsync.SyncStatusActive {
+		return fmt.Errorf("sync: cannot pause session %q with status %q", sessionID, sess.Status)
+	}
+	if s.mutagen == nil {
+		return fmt.Errorf("sync: mutagen not available")
+	}
+	if sess.MutagenID == "" {
+		return fmt.Errorf("sync: session %q has no mutagen session", sessionID)
+	}
+	if err := s.mutagen.PauseSession(ctx, sess.MutagenID); err != nil {
+		return fmt.Errorf("sync: pause session %q: %w", sessionID, err)
+	}
+	sess.Status = domainsync.SyncStatusPaused
+	if err := s.repo.Update(ctx, sess); err != nil {
+		return err
+	}
+	if s.store != nil {
+		if err := s.store.Update(sess); err != nil {
+			return fmt.Errorf("sync: persist paused session: %w", err)
+		}
+	}
+	return nil
 }
 
 // ResumeSync resumes a paused sync session.
 func (s *Service) ResumeSync(ctx context.Context, sessionID string) error {
-	// TODO: Implement resume functionality
-	return fmt.Errorf("sync: resume not yet implemented")
+	sess, err := s.repo.Get(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("sync: session %q not found", sessionID)
+	}
+	if sess.Status != domainsync.SyncStatusPaused {
+		return fmt.Errorf("sync: session %q is not paused (status: %s)", sessionID, sess.Status)
+	}
+	if s.mutagen == nil {
+		return fmt.Errorf("sync: mutagen not available")
+	}
+	if sess.MutagenID == "" {
+		return fmt.Errorf("sync: session %q has no mutagen session", sessionID)
+	}
+	if err := s.mutagen.ResumeSession(ctx, sess.MutagenID); err != nil {
+		return fmt.Errorf("sync: resume session %q: %w", sessionID, err)
+	}
+	sess.Status = domainsync.SyncStatusActive
+	if err := s.repo.Update(ctx, sess); err != nil {
+		return err
+	}
+	if s.store != nil {
+		if err := s.store.Update(sess); err != nil {
+			return fmt.Errorf("sync: persist resumed session: %w", err)
+		}
+	}
+	return nil
 }
 
 // StartVolumeSync starts sync for a volume with explicit alpha/beta paths.

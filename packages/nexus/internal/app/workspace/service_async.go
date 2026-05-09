@@ -20,6 +20,21 @@ const runStartAsyncTimeout = 6 * time.Minute
 // provisioned before marking the workspace as running (keeping it in the
 // starting state during package installation to block premature PTY access).
 func (s *Service) runStartAsync(ws *workspace.Workspace) {
+	// Recover from panics so the workspace doesn't get stuck in StateStarting.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[workspace] runStartAsync: panic for workspace=%s: %v", ws.ID, r)
+			// Try to reset workspace to Created state so it can be retried.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if current, err := s.repo.Get(ctx, ws.ID); err == nil {
+				current.State = workspace.StateCreated
+				current.UpdatedAt = time.Now().UTC()
+				_ = s.repo.Update(ctx, current)
+			}
+		}
+	}()
+
 	id := ws.ID
 
 	// Apply a timeout to the start operation so it doesn't hang forever.

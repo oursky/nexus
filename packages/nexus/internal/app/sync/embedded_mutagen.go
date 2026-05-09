@@ -83,6 +83,28 @@ func (c *EmbeddedMutagenClient) TerminateSession(ctx context.Context, sessionID 
 	return nil
 }
 
+// PauseSession pauses the mutagen session identified by sessionID.
+func (c *EmbeddedMutagenClient) PauseSession(ctx context.Context, sessionID string) error {
+	sel := &selection.Selection{
+		Specifications: []string{sessionID},
+	}
+	if err := c.manager.Pause(ctx, sel, ""); err != nil {
+		return fmt.Errorf("sync: pause session %q failed: %w", sessionID, err)
+	}
+	return nil
+}
+
+// ResumeSession resumes the mutagen session identified by sessionID.
+func (c *EmbeddedMutagenClient) ResumeSession(ctx context.Context, sessionID string) error {
+	sel := &selection.Selection{
+		Specifications: []string{sessionID},
+	}
+	if err := c.manager.Resume(ctx, sel, ""); err != nil {
+		return fmt.Errorf("sync: resume session %q failed: %w", sessionID, err)
+	}
+	return nil
+}
+
 // SessionStatus returns a human-readable status string for the given session.
 func (c *EmbeddedMutagenClient) SessionStatus(ctx context.Context, sessionID string) (string, error) {
 	sel := &selection.Selection{

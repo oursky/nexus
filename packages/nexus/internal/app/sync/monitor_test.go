@@ -47,6 +47,14 @@ func (m *mockMutagenClient) TerminateSession(_ context.Context, _ string) error 
 	return nil
 }
 
+func (m *mockMutagenClient) PauseSession(_ context.Context, _ string) error {
+	return nil
+}
+
+func (m *mockMutagenClient) ResumeSession(_ context.Context, _ string) error {
+	return nil
+}
+
 func (m *mockMutagenClient) SetStatus(sessionID, status string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

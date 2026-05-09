@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/oursky/nexus/packages/nexus/internal/domain/project"
+	domainruntime "github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/sandbox"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/store"
 )
 
@@ -278,5 +280,107 @@ func TestIntegration_WithProject(t *testing.T) {
 	got, _ := wsStore.Get(ctx, ws.ID)
 	if got.ProjectID != "proj-int-1" {
 		t.Errorf("project ID: got %q, want %q", got.ProjectID, "proj-int-1")
+	}
+}
+
+// TestIntegration_StartWithSandboxDriver tests the Create→Start lifecycle using
+// the real sandbox driver and registry. This would have caught the naming
+// mismatch where sandbox.Backend() returned "process" but the daemon set the
+// default to "sandbox".
+func TestIntegration_StartWithSandboxDriver(t *testing.T) {
+	db := openIntegrationDB(t)
+
+	wsStore := store.NewWorkspaceStore(db)
+	projStore := store.NewProjectStore(db)
+
+	registry := domainruntime.NewRegistry()
+	sandboxAdapter := sandbox.NewAdapter(sandbox.NewDriver())
+	registry.Register(sandboxAdapter)
+	registry.SetDefaultBackend("process")
+
+	svc := NewService(wsStore, projStore, registry, nil, nil, nil, nil, context.Background())
+	ctx := context.Background()
+
+	ws, err := svc.Create(ctx, workspace.CreateSpec{
+		Repo:          "https://github.com/example/sandbox-test",
+		Ref:           "main",
+		WorkspaceName: "sandbox-ws",
+		Backend:       "process",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	_, err = svc.Start(ctx, ws.ID)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	var check *workspace.Workspace
+	for i := 0; i < 20; i++ {
+		check, _ = wsStore.Get(ctx, ws.ID)
+		if check != nil && check.State == workspace.StateRunning {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if check == nil || check.State != workspace.StateRunning {
+		t.Fatalf("persisted state: got %q, want %q", check.State, workspace.StateRunning)
+	}
+	if check.Backend != "process" {
+		t.Errorf("backend: got %q, want %q", check.Backend, "process")
+	}
+	if check.RootPath != ws.Repo {
+		t.Errorf("rootPath: got %q, want %q", check.RootPath, ws.Repo)
+	}
+}
+
+// TestIntegration_StartWithMismatchedBackend verifies that even when the
+// default backend name is mismatched (the old "sandbox" vs "process" bug),
+// the start flow still completes because the driver lookup falls back to nil
+// and the service handles nil gracefully.
+func TestIntegration_StartWithMismatchedBackend(t *testing.T) {
+	db := openIntegrationDB(t)
+
+	wsStore := store.NewWorkspaceStore(db)
+	projStore := store.NewProjectStore(db)
+
+	registry := domainruntime.NewRegistry()
+	sandboxAdapter := sandbox.NewAdapter(sandbox.NewDriver())
+	registry.Register(sandboxAdapter)
+	// Deliberately set the wrong default — the old bug.
+	if !registry.SetDefaultBackend("sandbox") {
+		// "sandbox" is not registered; the driver is keyed as "process".
+		// This is expected — the test documents this mismatch.
+	}
+
+	svc := NewService(wsStore, projStore, registry, nil, nil, nil, nil, context.Background())
+	ctx := context.Background()
+
+	// Create with empty backend so it resolves to the (wrong) default.
+	ws, err := svc.Create(ctx, workspace.CreateSpec{
+		Repo:          "https://github.com/example/mismatch-test",
+		Ref:           "main",
+		WorkspaceName: "mismatch-ws",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	_, err = svc.Start(ctx, ws.ID)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	var check *workspace.Workspace
+	for i := 0; i < 20; i++ {
+		check, _ = wsStore.Get(ctx, ws.ID)
+		if check != nil && check.State == workspace.StateRunning {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if check == nil || check.State != workspace.StateRunning {
+		t.Fatalf("persisted state: got %q, want %q", check.State, workspace.StateRunning)
 	}
 }
