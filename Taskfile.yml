@@ -59,6 +59,7 @@ tasks:
     desc: "Run golangci-lint"
     dir: packages/nexus
     cmds:
+      - go generate ./cmd/nexus/
       - golangci-lint run ./...
 
   format:
@@ -67,14 +68,6 @@ tasks:
     cmds:
       - gofmt -w .
       - goimports -w .
-
-  ci:
-    desc: "Run local CI equivalent (go-fix + coverage + core)"
-    cmds:
-      - ./scripts/ci/go-fix.sh
-      - ./scripts/ci/coverage.sh
-      - task: check:spec-coverage
-      - ./scripts/ci/nexus-core.sh
 
   check:spec-coverage:
     desc: "Generate formal verification coverage map and fail on unwaived missing proof IDs"
@@ -402,6 +395,62 @@ tasks:
         else
           scripts/workspace-sync.sh
         fi
+
+  # ── CI mirrors (local equivalents of GitHub Actions) ─────────────────────
+  generate:agent:
+    desc: "Build embedded guest-agent binary (go generate)"
+    dir: packages/nexus
+    cmds:
+      - go generate ./cmd/nexus/
+    status:
+      - test -f cmd/nexus/embed_agent_linux_amd64.go
+
+  ci:lint:
+    desc: "Run full CI lint pipeline (go-fix + golangci-lint)"
+    cmds:
+      - ./scripts/ci/go-fix.sh
+      - task: lint
+
+  ci:test:
+    desc: "Run CI test pipeline (generate + coverage)"
+    cmds:
+      - task: generate:agent
+      - ./scripts/ci/coverage.sh
+
+  ci:build:
+    desc: "Run CI build pipeline (generate + build + cross-platform)"
+    cmds:
+      - task: generate:agent
+      - task: build
+      - task: stage:nexus-macos
+
+  ci:commits:
+    desc: "Validate commit messages match conventional commit format"
+    cmds:
+      - ./scripts/ci/check-commits.sh
+
+  ci:local:
+    desc: "Run all local CI checks (commits + lint + test + build)"
+    cmds:
+      - task: ci:commits
+      - task: ci:lint
+      - task: ci:test
+      - task: ci:build
+
+  ci:
+    desc: "Alias for ci:local — run all local CI checks"
+    cmds:
+      - task: ci:local
+
+  ci:core:
+    desc: "CI core: build + vet + e2e-short (requires local nexus daemon)"
+    cmds:
+      - ./scripts/ci/nexus-core.sh
+
+  ci:spec:
+    desc: "CI spec-coverage: formal verification coverage map"
+    cmds:
+      - task: check:spec-coverage
 
   showcase:rerecord:
     desc: "Re-record showcase flow by controlling NexusApp through headless RPC, then render remotion"
