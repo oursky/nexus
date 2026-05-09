@@ -2,6 +2,9 @@ version: "3"
 
 dotenv: [".env.local"]
 
+env:
+  GOTOOLCHAIN: "go1.25.0+auto"
+
 vars:
   REMOTE_HOST:         '{{.REMOTE_HOST         | default ""}}'
   REMOTE_BIN:          '{{.REMOTE_BIN          | default "~/.local/bin/nexus-dev"}}'
