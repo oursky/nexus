@@ -40,23 +40,32 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          output=$(pnpm exec semantic-release --json 2>&1 || true)
-          echo "$output"
-          # Extract version from JSON output using jq if available, fallback to grep
+          # Run semantic-release and capture JSON result to a file
+          # The --json flag outputs the result object as the last line of stdout
+          pnpm exec semantic-release --json > /tmp/sr-result.json 2> /tmp/sr-log.txt || true
+          cat /tmp/sr-log.txt
+          
+          # Extract version from the JSON result
           version=""
-          if command -v jq &> /dev/null; then
-            version=$(echo "$output" | jq -r '.nextRelease.version // empty' 2>/dev/null || true)
+          if [ -f /tmp/sr-result.json ] && [ -s /tmp/sr-result.json ]; then
+            # Try jq first
+            if command -v jq &> /dev/null; then
+              version=$(jq -r '.nextRelease.version // empty' /tmp/sr-result.json 2>/dev/null || true)
+            fi
+            # Fallback: parse with grep/sed
+            if [ -z "$version" ]; then
+              version=$(grep -o '"version":"[^"]*"' /tmp/sr-result.json | head -1 | cut -d'"' -f4 || true)
+            fi
           fi
-          if [ -z "$version" ]; then
-            # Fallback: extract from any JSON line containing nextRelease
-            version=$(echo "$output" | grep -o '"nextRelease"[^}]*"version"[^}]*}' | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
-          fi
+          
           if [ -n "$version" ]; then
             echo "released=true" >> "$GITHUB_OUTPUT"
             echo "version=$version" >> "$GITHUB_OUTPUT"
             echo "tag=v$version" >> "$GITHUB_OUTPUT"
+            echo "Semantic release: v$version"
           else
             echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "No new release"
           fi
 
       - name: Set up Go
