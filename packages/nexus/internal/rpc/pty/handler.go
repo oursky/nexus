@@ -2,6 +2,9 @@
 package pty
 
 import (
+	"context"
+	"encoding/json"
+
 	appty "github.com/oursky/nexus/packages/nexus/internal/app/pty"
 	domainproj "github.com/oursky/nexus/packages/nexus/internal/domain/project"
 	domainws "github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
@@ -17,9 +20,22 @@ type SessionRegistry interface {
 	Rename(id string, name string) bool
 }
 
+// PTYHostClient is the interface for proxying PTY operations to a PTY host.
+type PTYHostClient interface {
+	Create(ctx context.Context, params json.RawMessage) (any, error)
+	Write(ctx context.Context, params json.RawMessage) (any, error)
+	Resize(ctx context.Context, params json.RawMessage) (any, error)
+	CloseSession(ctx context.Context, params json.RawMessage) (any, error)
+	Reattach(ctx context.Context, params json.RawMessage) (any, error)
+	List(ctx context.Context, params json.RawMessage) (any, error)
+	Rename(ctx context.Context, params json.RawMessage) (any, error)
+	IsConnected() bool
+}
+
 // Handler provides JSON-RPC dispatch for PTY operations.
 type Handler struct {
 	reg    SessionRegistry
+	host   PTYHostClient
 	ws     domainws.Repository
 	proj   domainproj.Repository
 	dialer VsockDialer
@@ -28,6 +44,11 @@ type Handler struct {
 
 // HandlerOption configures handler dependencies.
 type HandlerOption func(*Handler)
+
+// WithPTYHost wires a PTY host client for proxying PTY operations.
+func WithPTYHost(host PTYHostClient) HandlerOption {
+	return func(h *Handler) { h.host = host }
+}
 
 // WithWorkspaceRepo wires workspace repository lookup into PTY handler.
 func WithWorkspaceRepo(ws domainws.Repository) HandlerOption {
@@ -60,13 +81,53 @@ func New(reg SessionRegistry, opts ...HandlerOption) *Handler {
 
 // Register wires all pty.* methods into the given RPC registry.
 func (h *Handler) Register(r registry.Registry) {
-	r.Register("pty.create", h.create)
-	r.Register("pty.list", h.list)
-	r.Register("pty.resize", h.resize)
-	r.Register("pty.rename", h.rename)
-	r.Register("pty.close", h.close)
-	r.Register("pty.write", h.write)
-	r.Register("pty.reattach", h.reattach)
+	if h.host != nil && h.host.IsConnected() {
+		r.Register("pty.create", h.proxyCreate)
+		r.Register("pty.list", h.proxyList)
+		r.Register("pty.resize", h.proxyResize)
+		r.Register("pty.rename", h.proxyRename)
+		r.Register("pty.close", h.proxyClose)
+		r.Register("pty.write", h.proxyWrite)
+		r.Register("pty.reattach", h.proxyReattach)
+	} else {
+		r.Register("pty.create", h.create)
+		r.Register("pty.list", h.list)
+		r.Register("pty.resize", h.resize)
+		r.Register("pty.rename", h.rename)
+		r.Register("pty.close", h.close)
+		r.Register("pty.write", h.write)
+		r.Register("pty.reattach", h.reattach)
+	}
+}
+
+// ── Proxy methods ────────────────────────────────────────────────────────────
+
+func (h *Handler) proxyCreate(ctx context.Context, raw json.RawMessage) (any, error) {
+	return h.host.Create(ctx, raw)
+}
+
+func (h *Handler) proxyList(ctx context.Context, raw json.RawMessage) (any, error) {
+	return h.host.List(ctx, raw)
+}
+
+func (h *Handler) proxyResize(ctx context.Context, raw json.RawMessage) (any, error) {
+	return h.host.Resize(ctx, raw)
+}
+
+func (h *Handler) proxyRename(ctx context.Context, raw json.RawMessage) (any, error) {
+	return h.host.Rename(ctx, raw)
+}
+
+func (h *Handler) proxyClose(ctx context.Context, raw json.RawMessage) (any, error) {
+	return h.host.CloseSession(ctx, raw)
+}
+
+func (h *Handler) proxyWrite(ctx context.Context, raw json.RawMessage) (any, error) {
+	return h.host.Write(ctx, raw)
+}
+
+func (h *Handler) proxyReattach(ctx context.Context, raw json.RawMessage) (any, error) {
+	return h.host.Reattach(ctx, raw)
 }
 
 // ── DTOs ─────────────────────────────────────────────────────────────────────

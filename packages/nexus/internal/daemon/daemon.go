@@ -8,10 +8,12 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	apppty "github.com/oursky/nexus/packages/nexus/internal/app/pty"
@@ -38,6 +40,7 @@ import (
 	rpcvolume "github.com/oursky/nexus/packages/nexus/internal/rpc/volume"
 	rpcworkspace "github.com/oursky/nexus/packages/nexus/internal/rpc/workspace"
 	"github.com/oursky/nexus/packages/nexus/internal/transport"
+	"github.com/oursky/nexus/packages/nexus/internal/ptyhost"
 )
 
 // NetworkConfig holds optional remote-listener settings.
@@ -92,6 +95,9 @@ type Config struct {
 	// When set, the libkrun driver injects the current agent into each VM's rootfs
 	// on spawn so the agent stays in sync with the nexus binary.
 	EmbeddedAgentFn func() []byte
+	// PTYHostSocket is the path to the PTY host Unix socket.
+	// When empty, defaults to <socket-dir>/pty-host.sock.
+	PTYHostSocket string
 }
 
 // Daemon is the assembled daemon with all services wired together.
@@ -102,6 +108,8 @@ type Daemon struct {
 	listener        *transport.Listener
 	networkListener *transport.NetworkListener
 	spotlightSvc    *appspotlight.Service
+	ptyHost         *ptyhost.Client
+	ptyHostCmd      *exec.Cmd
 
 	// Mac reverse tunnel state (set by Mac app via RPC)
 	mu            sync.RWMutex
@@ -222,6 +230,29 @@ func New(cfg Config) (*Daemon, error) {
 	ptyReg := apppty.NewRegistry()
 	broker := relay.NewBroker()
 
+	// ── PTY host process ─────────────────────────────────────────────────────
+	ptyHostSocket := cfg.PTYHostSocket
+	if ptyHostSocket == "" {
+		ptyHostSocket = filepath.Join(filepath.Dir(cfg.SocketPath), "pty-host.sock")
+	}
+
+	var ptyHostCmd *exec.Cmd
+	var ptyHostClient *ptyhost.Client
+
+	ptyHostCmd = exec.Command(os.Args[0], "pty-host", "--socket", ptyHostSocket)
+	if err := ptyHostCmd.Start(); err != nil {
+		log.Printf("daemon: failed to start pty-host: %v", err)
+	} else {
+		log.Printf("daemon: pty-host started on %s", ptyHostSocket)
+	}
+
+	ptyHostClient = ptyhost.NewClient(ptyHostSocket)
+	if err := ptyHostClient.Connect(); err != nil {
+		log.Printf("daemon: failed to connect to pty-host: %v", err)
+	} else {
+		log.Printf("daemon: connected to pty-host")
+	}
+
 	reg := rpcregistry.NewMapRegistry()
 
 	rpcworkspace.NewHandler(wsSvc, wsHandlerOpts...).Register(reg)
@@ -232,6 +263,9 @@ func New(cfg Config) (*Daemon, error) {
 	ptyHandlerOpts := []rpcpty.HandlerOption{
 		rpcpty.WithWorkspaceRepo(wsStore),
 		rpcpty.WithProjectRepo(projStore),
+	}
+	if ptyHostClient.IsConnected() {
+		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithPTYHost(ptyHostClient))
 	}
 	if registry.HasBackend("libkrun") {
 		ptyHandlerOpts = append(ptyHandlerOpts, rpcpty.WithVsockDialer(lkBundle))
@@ -304,6 +338,8 @@ func New(cfg Config) (*Daemon, error) {
 	preDaemon.registry = reg
 	preDaemon.listener = lst
 	preDaemon.spotlightSvc = spotlightSvc
+	preDaemon.ptyHost = ptyHostClient
+	preDaemon.ptyHostCmd = ptyHostCmd
 	d := preDaemon
 
 	// Wire Mac tunnel config into sync service so workspace sync targets the Mac.
@@ -398,6 +434,17 @@ func (d *Daemon) Stop() error {
 		if err := d.spotlightSvc.StopAll(context.Background()); err != nil {
 			errs = append(errs, fmt.Errorf("stop spotlight: %w", err))
 		}
+	}
+	if d.ptyHostCmd != nil && d.ptyHostCmd.Process != nil {
+		_ = d.ptyHostCmd.Process.Signal(syscall.SIGTERM)
+		time.AfterFunc(2*time.Second, func() {
+			if d.ptyHostCmd != nil && d.ptyHostCmd.Process != nil {
+				_ = d.ptyHostCmd.Process.Kill()
+			}
+		})
+	}
+	if d.ptyHost != nil {
+		_ = d.ptyHost.Close()
 	}
 	if err := d.listener.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close listener: %w", err))
