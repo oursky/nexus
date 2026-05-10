@@ -187,6 +187,10 @@ jobs:
     needs: release
     if: needs.release.outputs.released == 'true'
     runs-on: [self-hosted, macOS, ARM64, v2, tw]
+    env:
+      DEVELOPER_DIR: /Volumes/xcodes/Xcode_26.2.app
+      GEM_HOME: ${{ github.workspace }}/.gem
+      BUNDLE_PATH: ${{ github.workspace }}/.bundle/vendor
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -198,6 +202,30 @@ jobs:
         with:
           go-version-file: packages/nexus/go.mod
           cache-dependency-path: packages/nexus/go.sum
+
+      - name: Select compatible Ruby
+        run: |
+          set -euo pipefail
+          if [ -x /opt/homebrew/opt/ruby@3.3/bin/ruby ]; then
+            echo "/opt/homebrew/opt/ruby@3.3/bin" >> "$GITHUB_PATH"
+          elif [ -x /opt/homebrew/opt/ruby@3.2/bin/ruby ]; then
+            echo "/opt/homebrew/opt/ruby@3.2/bin" >> "$GITHUB_PATH"
+          elif [ -x /opt/homebrew/opt/ruby@3.1/bin/ruby ]; then
+            echo "/opt/homebrew/opt/ruby@3.1/bin" >> "$GITHUB_PATH"
+          else
+            echo "/usr/bin" >> "$GITHUB_PATH"
+            echo "$HOME/.gem/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Install Bundler
+        run: |
+          set -euo pipefail
+          ruby --version
+          gem install bundler -v 2.4.22 --user-install
+
+      - name: Bundle install
+        working-directory: packages/nexus-swift
+        run: bundle _2.4.22_ install
 
       - name: Build nexus (darwin/arm64)
         working-directory: packages/nexus
