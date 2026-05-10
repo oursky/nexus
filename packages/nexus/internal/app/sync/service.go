@@ -501,5 +501,3 @@ func (s *Service) StartVolumeSync(ctx context.Context, workspaceID, alphaPath, b
 
 	return id, nil
 }
-
-

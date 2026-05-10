@@ -88,8 +88,8 @@ func connectCommand() *cobra.Command {
 			homeDir, _ := os.UserHomeDir()
 
 			var connectResult struct {
-				OK           bool `json:"ok"`
-				Node         struct {
+				OK   bool `json:"ok"`
+				Node struct {
 					Name string   `json:"name"`
 					Tags []string `json:"tags"`
 				} `json:"node"`
