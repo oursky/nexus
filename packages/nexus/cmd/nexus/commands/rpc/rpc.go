@@ -182,6 +182,33 @@ func UnmarshalJSON(data []byte, v any) error {
 	return json.Unmarshal(data, v)
 }
 
+// CachedTunnelPort returns the local port of the cached SSH tunnel.
+// Returns (port, true) if a tunnel is active, (0, false) otherwise.
+func CachedTunnelPort() (int, bool) {
+	if tunnelCache.port > 0 && tunnelCache.err == nil {
+		return tunnelCache.port, true
+	}
+	return 0, false
+}
+
+// DialDirect connects directly to a daemon at host:port without SSH tunnel.
+func DialDirect(host string, port int, token string, verbose bool) (*websocket.Conn, error) {
+	url := fmt.Sprintf("ws://%s:%d/", host, port)
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+token)
+	if verbose {
+		fmt.Fprintf(os.Stderr, "[nexus] connecting directly to daemon: %s\n", url)
+	}
+	dialer := &websocket.Dialer{
+		HandshakeTimeout: 15 * time.Second,
+	}
+	conn, _, err := dialer.Dial(url, header)
+	if err != nil {
+		return nil, fmt.Errorf("connect to daemon at %s: %w", url, err)
+	}
+	return conn, nil
+}
+
 func ConfirmPrompt(msg string) bool {
 	fmt.Printf("%s [y/N]: ", msg)
 	scanner := bufio.NewScanner(os.Stdin)
