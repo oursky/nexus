@@ -4,7 +4,122 @@ on:
   workflow_call:
 
 jobs:
+  release:
+    name: Determine release version
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.semantic.outputs.released }}
+      version: ${{ steps.semantic.outputs.version }}
+      tag: ${{ steps.semantic.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Enable corepack and install pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run semantic-release
+        id: semantic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          
+          latest_tag_before=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          
+          pnpm exec semantic-release --json > /tmp/sr-result.json 2> /tmp/sr-log.txt || true
+          cat /tmp/sr-log.txt
+          
+          latest_tag_after=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          
+          version=""
+          if [ -f /tmp/sr-result.json ] && [ -s /tmp/sr-result.json ]; then
+            if command -v jq &> /dev/null; then
+              version=$(jq -r '.nextRelease.version // empty' /tmp/sr-result.json 2>/dev/null || true)
+            fi
+            if [ -z "$version" ]; then
+              version=$(grep -o '"version":"[^"]*"' /tmp/sr-result.json | head -1 | cut -d'"' -f4 || true)
+            fi
+          fi
+          
+          if [ -z "$version" ] && [ "$latest_tag_before" != "$latest_tag_after" ] && [ -n "$latest_tag_after" ]; then
+            version=$(echo "$latest_tag_after" | sed 's/^v//')
+          fi
+          
+          if [ -n "$version" ]; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Go
+        if: steps.semantic.outputs.released == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      - name: Build binaries
+        if: steps.semantic.outputs.released == 'true'
+        working-directory: packages/nexus
+        run: |
+          set -euo pipefail
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GIT_COMMIT="${GITHUB_SHA::8}"
+          VERSION="${{ steps.semantic.outputs.version }}"
+          LDFLAGS="-s -w \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${VERSION}"
+          
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" \
+            -o cmd/nexus/agent-linux-amd64 ./cmd/nexus-guest-agent
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/nexus-linux-amd64 ./cmd/nexus
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
+            -o cmd/nexus/agent-linux-arm64 ./cmd/nexus-guest-agent
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/nexus-linux-arm64 ./cmd/nexus
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/nexus-darwin-arm64 ./cmd/nexus
+
+      - name: Create checksums
+        if: steps.semantic.outputs.released == 'true'
+        run: |
+          cd dist
+          sha256sum nexus-linux-amd64 nexus-linux-arm64 nexus-darwin-arm64 > sha256sums.txt
+
+      - name: Upload binaries to GitHub Release
+        if: steps.semantic.outputs.released == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.semantic.outputs.tag }}"
+          gh release upload "$tag" \
+            dist/nexus-linux-amd64 \
+            dist/nexus-linux-arm64 \
+            dist/nexus-darwin-arm64 \
+            dist/sha256sums.txt \
+            --clobber
+
   app-macos-deploy:
+    name: Upload to TestFlight
+    needs: release
+    if: needs.release.outputs.released == 'true'
     runs-on: [self-hosted, macOS, ARM64, v2, tw]
     env:
       DEVELOPER_DIR: /Volumes/xcodes/Xcode_26.2.app
@@ -67,7 +182,7 @@ jobs:
       - name: Build NexusApp
         working-directory: packages/nexus-swift
         timeout-minutes: 30
-        run: bundle _2.4.22_ exec fastlane mac app_build build_number:"$(date +%s)"
+        run: bundle _2.4.22_ exec fastlane mac app_build build_number:"${{ needs.release.outputs.version }}"
 
       - name: Upload to TestFlight
         working-directory: packages/nexus-swift
@@ -102,3 +217,97 @@ jobs:
       - name: Show gym logs on failure
         if: failure()
         run: find /Users/runner/Library/Logs/gym -name '*.log' -exec tail -n 1000 {} \; 2>/dev/null || true
+
+  build-macos-dmg:
+    name: Build and publish macOS DMG
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: [self-hosted, macOS, ARM64, v2, tw]
+    env:
+      DEVELOPER_DIR: /Volumes/xcodes/Xcode_26.2.app
+      GEM_HOME: ${{ github.workspace }}/.gem
+      BUNDLE_PATH: ${{ github.workspace }}/.bundle/vendor
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      - name: Select compatible Ruby
+        run: |
+          set -euo pipefail
+          if [ -x /opt/homebrew/opt/ruby@3.3/bin/ruby ]; then
+            echo "/opt/homebrew/opt/ruby@3.3/bin" >> "$GITHUB_PATH"
+          elif [ -x /opt/homebrew/opt/ruby@3.2/bin/ruby ]; then
+            echo "/opt/homebrew/opt/ruby@3.2/bin" >> "$GITHUB_PATH"
+          elif [ -x /opt/homebrew/opt/ruby@3.1/bin/ruby ]; then
+            echo "/opt/homebrew/opt/ruby@3.1/bin" >> "$GITHUB_PATH"
+          else
+            echo "/usr/bin" >> "$GITHUB_PATH"
+            echo "$HOME/.gem/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Install Bundler
+        run: |
+          set -euo pipefail
+          ruby --version
+          gem install bundler -v 2.4.22 --user-install
+
+      - name: Bundle install
+        working-directory: packages/nexus-swift
+        run: bundle _2.4.22_ install
+
+      - name: Build nexus (darwin/arm64)
+        working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GIT_COMMIT="${GITHUB_SHA::8}"
+          VERSION="${{ needs.release.outputs.version }}"
+          LDFLAGS="-s -w \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${VERSION}"
+          go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/nexus-darwin-arm64 \
+            ./cmd/nexus
+
+      - name: Build pty-host (darwin/arm64)
+        working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GIT_COMMIT="${GITHUB_SHA::8}"
+          VERSION="${{ needs.release.outputs.version }}"
+          LDFLAGS="-s -w \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${VERSION}"
+          go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/pty-host-darwin-arm64 \
+            ./cmd/pty-host
+
+      - name: Build DMG
+        working-directory: packages/nexus-swift
+        run: bundle exec fastlane mac app_dmg build_number:"${{ needs.release.outputs.version }}"
+
+      - name: Upload DMG to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ needs.release.outputs.tag }}"
+          dmg_path=$(find packages/nexus-swift/dist -name "*.dmg" -maxdepth 1 | head -n 1)
+          if [ -z "$dmg_path" ]; then
+            echo "Error: No DMG file found"
+            exit 1
+          fi
+          gh release upload "$tag" "$dmg_path" --clobber

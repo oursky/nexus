@@ -9,6 +9,9 @@ on:
     branches:
       - test-cd
 
+permissions:
+  contents: write
+
 jobs:
   cd:
     uses: ./.github/workflows/job-cd.yaml
