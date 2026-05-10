@@ -43,7 +43,7 @@ tasks:
 
         [ "$fail" -eq 0 ] || { echo ""; echo "Fix the issues above then re-run: task setup"; exit 1; }
       - cd packages/nexus && go mod download
-      - 'echo "Setup complete. Next: task dev:remote"'
+      - 'echo "Setup complete. Next: task dev:swift"'
 
   # ── Checks ───────────────────────────────────────────────────────────────
   build:
@@ -146,7 +146,8 @@ tasks:
       - rm -rf packages/nexus/nexus packages/nexus/tmp packages/nexus/.air-tmp
 
   # ── Dev loops ─────────────────────────────────────────────────────────────
-  # Set REMOTE_HOST=user@hostname in .env.local (see .env.local.example).
+  # Daemon runs locally. Mac app built via SSH (set MAC_HOST in .env.local).
+  # For deploying to a remote Linux host, use dev:remote with REMOTE_HOST.
 
   dev:remote:
     desc: "Build for linux/amd64, deploy, restart remote daemon, and stage Resources so provision stays in sync"
@@ -163,15 +164,8 @@ tasks:
       - scripts/remote/daemon-restart.sh  # restarts daemon + prints remote version for confirmation
 
   dev:cli:
-    desc: "install local CLI binary (for CLI-only changes)"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
+    desc: "Build and install local CLI binary to ~/.local/bin/nexus-dev"
     env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN:  "{{.REMOTE_BIN}}"
-      REMOTE_PORT: "{{.REMOTE_PORT}}"
-      REMOTE_XDG_STATE_HOME: "{{.REMOTE_XDG_STATE_HOME}}"
       LOCAL_BIN:   "{{.LOCAL_BIN}}"
     cmds:
       - scripts/local/deploy.sh
@@ -228,32 +222,10 @@ tasks:
         git commit -m "chore(kernel): rebuild kernels $(date +%Y-%m-%d)"
 
   dev:swift:
-    desc: "dev:cli + stage macOS nexus binary + regenerate Swift SDK + build and open NexusApp"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN:  "{{.REMOTE_BIN}}"
-      REMOTE_PORT: "{{.REMOTE_PORT}}"
-      REMOTE_XDG_STATE_HOME: "{{.REMOTE_XDG_STATE_HOME}}"
-      LOCAL_BIN:   "{{.LOCAL_BIN}}"
-    cmds:
-      - task: dev:cli
-      - task: stage:nexus-macos
-      - task: stage:nexus-linux
-      - scripts/generate-sdk.sh
-      - scripts/swift/build.sh
-      - scripts/swift/open.sh
-
-  # ── Dogfooding (develop on Linux remote) ──────────────────────────────────
-  # Set MAC_HOST=user@mac-hostname in .env.local on the Linux remote.
-
-  dev:local:swift:
-    desc: "Linux-first dev loop: build locally, sync to Mac, build app and test headless RPC"
+    desc: "Linux-first full dev loop: build CLI locally, stage resources, sync to Mac, build + open NexusApp"
     preconditions:
       - sh: '[ -n "{{.MAC_HOST}}" ]'
-        msg: "MAC_HOST is not set. Add it to .env.local on the remote with MAC_HOST=user@mac-host."
+        msg: "MAC_HOST is not set. Add MAC_HOST=user@mac-hostname to .env.local"
     env:
       MAC_HOST: "{{.MAC_HOST}}"
       MAC_REPO_ROOT: "{{.MAC_REPO_ROOT}}"
@@ -264,7 +236,9 @@ tasks:
       - task: stage:nexus-linux
       - scripts/generate-sdk.sh
       - scripts/remote/mac-build-app.sh
-      - scripts/remote/mac-test-headless.sh
+
+  # ── Dogfooding (develop on Linux remote) ──────────────────────────────────
+  # Set MAC_HOST=user@mac-hostname in .env.local on the Linux remote.
 
   dev:mac:build:
     desc: "SSH from Linux remote back to Mac to build NexusApp"

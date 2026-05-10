@@ -994,18 +994,29 @@ public final class AppState: ObservableObject {
             }
             self.updateProfileStatus(profileId: profile.profileId, status: .connected)
 
-            // Notify the daemon about the reverse tunnel port so it can use it for sync
+            // Register tunnel with daemon via daemon.connect RPC
             let rp = await mgr.reversePort
             if rp > 0, let wsClient = self.client as? WebSocketDaemonClient {
                 Task {
-                    let macUser = NSUserName()
-                    let macPath = "~/magic/nexus"
-                    _ = try? await wsClient.call("daemon.set-mac-tunnel", params: [
+                    let clientUser = NSUserName()
+                    let clientPath = NSHomeDirectory()
+                    let res = try? await wsClient.call("daemon.connect", params: [
+                        "token": resolvedToken,
                         "reversePort": rp,
-                        "macUser": macUser,
-                        "macPath": macPath,
+                        "clientUser": clientUser,
+                        "clientPath": clientPath,
                     ] as [String: Any])
-                    Self.logger.info("Notified daemon of reverse tunnel port=\(rp)")
+                    if let res = res, let dict = res as? [String: Any], dict["ok"] as? Bool == true {
+                        Self.logger.info("daemon.connect ok, reversePort=\(rp)")
+                    } else {
+                        let errorMsg = "daemon.connect returned non-ok (reversePort=\(rp))"
+                        Self.logger.error("\(errorMsg)")
+                        await MainActor.run {
+                            if self.error == nil {
+                                self.error = errorMsg
+                            }
+                        }
+                    }
                 }
             }
         } catch {

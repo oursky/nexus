@@ -3,6 +3,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"log"
 	"log/slog"
@@ -261,6 +262,12 @@ func New(cfg Config) (*Daemon, error) {
 	if sshManager != nil {
 		daemonOpts = append(daemonOpts, rpcdaemon.WithSSHKeyProvider(sshManager))
 	}
+	if cfg.Network.TokenAuthEnabled && cfg.Network.Token != "" {
+		token := cfg.Network.Token
+		daemonOpts = append(daemonOpts, rpcdaemon.WithTokenValidator(func(t string) bool {
+			return subtle.ConstantTimeCompare([]byte(t), []byte(token)) == 1
+		}))
+	}
 	rpcdaemon.New(newNodeInfo(cfg, registry), daemonOpts...).Register(reg)
 
 	rpcproject.New(projStore, rpcproject.WithWorkspaceRepo(wsStore), rpcproject.WithWorkspaceService(wsSvc)).Register(reg)
@@ -298,6 +305,11 @@ func New(cfg Config) (*Daemon, error) {
 	preDaemon.listener = lst
 	preDaemon.spotlightSvc = spotlightSvc
 	d := preDaemon
+
+	// Wire Mac tunnel config into sync service so workspace sync targets the Mac.
+	if syncSvc != nil {
+		syncSvc.SetMacTunnelGetter(d.GetMacTunnelConfig)
+	}
 
 	// Wire sync service into volume service for auto-sync on volume operations
 	if syncSvc != nil {

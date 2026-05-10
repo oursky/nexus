@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/gorilla/websocket"
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
 	"github.com/spf13/cobra"
@@ -18,6 +20,7 @@ func connectCommand() *cobra.Command {
 	var sshPort int
 	var verbose bool
 	var identityFile string
+	var noTunnel bool
 
 	cmd := &cobra.Command{
 		Use:   "connect <host>",
@@ -46,14 +49,72 @@ func connectCommand() *cobra.Command {
 				return fmt.Errorf("update local SSH config: %w", err)
 			}
 
-			conn, err := rpc.EnsureDaemonVerbose(verbose)
-			if err != nil {
-				_ = profile.DeleteDefault()
-				return fmt.Errorf("connection test failed: %w", err)
-			}
-			conn.Close()
+			// Establish connection to daemon.
+			var conn *websocket.Conn
+			if noTunnel {
+				// Direct connection without SSH tunnel.
+				var err error
+				conn, err = rpc.DialDirect(host, port, token, verbose)
+				if err != nil {
+					_ = profile.DeleteDefault()
+					return fmt.Errorf("direct connection failed: %w", err)
+				}
+			} else {
+				// Connection via SSH tunnel (uses cached tunnel from rpc package).
+				var err error
+				conn, err = rpc.EnsureDaemonVerbose(verbose)
+				if err != nil {
+					_ = profile.DeleteDefault()
+					return fmt.Errorf("connection test failed: %w", err)
+				}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Connected to %s (port %d)\n", host, port)
+				// Save tunnel port in profile.
+				if localPort, ok := rpc.CachedTunnelPort(); ok {
+					p.LocalPort = localPort
+					if err := profile.SaveDefault(p); err != nil {
+						return fmt.Errorf("save profile with tunnel port: %w", err)
+					}
+				}
+			}
+			defer conn.Close()
+
+			// Call daemon.connect RPC to register this client with the daemon.
+			clientUser := os.Getenv("USER")
+			if clientUser == "" {
+				if u, err := user.Current(); err == nil {
+					clientUser = u.Username
+				}
+			}
+			homeDir, _ := os.UserHomeDir()
+
+			var connectResult struct {
+				OK           bool `json:"ok"`
+				Node         struct {
+					Name string   `json:"name"`
+					Tags []string `json:"tags"`
+				} `json:"node"`
+				Capabilities []struct {
+					Name      string `json:"name"`
+					Available bool   `json:"available"`
+				} `json:"capabilities"`
+			}
+			if err := rpc.Do(conn, "daemon.connect", map[string]any{
+				"token":       token,
+				"reversePort": 0,
+				"clientUser":  clientUser,
+				"clientPath":  homeDir,
+			}, &connectResult); err != nil {
+				_ = profile.DeleteDefault()
+				return fmt.Errorf("daemon.connect RPC failed: %w", err)
+			}
+
+			if p.LocalPort > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Connected to %s (tunnel port %d)\n", host, p.LocalPort)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Connected to %s (port %d)\n", host, port)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "  Node: %s\n", connectResult.Node.Name)
+			fmt.Fprintf(cmd.OutOrStdout(), "  Capabilities: %d\n", len(connectResult.Capabilities))
 			return nil
 		},
 	}
@@ -62,6 +123,7 @@ func connectCommand() *cobra.Command {
 	cmd.Flags().IntVar(&sshPort, "ssh-port", 0, "SSH port (default: 22)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", true, "Print SSH commands and enable verbose SSH output")
 	cmd.Flags().StringVarP(&identityFile, "identity", "i", "", "SSH identity file (private key) to use")
+	cmd.Flags().BoolVar(&noTunnel, "no-tunnel", false, "skip SSH tunnel establishment (for local daemons or external tunnel management)")
 	return cmd
 }
 
