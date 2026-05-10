@@ -230,6 +230,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install sops
+        run: |
+          set -euo pipefail
+          SOPS_VERSION="${SOPS_VERSION:-3.12.2}"
+          mkdir -p "${HOME}/.local/bin"
+          curl -fsSL \
+            "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.darwin" \
+            -o "${HOME}/.local/bin/sops"
+          chmod +x "${HOME}/.local/bin/sops"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Decrypt secrets
+        run: |
+          sops decrypt packages/nexus-swift/signing/mac_installer.cer.enc \
+            > packages/nexus-swift/signing/mac_installer.cer
+          sops decrypt packages/nexus-swift/signing/mac_installer.p12.enc \
+            > packages/nexus-swift/signing/mac_installer.p12
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
