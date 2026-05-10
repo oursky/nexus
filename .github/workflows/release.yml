@@ -40,22 +40,34 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Run semantic-release and capture JSON result to a file
-          # The --json flag outputs the result object as the last line of stdout
+          
+          # Get the latest tag before running semantic-release
+          latest_tag_before=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "Latest tag before: $latest_tag_before"
+          
+          # Run semantic-release and capture JSON result
           pnpm exec semantic-release --json > /tmp/sr-result.json 2> /tmp/sr-log.txt || true
           cat /tmp/sr-log.txt
+          
+          # Get the latest tag after running semantic-release
+          latest_tag_after=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "Latest tag after: $latest_tag_after"
           
           # Extract version from the JSON result
           version=""
           if [ -f /tmp/sr-result.json ] && [ -s /tmp/sr-result.json ]; then
-            # Try jq first
             if command -v jq &> /dev/null; then
               version=$(jq -r '.nextRelease.version // empty' /tmp/sr-result.json 2>/dev/null || true)
             fi
-            # Fallback: parse with grep/sed
             if [ -z "$version" ]; then
               version=$(grep -o '"version":"[^"]*"' /tmp/sr-result.json | head -1 | cut -d'"' -f4 || true)
             fi
+          fi
+          
+          # Fallback: if a new tag was created, extract version from it
+          if [ -z "$version" ] && [ "$latest_tag_before" != "$latest_tag_after" ] && [ -n "$latest_tag_after" ]; then
+            version=$(echo "$latest_tag_after" | sed 's/^v//')
+            echo "Detected new tag: $latest_tag_after, version: $version"
           fi
           
           if [ -n "$version" ]; then
