@@ -349,7 +349,7 @@ func isSkipLibkrunBake() bool {
 // resolveVMBinDir returns the directory containing the nexus-libkrun-vm binary.
 func resolveVMBinDir() string {
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
-		return filepath.Join(xdg, "nexus", "bin")
+		return filepath.Join(ExpandTilde(xdg), "nexus", "bin")
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "nexus", "bin")

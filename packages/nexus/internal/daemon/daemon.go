@@ -13,7 +13,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	apppty "github.com/oursky/nexus/packages/nexus/internal/app/pty"
@@ -239,18 +238,36 @@ func New(cfg Config) (*Daemon, error) {
 	var ptyHostCmd *exec.Cmd
 	var ptyHostClient *ptyhost.Client
 
-	ptyHostCmd = exec.Command(os.Args[0], "pty-host", "--socket", ptyHostSocket)
-	if err := ptyHostCmd.Start(); err != nil {
-		log.Printf("daemon: failed to start pty-host: %v", err)
-	} else {
-		log.Printf("daemon: pty-host started on %s", ptyHostSocket)
+	ptyHostClient = ptyhost.NewClient(ptyHostSocket)
+	var ptyHostConnErr error
+	for i := 0; i < 10; i++ {
+		if ptyHostConnErr = ptyHostClient.Connect(); ptyHostConnErr == nil {
+			log.Printf("daemon: connected to existing pty-host")
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
-	ptyHostClient = ptyhost.NewClient(ptyHostSocket)
-	if err := ptyHostClient.Connect(); err != nil {
-		log.Printf("daemon: failed to connect to pty-host: %v", err)
-	} else {
-		log.Printf("daemon: connected to pty-host")
+	if ptyHostConnErr != nil {
+		// No existing PTY host found; start a new one
+		ptyHostBin := resolvePTYHostBinary()
+		ptyHostCmd = exec.Command(ptyHostBin, "--socket", ptyHostSocket)
+		if err := ptyHostCmd.Start(); err != nil {
+			log.Printf("daemon: failed to start pty-host: %v", err)
+		} else {
+			log.Printf("daemon: pty-host started on %s", ptyHostSocket)
+		}
+
+		for i := 0; i < 10; i++ {
+			if ptyHostConnErr = ptyHostClient.Connect(); ptyHostConnErr == nil {
+				log.Printf("daemon: connected to pty-host")
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if ptyHostConnErr != nil {
+			log.Printf("daemon: failed to connect to pty-host: %v", ptyHostConnErr)
+		}
 	}
 
 	reg := rpcregistry.NewMapRegistry()
@@ -435,14 +452,11 @@ func (d *Daemon) Stop() error {
 			errs = append(errs, fmt.Errorf("stop spotlight: %w", err))
 		}
 	}
-	if d.ptyHostCmd != nil && d.ptyHostCmd.Process != nil {
-		_ = d.ptyHostCmd.Process.Signal(syscall.SIGTERM)
-		time.AfterFunc(2*time.Second, func() {
-			if d.ptyHostCmd != nil && d.ptyHostCmd.Process != nil {
-				_ = d.ptyHostCmd.Process.Kill()
-			}
-		})
-	}
+	// NOTE: We intentionally do NOT kill the PTY host process here.
+	// The PTY host is designed to outlive the daemon so that terminal
+	// sessions survive daemon restarts. It will be reaped by the init
+	// system when the parent session ends, or explicitly stopped via
+	// `nexus pty-host stop`.
 	if d.ptyHost != nil {
 		_ = d.ptyHost.Close()
 	}
@@ -465,15 +479,47 @@ func (d *Daemon) Stop() error {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+func expandTilde(path string) string {
+	if path == "" || !strings.HasPrefix(path, "~") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[2:])
+	}
+	return path
+}
+
 func defaultDataDir() string {
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
-		return filepath.Join(xdg, "nexus")
+		return filepath.Join(expandTilde(xdg), "nexus")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return "/var/lib/nexus"
 	}
 	return filepath.Join(home, ".local", "state", "nexus")
+}
+
+func resolvePTYHostBinary() string {
+	if resolved, err := exec.LookPath("pty-host"); err == nil {
+		return resolved
+	}
+	daemonBin := os.Args[0]
+	daemonDir := filepath.Dir(daemonBin)
+	if daemonDir != "" && daemonDir != "." {
+		candidate := filepath.Join(daemonDir, "pty-host")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return "pty-host"
 }
 
 // nodeInfo wraps Config to satisfy rpcdaemon.NodeInfoProvider.

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon/start"
 	"github.com/spf13/cobra"
 )
 
@@ -83,10 +84,14 @@ func implodeUserState(w io.Writer) error {
 	xdgState := os.Getenv("XDG_STATE_HOME")
 	if xdgState == "" {
 		xdgState = filepath.Join(home, ".local", "state")
+	} else {
+		xdgState = start.ExpandTilde(xdgState)
 	}
 	xdgData := os.Getenv("XDG_DATA_HOME")
 	if xdgData == "" {
 		xdgData = filepath.Join(home, ".local", "share")
+	} else {
+		xdgData = start.ExpandTilde(xdgData)
 	}
 
 	for _, dir := range []string{

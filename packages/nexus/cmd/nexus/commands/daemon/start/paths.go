@@ -8,6 +8,24 @@ import (
 	"strings"
 )
 
+// ExpandTilde replaces a leading "~" in a path with the user's home directory.
+func ExpandTilde(path string) string {
+	if path == "" || !strings.HasPrefix(path, "~") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[2:])
+	}
+	return path
+}
+
 // defaultVMKernelPath returns the user-scoped kernel path under XDG_DATA_HOME.
 func defaultVMKernelPath() string {
 	return XDGVMAsset("vmlinux.bin")
@@ -31,7 +49,7 @@ func XDGVMAsset(name string) string {
 // DefaultDataDir returns the default data directory for nexus state.
 func DefaultDataDir() string {
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
-		return filepath.Join(xdg, "nexus")
+		return filepath.Join(ExpandTilde(xdg), "nexus")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
