@@ -6,11 +6,10 @@ env:
   GOTOOLCHAIN: "go1.25.0+auto"
 
 vars:
-  REMOTE_HOST:         '{{.REMOTE_HOST         | default ""}}'
-  REMOTE_BIN:          '{{.REMOTE_BIN          | default "~/.local/bin/nexus-dev"}}'
-  REMOTE_PORT:         '{{.REMOTE_PORT         | default "7778"}}'
-  REMOTE_XDG_STATE_HOME: '{{.REMOTE_XDG_STATE_HOME | default "~/.local/state-dev"}}'
   LOCAL_BIN:           '{{.LOCAL_BIN           | default "~/.local/bin/nexus-dev"}}'
+  LOCAL_PORT:          '{{.LOCAL_PORT          | default "7778"}}'
+  LOCAL_XDG_STATE_HOME: '{{.LOCAL_XDG_STATE_HOME | default "~/.local/state-dev"}}'
+  LOCAL_WORKDIR_ROOT:  '{{.LOCAL_WORKDIR_ROOT  | default "/data/nexus/nexus-dev"}}'
   MAC_HOST:            '{{.MAC_HOST            | default ""}}'
   MAC_REPO_ROOT:       '{{.MAC_REPO_ROOT       | default "~/magic/nexus"}}'
 
@@ -93,16 +92,6 @@ tasks:
     cmds:
       - ./scripts/e2e/cli-lima-preflight.sh
 
-  test:e2e:cli:remote:
-    desc: "Run Go e2e CLI package on remote Linux host"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-    cmds:
-      - ./scripts/remote/e2e-cli.sh
-
   test:e2e:local:
     desc: "Run full e2e suite locally on Linux (SSH bootstrap + host config fixtures + sudo)"
     env:
@@ -115,22 +104,6 @@ tasks:
       SKIP_BOOTSTRAP: "{{.SKIP_BOOTSTRAP | default \"0\"}}"
     cmds:
       - ./scripts/local/e2e-local.sh
-
-  test:e2e:remote:
-    desc: "Run full e2e suite (all packages) on remote Linux host"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN: "{{.REMOTE_BIN | default \"~/.local/bin/nexus\"}}"
-      E2E_P: "{{.E2E_P | default \"2\"}}"
-      E2E_PARALLEL: "{{.E2E_PARALLEL | default \"2\"}}"
-      E2E_TIMEOUT: "{{.E2E_TIMEOUT | default \"60m\"}}"
-      E2E_RUN: "{{.E2E_RUN | default \"\"}}"
-      E2E_PKG: "{{.E2E_PKG | default \"...\"}}"
-    cmds:
-      - ./scripts/remote/e2e-full.sh
 
   ci:libkrun:prep:
     desc: "Prepare libkrun VM assets for CI/e2e (host prereqs, build nexus, provision, prewarm)"
@@ -146,22 +119,8 @@ tasks:
       - rm -rf packages/nexus/nexus packages/nexus/tmp packages/nexus/.air-tmp
 
   # ── Dev loops ─────────────────────────────────────────────────────────────
-  # Daemon runs locally. Mac app built via SSH (set MAC_HOST in .env.local).
-  # For deploying to a remote Linux host, use dev:remote with REMOTE_HOST.
-
-  dev:remote:
-    desc: "Build for linux/amd64, deploy, restart remote daemon, and stage Resources so provision stays in sync"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN:  "{{.REMOTE_BIN}}"
-      REMOTE_PORT: "{{.REMOTE_PORT}}"
-      REMOTE_XDG_STATE_HOME: "{{.REMOTE_XDG_STATE_HOME}}"
-    cmds:
-      - scripts/remote/deploy.sh       # builds linux binary, stages to Resources/, deploys to remote
-      - scripts/remote/daemon-restart.sh  # restarts daemon + prints remote version for confirmation
+  # Canonical flow is Linux-first: develop on linuxbox, build Mac app via SSH.
+  # Set MAC_HOST in .env.local for Mac app builds.
 
   dev:cli:
     desc: "Build and install local CLI binary to ~/.local/bin/nexus-dev"
@@ -170,28 +129,16 @@ tasks:
     cmds:
       - scripts/local/deploy.sh
 
-  dev:libkrun:
-    desc: "Build libkrun-enabled nexus (downloads libs, embeds nexus-libkrun-vm) and deploy to remote"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
+  dev:local:
+    desc: "Build locally and restart the dev daemon on this Linux host"
     env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN:  "{{.REMOTE_BIN}}"
-      REMOTE_PORT: "{{.REMOTE_PORT}}"
-      REMOTE_XDG_STATE_HOME: "{{.REMOTE_XDG_STATE_HOME}}"
+      LOCAL_BIN:   "{{.LOCAL_BIN}}"
+      LOCAL_PORT:  "{{.LOCAL_PORT}}"
+      LOCAL_XDG_STATE_HOME: "{{.LOCAL_XDG_STATE_HOME}}"
+      LOCAL_WORKDIR_ROOT: "{{.LOCAL_WORKDIR_ROOT}}"
     cmds:
-      - scripts/remote/deploy-libkrun.sh
-
-  dev:libkrun:rebuild-vm:
-    desc: "Rebuild nexus-libkrun-vm on remote Linux host when local source is newer (macOS contributors)"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-    cmds:
-      - scripts/local/rebuild-libkrun-vm.sh
+      - scripts/local/deploy.sh
+      - scripts/local/daemon-restart.sh
 
   kernel:build:arm64:
     desc: "Build arm64 Image kernel locally (requires aarch64 host or cross-compiler)"
@@ -203,16 +150,6 @@ tasks:
     cmds:
       - scripts/nexus/build-kernel.sh --arch x86_64 packages/nexus/cmd/nexus/assets/vmlinux
 
-  kernel:rebuild:remote:
-    desc: "Rebuild x86_64 vmlinux kernel on remote Linux host and copy back (commit result after)"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-    cmds:
-      - scripts/remote/rebuild-kernel.sh
-
   kernel:commit:
     desc: "Commit rebuilt kernels to the repo"
     cmds:
@@ -222,7 +159,7 @@ tasks:
         git commit -m "chore(kernel): rebuild kernels $(date +%Y-%m-%d)"
 
   dev:swift:
-    desc: "Linux-first full dev loop: build CLI locally, stage resources, sync to Mac, build + open NexusApp"
+    desc: "Linux-first full dev loop: build CLI locally, restart daemon, stage resources, sync to Mac, build + open NexusApp"
     preconditions:
       - sh: '[ -n "{{.MAC_HOST}}" ]'
         msg: "MAC_HOST is not set. Add MAC_HOST=user@mac-hostname to .env.local"
@@ -230,8 +167,10 @@ tasks:
       MAC_HOST: "{{.MAC_HOST}}"
       MAC_REPO_ROOT: "{{.MAC_REPO_ROOT}}"
       LOCAL_BIN:   "{{.LOCAL_BIN}}"
+      LOCAL_PORT:  "{{.LOCAL_PORT}}"
+      LOCAL_XDG_STATE_HOME: "{{.LOCAL_XDG_STATE_HOME}}"
     cmds:
-      - scripts/local/deploy.sh
+      - task: dev:local
       - task: stage:nexus-macos
       - task: stage:nexus-linux
       - scripts/generate-sdk.sh

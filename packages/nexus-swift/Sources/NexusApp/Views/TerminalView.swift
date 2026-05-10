@@ -223,6 +223,43 @@ struct DaemonPTYTerminalView: NSViewRepresentable {
             }
         }
 
+        /// Reattach to an existing session or create a new one if it no longer exists.
+        func attachOrCreate(sessionId sid: String) async {
+            do {
+                try await client.attachPTY(sessionId: sid)
+                sessionId = sid
+                client.subscribePTY(
+                    sessionId: sid,
+                    onData: { [weak self] text in
+                        DispatchQueue.main.async { self?.termView?.feed(text: text) }
+                    },
+                    onExit: { [weak self] code in
+                        DispatchQueue.main.async {
+                            let msg = "\r\n\u{001b}[90m[process exited: \(code)]\u{001b}[0m\r\n"
+                            self?.termView?.feed(text: msg)
+                        }
+                    }
+                )
+                DispatchQueue.main.async { [weak self] in self?.onPTYActive() }
+            } catch {
+                let errMsg = "\(error)"
+                if errMsg.localizedCaseInsensitiveContains("not found") {
+                    await openSession()
+                } else {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onError(errMsg)
+                        self?.onPTYError()
+                    }
+                }
+            }
+        }
+
+        /// Close the current session and open a fresh one (e.g. after the daemon restarts).
+        private func recreateSession() async {
+            await closeSession()
+            await openSession()
+        }
+
         func closeSession() async {
             guard let sid = sessionId else { return }
             client.unsubscribePTY(sessionId: sid)
@@ -239,7 +276,26 @@ struct DaemonPTYTerminalView: NSViewRepresentable {
                    ?? String(bytes: data, encoding: .isoLatin1)
                    ?? ""
             guard !str.isEmpty else { return }
-            Task { try? await client.writePTY(sessionId: sid, data: str) }
+            Task { [weak self] in
+                guard let self = self else { return }
+                do {
+                    try await self.client.writePTY(sessionId: sid, data: str)
+                } catch {
+                    let errMsg = "\(error)"
+                    if errMsg.localizedCaseInsensitiveContains("not found") {
+                        // Session was lost (daemon restart) — auto-recreate
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self = self else { return }
+                            self.termView?.feed(text: "\r\n\u{001b}[33m[session expired — restarting...]\u{001b}[0m\r\n")
+                        }
+                        await self.recreateSession()
+                    } else {
+                        DispatchQueue.main.async { [weak self] in
+                            self?.onError(errMsg)
+                        }
+                    }
+                }
+            }
         }
 
         /// Terminal was resized (font change or view resize) → tell daemon

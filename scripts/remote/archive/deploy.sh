@@ -15,7 +15,7 @@
 set -euo pipefail
 
 REMOTE_HOST="${REMOTE_HOST:?REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname}"
-REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin/nexus-dev}"
+REMOTE_BIN="${REMOTE_BIN:-~/.local/bin/nexus-dev}"
 # v0.5.20 libkrun is built without virtio-net symbols.
 # v0.5.19 exports krun_add_net_unixstream and krun_set_passt_fd.
 SMOLVM_VERSION="${SMOLVM_VERSION:-v0.5.19}"

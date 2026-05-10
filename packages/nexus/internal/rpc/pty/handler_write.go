@@ -18,7 +18,7 @@ func (h *Handler) write(_ context.Context, raw json.RawMessage) (any, error) {
 	}
 	s := h.reg.Get(p.SessionID)
 	if s == nil {
-		return nil, rpcerrors.NotFound("pty.not_found", "session not found")
+		return nil, ErrSessionNotFound
 	}
 	if s.Remote && s.Enc != nil {
 		if err := s.Enc.Encode(map[string]any{

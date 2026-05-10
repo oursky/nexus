@@ -20,7 +20,7 @@ func (h *Handler) reattach(ctx context.Context, raw json.RawMessage) (any, error
 	}
 	s := h.reg.Get(p.SessionID)
 	if s == nil {
-		return nil, rpcerrors.NotFound("pty.not_found", "session not found")
+		return nil, ErrSessionNotFound
 	}
 	n := transport.NotifierFromCtx(ctx)
 	s.SetNotifier(n)

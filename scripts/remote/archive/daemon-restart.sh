@@ -14,12 +14,12 @@
 set -euo pipefail
 
 REMOTE_HOST="${REMOTE_HOST:?REMOTE_HOST is not set. Create .env.local with REMOTE_HOST=user@hostname}"
-REMOTE_BIN="${REMOTE_BIN:-\$HOME/.local/bin/nexus-dev}"
+REMOTE_BIN="${REMOTE_BIN:-~/.local/bin/nexus-dev}"
 REMOTE_PORT="${REMOTE_PORT:-7778}"
-REMOTE_XDG_STATE_HOME="${REMOTE_XDG_STATE_HOME:-\$HOME/.local/state-dev}"
+REMOTE_XDG_STATE_HOME="${REMOTE_XDG_STATE_HOME:-~/.local/state-dev}"
 # XDG_DATA_HOME must also be isolated so VM kernel/rootfs assets and workspace
 # data do not collide with the prod daemon (~/.local/share/nexus/).
-REMOTE_XDG_DATA_HOME="${REMOTE_XDG_DATA_HOME:-\$HOME/.local/share-dev}"
+REMOTE_XDG_DATA_HOME="${REMOTE_XDG_DATA_HOME:-~/.local/share-dev}"
 # workdir-root: where libkrun VM disk images are stored.  Without an explicit
 # override both prod and dev resolve to /data/nexus/libkrun-vms when that XFS
 # mount exists — causing disk-image collision.  Dev uses /data/nexus-dev/.
