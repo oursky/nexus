@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    branches: [main, test-cd]
 
 permissions:
   contents: write
@@ -42,8 +42,9 @@ jobs:
           set -euo pipefail
           output=$(pnpm exec semantic-release --json 2>&1 || true)
           echo "$output"
-          if echo "$output" | jq -e '.nextRelease.version' >/dev/null 2>&1; then
-            version=$(echo "$output" | jq -r '.nextRelease.version')
+          # Try to extract version from JSON output
+          version=$(echo "$output" | grep -o '"nextRelease".*"version"' | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || true)
+          if [ -n "$version" ]; then
             echo "released=true" >> "$GITHUB_OUTPUT"
             echo "version=$version" >> "$GITHUB_OUTPUT"
             echo "tag=v$version" >> "$GITHUB_OUTPUT"

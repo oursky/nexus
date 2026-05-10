@@ -1,6 +1,10 @@
 {
   "branches": [
-    "main"
+    "main",
+    {
+      "name": "test-cd",
+      "prerelease": true
+    }
   ],
   "tagFormat": "v${version}",
   "plugins": [
