@@ -42,8 +42,15 @@ jobs:
           set -euo pipefail
           output=$(pnpm exec semantic-release --json 2>&1 || true)
           echo "$output"
-          # Try to extract version from JSON output
-          version=$(echo "$output" | grep -o '"nextRelease".*"version"' | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || true)
+          # Extract version from JSON output using jq if available, fallback to grep
+          version=""
+          if command -v jq &> /dev/null; then
+            version=$(echo "$output" | jq -r '.nextRelease.version // empty' 2>/dev/null || true)
+          fi
+          if [ -z "$version" ]; then
+            # Fallback: extract from any JSON line containing nextRelease
+            version=$(echo "$output" | grep -o '"nextRelease"[^}]*"version"[^}]*}' | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+          fi
           if [ -n "$version" ]; then
             echo "released=true" >> "$GITHUB_OUTPUT"
             echo "version=$version" >> "$GITHUB_OUTPUT"
