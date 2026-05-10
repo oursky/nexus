@@ -355,6 +355,16 @@ private final class MockDaemonClient: DaemonClient, @unchecked Sendable {
     func daemonLogTail(lines: Int) async throws -> DaemonLogTail {
         DaemonLogTail(lines: [], path: "")
     }
+    func startSync(workspaceID: String, localPath: String, direction: String) async throws -> SyncSession {
+        SyncSession(id: "sync-1", workspaceID: workspaceID, localPath: localPath, status: "running", direction: direction, startedAt: "")
+    }
+    func stopSync(sessionID: String, workspaceID: String) async throws {}
+    func syncStatus(sessionID: String, workspaceID: String) async throws -> SyncSession {
+        SyncSession(id: sessionID, workspaceID: workspaceID, localPath: "", status: "running", direction: "both", startedAt: "")
+    }
+    func listSyncs(workspaceID: String) async throws -> [SyncSession] { [] }
+    func pauseSync(sessionID: String) async throws {}
+    func resumeSync(sessionID: String) async throws {}
 }
 
 // MARK: - Integration tests (require running daemon)

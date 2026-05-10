@@ -3,6 +3,9 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -10,6 +13,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/domain/project"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/volume"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 )
 
@@ -26,13 +30,29 @@ type ForwardCreator interface {
 	StartSpotlight(ctx context.Context, workspaceID string, spec spotlight.ExposeSpec) (*spotlight.Forward, error)
 }
 
+// VolumeMounter mounts volumes into workspaces.
+type VolumeMounter interface {
+	ListWorkspaceAttachments(ctx context.Context, workspaceID string) ([]*volume.VolumeAttachment, error)
+	MountPath(volumeID string) string
+}
+
+// VolumeSyncStarter starts sync for volumes.
+type VolumeSyncStarter interface {
+	GetVolume(ctx context.Context, id string) (*volume.Volume, error)
+	StartVolumeSync(ctx context.Context, workspaceID, volumeID string) (sessionID string, err error)
+	StopVolumeSync(ctx context.Context, volumeID string) error
+	UpdateSyncSession(ctx context.Context, volumeID string, sessionID string, status string) error
+}
+
 // Service orchestrates workspace lifecycle operations.
 type Service struct {
-	repo           workspace.Repository
-	projectRepo    project.Repository
-	registry       RegistryResolver
-	portDiscoverer workspace.PortDiscoverer
-	forwardCreator ForwardCreator
+	repo              workspace.Repository
+	projectRepo       project.Repository
+	registry          RegistryResolver
+	portDiscoverer    workspace.PortDiscoverer
+	forwardCreator    ForwardCreator
+	volumeMounter     VolumeMounter
+	volumeSyncStarter VolumeSyncStarter
 	// bgCtx is a long-lived context used for async workspace starts so they
 	// are not cancelled when the originating RPC request context expires.
 	bgCtx context.Context
@@ -50,8 +70,8 @@ type runtimeReadinessDriver interface {
 
 // NewService constructs a Service. registry may be nil if no runtime backend is available.
 // bgCtx should be the daemon's root context (cancelled only on shutdown).
-func NewService(repo workspace.Repository, projectRepo project.Repository, registry RegistryResolver, portDiscoverer workspace.PortDiscoverer, forwardCreator ForwardCreator, bgCtx context.Context) *Service {
-	return &Service{repo: repo, projectRepo: projectRepo, registry: registry, portDiscoverer: portDiscoverer, forwardCreator: forwardCreator, bgCtx: bgCtx, readySubs: make(map[string][]chan struct{})}
+func NewService(repo workspace.Repository, projectRepo project.Repository, registry RegistryResolver, portDiscoverer workspace.PortDiscoverer, forwardCreator ForwardCreator, volumeMounter VolumeMounter, volumeSyncStarter VolumeSyncStarter, bgCtx context.Context) *Service {
+	return &Service{repo: repo, projectRepo: projectRepo, registry: registry, portDiscoverer: portDiscoverer, forwardCreator: forwardCreator, volumeMounter: volumeMounter, volumeSyncStarter: volumeSyncStarter, bgCtx: bgCtx, readySubs: make(map[string][]chan struct{})}
 }
 
 // driverFor returns the runtime driver for a workspace, or nil if none is available.
@@ -162,6 +182,11 @@ func (s *Service) Stop(ctx context.Context, id string) (*workspace.Workspace, er
 			return nil, fmt.Errorf("runtime stop: %w", err)
 		}
 	}
+
+	// Unmount any attached volumes.
+	s.unmountVolumes(ctx, ws)
+	// Stop sync for attached volumes.
+	s.stopVolumeSync(ctx, ws)
 
 	ws.State = workspace.StateStopped
 	ws.UpdatedAt = time.Now().UTC()
@@ -366,4 +391,29 @@ func (s *Service) Relations(ctx context.Context, id string) (*Relations, error) 
 		return result.Groups[i].RepoID < result.Groups[j].RepoID
 	})
 	return result, nil
+}
+
+func (s *Service) unmountVolumes(ctx context.Context, ws *workspace.Workspace) {
+	if s.volumeMounter == nil {
+		return
+	}
+	attachments, err := s.volumeMounter.ListWorkspaceAttachments(ctx, ws.ID)
+	if err != nil {
+		log.Printf("[workspace] unmountVolumes: list attachments failed for %s: %v", ws.ID, err)
+		return
+	}
+	if len(attachments) == 0 {
+		return
+	}
+	log.Printf("[workspace] unmountVolumes: unmounting %d volume(s) for %s", len(attachments), ws.ID)
+	for _, att := range attachments {
+		mountPath := filepath.Join(ws.RootPath, att.MountPath)
+		if _, err := os.Lstat(mountPath); err == nil {
+			if err := os.Remove(mountPath); err != nil {
+				log.Printf("[workspace] unmountVolumes: remove symlink failed for %s: %v", mountPath, err)
+				continue
+			}
+			log.Printf("[workspace] unmountVolumes: unmounted %s from %s", att.VolumeID, mountPath)
+		}
+	}
 }

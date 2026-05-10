@@ -18,7 +18,9 @@ func TestWorkspaceIdempotency(t *testing.T) {
 	repoPath := harness.MakeLocalGitRepo(t, "idempotency")
 
 	var createRes struct {
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{
@@ -32,7 +34,9 @@ func TestWorkspaceIdempotency(t *testing.T) {
 		t.Fatal("first create: empty workspace id")
 	}
 
-	var removeRes struct{ Removed bool `json:"removed"` }
+	var removeRes struct {
+		Removed bool `json:"removed"`
+	}
 	h.MustCall("workspace.remove", map[string]any{"id": firstID}, &removeRes)
 	if !removeRes.Removed {
 		t.Fatal("remove: expected removed=true")
@@ -56,7 +60,9 @@ func TestWorkspaceIdempotency(t *testing.T) {
 
 	// Verify only the second workspace is present in the list.
 	var listRes struct {
-		Workspaces []struct{ ID string `json:"id"` } `json:"workspaces"`
+		Workspaces []struct {
+			ID string `json:"id"`
+		} `json:"workspaces"`
 	}
 	h.MustCall("workspace.list", nil, &listRes)
 	foundFirst := false
@@ -86,7 +92,9 @@ func TestProjectRepoDedup(t *testing.T) {
 	repoPath := harness.MakeLocalGitRepo(t, "dedup")
 
 	var createRes struct {
-		Project struct{ ID string `json:"id"` } `json:"project"`
+		Project struct {
+			ID string `json:"id"`
+		} `json:"project"`
 	}
 	h.MustCall("project.create", map[string]any{
 		"name":    "first-name",

@@ -3,6 +3,8 @@ package workspace
 import (
 	"context"
 	"log"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
@@ -18,6 +20,21 @@ const runStartAsyncTimeout = 6 * time.Minute
 // provisioned before marking the workspace as running (keeping it in the
 // starting state during package installation to block premature PTY access).
 func (s *Service) runStartAsync(ws *workspace.Workspace) {
+	// Recover from panics so the workspace doesn't get stuck in StateStarting.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[workspace] runStartAsync: panic for workspace=%s: %v", ws.ID, r)
+			// Try to reset workspace to Created state so it can be retried.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if current, err := s.repo.Get(ctx, ws.ID); err == nil {
+				current.State = workspace.StateCreated
+				current.UpdatedAt = time.Now().UTC()
+				_ = s.repo.Update(ctx, current)
+			}
+		}
+	}()
+
 	id := ws.ID
 
 	// Apply a timeout to the start operation so it doesn't hang forever.
@@ -154,13 +171,130 @@ func (s *Service) markWorkspaceRunning(ctx context.Context, current *workspace.W
 	if current.Backend == "" && s.registry != nil {
 		current.Backend = s.registry.DefaultBackend()
 	}
+
+	// Populate RootPath so sync drivers can resolve the workspace filesystem path.
+	// This is the authoritative source for "where does this workspace's code live?".
+	if current.RootPath == "" {
+		if workspace.UsesGuestVM(current.Backend) {
+			// VM backends (libkrun) mount the project at /workspace inside the guest.
+			current.RootPath = "/workspace"
+		} else {
+			// Process/sandbox backends use the local repo path as the workspace root.
+			current.RootPath = current.Repo
+		}
+	}
+
 	current.State = workspace.StateRunning
 	current.UpdatedAt = time.Now().UTC()
 	if err := s.repo.Update(ctx, current); err != nil {
 		log.Printf("[workspace] runStartAsync: persist running failed for %s: %v", current.ID, err)
 	}
+	// Mount any attached volumes.
+	s.mountVolumes(ctx, current)
+	// Start sync for volumes with sync enabled.
+	s.startVolumeSync(ctx, current)
 	// Notify any callers blocked in WaitReady.
 	s.notifyReady(current.ID)
+}
+
+func (s *Service) mountVolumes(ctx context.Context, ws *workspace.Workspace) {
+	if s.volumeMounter == nil {
+		return
+	}
+	attachments, err := s.volumeMounter.ListWorkspaceAttachments(ctx, ws.ID)
+	if err != nil {
+		log.Printf("[workspace] mountVolumes: list attachments failed for %s: %v", ws.ID, err)
+		return
+	}
+	if len(attachments) == 0 {
+		return
+	}
+	log.Printf("[workspace] mountVolumes: mounting %d volume(s) for %s", len(attachments), ws.ID)
+	for _, att := range attachments {
+		mountPath := filepath.Join(ws.RootPath, att.MountPath)
+		if err := os.MkdirAll(mountPath, 0755); err != nil {
+			log.Printf("[workspace] mountVolumes: mkdir failed for %s at %s: %v", att.VolumeID, mountPath, err)
+			continue
+		}
+		volumePath := s.volumeMounter.MountPath(att.VolumeID)
+		// For now, create a symlink or bind mount would be needed.
+		// For process backend, we'll create a symlink.
+		// For VM backend, the driver would need to handle this.
+		if workspace.UsesGuestVM(ws.Backend) {
+			log.Printf("[workspace] mountVolumes: VM backend volume mount not yet implemented for %s", att.VolumeID)
+			continue
+		}
+		// Process backend: create symlink
+		if err := os.Symlink(volumePath, mountPath); err != nil {
+			if os.IsExist(err) {
+				// Remove existing and retry
+				os.Remove(mountPath)
+				err = os.Symlink(volumePath, mountPath)
+			}
+			if err != nil {
+				log.Printf("[workspace] mountVolumes: symlink failed for %s -> %s: %v", volumePath, mountPath, err)
+				continue
+			}
+		}
+		log.Printf("[workspace] mountVolumes: mounted %s at %s", att.VolumeID, mountPath)
+	}
+}
+
+func (s *Service) startVolumeSync(ctx context.Context, ws *workspace.Workspace) {
+	if s.volumeSyncStarter == nil {
+		return
+	}
+	attachments, err := s.volumeMounter.ListWorkspaceAttachments(ctx, ws.ID)
+	if err != nil {
+		log.Printf("[workspace] startVolumeSync: list attachments failed for %s: %v", ws.ID, err)
+		return
+	}
+	if len(attachments) == 0 {
+		return
+	}
+	for _, att := range attachments {
+		vol, err := s.volumeSyncStarter.GetVolume(ctx, att.VolumeID)
+		if err != nil {
+			log.Printf("[workspace] startVolumeSync: get volume failed for %s: %v", att.VolumeID, err)
+			continue
+		}
+		if vol.Sync == nil || !vol.Sync.Enabled {
+			continue
+		}
+		log.Printf("[workspace] startVolumeSync: starting sync for volume %s (workspace %s)", att.VolumeID, ws.ID)
+		sessionID, err := s.volumeSyncStarter.StartVolumeSync(ctx, ws.ID, att.VolumeID)
+		if err != nil {
+			log.Printf("[workspace] startVolumeSync: start sync failed for %s: %v", att.VolumeID, err)
+			continue
+		}
+		if err := s.volumeSyncStarter.UpdateSyncSession(ctx, att.VolumeID, sessionID, "syncing"); err != nil {
+			log.Printf("[workspace] startVolumeSync: update sync session failed for %s: %v", att.VolumeID, err)
+		}
+	}
+}
+
+func (s *Service) stopVolumeSync(ctx context.Context, ws *workspace.Workspace) {
+	if s.volumeSyncStarter == nil {
+		return
+	}
+	attachments, err := s.volumeMounter.ListWorkspaceAttachments(ctx, ws.ID)
+	if err != nil {
+		log.Printf("[workspace] stopVolumeSync: list attachments failed for %s: %v", ws.ID, err)
+		return
+	}
+	for _, att := range attachments {
+		vol, err := s.volumeSyncStarter.GetVolume(ctx, att.VolumeID)
+		if err != nil {
+			continue
+		}
+		if vol.Sync == nil || !vol.Sync.Enabled || vol.Sync.SessionID == "" {
+			continue
+		}
+		log.Printf("[workspace] stopVolumeSync: stopping sync for volume %s (workspace %s)", att.VolumeID, ws.ID)
+		if err := s.volumeSyncStarter.StopVolumeSync(ctx, att.VolumeID); err != nil {
+			log.Printf("[workspace] stopVolumeSync: stop sync failed for %s: %v", att.VolumeID, err)
+		}
+	}
 }
 
 func (s *Service) autoForwardPorts(ctx context.Context, current *workspace.Workspace) {

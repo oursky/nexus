@@ -141,7 +141,9 @@ func TestPTY_Operations(t *testing.T) {
 	}
 
 	// pty.resize
-	var resizeRes struct{ Ok bool `json:"ok"` }
+	var resizeRes struct {
+		Ok bool `json:"ok"`
+	}
 	if err := h.Call("pty.resize", map[string]any{"sessionId": sessionID, "cols": 120, "rows": 40}, &resizeRes); err != nil {
 		t.Fatalf("pty.resize: %v", err)
 	}
@@ -150,7 +152,9 @@ func TestPTY_Operations(t *testing.T) {
 	}
 
 	// pty.rename
-	var renameRes struct{ Ok bool `json:"ok"` }
+	var renameRes struct {
+		Ok bool `json:"ok"`
+	}
 	if err := h.Call("pty.rename", map[string]any{"sessionId": sessionID, "name": "renamed-session"}, &renameRes); err != nil {
 		t.Fatalf("pty.rename: %v", err)
 	}
@@ -159,7 +163,9 @@ func TestPTY_Operations(t *testing.T) {
 	}
 
 	// pty.close
-	var closeRes struct{ Ok bool `json:"ok"` }
+	var closeRes struct {
+		Ok bool `json:"ok"`
+	}
 	if err := h.Call("pty.close", map[string]any{"sessionId": sessionID}, &closeRes); err != nil {
 		t.Fatalf("pty.close: %v", err)
 	}

@@ -363,5 +363,20 @@ func buildMethods() []Method {
 				"capabilities": arrayOf("Capability", false),
 			}),
 		},
+		// ── daemon ───────────────────────────────────────────────────────────
+		{
+			Name: "daemon.connect",
+			Request: obj(map[string]PropSchema{
+				"token":       str(false),
+				"reversePort": integer(true),
+				"clientUser":  str(true),
+				"clientPath":  str(true),
+			}),
+			Response: obj(map[string]PropSchema{
+				"ok":           boolean(false),
+				"node":         ref("NodeInfo", true),
+				"capabilities": arrayOf("Capability", true),
+			}),
+		},
 	}
 }

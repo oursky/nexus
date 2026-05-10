@@ -51,6 +51,14 @@ public protocol DaemonClient: Sendable {
     func workspaceSerialLog(workspaceId: String, lines: Int) async throws -> WorkspaceSerialLog
     /// Returns the last `lines` lines of the daemon process log.
     func daemonLogTail(lines: Int) async throws -> DaemonLogTail
+
+    // ── Sync ─────────────────────────────────────────────────────────
+    func startSync(workspaceID: String, localPath: String, direction: String) async throws -> SyncSession
+    func stopSync(sessionID: String, workspaceID: String) async throws
+    func syncStatus(sessionID: String, workspaceID: String) async throws -> SyncSession
+    func listSyncs(workspaceID: String) async throws -> [SyncSession]
+    func pauseSync(sessionID: String) async throws
+    func resumeSync(sessionID: String) async throws
 }
 
 /// Result of `workspace.sshcheck` — SSH connectivity test run from the engine host.
@@ -143,3 +151,49 @@ public struct SandboxResourceSettings: Sendable, Equatable {
         self.maxVCPUs = maxVCPUs
     }
 }
+
+// MARK: - Sync Session
+
+public struct SyncSession: Sendable, Identifiable {
+    public let id: String
+    public let workspaceID: String
+    public let localPath: String
+    public let status: String
+    public let direction: String
+    public let startedAt: String
+    public let stoppedAt: String?
+    public let lastSyncAt: String?
+    public let stats: SyncStats
+
+    public init(id: String, workspaceID: String, localPath: String, status: String, direction: String, startedAt: String, stoppedAt: String? = nil, lastSyncAt: String? = nil, stats: SyncStats = SyncStats()) {
+        self.id = id
+        self.workspaceID = workspaceID
+        self.localPath = localPath
+        self.status = status
+        self.direction = direction
+        self.startedAt = startedAt
+        self.stoppedAt = stoppedAt
+        self.lastSyncAt = lastSyncAt
+        self.stats = stats
+    }
+}
+
+public struct SyncStats: Sendable {
+    public let totalSyncs: Int64
+    public let bytesSent: Int64
+    public let bytesReceived: Int64
+    public let filesSent: Int64
+    public let filesReceived: Int64
+    public let conflictsResolved: Int64
+
+    public init(totalSyncs: Int64 = 0, bytesSent: Int64 = 0, bytesReceived: Int64 = 0, filesSent: Int64 = 0, filesReceived: Int64 = 0, conflictsResolved: Int64 = 0) {
+        self.totalSyncs = totalSyncs
+        self.bytesSent = bytesSent
+        self.bytesReceived = bytesReceived
+        self.filesSent = filesSent
+        self.filesReceived = filesReceived
+        self.conflictsResolved = conflictsResolved
+    }
+}
+
+

@@ -50,6 +50,10 @@ public final class AppState: ObservableObject {
     @Published public var workspaceOps: [String: WorkspaceOpState] = [:]
     /// Live profile for the most recently created/forked workspace.
     @Published public var workspaceCreateProgress: WorkspaceCreateProgress?
+    /// Per-workspace sync sessions (key = workspaceID).
+    @Published public var syncSessions: [String: [SyncSession]] = [:]
+    /// In-flight sync operation state.
+    @Published public var syncOps: [String: SyncOpState] = [:]
 
     // MARK: - Client
     public private(set) var client: any DaemonClient
@@ -62,6 +66,9 @@ public final class AppState: ObservableObject {
     private var daemonWebSocketURL: URL?
     /// Bearer token for the active daemon connection.
     private var daemonToken: String?
+
+    /// Reverse SSH tunnel port (set once after tunnel established).
+    private var reverseTunnelPort: Int = 0
 
     private var refreshTask: Task<Void, Never>?
     private var tunnelStateTask: Task<Void, Never>?
@@ -391,6 +398,50 @@ public final class AppState: ObservableObject {
             AppLifecycleLog.info("rpc", "reconnect requested via headless rpc")
             return (true, "reconnected")
         }
+        server.daemonDisconnectAction = { [weak self] in
+            guard let self else { return (false, "AppState deallocated") }
+            await self.tunnelManager?.stop()
+            self.tunnelManager = nil
+            self.connectionState = .disconnected
+            self.error = nil
+            AppLifecycleLog.info("rpc", "disconnected via headless rpc")
+            return (true, "disconnected")
+        }
+        server.daemonProfileDeleteAction = { [weak self] profileId in
+            guard let self else { return (false, "AppState deallocated") }
+            let store = DaemonProfileStore()
+            var profiles = store.load()
+            let before = profiles.count
+            profiles.removeAll { $0.profileId == profileId }
+            guard profiles.count < before else {
+                return (false, "profile not found: \(profileId)")
+            }
+            store.save(profiles)
+            // If we deleted the active profile, disconnect.
+            if self.cachedProfile?.profileId == profileId {
+                await self.tunnelManager?.stop()
+                self.tunnelManager = nil
+                self.connectionState = .disconnected
+                self.cachedProfile = nil
+            }
+            AppLifecycleLog.info("rpc", "deleted profile via headless rpc id=\(profileId)")
+            return (true, "deleted")
+        }
+        server.daemonProfileSetActiveAction = { [weak self] profileId in
+            guard let self else { return (false, "AppState deallocated") }
+            let store = DaemonProfileStore()
+            var profiles = store.load()
+            guard let idx = profiles.firstIndex(where: { $0.profileId == profileId }) else {
+                return (false, "profile not found: \(profileId)")
+            }
+            // Clear all defaults, set the target.
+            for i in profiles.indices { profiles[i].isDefault = false }
+            profiles[idx].isDefault = true
+            store.save(profiles)
+            AppLifecycleLog.info("rpc", "set active profile via headless rpc id=\(profileId)")
+            await self.reconnect()
+            return (true, "set active and reconnected")
+        }
         server.appLogTailProvider = { lines in
             Self.tailFile(path: Self.appLifecycleLogPath(), lines: lines)
         }
@@ -420,6 +471,7 @@ public final class AppState: ObservableObject {
                 "daemonWebSocketURL": self.daemonWebSocketURL?.absoluteString as Any,
                 "daemonToken": self.daemonToken != nil ? "set(\(self.daemonToken!.count)chars)" : "nil",
                 "sshTarget": self.cachedProfile?.sshTarget as Any,
+                "reverseTunnelPort": self.reverseTunnelPort,
             ]
         }
         rpcServer = server
@@ -878,7 +930,8 @@ public final class AppState: ObservableObject {
         let resolvedToken: String
         do {
             let localPort = try await mgr.start()
-            StartupTrace.checkpoint("remote.tunnel.ok", "localPort=\(localPort)")
+            reverseTunnelPort = await mgr.reversePort
+            StartupTrace.checkpoint("remote.tunnel.ok", "localPort=\(localPort) reversePort=\(reverseTunnelPort)")
             resolvedToken = try await mgr.fetchRemoteToken()
             StartupTrace.checkpoint("remote.token.ok", "tokenLen=\(resolvedToken.count)")
             guard let url = URL(string: "ws://127.0.0.1:\(localPort)") else {
@@ -940,6 +993,32 @@ public final class AppState: ObservableObject {
                 }
             }
             self.updateProfileStatus(profileId: profile.profileId, status: .connected)
+
+            // Register tunnel with daemon via daemon.connect RPC
+            let rp = await mgr.reversePort
+            if rp > 0, let wsClient = self.client as? WebSocketDaemonClient {
+                Task {
+                    let clientUser = NSUserName()
+                    let clientPath = NSHomeDirectory()
+                    let res = try? await wsClient.call("daemon.connect", params: [
+                        "token": resolvedToken,
+                        "reversePort": rp,
+                        "clientUser": clientUser,
+                        "clientPath": clientPath,
+                    ] as [String: Any])
+                    if let res = res, let dict = res as? [String: Any], dict["ok"] as? Bool == true {
+                        Self.logger.info("daemon.connect ok, reversePort=\(rp)")
+                    } else {
+                        let errorMsg = "daemon.connect returned non-ok (reversePort=\(rp))"
+                        Self.logger.error("\(errorMsg)")
+                        await MainActor.run {
+                            if self.error == nil {
+                                self.error = errorMsg
+                            }
+                        }
+                    }
+                }
+            }
         } catch {
             if connectionState != .connected {
                 connectionState = .disconnected
@@ -1254,6 +1333,61 @@ public final class AppState: ObservableObject {
                 try await self.client.stopWorkspace(id: workspace.id)
             }
             try await self.client.removeWorkspace(id: workspace.id)
+        }
+    }
+
+    // MARK: - Sync actions
+
+    public func startSync(workspaceID: String, localPath: String, direction: String) async {
+        await performSync(workspaceID: workspaceID, opState: .starting) {
+            let session = try await self.client.startSync(workspaceID: workspaceID, localPath: localPath, direction: direction)
+            await self.refreshSyncs(workspaceID: workspaceID)
+            return session
+        }
+    }
+
+    public func stopSync(sessionID: String, workspaceID: String) async {
+        await performSync(workspaceID: workspaceID, opState: .stopping) {
+            try await self.client.stopSync(sessionID: sessionID, workspaceID: workspaceID)
+            await self.refreshSyncs(workspaceID: workspaceID)
+        }
+    }
+
+    public func pauseSync(sessionID: String, workspaceID: String) async {
+        await performSync(workspaceID: workspaceID, opState: .pausing) {
+            try await self.client.pauseSync(sessionID: sessionID)
+            await self.refreshSyncs(workspaceID: workspaceID)
+        }
+    }
+
+    public func resumeSync(sessionID: String, workspaceID: String) async {
+        await performSync(workspaceID: workspaceID, opState: .resuming) {
+            try await self.client.resumeSync(sessionID: sessionID)
+            await self.refreshSyncs(workspaceID: workspaceID)
+        }
+    }
+
+    public func refreshSyncs(workspaceID: String) async {
+        do {
+            let sessions = try await client.listSyncs(workspaceID: workspaceID)
+            syncSessions[workspaceID] = sessions
+        } catch {
+            Self.logger.error("refreshSyncs failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    // MARK: - Sync helper
+
+    @discardableResult
+    private func performSync<T>(workspaceID: String, opState: SyncOpState, _ op: @escaping () async throws -> T) async -> T? {
+        syncOps[workspaceID] = opState
+        defer { syncOps.removeValue(forKey: workspaceID) }
+        do {
+            let result = try await op()
+            return result
+        } catch {
+            self.error = error.localizedDescription
+            return nil
         }
     }
 
@@ -1649,6 +1783,13 @@ public final class AppState: ObservableObject {
         }
         return normalizedMessage
     }
+}
+
+public enum SyncOpState: Equatable {
+    case starting
+    case stopping
+    case pausing
+    case resuming
 }
 
 public enum ConnectionState: Equatable {

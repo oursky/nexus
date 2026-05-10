@@ -21,6 +21,8 @@ type Profile struct {
 	Token           string `json:"-"`                         // never written to JSON; use Load/SaveToken
 	SSHPort         int    `json:"sshPort,omitempty"`         // SSH port override (default: 22)
 	SSHIdentityFile string `json:"sshIdentityFile,omitempty"` // SSH identity file (private key path)
+	LocalPort       int    `json:"localPort,omitempty"`       // forward tunnel local port
+
 }
 
 // ProfilesDir returns the directory where profiles are stored.

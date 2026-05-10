@@ -25,6 +25,11 @@ type Capability struct {
 	Available bool   `json:"available"`
 }
 
+// SSHKeyProvider supplies the daemon's SSH public key for cross-host sync.
+type SSHKeyProvider interface {
+	PublicKey() (string, error)
+}
+
 // Option configures optional Handler dependencies.
 type Option func(*Handler)
 
@@ -33,10 +38,39 @@ func WithLogPath(path string) Option {
 	return func(h *Handler) { h.logPath = path }
 }
 
+// WithSSHKeyProvider sets the SSH key provider for daemon.sync-ssh-key.
+func WithSSHKeyProvider(p SSHKeyProvider) Option {
+	return func(h *Handler) { h.sshKey = p }
+}
+
+// WithMacTunnelConfig sets the callback invoked when daemon.connect receives tunnel info.
+func WithMacTunnelConfig(fn func(port int, macUser, macPath string)) Option {
+	return func(h *Handler) { h.setMacTunnelConfig = fn }
+}
+
+// MacTunnelGetter allows the handler to read stored tunnel config for status responses.
+type MacTunnelGetter interface {
+	GetMacTunnelConfig() (port int, macUser, macPath string, ok bool)
+}
+
+// WithMacTunnelGetter sets the getter used to include tunnel info in daemon.status.
+func WithMacTunnelGetter(g MacTunnelGetter) Option {
+	return func(h *Handler) { h.macTunnelGetter = g }
+}
+
+// WithTokenValidator sets the token validation function for daemon.connect.
+func WithTokenValidator(fn func(string) bool) Option {
+	return func(h *Handler) { h.tokenValidator = fn }
+}
+
 // Handler exposes daemon.* and node.* RPC methods.
 type Handler struct {
-	node    NodeInfoProvider
-	logPath string
+	node               NodeInfoProvider
+	logPath            string
+	sshKey             SSHKeyProvider
+	setMacTunnelConfig func(port int, macUser, macPath string)
+	macTunnelGetter    MacTunnelGetter
+	tokenValidator     func(string) bool
 }
 
 // New creates a Handler backed by the given NodeInfoProvider.
@@ -53,6 +87,9 @@ func New(node NodeInfoProvider, opts ...Option) *Handler {
 func (h *Handler) Register(reg registry.Registry) {
 	reg.Register("node.info", h.nodeInfo)
 	reg.Register("daemon.log.tail", h.daemonLogTail)
+	reg.Register("daemon.sync-ssh-key", h.syncSSHKey)
+	reg.Register("daemon.status", h.daemonStatus)
+	reg.Register("daemon.connect", h.connect)
 }
 
 // ── DTOs ─────────────────────────────────────────────────────────────────────
@@ -129,6 +166,88 @@ func (h *Handler) daemonLogTail(_ context.Context, raw json.RawMessage) (any, er
 
 // tailLines reads up to maxLines lines from the end of a file.
 // It reads at most 256 KB from the end to avoid loading large files.
+type syncSSHKeyRes struct {
+	PublicKey string `json:"publicKey"`
+}
+
+func (h *Handler) syncSSHKey(_ context.Context, raw json.RawMessage) (any, error) {
+	if h.sshKey == nil {
+		return nil, rpce.Internal("daemon.ssh_not_configured", "SSH key management not configured")
+	}
+	pubKey, err := h.sshKey.PublicKey()
+	if err != nil {
+		return nil, rpce.Internal("daemon.ssh_key_error", "failed to get SSH public key: "+err.Error())
+	}
+	return &syncSSHKeyRes{PublicKey: pubKey}, nil
+}
+
+// ── daemon.connect ──────────────────────────────────────────────────────────
+
+type connectReq struct {
+	Token       string `json:"token"`
+	ReversePort int    `json:"reversePort"`
+	ClientUser  string `json:"clientUser"`
+	ClientPath  string `json:"clientPath"`
+}
+
+type connectRes struct {
+	OK           bool         `json:"ok"`
+	Node         nodeIdentity `json:"node"`
+	Capabilities []Capability `json:"capabilities"`
+}
+
+func (h *Handler) connect(_ context.Context, raw json.RawMessage) (any, error) {
+	req, err := decode[connectReq](raw)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate token if token validator is configured.
+	if h.tokenValidator != nil {
+		if !h.tokenValidator(req.Token) {
+			return nil, rpce.InvalidParams("daemon.invalid_token", "invalid token")
+		}
+	}
+
+	// Register tunnel config if reverse tunnel info provided.
+	if req.ReversePort > 0 && h.setMacTunnelConfig != nil {
+		h.setMacTunnelConfig(req.ReversePort, req.ClientUser, req.ClientPath)
+	}
+
+	// Return node info + capabilities (same data as nodeInfo handler).
+	res := &connectRes{
+		OK:           true,
+		Capabilities: []Capability{},
+	}
+	if h.node != nil {
+		res.Node = nodeIdentity{
+			Name: h.node.NodeName(),
+			Tags: h.node.NodeTags(),
+		}
+		res.Capabilities = h.node.Capabilities()
+		if res.Capabilities == nil {
+			res.Capabilities = []Capability{}
+		}
+	}
+	return res, nil
+}
+
+// ── daemon.status ─────────────────────────────────────────────────────────────
+
+func (h *Handler) daemonStatus(_ context.Context, _ json.RawMessage) (any, error) {
+	result := map[string]any{}
+	if h.macTunnelGetter != nil {
+		if port, user, path, ok := h.macTunnelGetter.GetMacTunnelConfig(); ok {
+			result["macTunnel"] = map[string]any{
+				"port":    port,
+				"macUser": user,
+				"macPath": path,
+			}
+		}
+	}
+	return result, nil
+}
+
 func tailLines(path string, maxLines int) ([]string, error) {
 	const bufCap = 256 * 1024
 	f, err := os.Open(path)

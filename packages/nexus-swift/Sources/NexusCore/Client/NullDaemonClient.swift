@@ -32,4 +32,10 @@ public struct NullDaemonClient: DaemonClient {
     public func checkVMSSH(workspaceId: String) async throws -> VMSSHCheckResult { throw Self.err }
     public func workspaceSerialLog(workspaceId: String, lines: Int) async throws -> WorkspaceSerialLog { throw Self.err }
     public func daemonLogTail(lines: Int) async throws -> DaemonLogTail { throw Self.err }
+    public func startSync(workspaceID: String, localPath: String, direction: String) async throws -> SyncSession { throw Self.err }
+    public func stopSync(sessionID: String, workspaceID: String) async throws { throw Self.err }
+    public func syncStatus(sessionID: String, workspaceID: String) async throws -> SyncSession { throw Self.err }
+    public func listSyncs(workspaceID: String) async throws -> [SyncSession] { throw Self.err }
+    public func pauseSync(sessionID: String) async throws { throw Self.err }
+    public func resumeSync(sessionID: String) async throws { throw Self.err }
 }

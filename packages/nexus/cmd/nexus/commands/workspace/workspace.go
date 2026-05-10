@@ -27,6 +27,8 @@ func Command() *cobra.Command {
 		openEditorCommand(),
 		exportCommand(),
 		importCommand(),
+		volumeCommand(),
+		syncCommand(),
 	)
 	return cmd
 }

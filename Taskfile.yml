@@ -2,6 +2,9 @@ version: "3"
 
 dotenv: [".env.local"]
 
+env:
+  GOTOOLCHAIN: "go1.25.0+auto"
+
 vars:
   REMOTE_HOST:         '{{.REMOTE_HOST         | default ""}}'
   REMOTE_BIN:          '{{.REMOTE_BIN          | default "~/.local/bin/nexus-dev"}}'
@@ -40,7 +43,7 @@ tasks:
 
         [ "$fail" -eq 0 ] || { echo ""; echo "Fix the issues above then re-run: task setup"; exit 1; }
       - cd packages/nexus && go mod download
-      - 'echo "Setup complete. Next: task dev:remote"'
+      - 'echo "Setup complete. Next: task dev:swift"'
 
   # ── Checks ───────────────────────────────────────────────────────────────
   build:
@@ -59,6 +62,7 @@ tasks:
     desc: "Run golangci-lint"
     dir: packages/nexus
     cmds:
+      - go generate ./cmd/nexus/
       - golangci-lint run ./...
 
   format:
@@ -67,14 +71,6 @@ tasks:
     cmds:
       - gofmt -w .
       - goimports -w .
-
-  ci:
-    desc: "Run local CI equivalent (go-fix + coverage + core)"
-    cmds:
-      - ./scripts/ci/go-fix.sh
-      - ./scripts/ci/coverage.sh
-      - task: check:spec-coverage
-      - ./scripts/ci/nexus-core.sh
 
   check:spec-coverage:
     desc: "Generate formal verification coverage map and fail on unwaived missing proof IDs"
@@ -150,7 +146,8 @@ tasks:
       - rm -rf packages/nexus/nexus packages/nexus/tmp packages/nexus/.air-tmp
 
   # ── Dev loops ─────────────────────────────────────────────────────────────
-  # Set REMOTE_HOST=user@hostname in .env.local (see .env.local.example).
+  # Daemon runs locally. Mac app built via SSH (set MAC_HOST in .env.local).
+  # For deploying to a remote Linux host, use dev:remote with REMOTE_HOST.
 
   dev:remote:
     desc: "Build for linux/amd64, deploy, restart remote daemon, and stage Resources so provision stays in sync"
@@ -167,15 +164,8 @@ tasks:
       - scripts/remote/daemon-restart.sh  # restarts daemon + prints remote version for confirmation
 
   dev:cli:
-    desc: "install local CLI binary (for CLI-only changes)"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
+    desc: "Build and install local CLI binary to ~/.local/bin/nexus-dev"
     env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN:  "{{.REMOTE_BIN}}"
-      REMOTE_PORT: "{{.REMOTE_PORT}}"
-      REMOTE_XDG_STATE_HOME: "{{.REMOTE_XDG_STATE_HOME}}"
       LOCAL_BIN:   "{{.LOCAL_BIN}}"
     cmds:
       - scripts/local/deploy.sh
@@ -232,32 +222,10 @@ tasks:
         git commit -m "chore(kernel): rebuild kernels $(date +%Y-%m-%d)"
 
   dev:swift:
-    desc: "dev:cli + stage macOS nexus binary + regenerate Swift SDK + build and open NexusApp"
-    preconditions:
-      - sh: '[ -n "{{.REMOTE_HOST}}" ]'
-        msg: "REMOTE_HOST is not set. Add it to .env.local or pass REMOTE_HOST=user@host on the CLI."
-    env:
-      REMOTE_HOST: "{{.REMOTE_HOST}}"
-      REMOTE_BIN:  "{{.REMOTE_BIN}}"
-      REMOTE_PORT: "{{.REMOTE_PORT}}"
-      REMOTE_XDG_STATE_HOME: "{{.REMOTE_XDG_STATE_HOME}}"
-      LOCAL_BIN:   "{{.LOCAL_BIN}}"
-    cmds:
-      - task: dev:cli
-      - task: stage:nexus-macos
-      - task: stage:nexus-linux
-      - scripts/generate-sdk.sh
-      - scripts/swift/build.sh
-      - scripts/swift/open.sh
-
-  # ── Dogfooding (develop on Linux remote) ──────────────────────────────────
-  # Set MAC_HOST=user@mac-hostname in .env.local on the Linux remote.
-
-  dev:local:swift:
-    desc: "Linux-first dev loop: build locally, sync to Mac, build app and test headless RPC"
+    desc: "Linux-first full dev loop: build CLI locally, stage resources, sync to Mac, build + open NexusApp"
     preconditions:
       - sh: '[ -n "{{.MAC_HOST}}" ]'
-        msg: "MAC_HOST is not set. Add it to .env.local on the remote with MAC_HOST=user@mac-host."
+        msg: "MAC_HOST is not set. Add MAC_HOST=user@mac-hostname to .env.local"
     env:
       MAC_HOST: "{{.MAC_HOST}}"
       MAC_REPO_ROOT: "{{.MAC_REPO_ROOT}}"
@@ -268,7 +236,9 @@ tasks:
       - task: stage:nexus-linux
       - scripts/generate-sdk.sh
       - scripts/remote/mac-build-app.sh
-      - scripts/remote/mac-test-headless.sh
+
+  # ── Dogfooding (develop on Linux remote) ──────────────────────────────────
+  # Set MAC_HOST=user@mac-hostname in .env.local on the Linux remote.
 
   dev:mac:build:
     desc: "SSH from Linux remote back to Mac to build NexusApp"
@@ -303,6 +273,7 @@ tasks:
         echo "Staging nexus (darwin/arm64) → packages/nexus-swift/Resources/nexus (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
         GOOS=darwin GOARCH=arm64 go build \
           -C packages/nexus \
+          -tags dev \
           -ldflags "$LDFLAGS" \
           -o ../../packages/nexus-swift/Resources/nexus \
           ./cmd/nexus
@@ -402,6 +373,105 @@ tasks:
         else
           scripts/workspace-sync.sh
         fi
+
+  # ── CI mirrors (local equivalents of GitHub Actions) ─────────────────────
+  generate:agent:
+    desc: "Build embedded guest-agent binary (go generate)"
+    dir: packages/nexus
+    cmds:
+      - go generate ./cmd/nexus/
+    status:
+      - test -f cmd/nexus/embed_agent_linux_amd64.go
+
+  ci:lint:
+    desc: "Run full CI lint pipeline (go-fix + golangci-lint)"
+    cmds:
+      - ./scripts/ci/go-fix.sh
+      - task: lint
+
+  ci:test:
+    desc: "Run CI test pipeline (generate + test without coverage)"
+    cmds:
+      - task: generate:agent
+      - cd packages/nexus && go test -count=1 ./...
+
+  ci:build:
+    desc: "Run CI build pipeline (generate + build + cross-platform)"
+    cmds:
+      - task: generate:agent
+      - task: build
+      - task: stage:nexus-macos
+
+  ci:commits:
+    desc: "Validate commit messages match conventional commit format"
+    cmds:
+      - ./scripts/ci/check-commits.sh
+
+  ci:local:
+    desc: "Run all local CI checks (commits + lint + test + build)"
+    cmds:
+      - task: ci:commits
+      - task: ci:lint
+      - task: ci:test
+      - task: ci:build
+
+  ci:
+    desc: "Alias for ci:local — run all local CI checks"
+    cmds:
+      - task: ci:local
+
+  ci:core:
+    desc: "CI core: build + vet + e2e-short (requires local nexus daemon)"
+    cmds:
+      - ./scripts/ci/nexus-core.sh
+
+  ci:spec:
+    desc: "CI spec-coverage: formal verification coverage map"
+    cmds:
+      - task: check:spec-coverage
+
+  ci:passt:build:
+    desc: "Build patched passt binary for CI"
+    cmds:
+      - scripts/ci/build-passt.sh
+
+  ci:e2e:prep:
+    desc: "Prepare environment for e2e tests in CI"
+    cmds:
+      - ./scripts/ci/enable-kvm.sh
+      - ./scripts/ci/install-host-prereqs.sh
+      - ./scripts/ci/setup-xfs-reflink.sh
+      - ./scripts/ci/prepare-libkrun-cache-env.sh
+      - ./scripts/ci/build-nexus-libkrun.sh
+      - ./scripts/ci/provision-libkrun-host.sh
+      - ./scripts/ci/setup-host-config-fixtures.sh
+
+  ci:e2e:run:
+    desc: "Run e2e tests in CI"
+    vars:
+      E2E_TIMEOUT: '{{.E2E_TIMEOUT | default "60m"}}'
+      E2E_P: '{{.E2E_P | default "2"}}'
+      E2E_PARALLEL: '{{.E2E_PARALLEL | default "2"}}'
+      E2E_RUN: '{{.E2E_RUN | default ""}}'
+      E2E_PKG: '{{.E2E_PKG | default "./test/e2e/..."}}'
+    env:
+      CI: "true"
+      NEXUS_LIBKRUN_SKIP_BAKE: "1"
+      NEXUS_LIBKRUN_BAKE_TIMEOUT: "120s"
+      NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "1"
+      NEXUS_VM_KERNEL: "/var/lib/nexus/vmlinux.bin"
+      NEXUS_VM_ROOTFS: "/var/lib/nexus/rootfs.ext4"
+      NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
+      NEXUS_RUNNER_ROOTFS_MIN_MIB: "512"
+      NEXUS_LIBKRUN_MEM_MIB: "256"
+      NEXUS_PASST_PATH: "/tmp/passt-patched"
+    cmds:
+      - |
+        RUN_FLAG=""
+        if [ -n "{{.E2E_RUN}}" ]; then
+          RUN_FLAG="-run {{.E2E_RUN}}"
+        fi
+        go test -tags e2e -count=1 -timeout={{.E2E_TIMEOUT}} -v -p {{.E2E_P}} -parallel {{.E2E_PARALLEL}} $RUN_FLAG {{.E2E_PKG}}
 
   showcase:rerecord:
     desc: "Re-record showcase flow by controlling NexusApp through headless RPC, then render remotion"

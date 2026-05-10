@@ -90,9 +90,10 @@ if [[ -f "$EMBED_DIR/nexus-libkrun-vm" ]]; then
   fi
   cp "$NEXUS_PKG/tmp/passt-embed" "$PASST_EMBED"
 
-  BUILD_TAGS="-tags libkrun"
+  BUILD_TAGS="-tags libkrun,dev"
   echo "Building nexus for linux/amd64 with libkrun (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
 else
+  BUILD_TAGS="-tags dev"
   echo "Building nexus for linux/amd64 (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
   echo "  (nexus-libkrun-vm not found — building without libkrun embed)"
 fi

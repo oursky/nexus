@@ -50,6 +50,7 @@ public actor SSHTunnelManager {
     private var spotlightTunnels: [Int: SSHTunnelProcess] = [:]   // keyed by remotePort
     private var _state: State = .idle
     private var _localPort: Int?
+    private var _reversePort: Int = 0
     private var restartTask: Task<Void, Never>?
     private var activeScopedPaths: SSHSecurityScopedPaths = .empty
     private let logger = Logger(subsystem: "com.nexus.NexusApp", category: "SSHTunnel")
@@ -63,6 +64,10 @@ public actor SSHTunnelManager {
 
     public var state: State { _state }
     public var localPort: Int? { _localPort }
+
+    /// The port on the REMOTE host that tunnels back to this Mac's SSH server (port 22).
+    /// Zero if no reverse tunnel has been established.
+    public var reversePort: Int { _reversePort }
 
     // MARK: - setState helper
 
@@ -83,6 +88,8 @@ public actor SSHTunnelManager {
             do {
                 let port = try allocateLocalPort()
                 _localPort = port
+                let rp = try allocateLocalPort()
+                _reversePort = rp
                 let resolvedPaths = resolveScopedPaths()
                 let identityPath = resolvedPaths.identityPath
                 guard let identityPath, !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -92,7 +99,7 @@ public actor SSHTunnelManager {
                 // (SSHClientArgs passes -F /dev/null so ~/.ssh/config is bypassed).
                 // Never fall back to a config-based mode — that would allow the agent
                 // or config to inject the real key and mask a wrong-key error.
-                try launchControlTunnel(localPort: port, configPath: nil, identityPath: identityPath)
+                try launchControlTunnel(localPort: port, reversePort: rp, configPath: nil, identityPath: identityPath)
                 try await waitForHealthz(localPort: port)
                 setState(.connected)
                 AppLifecycleLog.info("ssh-tunnel", "start success localPort=\(port)")
@@ -317,7 +324,7 @@ public actor SSHTunnelManager {
         return Int(addr.sin_port.bigEndian)
     }
 
-    private func launchControlTunnel(localPort: Int, configPath: String?, identityPath: String?) throws {
+    private func launchControlTunnel(localPort: Int, reversePort: Int, configPath: String?, identityPath: String?) throws {
         guard let sshTarget = profile.sshTarget, !sshTarget.isEmpty else {
             throw TunnelError.noTarget
         }
@@ -328,7 +335,13 @@ public actor SSHTunnelManager {
             identityPath: identityPath,
             configPath: configPath
         )
-        let args = client.tunnelArgs(localPort: localPort, remotePort: remotePort)
+        var args = client.tunnelArgs(localPort: localPort, remotePort: remotePort)
+        // Reverse tunnel: allows the remote daemon to reach this Mac's SSH server
+        if reversePort > 0 {
+            // Insert -R before the sshTarget (last element)
+            args.insert("-R", at: args.count - 1)
+            args.insert("\(reversePort):127.0.0.1:22", at: args.count - 1)
+        }
         AppLifecycleLog.info(
             "ssh-tunnel",
             "launch \(client.logDescription) localPort=\(localPort) remotePort=\(remotePort)"
@@ -467,7 +480,7 @@ public actor SSHTunnelManager {
         controlTunnel = nil
         let resolvedPaths = resolveScopedPaths()
         let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
-        try launchControlTunnel(localPort: localPort, configPath: configPath, identityPath: resolvedPaths.identityPath)
+        try launchControlTunnel(localPort: localPort, reversePort: _reversePort, configPath: configPath, identityPath: resolvedPaths.identityPath)
         setState(.connected)
     }
 

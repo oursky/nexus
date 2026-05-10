@@ -38,6 +38,7 @@ enum Theme {
     // ── Status ─────────────────────────────────────────────────────
     static let green  = Color(nsColor: .systemGreen)
     static let orange = Color(nsColor: .systemOrange)
+    static let yellow = Color(nsColor: .systemYellow)
     static let red    = Color(nsColor: .systemRed)
 
     // ── Accent – matches Conductor's coral/red brand color ─────────

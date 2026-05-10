@@ -202,6 +202,66 @@ LOCAL_TUNNEL_PORT=17778 MAC_HOST=newman@minion scripts/remote/mac-test-headless.
 
 ---
 
+## Nexus-in-Nexus Development
+
+Develop nexus from inside a workspace (process sandbox or VM). The daemon runs on the Linux host; you work inside the workspace with sync keeping `/workspace` in sync with the host path.
+
+### Setup
+
+Create a workspace pointing at the nexus repo, start it, and open a terminal:
+
+```bash
+nexus-dev workspace create --name nexus-dev --repo ~/magic/nexus
+nexus-dev workspace start ws-xxx
+```
+
+### Sync workflow
+
+Use `workspace.sync-start` to sync code between host and workspace:
+
+```bash
+nexus-dev sync start ws-xxx --local-path ~/magic/nexus
+nexus-dev sync status ws-xxx
+nexus-dev sync pause ws-xxx
+nexus-dev sync resume ws-xxx
+nexus-dev sync stop ws-xxx
+```
+
+### Building inside the workspace
+
+Build, test, and run the daemon from inside the workspace:
+
+```bash
+cd /workspace/packages/nexus
+go build ./...
+go test ./...
+```
+
+### Agent integration
+
+opencode and codex are installed via the config drive. Invoke them inside the workspace:
+
+```bash
+cd /workspace
+opencode  # starts interactive session
+opencode run 'fix the bug in service.go'  # non-interactive
+```
+
+### Editing from Mac, building on Linux
+
+Round-trip workflow:
+
+- Edit code on Mac (or inside workspace)
+- Sync propagates to the host
+- `task dev:remote` deploys from the host
+- Or build directly inside the workspace with `go build ./...`
+
+### Limitations
+
+- Docker inside process sandbox: not supported
+- Nested VMs in libkrun: not supported
+
+---
 ## Common workflows
 
 ### Remote daemon + Mac CLI + app (primary loop)

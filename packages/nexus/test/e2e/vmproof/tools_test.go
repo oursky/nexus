@@ -16,7 +16,9 @@ import (
 func createWorkspaceAndStart(t *testing.T, h *harness.CLIHarness, repoPath, name string) string {
 	t.Helper()
 	var res struct {
-		Workspace struct{ ID string `json:"id"` } `json:"workspace"`
+		Workspace struct {
+			ID string `json:"id"`
+		} `json:"workspace"`
 	}
 	h.MustCall("workspace.create", map[string]any{
 		"spec": map[string]any{
@@ -36,7 +38,9 @@ func createWorkspaceAndStart(t *testing.T, h *harness.CLIHarness, repoPath, name
 	h.MustCall("workspace.start", map[string]any{"id": id}, nil)
 
 	// Wait for workspace to be fully ready before running exec commands.
-	var readyRes struct{ Ready bool `json:"ready"` }
+	var readyRes struct {
+		Ready bool `json:"ready"`
+	}
 	ready := false
 	for attempts := 0; attempts < 120; attempts++ {
 		h.MustCall("workspace.ready", map[string]any{"id": id}, &readyRes)
