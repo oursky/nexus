@@ -3,7 +3,9 @@ package sync
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,16 +48,20 @@ type MutagenClientInterface interface {
 	ResumeSession(ctx context.Context, sessionID string) error
 }
 
+// MacTunnelGetter returns the current Mac reverse tunnel config (if any).
+type MacTunnelGetter func() (port int, macUser, macPath string, ok bool)
+
 // Service manages volume sync sessions via MutagenClient.
 // It implements the SyncStarter interface consumed by the RPC handler.
 // mc may be nil, in which case mutagen operations return errors gracefully.
 type Service struct {
-	mutagen    MutagenClientInterface
-	repo       domainsync.Repository
-	wsLookup   WorkspaceLookup
-	sshManager *SSHManager
-	driver     SyncDriver
-	store      *SessionStore
+	mutagen         MutagenClientInterface
+	repo            domainsync.Repository
+	wsLookup        WorkspaceLookup
+	sshManager      *SSHManager
+	driver          SyncDriver
+	store           *SessionStore
+	macTunnelGetter MacTunnelGetter
 }
 
 // NewService returns a Service backed by the given MutagenClient and Repository.
@@ -85,6 +91,73 @@ func (s *Service) SetStore(store *SessionStore) {
 	s.store = store
 }
 
+// SetMacTunnelGetter sets the callback used to resolve Mac reverse tunnel config.
+func (s *Service) SetMacTunnelGetter(getter MacTunnelGetter) {
+	s.macTunnelGetter = getter
+}
+
+// expandMacPath expands a leading ~/ in path using the given macOS username.
+func expandMacPath(path, macUser string) string {
+	if strings.HasPrefix(path, "~/") {
+		return "/Users/" + macUser + path[1:]
+	}
+	return path
+}
+
+// resolveSyncPaths determines the alpha and beta paths for a sync session.
+// When a Mac reverse tunnel is configured, it resolves SSH-based paths.
+// Otherwise it falls back to driver-based or workspace-based resolution.
+func (s *Service) resolveSyncPaths(ws *domainws.Workspace, workspaceID, localPath string, dir domainsync.SyncDirection) (alpha, beta string, err error) {
+	// Mac tunnel: SSH-based sync to Mac host
+	if s.macTunnelGetter != nil {
+		if port, macUser, _, ok := s.macTunnelGetter(); ok {
+			log.Printf("sync: using Mac tunnel path (port=%d, user=%s)", port, macUser)
+			macPath := expandMacPath(localPath, macUser)
+			alpha = ws.RootPath
+			beta = fmt.Sprintf("%s@127.0.0.1:%d:%s", macUser, port, macPath)
+			if dir == domainsync.SyncDirectionDown {
+				alpha, beta = beta, alpha
+			}
+			return alpha, beta, nil
+		}
+	}
+
+	// Validate local path exists and is accessible (only for local daemon paths).
+	if _, err := os.Stat(localPath); err != nil {
+		if os.IsNotExist(err) {
+			return "", "", fmt.Errorf("sync: local path %q does not exist", localPath)
+		}
+		return "", "", fmt.Errorf("sync: local path %q is not accessible: %w", localPath, err)
+	}
+
+	if s.driver != nil && s.driver.IsAvailable(workspaceID) {
+		alpha, beta, err = s.driver.GetSyncPaths(workspaceID)
+		if err != nil {
+			return "", "", fmt.Errorf("sync: driver failed for workspace %q: %w", workspaceID, err)
+		}
+		// Drivers may leave alpha empty to indicate the caller should supply it.
+		if alpha == "" {
+			alpha = localPath
+		}
+	} else {
+		// Fall back to workspace-based path resolution
+		if ws.GuestIP == "" && ws.RootPath == "" {
+			return "", "", fmt.Errorf("sync: workspace %q is not running (no guest IP)", workspaceID)
+		}
+		alpha = localPath
+		if ws.GuestIP == "" || ws.GuestIP == "local" {
+			beta = ws.RootPath
+		} else {
+			beta = fmt.Sprintf("user@%s:%s", ws.GuestIP, ws.RootPath)
+		}
+	}
+
+	if dir == domainsync.SyncDirectionDown {
+		alpha, beta = beta, alpha
+	}
+	return alpha, beta, nil
+}
+
 // StartSync starts a new sync session for workspaceID/localPath in the given direction.
 func (s *Service) StartSync(ctx context.Context, workspaceID, localPath, direction string) (*SyncSessionDTO, error) {
 	dir := domainsync.SyncDirection(direction)
@@ -104,42 +177,18 @@ func (s *Service) StartSync(ctx context.Context, workspaceID, localPath, directi
 		return nil, fmt.Errorf("sync: workspace %q already has an active sync session %q", workspaceID, existing.ID)
 	}
 
-	// Validate local path exists and is accessible.
-	if _, err := os.Stat(localPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("sync: local path %q does not exist", localPath)
-		}
-		return nil, fmt.Errorf("sync: local path %q is not accessible: %w", localPath, err)
+	alpha, beta, err := s.resolveSyncPaths(ws, workspaceID, localPath, dir)
+	if err != nil {
+		return nil, err
 	}
 
-	var alpha, beta string
-	if s.driver != nil && s.driver.IsAvailable(workspaceID) {
-		alpha, beta, err = s.driver.GetSyncPaths(workspaceID)
-		if err != nil {
-			return nil, fmt.Errorf("sync: driver failed for workspace %q: %w", workspaceID, err)
-		}
-		// Drivers may leave alpha empty to indicate the caller should supply it.
-		if alpha == "" {
-			alpha = localPath
-		}
-	} else {
-		// Fall back to workspace-based path resolution
-		if ws.GuestIP == "" && ws.RootPath == "" {
-			return nil, fmt.Errorf("sync: workspace %q is not running (no guest IP)", workspaceID)
-		}
-		alpha = localPath
-		if ws.GuestIP == "" || ws.GuestIP == "local" {
-			beta = ws.RootPath
-		} else {
-			beta = fmt.Sprintf("user@%s:%s", ws.GuestIP, ws.RootPath)
-		}
-	}
+	return s.createSession(ctx, workspaceID, localPath, dir, mode, alpha, beta)
+}
 
-	if dir == domainsync.SyncDirectionDown {
-		alpha, beta = beta, alpha
-	}
-
+// createSession creates the mutagen session and persists it.
+func (s *Service) createSession(ctx context.Context, workspaceID, localPath string, dir domainsync.SyncDirection, mode SyncDirection, alpha, beta string) (*SyncSessionDTO, error) {
 	mutagenID := ""
+	var err error
 	if s.mutagen != nil {
 		mutagenID, err = s.mutagen.CreateSession(ctx, alpha, beta, mode)
 		if err != nil {
@@ -452,3 +501,5 @@ func (s *Service) StartVolumeSync(ctx context.Context, workspaceID, alphaPath, b
 
 	return id, nil
 }
+
+

@@ -658,3 +658,129 @@ func containsSubstr(s, substr string) bool {
 	}
 	return false
 }
+
+// --- Mac Tunnel Path Tests ---
+
+func TestExpandMacPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		macUser  string
+		expected string
+	}{
+		{
+			name:     "tilde expansion",
+			path:     "~/Projects/foo",
+			macUser:  "alice",
+			expected: "/Users/alice/Projects/foo",
+		},
+		{
+			name:     "absolute path unchanged",
+			path:     "/absolute/path",
+			macUser:  "alice",
+			expected: "/absolute/path",
+		},
+		{
+			name:     "tilde slash only",
+			path:     "~/",
+			macUser:  "bob",
+			expected: "/Users/bob/",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := expandMacPath(tt.path, tt.macUser)
+			if got != tt.expected {
+				t.Fatalf("expandMacPath(%q, %q) = %q, want %q", tt.path, tt.macUser, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestStartSync_MacTunnelPath(t *testing.T) {
+	repo := domainsync.NewMemoryRepository()
+	svc := NewService(nil, repo, newMockWSLookup())
+	svc.SetMacTunnelGetter(func() (int, string, string, bool) {
+		return 2222, "alice", "", true
+	})
+	ctx := context.Background()
+
+	dto, err := svc.StartSync(ctx, "ws-1", "~/Projects/myapp", "bidirectional")
+	if err != nil {
+		t.Fatalf("StartSync failed: %v", err)
+	}
+	// alpha = workspace RootPath
+	if dto.Alpha != "/workspace" {
+		t.Fatalf("expected alpha=/workspace, got %s", dto.Alpha)
+	}
+	// beta = macUser@127.0.0.1:port:expandedMacPath
+	expectedBeta := "alice@127.0.0.1:2222:/Users/alice/Projects/myapp"
+	if dto.Beta != expectedBeta {
+		t.Fatalf("expected beta=%s, got %s", expectedBeta, dto.Beta)
+	}
+	// Verify no error — localPath does NOT need to exist on disk with tunnel active
+	if dto.Status != "active" {
+		t.Fatalf("expected status=active, got %s", dto.Status)
+	}
+}
+
+func TestStartSync_MacTunnelPathDown(t *testing.T) {
+	repo := domainsync.NewMemoryRepository()
+	svc := NewService(nil, repo, newMockWSLookup())
+	svc.SetMacTunnelGetter(func() (int, string, string, bool) {
+		return 2222, "alice", "", true
+	})
+	ctx := context.Background()
+
+	dto, err := svc.StartSync(ctx, "ws-1", "~/Projects/myapp", "down")
+	if err != nil {
+		t.Fatalf("StartSync failed: %v", err)
+	}
+	// For "down": alpha and beta are swapped (alpha = tunnel path, beta = workspace RootPath)
+	expectedAlpha := "alice@127.0.0.1:2222:/Users/alice/Projects/myapp"
+	if dto.Alpha != expectedAlpha {
+		t.Fatalf("expected alpha=%s, got %s", expectedAlpha, dto.Alpha)
+	}
+	if dto.Beta != "/workspace" {
+		t.Fatalf("expected beta=/workspace, got %s", dto.Beta)
+	}
+	if dto.Direction != "down" {
+		t.Fatalf("expected direction=down, got %s", dto.Direction)
+	}
+}
+
+func TestStartSync_MacTunnelGetterNotOk(t *testing.T) {
+	repo := domainsync.NewMemoryRepository()
+	svc := NewService(nil, repo, newMockWSLookup())
+	svc.SetMacTunnelGetter(func() (int, string, string, bool) {
+		return 0, "", "", false
+	})
+	ctx := context.Background()
+
+	// When getter returns ok=false, it falls through to normal path
+	// which requires localPath to exist on disk.
+	_, err := svc.StartSync(ctx, "ws-1", "/nonexistent/path/that/does/not/exist", "bidirectional")
+	if err == nil {
+		t.Fatal("expected error when tunnel getter returns ok=false and localPath doesn't exist")
+	}
+	if !contains(err.Error(), "does not exist") {
+		t.Fatalf("expected 'does not exist' error, got: %v", err)
+	}
+}
+
+func TestStartSync_MacTunnelNilGetter(t *testing.T) {
+	repo := domainsync.NewMemoryRepository()
+	svc := NewService(nil, repo, newMockWSLookup())
+	// Deliberately do NOT call SetMacTunnelGetter — macTunnelGetter stays nil
+
+	ctx := context.Background()
+
+	// With nil getter, falls through to normal path which requires localPath to exist.
+	_, err := svc.StartSync(ctx, "ws-1", "/nonexistent/path/that/does/not/exist", "bidirectional")
+	if err == nil {
+		t.Fatal("expected error when macTunnelGetter is nil and localPath doesn't exist")
+	}
+	if !contains(err.Error(), "does not exist") {
+		t.Fatalf("expected 'does not exist' error, got: %v", err)
+	}
+}

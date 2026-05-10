@@ -96,9 +96,6 @@ else
   BUILD_TAGS="-tags dev"
   echo "Building nexus for linux/amd64 (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
   echo "  (nexus-libkrun-vm not found — building without libkrun embed)"
-else
-  echo "Building nexus for linux/amd64 (commit=${GIT_COMMIT} built=${BUILD_TIME})..."
-  echo "  (nexus-libkrun-vm not found — building without libkrun embed)"
 fi
 
 # shellcheck disable=SC2086
