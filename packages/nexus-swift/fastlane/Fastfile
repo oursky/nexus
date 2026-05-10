@@ -111,6 +111,22 @@ platform :mac do
       timeout: 0,
     )
 
+    # Import Developer ID Application certificate (for direct distribution)
+    dev_id_path = 'signing/developer_id_app.p12'
+    if File.exist?(dev_id_path)
+      UI.message "Importing Developer ID Application certificate"
+      import_certificate(
+        certificate_path: dev_id_path,
+        certificate_password: '',
+        keychain_name: variant['keychain_name'],
+        keychain_password: keychain_password,
+      )
+    else
+      UI.important "Developer ID Application certificate not found at #{dev_id_path}"
+      UI.important "Build may fail if certificate is not in system keychain"
+    end
+
+    # Import Mac Installer certificate (fallback)
     import_certificate(
       certificate_path: 'signing/mac_installer.p12',
       certificate_password: '',
