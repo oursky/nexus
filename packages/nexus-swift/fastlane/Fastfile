@@ -83,6 +83,95 @@ platform :mac do
     )
   end
 
+  desc 'Build and notarize a DMG for direct distribution'
+  lane :app_dmg do |options|
+    build_number = resolve_build_number(options)
+    git_info = get_git_commit_info
+
+    UI.message "Building Nexus macOS DMG"
+    UI.message "Build: #{build_number}"
+    UI.message "Commit: #{git_info[:commit_hash]}"
+    UI.message "Message: #{git_info[:commit_message]}"
+
+    UI.user_error!('APP_STORE_CONNECT_API_KEY_FILE is not set') if ENV['APP_STORE_CONNECT_API_KEY_FILE'].to_s.empty?
+
+    api_key_file = ENV['APP_STORE_CONNECT_API_KEY_FILE']
+    api_key = JSON.parse(File.read(api_key_file))
+    key_id = api_key['key_id']
+    issuer_id = api_key['issuer_id']
+    key = api_key['key']
+
+    keychain_password = SecureRandom.hex(16)
+
+    create_keychain(
+      name: variant['keychain_name'],
+      password: keychain_password,
+      default_keychain: true,
+      unlock: true,
+      timeout: 0,
+    )
+
+    import_certificate(
+      certificate_path: 'signing/mac_installer.p12',
+      certificate_password: '',
+      keychain_name: variant['keychain_name'],
+      keychain_password: keychain_password,
+    )
+
+    install_provisioning_profile(
+      path: variant['provisioning_profile']
+    )
+
+    build_mac_app(
+      project: variant['project'],
+      scheme: variant['scheme'],
+      configuration: 'Release',
+      export_method: 'developer-id',
+      skip_package_pkg: true,
+      export_options: {
+        provisioningProfiles: {
+          variant['app_identifier'] => variant['provisioning_profile_name'],
+        },
+      },
+      xcargs: "CURRENT_PROJECT_VERSION=#{build_number} MARKETING_VERSION=#{get_version_number(xcodeproj: variant['project'], target: variant['scheme'])} SWIFT_STRICT_CONCURRENCY=minimal NEXUS_APP_BUNDLE_ID=#{variant['app_identifier']} CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=#{variant['team_id']} CODE_SIGN_IDENTITY='Developer ID Application: Oursky Limited (M7HB6C3N6X)'"
+    )
+
+    app_path = Actions.lane_context[SharedValues::APP_PATH]
+    UI.user_error!('No built app found') if app_path.nil? || !File.exist?(app_path)
+
+    dist_dir = File.join(File.dirname(__dir__), 'dist')
+    FileUtils.mkdir_p(dist_dir)
+
+    version = get_version_number(xcodeproj: variant['project'], target: variant['scheme'])
+    dmg_name = "Nexus-#{version}-#{build_number}.dmg"
+    dmg_path = File.join(dist_dir, dmg_name)
+
+    UI.message "Creating DMG: #{dmg_path}"
+
+    temp_dmg = File.join(dist_dir, 'temp.dmg')
+    app_name = File.basename(app_path)
+    volume_name = "Nexus #{version}"
+
+    sh("hdiutil create -srcfolder '#{app_path}' -volname '#{volume_name}' -fs HFS+ -format UDRW -size 100m '#{temp_dmg}'")
+    sh("hdiutil convert '#{temp_dmg}' -format UDZO -o '#{dmg_path}'")
+    FileUtils.rm_f(temp_dmg)
+
+    UI.message "Notarizing DMG..."
+
+    key_file = File.join(dist_dir, 'AuthKey.p8')
+    File.write(key_file, key)
+
+    begin
+      sh("xcrun notarytool submit '#{dmg_path}' --key '#{key_file}' --key-id '#{key_id}' --issuer '#{issuer_id}' --wait")
+      sh("xcrun stapler staple '#{dmg_path}'")
+      UI.success "DMG created and notarized: #{dmg_path}"
+    ensure
+      FileUtils.rm_f(key_file)
+    end
+
+    dmg_path
+  end
+
   desc 'Upload the macOS app to TestFlight'
   lane :app_testflight do |options|
     build_number = resolve_build_number(options)

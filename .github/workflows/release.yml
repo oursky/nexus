@@ -11,6 +11,10 @@ jobs:
   release:
     name: Build and publish release
     runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.semantic.outputs.released }}
+      version: ${{ steps.semantic.outputs.version }}
+      tag: ${{ steps.semantic.outputs.tag }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -148,3 +152,70 @@ jobs:
             dist/nexus-darwin-arm64 \
             dist/sha256sums.txt \
             --clobber
+
+  build-macos-dmg:
+    name: Build and publish macOS DMG
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: [self-hosted, macOS, ARM64, v2, tw]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      - name: Build nexus (darwin/arm64)
+        working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GIT_COMMIT="${GITHUB_SHA::8}"
+          LDFLAGS="-s -w \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ needs.release.outputs.version }}"
+          go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/nexus-darwin-arm64 \
+            ./cmd/nexus
+
+      - name: Build pty-host (darwin/arm64)
+        working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GIT_COMMIT="${GITHUB_SHA::8}"
+          LDFLAGS="-s -w \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${{ needs.release.outputs.version }}"
+          go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/pty-host-darwin-arm64 \
+            ./cmd/pty-host
+
+      - name: Build DMG
+        working-directory: packages/nexus-swift
+        run: bundle exec fastlane mac app_dmg build_number:${{ needs.release.outputs.version }}
+
+      - name: Upload DMG to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ needs.release.outputs.tag }}"
+          dmg_path=$(find packages/nexus-swift/dist -name "*.dmg" -maxdepth 1 | head -n 1)
+          if [ -z "$dmg_path" ]; then
+            echo "Error: No DMG file found"
+            exit 1
+          fi
+          gh release upload "$tag" "$dmg_path" --clobber
