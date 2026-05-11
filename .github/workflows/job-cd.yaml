@@ -193,7 +193,9 @@ jobs:
       - name: Build NexusApp
         working-directory: packages/nexus-swift
         timeout-minutes: 30
-        run: bundle _2.4.22_ exec fastlane mac app_build build_number:"${{ needs.release.outputs.version }}"
+        run: |
+          BUILD_NUMBER=$(date +%s)
+          bundle _2.4.22_ exec fastlane mac app_build build_number:"${BUILD_NUMBER}"
 
       - name: Upload to TestFlight
         working-directory: packages/nexus-swift
