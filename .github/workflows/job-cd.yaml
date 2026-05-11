@@ -90,18 +90,24 @@ jobs:
             -o cmd/nexus/agent-linux-amd64 ./cmd/nexus-guest-agent
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" \
             -o ../../dist/nexus-linux-amd64 ./cmd/nexus
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/pty-host-linux-amd64 ./cmd/pty-host
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
             -o cmd/nexus/agent-linux-arm64 ./cmd/nexus-guest-agent
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
             -o ../../dist/nexus-linux-arm64 ./cmd/nexus
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/pty-host-linux-arm64 ./cmd/pty-host
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
             -o ../../dist/nexus-darwin-arm64 ./cmd/nexus
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/pty-host-darwin-arm64 ./cmd/pty-host
 
       - name: Create checksums
         if: steps.semantic.outputs.released == 'true'
         run: |
           cd dist
-          sha256sum nexus-linux-amd64 nexus-linux-arm64 nexus-darwin-arm64 > sha256sums.txt
+          sha256sum nexus-linux-amd64 nexus-linux-arm64 nexus-darwin-arm64 pty-host-linux-amd64 pty-host-linux-arm64 pty-host-darwin-arm64 > sha256sums.txt
 
       - name: Upload binaries to GitHub Release
         if: steps.semantic.outputs.released == 'true'
@@ -113,6 +119,9 @@ jobs:
             dist/nexus-linux-amd64 \
             dist/nexus-linux-arm64 \
             dist/nexus-darwin-arm64 \
+            dist/pty-host-linux-amd64 \
+            dist/pty-host-linux-arm64 \
+            dist/pty-host-darwin-arm64 \
             dist/sha256sums.txt \
             --clobber
 

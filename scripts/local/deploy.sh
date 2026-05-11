@@ -16,10 +16,19 @@ echo "Building nexus for $(go env GOOS)/$(go env GOARCH) (commit=${GIT_COMMIT} b
 # Dev build: enable file-based token storage and headless RPC
 go build -C "$NEXUS_PKG" -tags dev -ldflags "$LDFLAGS" -o ./tmp/nexus-local ./cmd/nexus
 
+echo "Building pty-host..."
+go build -C "$NEXUS_PKG" -tags dev -ldflags "$LDFLAGS" -o ./tmp/pty-host ./cmd/pty-host
+
 mkdir -p "$(dirname "$LOCAL_BIN")"
 rm -f "$LOCAL_BIN"
 cp "$NEXUS_PKG/tmp/nexus-local" "$LOCAL_BIN"
 chmod +x "$LOCAL_BIN"
+
+# Install pty-host alongside nexus so the daemon can find it
+LOCAL_PTY_HOST="$(dirname "$LOCAL_BIN")/pty-host"
+rm -f "$LOCAL_PTY_HOST"
+cp "$NEXUS_PKG/tmp/pty-host" "$LOCAL_PTY_HOST"
+chmod +x "$LOCAL_PTY_HOST"
 
 if [ "$(uname -s)" = "Darwin" ]; then
   ENTITLEMENTS="$NEXUS_PKG/nexus.entitlements"

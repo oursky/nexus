@@ -50,6 +50,7 @@ tasks:
     dir: packages/nexus
     cmds:
       - go build ./...
+      - go build ./cmd/pty-host
 
   test:
     desc: "Run Go tests"
@@ -340,6 +341,7 @@ tasks:
       - task: generate:agent
       - task: build
       - task: stage:nexus-macos
+      - cd packages/nexus && go build ./cmd/pty-host
 
   ci:commits:
     desc: "Validate commit messages match conventional commit format"
