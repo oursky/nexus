@@ -105,11 +105,11 @@ public actor SSHTunnelManager {
                 setState(.connected)
                 AppLifecycleLog.info("ssh-tunnel", "start success localPort=\(port)")
                 // Launch reverse tunnel as best-effort (non-blocking)
-                if rp > 0 {
+                if rp > 0, let sshTarget = profile.sshTarget {
                     do {
                         try launchReverseTunnel(
                             reversePort: rp,
-                            sshTarget: profile.sshTarget,
+                            sshTarget: sshTarget,
                             sshPort: profile.sshPort,
                             identityPath: profile.sshIdentity,
                             configPath: profile.sshConfigPath
@@ -401,7 +401,7 @@ public actor SSHTunnelManager {
             sshTarget,
         ]
         let proc = Process()
-        proc.executableURL = client.sshBinary
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         proc.arguments = args
         let outPipe = Pipe()
         let errPipe = Pipe()
