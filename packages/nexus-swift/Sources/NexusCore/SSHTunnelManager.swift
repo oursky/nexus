@@ -47,6 +47,7 @@ public actor SSHTunnelManager {
 
     private let profile: DaemonProfile
     private var controlTunnel: SSHTunnelProcess?
+    private var reverseTunnel: Process?
     private var spotlightTunnels: [Int: SSHTunnelProcess] = [:]   // keyed by remotePort
     private var _state: State = .idle
     private var _localPort: Int?
@@ -103,6 +104,22 @@ public actor SSHTunnelManager {
                 try await waitForHealthz(localPort: port)
                 setState(.connected)
                 AppLifecycleLog.info("ssh-tunnel", "start success localPort=\(port)")
+                // Launch reverse tunnel as best-effort (non-blocking)
+                if rp > 0 {
+                    do {
+                        try launchReverseTunnel(
+                            reversePort: rp,
+                            sshTarget: profile.sshTarget,
+                            sshPort: profile.sshPort,
+                            identityPath: profile.sshIdentity,
+                            configPath: profile.sshConfigPath
+                        )
+                        logger.info("Reverse tunnel established on port \(rp)")
+                    } catch {
+                        logger.warning("Reverse tunnel failed (non-blocking): \(error.localizedDescription)")
+                        _reversePort = 0  // clear so daemon.connect doesn't try to use a dead tunnel
+                    }
+                }
                 startRestartLoop(localPort: port)
                 return port
             } catch {
@@ -134,6 +151,8 @@ public actor SSHTunnelManager {
         restartTask = nil
         controlTunnel?.terminate()
         controlTunnel = nil
+        reverseTunnel?.terminate()
+        reverseTunnel = nil
         stopAllSpotlightTunnels()
         SSHSecurityScope.stop(activeScopedPaths)
         activeScopedPaths = .empty
@@ -335,13 +354,7 @@ public actor SSHTunnelManager {
             identityPath: identityPath,
             configPath: configPath
         )
-        var args = client.tunnelArgs(localPort: localPort, remotePort: remotePort)
-        // Reverse tunnel: allows the remote daemon to reach this Mac's SSH server
-        if reversePort > 0 {
-            // Insert -R before the sshTarget (last element)
-            args.insert("-R", at: args.count - 1)
-            args.insert("\(reversePort):127.0.0.1:22", at: args.count - 1)
-        }
+        let args = client.tunnelArgs(localPort: localPort, remotePort: remotePort)
         AppLifecycleLog.info(
             "ssh-tunnel",
             "launch \(client.logDescription) localPort=\(localPort) remotePort=\(remotePort)"
@@ -370,6 +383,33 @@ public actor SSHTunnelManager {
 
         try proc.run()
         controlTunnel = SSHTunnelProcess(process: proc, stdoutPipe: outPipe, stderrPipe: errPipe)
+    }
+
+    private func launchReverseTunnel(reversePort: Int, sshTarget: String, sshPort: Int?, identityPath: String?, configPath: String?) throws {
+        let client = SSHClientArgs(
+            sshTarget: sshTarget,
+            port: sshPort,
+            identityPath: identityPath,
+            configPath: configPath
+        )
+        // Build args WITHOUT ExitOnForwardFailure — reverse tunnel is best-effort
+        var args = client.baseArgs + [
+            "-v",
+            "-N",
+            "-o", "ServerAliveInterval=10",
+            "-R", "\(reversePort):127.0.0.1:22",
+            sshTarget,
+        ]
+        let proc = Process()
+        proc.executableURL = client.sshBinary
+        proc.arguments = args
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
+        try proc.run()
+        logger.info("Reverse tunnel launched pid=\(proc.processIdentifier)")
+        self.reverseTunnel = proc
     }
 
     private func launchSpotlightTunnel(

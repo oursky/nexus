@@ -20,6 +20,11 @@ else
   echo "✓ BuildInfo updated in NexusRPC.swift (commit=${GIT_COMMIT})"
 fi
 
+echo "Generating Xcode project..."
+/opt/homebrew/bin/xcodegen generate --spec "$SWIFT_DIR/project.yml" --project "$SWIFT_DIR" --quiet 2>&1 || {
+  echo "⚠ xcodegen not available, continuing with existing project"
+}
+
 echo "Building NexusApp..."
 LOG=$(mktemp)
 set +e
