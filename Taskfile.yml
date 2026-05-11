@@ -218,11 +218,10 @@ tasks:
           -o ../../packages/nexus-swift/Resources/nexus \
           ./cmd/nexus
         chmod +x packages/nexus-swift/Resources/nexus
-        if [ "$(uname -s)" = "Darwin" ] && [ -f packages/nexus/nexus.entitlements ]; then
-          codesign --sign - --force --entitlements packages/nexus/nexus.entitlements packages/nexus-swift/Resources/nexus 2>/dev/null && \
-            echo "✓ Codesigned with hypervisor entitlements" || \
-            echo "Warning: codesign failed"
-        fi
+        echo "  Injecting Info.plist..."
+        go run -C packages/nexus ./cmd/macho-inject-plist \
+          -plist ./cmd/nexus/info.plist \
+          ../../packages/nexus-swift/Resources/nexus
         echo "✓ Staged $(ls -lh packages/nexus-swift/Resources/nexus | awk '{print $5}')"
 
   stage:nexus-linux:
