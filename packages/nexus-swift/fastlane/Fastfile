@@ -94,7 +94,7 @@ platform :mac do
     begin
       app_path = File.join(output_dir, "#{scheme}.app")
       cli_binary = File.join(app_path, 'Contents', 'Resources', 'nexus')
-      entitlements_file = File.expand_path('Sources/NexusApp/nexus-cli-no-sandbox.entitlements')
+      entitlements_file = File.expand_path('../Sources/NexusApp/nexus-cli-no-sandbox.entitlements')
       if File.exist?(cli_binary) && File.exist?(entitlements_file)
         sh("codesign", "--force", "--sign", "-", "--entitlements",
            entitlements_file, cli_binary)
