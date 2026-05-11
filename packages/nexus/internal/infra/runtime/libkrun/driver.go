@@ -311,13 +311,30 @@ func resolveManifestHash(projectRoot string) string {
 
 func defaultStampDir() string {
 	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
-		return filepath.Join(xdg, "nexus")
+		return filepath.Join(expandTilde(xdg), "nexus")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return "/var/lib/nexus"
 	}
 	return filepath.Join(home, ".local", "state", "nexus")
+}
+
+func expandTilde(path string) string {
+	if path == "" || !strings.HasPrefix(path, "~") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[2:])
+	}
+	return path
 }
 
 // WorkspaceReady probes the guest agent to verify tools are installed.

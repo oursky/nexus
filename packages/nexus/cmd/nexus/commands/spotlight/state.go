@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon/start"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
 )
 
@@ -47,7 +48,7 @@ func loadTunnelPIDsForWorkspace(workspaceID string) []int {
 
 func spotlightStatePath() (string, error) {
 	if xdg := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); xdg != "" {
-		return filepath.Join(xdg, "nexus", "spotlight-client-state.json"), nil
+		return filepath.Join(start.ExpandTilde(xdg), "nexus", "spotlight-client-state.json"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {

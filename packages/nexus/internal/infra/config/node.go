@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // NodeConfig describes the capabilities and identity of a Nexus node (host machine).
@@ -55,13 +56,30 @@ func NodeConfigPath() string {
 // If $XDG_STATE_HOME is empty, it defaults to ~/.nexus/node.db.
 func NodeDBPath() string {
 	if stateHome := os.Getenv("XDG_STATE_HOME"); stateHome != "" {
-		return filepath.Join(stateHome, "nexus", "node.db")
+		return filepath.Join(expandTilde(stateHome), "nexus", "node.db")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return filepath.Join(".nexus", "node.db")
 	}
 	return filepath.Join(home, ".nexus", "node.db")
+}
+
+func expandTilde(path string) string {
+	if path == "" || !strings.HasPrefix(path, "~") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[2:])
+	}
+	return path
 }
 
 // LoadNodeConfig reads and parses the node config from the given path.

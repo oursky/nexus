@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon/start"
 )
 
 func cleanupDaemonResidue() {
@@ -38,7 +40,7 @@ func cleanupDaemonResidue() {
 
 func defaultStateDataDir() string {
 	if xdg := os.Getenv("XDG_STATE_HOME"); strings.TrimSpace(xdg) != "" {
-		return filepath.Join(xdg, "nexus")
+		return filepath.Join(start.ExpandTilde(xdg), "nexus")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {

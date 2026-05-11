@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -25,10 +26,27 @@ func xdgShareNexus() string {
 
 func xdgStateNexus() string {
 	if s := os.Getenv("XDG_STATE_HOME"); s != "" {
-		return filepath.Join(s, "nexus")
+		return filepath.Join(expandTilde(s), "nexus")
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "state", "nexus")
+}
+
+func expandTilde(path string) string {
+	if path == "" || !strings.HasPrefix(path, "~") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[2:])
+	}
+	return path
 }
 
 func xdgLocalBin() string {
