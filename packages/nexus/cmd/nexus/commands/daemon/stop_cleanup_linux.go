@@ -14,7 +14,7 @@ import (
 
 func cleanupDaemonResidue() {
 	// Ensure child helpers are torn down even if daemon shutdown raced.
-	for _, name := range []string{"nexus-libkrun-vm", "nexus-guest-agent", "passt", "pasta"} {
+	for _, name := range []string{"nexus-libkrun-vm", "nexus-guest-agent", "passt", "pasta", "pty-host"} {
 		_ = exec.Command("pkill", "-x", name).Run()
 	}
 

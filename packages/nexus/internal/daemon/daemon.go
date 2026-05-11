@@ -452,13 +452,19 @@ func (d *Daemon) Stop() error {
 			errs = append(errs, fmt.Errorf("stop spotlight: %w", err))
 		}
 	}
-	// NOTE: We intentionally do NOT kill the PTY host process here.
-	// The PTY host is designed to outlive the daemon so that terminal
-	// sessions survive daemon restarts. It will be reaped by the init
-	// system when the parent session ends, or explicitly stopped via
-	// `nexus pty-host stop`.
+	// Close the pty-host client connection and kill its process.
+	// The pty-host is restarted alongside the daemon on next start
+	// (the build pipeline ensures the binary is always deployed).
 	if d.ptyHost != nil {
 		_ = d.ptyHost.Close()
+	}
+	if d.ptyHostCmd != nil && d.ptyHostCmd.Process != nil {
+		if err := d.ptyHostCmd.Process.Kill(); err != nil {
+			errs = append(errs, fmt.Errorf("kill pty-host: %w", err))
+		}
+		// Reap the process in the background so it doesn't become a zombie.
+		// We don't block on Wait() since this is the shutdown path.
+		go func() { _ = d.ptyHostCmd.Wait() }()
 	}
 	if err := d.listener.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("close listener: %w", err))
