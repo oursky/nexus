@@ -146,18 +146,15 @@ jobs:
           BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           GIT_COMMIT="${GITHUB_SHA::8}"
           VERSION="${{ needs.release.outputs.version }}"
-          PLIST="../../packages/nexus-swift/Resources/nexus-info.plist"
           LDFLAGS="-s -w \
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${VERSION}"
-          # Build nexus CLI with embedded Info.plist (required for sandbox child process)
-          # CGO_ENABLED=1 is required for -linkmode=external which uses the macOS linker
-          # that supports -sectcreate to embed the plist into __TEXT,__info_plist
-          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -trimpath \
-            -ldflags "${LDFLAGS} -linkmode=external -extldflags=-Wl,-sectcreate,__TEXT,__info_plist,${PLIST}" \
+          # Build nexus CLI for macOS (pure Go, no plist or sandbox entitlements).
+          # The app spawns this as a child process; signed as ad-hoc by go build.
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
             -o ../../packages/nexus-swift/Resources/nexus ./cmd/nexus
-          # Build pty-host (no plist needed — not a sandboxed child)
+          # Build pty-host
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
             -o ../../dist/pty-host-darwin-arm64 ./cmd/pty-host
 
