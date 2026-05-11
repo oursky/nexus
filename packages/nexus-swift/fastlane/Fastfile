@@ -69,7 +69,7 @@ platform :mac do
 
     scheme = variant['scheme']
     # Explicit output dir so we can find the .app after build.
-    output_dir = File.expand_path('.')
+    output_dir = File.expand_path('..')
     build_mac_app(
       project: variant['project'],
       scheme: scheme,
