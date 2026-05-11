@@ -67,14 +67,13 @@ platform :mac do
       path: variant['provisioning_profile']
     )
 
-    # Step 1: Archive and export the .app (skip .pkg — we re-sign and repackage after)
     build_mac_app(
       project: variant['project'],
       scheme: variant['scheme'],
       configuration: 'Release',
       export_method: 'app-store',
       installer_cert_name: variant['installer_sign_identity'],
-      skip_package_pkg: true,
+      skip_package_pkg: false,
       export_options: {
         provisioningProfiles: {
           variant['app_identifier'] => variant['provisioning_profile_name'],
@@ -82,34 +81,6 @@ platform :mac do
       },
       xcargs: "CURRENT_PROJECT_VERSION=#{build_number} MARKETING_VERSION=#{get_version_number(xcodeproj: variant['project'], target: variant['scheme'])} SWIFT_STRICT_CONCURRENCY=minimal NEXUS_APP_BUNDLE_ID=#{variant['app_identifier']} CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=#{variant['team_id']} CODE_SIGN_IDENTITY='#{variant['code_sign_identity']}'"
     )
-
-    # Step 2: Re-sign the bundled CLI binary with sandbox-inherit entitlements.
-    # The archive build phase signs it correctly, but the export step deep-re-signs
-    # everything with the app's entitlements, stripping com.apple.security.inherit.
-    app_path = File.expand_path("#{variant['scheme']}.app")
-    cli_path = File.join(app_path, 'Contents/Resources/nexus')
-    cli_entitlements = File.join(File.dirname(__dir__), 'Sources/NexusApp/nexus.entitlements')
-
-    if File.exist?(cli_path) && File.exist?(cli_entitlements)
-      UI.message "Re-signing bundled CLI with sandbox-inherit entitlements..."
-      sh("codesign --force --sign '#{variant['code_sign_identity']}' " \
-         "--entitlements '#{cli_entitlements}' " \
-         "--options runtime --timestamp " \
-         "--identifier com.oursky.nexus.cli " \
-         "'#{cli_path}'")
-      UI.success "Re-signed #{cli_path}"
-    else
-      UI.user_error!("CLI binary or entitlements not found:\n  cli=#{cli_path}\n  ent=#{cli_entitlements}")
-    end
-
-    # Step 3: Create the .pkg from the re-signed .app
-    pkg_name = "NexusApp-#{build_number}.pkg"
-    pkg_dir = File.dirname(app_path)
-    pkg_path = File.join(pkg_dir, pkg_name)
-    sh("productbuild --component '#{app_path}' /Applications " \
-       "--sign '#{variant['installer_sign_identity']}' '#{pkg_path}'")
-    UI.success "Created #{pkg_path}"
-    Actions.lane_context[SharedValues::PKG_OUTPUT_PATH] = pkg_path
   end
 
   desc 'Build and notarize a DMG for direct distribution'
@@ -181,7 +152,7 @@ platform :mac do
       xcargs: "CURRENT_PROJECT_VERSION=#{build_number} MARKETING_VERSION=#{get_version_number(xcodeproj: variant['project'], target: variant['scheme'])} SWIFT_STRICT_CONCURRENCY=minimal NEXUS_APP_BUNDLE_ID=#{variant['app_identifier']} CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=#{variant['team_id']} CODE_SIGN_IDENTITY='Developer ID Application: Oursky Limited (M7HB6C3N6X)'"
     )
 
-    app_path = File.expand_path("#{variant['scheme']}.app")
+    app_path = Actions.lane_context[SharedValues::APP_PATH]
     UI.user_error!('No built app found') if app_path.nil? || !File.exist?(app_path)
 
     dist_dir = File.join(File.dirname(__dir__), 'dist')
