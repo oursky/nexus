@@ -106,9 +106,10 @@ platform :mac do
       UI.error("Failed to re-sign CLI binary: #{e.message}")
     end
 
-    # Create .pkg from the re-signed .app
+    # Create signed .pkg from the re-signed .app
     app_pkg = File.join(output_dir, "#{scheme}.pkg")
-    sh("productbuild", "--component", File.join(output_dir, "#{scheme}.app"), "/Applications", app_pkg)
+    sh("productbuild", "--component", File.join(output_dir, "#{scheme}.app"), "/Applications",
+       "--sign", variant['installer_sign_identity'], app_pkg)
     Actions.lane_context[SharedValues::PKG_OUTPUT_PATH] = app_pkg
   end
 
