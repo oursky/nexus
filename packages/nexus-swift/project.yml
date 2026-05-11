@@ -89,10 +89,15 @@ targets:
         script: |
           # Every Mach-O executable in the .app must declare App Sandbox for Mac App Store.
           # Copied CLIs are ad-hoc signed or unsigned; re-sign with the app entitlements.
+          # The CLI binary (nexus) is spawned as a child process and must inherit the
+          # parent's sandbox via com.apple.security.inherit (Apple requires exactly
+          # com.apple.security.app-sandbox + com.apple.security.inherit for inheritance).
           RES="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources"
           ENT="${SRCROOT}/Sources/NexusApp/NexusApp.entitlements"
+          ENT_CLI="${SRCROOT}/Sources/NexusApp/nexus.entitlements"
           sign_macho() {
             local bin="$1"
+            local ent="${2:-${ENT}}"
             [ -f "$bin" ] || return 0
             case "$(file -b "$bin")" in
               Mach-O*) ;;
@@ -103,13 +108,15 @@ targets:
               return 0
             fi
             codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY}" \
-              --entitlements "${ENT}" \
+              --entitlements "${ent}" \
               --timestamp \
               --options runtime \
               "$bin"
             echo "Sign bundled CLI: ok $(basename "$bin")"
           }
-          sign_macho "${RES}/nexus"
+          # nexus CLI is spawned as a child → must inherit sandbox
+          sign_macho "${RES}/nexus" "${ENT_CLI}"
+          # nexus-daemon runs independently → use app entitlements
           sign_macho "${RES}/nexus-daemon"
           if [ -d "${RES}/tools" ]; then
             for bin in "${RES}/tools/"*; do
