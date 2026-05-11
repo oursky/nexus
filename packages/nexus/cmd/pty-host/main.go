@@ -297,5 +297,5 @@ func resolveShell(requested string) string {
 	return "/bin/sh"
 }
 
-func timeNow() time.Time     { return time.Now() }
-func timeNowNano() int64     { return time.Now().UnixNano() }
+func timeNow() time.Time { return time.Now() }
+func timeNowNano() int64 { return time.Now().UnixNano() }

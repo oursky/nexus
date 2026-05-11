@@ -28,6 +28,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/infra/dockercompose"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/sandbox"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/store"
+	"github.com/oursky/nexus/packages/nexus/internal/ptyhost"
 	rpcauth "github.com/oursky/nexus/packages/nexus/internal/rpc/auth"
 	rpcdaemon "github.com/oursky/nexus/packages/nexus/internal/rpc/daemon"
 	rpcfs "github.com/oursky/nexus/packages/nexus/internal/rpc/fs"
@@ -39,7 +40,6 @@ import (
 	rpcvolume "github.com/oursky/nexus/packages/nexus/internal/rpc/volume"
 	rpcworkspace "github.com/oursky/nexus/packages/nexus/internal/rpc/workspace"
 	"github.com/oursky/nexus/packages/nexus/internal/transport"
-	"github.com/oursky/nexus/packages/nexus/internal/ptyhost"
 )
 
 // NetworkConfig holds optional remote-listener settings.
@@ -236,9 +236,7 @@ func New(cfg Config) (*Daemon, error) {
 	}
 
 	var ptyHostCmd *exec.Cmd
-	var ptyHostClient *ptyhost.Client
-
-	ptyHostClient = ptyhost.NewClient(ptyHostSocket)
+	ptyHostClient := ptyhost.NewClient(ptyHostSocket)
 	var ptyHostConnErr error
 	for i := 0; i < 10; i++ {
 		if ptyHostConnErr = ptyHostClient.Connect(); ptyHostConnErr == nil {
