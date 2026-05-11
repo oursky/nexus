@@ -88,17 +88,19 @@ platform :mac do
 
     # Re-sign the bundled CLI binary without sandbox.
     # ExportArchive deep-signs it with the app's full entitlements (app-sandbox,
-    # inherit, bookmarks, temp-exceptions) which causes _libsecinit_appsandbox to
-    # crash on macOS 26.4.1. Re-sign with network-only entitlements so the binary
-    # runs outside the sandbox (no app-sandbox, no inherit).
+    # the full app entitlements (app-sandbox + inherit + bookmarks + network + 
+    # temp-exceptions) which causes _libsecinit_appsandbox to crash on macOS 26.4.1.
+    # Re-sign with ONLY app-sandbox + inherit. App Store requires app-sandbox on
+    # all executables; inherit tells macOS to inherit the parent's sandbox (including
+    # network access) instead of creating a separate child sandbox.
     begin
       app_path = File.join(output_dir, "#{scheme}.app")
       cli_binary = File.join(app_path, 'Contents', 'Resources', 'nexus')
       entitlements_file = File.expand_path('../Sources/NexusApp/nexus-cli-no-sandbox.entitlements')
       if File.exist?(cli_binary) && File.exist?(entitlements_file)
-        sh("codesign", "--force", "--sign", "-", "--entitlements",
-           entitlements_file, cli_binary)
-        UI.success("Re-signed nexus CLI without sandbox")
+        sh("codesign", "--force", "--sign", variant['sign_identity'],
+           "--entitlements", entitlements_file, cli_binary)
+        UI.success("Re-signed nexus CLI with app-sandbox+inherit")
       else
         UI.important("Skipping CLI re-sign: binary=#{File.exist?(cli_binary)}, entitlements=#{File.exist?(entitlements_file)}")
       end
