@@ -100,7 +100,7 @@ public actor SSHTunnelManager {
                 // (SSHClientArgs passes -F /dev/null so ~/.ssh/config is bypassed).
                 // Never fall back to a config-based mode — that would allow the agent
                 // or config to inject the real key and mask a wrong-key error.
-                try launchControlTunnel(localPort: port, reversePort: rp, configPath: nil, identityPath: identityPath)
+                try launchControlTunnel(localPort: port, configPath: nil, identityPath: identityPath)
                 try await waitForHealthz(localPort: port)
                 setState(.connected)
                 AppLifecycleLog.info("ssh-tunnel", "start success localPort=\(port)")
@@ -259,7 +259,7 @@ public actor SSHTunnelManager {
             throw TunnelError.noTarget
         }
 
-        let remoteBin = "~/.local/bin/nexus"
+        let remoteBin = "~/.local/bin/nexus-dev"
         let resolvedPaths = resolveScopedPaths()
         guard let identityPath = resolvedPaths.identityPath,
               !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -343,7 +343,7 @@ public actor SSHTunnelManager {
         return Int(addr.sin_port.bigEndian)
     }
 
-    private func launchControlTunnel(localPort: Int, reversePort: Int, configPath: String?, identityPath: String?) throws {
+    private func launchControlTunnel(localPort: Int, configPath: String?, identityPath: String?) throws {
         guard let sshTarget = profile.sshTarget, !sshTarget.isEmpty else {
             throw TunnelError.noTarget
         }
@@ -367,14 +367,8 @@ public actor SSHTunnelManager {
 
         let outPipe = Pipe()
         proc.standardOutput = outPipe
-        outPipe.fileHandleForReading.readabilityHandler = { [logger] handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
-            for line in str.components(separatedBy: .newlines) {
-                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { logger.debug("ssh stdout: \(trimmed, privacy: .public)") }
-            }
-        }
+        // No stdout readabilityHandler — NSFileHandle.readabilityHandler re-fires
+        // continuously on an open pipe even when empty, burning CPU.
 
         let errPipe = Pipe()
         proc.standardError = errPipe
@@ -394,7 +388,6 @@ public actor SSHTunnelManager {
         )
         // Build args WITHOUT ExitOnForwardFailure — reverse tunnel is best-effort
         var args = client.baseArgs + [
-            "-v",
             "-N",
             "-o", "ServerAliveInterval=10",
             "-R", "\(reversePort):127.0.0.1:22",
@@ -520,8 +513,25 @@ public actor SSHTunnelManager {
         controlTunnel = nil
         let resolvedPaths = resolveScopedPaths()
         let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
-        try launchControlTunnel(localPort: localPort, reversePort: _reversePort, configPath: configPath, identityPath: resolvedPaths.identityPath)
+        try launchControlTunnel(localPort: localPort, configPath: configPath, identityPath: resolvedPaths.identityPath)
         setState(.connected)
+        // Re-launch reverse tunnel (best-effort, separate process)
+        if _reversePort > 0 {
+            let rp = _reversePort
+            do {
+                try launchReverseTunnel(
+                    reversePort: rp,
+                    sshTarget: profile.sshTarget ?? "",
+                    sshPort: profile.sshPort,
+                    identityPath: resolvedPaths.identityPath,
+                    configPath: configPath
+                )
+                logger.info("Reverse tunnel re-established on port \(rp)")
+            } catch {
+                logger.warning("Reverse tunnel re-launch failed: \(error.localizedDescription)")
+                _reversePort = 0
+            }
+        }
     }
 
     private func resolveScopedPaths() -> SSHSecurityScopedPaths {

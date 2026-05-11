@@ -10,8 +10,9 @@ pkill -x NexusApp 2>/dev/null || true
 sleep 1
 
 # 2. Kill ALL orphaned SSH tunnels spawned by Nexus
-pkill -f "ssh.*-L.*newman@linuxbox" 2>/dev/null || true
-pkill -f "ssh.*-R.*127.0.0.1:22" 2>/dev/null || true
+# Kill ALL SSH tunnels with -N (no shell) + forwarding — the exact signature of our tunnels
+pkill -f "ssh.*-N.*-L" 2>/dev/null || true
+pkill -f "ssh.*-N.*-R" 2>/dev/null || true
 sleep 0.5
 
 # 3. Remove UserDefaults (daemon profiles)

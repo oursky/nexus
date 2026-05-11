@@ -215,11 +215,14 @@ public final class AppState: ObservableObject {
             Task { await self.refreshDaemonStatus() }
             Self.logger.debug("load() phase-1 connected with \(workspaces.count, privacy: .public) workspaces")
 
-            // Pre-populate PTY session managers for every active workspace so
+            // Pre-populate PTY session managers for active workspaces so
             // existing terminal tabs are discoverable immediately after reconnect
-            // (reload-window behavior). The managers auto-refresh every 5 seconds.
+            // (reload-window behavior). Capped at 8 to match the Phase 2
+            // enrichment limit and prevent resource saturation from polling loops.
             if let wsClient = client as? WebSocketDaemonClient {
-                for ws in workspaces where ws.state.isActive {
+                let active = workspaces.filter { $0.state.isActive }
+                let capped = active.prefix(8)
+                for ws in capped {
                     TerminalRegistry.shared.ensureManager(workspaceId: ws.id, client: wsClient)
                 }
             }
@@ -1073,8 +1076,13 @@ public final class AppState: ObservableObject {
         // Stop the tunnel manager (kills all SSH processes)
         let tm = tunnelManager
         tunnelManager = nil
-        Task {
-            await tm?.stop()
+        if let tm = tm {
+            let semaphore = DispatchSemaphore(value: 0)
+            Task {
+                await tm.stop()
+                semaphore.signal()
+            }
+            _ = semaphore.wait(timeout: .now() + 5.0)
         }
         // Disconnect WebSocket client (best-effort, may already be gone)
         if let wsClient = client as? WebSocketDaemonClient {

@@ -99,16 +99,11 @@ public final class HeadlessRPCServer {
     }
 
     public func start() {
-        let env = ProcessInfo.processInfo.environment
-        let envEnabled = env["NEXUS_HEADLESS_RPC"] == "1"
-        // Also allow activation via a sentinel file (for GUI apps where env var may not propagate
-        // due to macOS app sandbox container isolation).
-        let sentinelPath = (NSHomeDirectory() as NSString).appendingPathComponent(".nexus-headless-rpc")
-        let fileEnabled = FileManager.default.fileExists(atPath: sentinelPath)
-        guard envEnabled || fileEnabled else {
-            Self.logger.debug("rpc.server disabled (set NEXUS_HEADLESS_RPC=1 or touch \(sentinelPath, privacy: .public))")
-            return
-        }
+        #if !DEBUG
+        // Headless RPC is disabled in Release/TestFlight builds.
+        Self.logger.debug("rpc.server disabled (release build)")
+        return
+        #endif
         Self.logger.notice("rpc.server starting on port \(self.port, privacy: .public)")
         do {
             let params = NWParameters.tcp
