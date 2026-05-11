@@ -64,6 +64,10 @@ jobs:
             echo "tag=v$version" >> "$GITHUB_OUTPUT"
           else
             echo "released=false" >> "$GITHUB_OUTPUT"
+            latest_tag=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0")
+            commit_count=$(git rev-list --count HEAD)
+            version="${latest_tag}.${commit_count}"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up Go
@@ -128,7 +132,6 @@ jobs:
   app-macos-deploy:
     name: Upload to TestFlight
     needs: release
-    if: needs.release.outputs.released == 'true'
     runs-on: [self-hosted, macOS, ARM64, v2, tw]
     env:
       DEVELOPER_DIR: /Volumes/xcodes/Xcode_26.2.app
