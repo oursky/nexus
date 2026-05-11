@@ -67,19 +67,23 @@ platform :mac do
       path: variant['provisioning_profile']
     )
 
+    scheme = variant['scheme']
+    # Explicit output dir so we can find the .app after build.
+    output_dir = File.expand_path('.')
     build_mac_app(
       project: variant['project'],
-      scheme: variant['scheme'],
+      scheme: scheme,
       configuration: 'Release',
       export_method: 'app-store',
       installer_cert_name: variant['installer_sign_identity'],
+      output_directory: output_dir,
       skip_package_pkg: true,
       export_options: {
         provisioningProfiles: {
           variant['app_identifier'] => variant['provisioning_profile_name'],
         },
       },
-      xcargs: "CURRENT_PROJECT_VERSION=#{build_number} MARKETING_VERSION=#{get_version_number(xcodeproj: variant['project'], target: variant['scheme'])} SWIFT_STRICT_CONCURRENCY=minimal NEXUS_APP_BUNDLE_ID=#{variant['app_identifier']} CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=#{variant['team_id']} CODE_SIGN_IDENTITY='#{variant['code_sign_identity']}'"
+      xcargs: "CURRENT_PROJECT_VERSION=#{build_number} MARKETING_VERSION=#{get_version_number(xcodeproj: variant['project'], target: scheme)} SWIFT_STRICT_CONCURRENCY=minimal NEXUS_APP_BUNDLE_ID=#{variant['app_identifier']} CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=#{variant['team_id']} CODE_SIGN_IDENTITY='#{variant['code_sign_identity']}'"
     )
 
     # Re-sign the bundled CLI binary without sandbox.
@@ -88,8 +92,7 @@ platform :mac do
     # crash on macOS 26.4.1. Re-sign with network-only entitlements so the binary
     # runs outside the sandbox (no app-sandbox, no inherit).
     begin
-      scheme = variant['scheme']
-      app_path = File.expand_path("#{scheme}.app")
+      app_path = File.join(output_dir, "#{scheme}.app")
       cli_binary = File.join(app_path, 'Contents', 'Resources', 'nexus')
       entitlements_file = File.expand_path('Sources/NexusApp/nexus-cli-no-sandbox.entitlements')
       if File.exist?(cli_binary) && File.exist?(entitlements_file)
@@ -104,9 +107,9 @@ platform :mac do
     end
 
     # Create .pkg from the re-signed .app
-    pkg_name = "#{scheme}.pkg"
-    sh("productbuild", "--component", "#{scheme}.app", "/Applications", pkg_name)
-    Actions.lane_context[SharedValues::PKG_OUTPUT_PATH] = File.expand_path(pkg_name)
+    app_pkg = File.join(output_dir, "#{scheme}.pkg")
+    sh("productbuild", "--component", File.join(output_dir, "#{scheme}.app"), "/Applications", app_pkg)
+    Actions.lane_context[SharedValues::PKG_OUTPUT_PATH] = app_pkg
   end
 
   desc 'Build and notarize a DMG for direct distribution'
