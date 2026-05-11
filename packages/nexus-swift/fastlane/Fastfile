@@ -86,7 +86,7 @@ platform :mac do
     # Step 2: Re-sign the bundled CLI binary with sandbox-inherit entitlements.
     # The archive build phase signs it correctly, but the export step deep-re-signs
     # everything with the app's entitlements, stripping com.apple.security.inherit.
-    app_path = File.expand_path("#{variant[scheme]}.app")
+    app_path = File.expand_path("#{variant['scheme']}.app")
     cli_path = File.join(app_path, 'Contents/Resources/nexus')
     cli_entitlements = File.join(File.dirname(__dir__), 'Sources/NexusApp/nexus.entitlements')
 
@@ -181,7 +181,7 @@ platform :mac do
       xcargs: "CURRENT_PROJECT_VERSION=#{build_number} MARKETING_VERSION=#{get_version_number(xcodeproj: variant['project'], target: variant['scheme'])} SWIFT_STRICT_CONCURRENCY=minimal NEXUS_APP_BUNDLE_ID=#{variant['app_identifier']} CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=#{variant['team_id']} CODE_SIGN_IDENTITY='Developer ID Application: Oursky Limited (M7HB6C3N6X)'"
     )
 
-    app_path = File.expand_path("#{variant[scheme]}.app")
+    app_path = File.expand_path("#{variant['scheme']}.app")
     UI.user_error!('No built app found') if app_path.nil? || !File.exist?(app_path)
 
     dist_dir = File.join(File.dirname(__dir__), 'dist')
