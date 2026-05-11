@@ -88,15 +88,13 @@ platform :mac do
     # crash on macOS 26.4.1. Re-sign with network-only entitlements so the binary
     # runs outside the sandbox (no app-sandbox, no inherit).
     begin
-      app_path = File.expand_path("#{variant['scheme']}.app")
+      scheme = variant['scheme']
+      app_path = File.expand_path("#{scheme}.app")
       cli_binary = File.join(app_path, 'Contents', 'Resources', 'nexus')
-      entitlements_file = 'packages/nexus-swift/Sources/NexusApp/nexus-cli-no-sandbox.entitlements'
+      entitlements_file = File.expand_path('Sources/NexusApp/nexus-cli-no-sandbox.entitlements')
       if File.exist?(cli_binary) && File.exist?(entitlements_file)
-        Dir.chdir('packages/nexus-swift') do
-          sh("codesign", "--force", "--sign", "-", "--entitlements",
-             "Sources/NexusApp/nexus-cli-no-sandbox.entitlements",
-             "../nexus-swift/#{app_path}/Contents/Resources/nexus")
-        end
+        sh("codesign", "--force", "--sign", "-", "--entitlements",
+           entitlements_file, cli_binary)
         UI.success("Re-signed nexus CLI without sandbox")
       else
         UI.important("Skipping CLI re-sign: binary=#{File.exist?(cli_binary)}, entitlements=#{File.exist?(entitlements_file)}")
@@ -106,12 +104,9 @@ platform :mac do
     end
 
     # Create .pkg from the re-signed .app
-    scheme = variant['scheme']
     pkg_name = "#{scheme}.pkg"
-    Dir.chdir('packages/nexus-swift') do
-      sh("productbuild", "--component", "#{scheme}.app", "/Applications", pkg_name)
-    end
-    Actions.lane_context[SharedValues::PKG_OUTPUT_PATH] = File.expand_path("packages/nexus-swift/#{pkg_name}")
+    sh("productbuild", "--component", "#{scheme}.app", "/Applications", pkg_name)
+    Actions.lane_context[SharedValues::PKG_OUTPUT_PATH] = File.expand_path(pkg_name)
   end
 
   desc 'Build and notarize a DMG for direct distribution'
