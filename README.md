@@ -132,8 +132,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full setup, including how to set `REM
 - [CLI reference](docs/reference/cli.md)
 - [Contributing](CONTRIBUTING.md)
 
-# Test release trigger
-# Dummy fix to trigger test release
-# Another dummy fix
-# Another dummy fix v3
-# Another dummy fix v4
+
