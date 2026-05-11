@@ -55,6 +55,14 @@ public final class TerminalRegistry {
         Array(managers.values)
     }
 
+    /// Clears all registered managers. Call on daemon disconnect or before
+    /// connecting to a new daemon to prevent stale managers from using a dead client.
+    public func reset() {
+        managers.removeAll()
+        outputBuffers.removeAll()
+        Self.logger.debug("terminal.registry reset_all")
+    }
+
     // MARK: - Output buffer management
 
     /// Called by TabTerminalView.Coordinator each time PTY data arrives.

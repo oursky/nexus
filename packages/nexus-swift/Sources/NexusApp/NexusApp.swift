@@ -78,8 +78,18 @@ private enum CrashProbe {
     }
 }
 
+class NexusAppDelegate: NSObject, NSApplicationDelegate {
+    weak var appState: AppState?
+
+    func applicationWillTerminate(_ notification: Notification) {
+        CrashProbe.checkpoint("NexusApp applicationWillTerminate")
+        appState?.shutdown()
+    }
+}
+
 @main
 struct NexusApp: App {
+    @NSApplicationDelegateAdaptor(NexusAppDelegate.self) private var appDelegate
     @StateObject private var appState: AppState
 
     init() {
@@ -94,6 +104,7 @@ struct NexusApp: App {
             ContentView()
                 .environmentObject(appState)
                 .onAppear {
+                    appDelegate.appState = appState
                     CrashProbe.checkpoint("NexusApp window appeared")
                 }
         }

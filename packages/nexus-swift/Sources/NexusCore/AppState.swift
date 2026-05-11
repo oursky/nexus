@@ -36,7 +36,13 @@ public final class AppState: ObservableObject {
     @Published public var repos: [Repo] = []
     @Published public var projects: [Project] = []
     @Published public var selectedWorkspaceID: String?
-    @Published public var connectionState: ConnectionState = .disconnected
+    @Published public var connectionState: ConnectionState = .disconnected {
+        didSet {
+            if connectionState == .disconnected {
+                TerminalRegistry.shared.reset()
+            }
+        }
+    }
     @Published public var daemonStatus: DaemonStatus = .unknown
     @Published public var showNewWorkspace = false
     @Published public var createIntent: CreateIntent?
@@ -208,6 +214,15 @@ public final class AppState: ObservableObject {
             // Update daemon status from /version — best-effort, must not block phase 2.
             Task { await self.refreshDaemonStatus() }
             Self.logger.debug("load() phase-1 connected with \(workspaces.count, privacy: .public) workspaces")
+
+            // Pre-populate PTY session managers for every active workspace so
+            // existing terminal tabs are discoverable immediately after reconnect
+            // (reload-window behavior). The managers auto-refresh every 5 seconds.
+            if let wsClient = client as? WebSocketDaemonClient {
+                for ws in workspaces where ws.state.isActive {
+                    TerminalRegistry.shared.ensureManager(workspaceId: ws.id, client: wsClient)
+                }
+            }
 
             // Phase 2 — best-effort; must not block startup indefinitely or pin RAM on hung RPCs.
             do {
@@ -1053,6 +1068,21 @@ public final class AppState: ObservableObject {
     }
 
 
+    /// Called on app termination to clean up SSH tunnels and WebSocket connections.
+    public func shutdown() {
+        // Stop the tunnel manager (kills all SSH processes)
+        let tm = tunnelManager
+        tunnelManager = nil
+        Task {
+            await tm?.stop()
+        }
+        // Disconnect WebSocket client (best-effort, may already be gone)
+        if let wsClient = client as? WebSocketDaemonClient {
+            wsClient.disconnect()
+        }
+        client = NullDaemonClient()
+    }
+
     /// Re-reads the default profile and reconnects (e.g. after the user changes the active profile).
     public func reconnect() async {
         // Clear any config error that was blocking the auto-reconnect loop.
@@ -1061,6 +1091,7 @@ public final class AppState: ObservableObject {
         daemonLogStream = nil
         await tunnelManager?.stop()
         tunnelManager = nil
+        TerminalRegistry.shared.reset()
         let profile = DaemonProfileStore().defaultProfile()
         self.cachedProfile = profile
         connectionState = .starting
