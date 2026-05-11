@@ -150,9 +150,11 @@ jobs:
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
             -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${VERSION}"
-          # Build nexus CLI for macOS (pure Go, no plist or sandbox entitlements).
-          # The app spawns this as a child process; signed as ad-hoc by go build.
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
+          PLIST="../../packages/nexus-swift/Resources/nexus-info.plist"
+          # Build nexus CLI for macOS with embedded Info.plist (CFBundleIdentifier).
+          # ExportArchive deep-signs this with app entitlements; we re-sign
+          # post-export in fastlane to remove the sandbox.
+          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-linkmode=external -extldflags=-Wl,-sectcreate,__TEXT,__info_plist,${PLIST} ${LDFLAGS}" \
             -o ../../packages/nexus-swift/Resources/nexus ./cmd/nexus
           # Build pty-host
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
