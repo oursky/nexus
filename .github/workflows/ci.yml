@@ -103,28 +103,14 @@ jobs:
       max-parallel: 4
       matrix:
         shard:
-          # ── Lightweight shards (merged low-test-count groups) ──────────
-          - name: auth-daemon-fs-project
-            packages: ./test/e2e/auth ./test/e2e/daemon ./test/e2e/fs ./test/e2e/project
+          # ── Core lightweight shard (merged auth+daemon+fs+project+spotlight+pty) ──
+          - name: core-light
+            packages: ./test/e2e/auth ./test/e2e/daemon ./test/e2e/fs ./test/e2e/project ./test/e2e/spotlight ./test/e2e/pty
             go_p: 2
             go_parallel: 2
             go_run: ""
-            go_timeout: 10m
-            step_timeout_minutes: 15
-          - name: pty
-            packages: ./test/e2e/pty
-            go_p: 2
-            go_parallel: 2
-            go_run: ""
-            go_timeout: 10m
-            step_timeout_minutes: 15
-          - name: spotlight
-            packages: ./test/e2e/spotlight
-            go_p: 2
-            go_parallel: 2
-            go_run: ""
-            go_timeout: 10m
-            step_timeout_minutes: 15
+            go_timeout: 15m
+            step_timeout_minutes: 20
           # ── VM-integration shard (all vmproof tests in one shard) ──────
           # Merged from vmproof-core + vmproof-heavy to avoid running two
           # shard jobs concurrently: parallel shards double the active VM
