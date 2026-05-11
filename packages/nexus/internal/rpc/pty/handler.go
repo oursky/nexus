@@ -101,33 +101,80 @@ func (h *Handler) Register(r registry.Registry) {
 }
 
 // ── Proxy methods ────────────────────────────────────────────────────────────
+//
+// When pty-host is connected, most PTY operations are proxied. But VM workspaces
+// (libkrun/firecracker) must bypass pty-host because pty-host creates PTYs on the
+// daemon host, not inside the VM. For VM workspaces we connect directly via SSH
+// to the guest agent using createVMSession / streamVMSession.
 
 func (h *Handler) proxyCreate(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p createParams
+	if err := json.Unmarshal(raw, &p); err != nil || p.WorkspaceID == "" {
+		return h.host.Create(ctx, raw)
+	}
+	ws, err := h.lookupAndCheckWorkspace(ctx, p.WorkspaceID)
+	if err == nil && ws != nil && h.shouldUseVMSession(ws) {
+		return h.create(ctx, raw)
+	}
 	return h.host.Create(ctx, raw)
 }
 
 func (h *Handler) proxyList(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p listParams
+	if err := json.Unmarshal(raw, &p); err != nil || p.WorkspaceID == "" {
+		return h.host.List(ctx, raw)
+	}
+	ws, err := h.lookupAndCheckWorkspace(ctx, p.WorkspaceID)
+	if err == nil && ws != nil && h.shouldUseVMSession(ws) {
+		return h.list(ctx, raw)
+	}
 	return h.host.List(ctx, raw)
 }
 
 func (h *Handler) proxyResize(ctx context.Context, raw json.RawMessage) (any, error) {
-	return h.host.Resize(ctx, raw)
+	var p resizeParams
+	if err := json.Unmarshal(raw, &p); err != nil || !h.isLocalSession(p.SessionID) {
+		return h.host.Resize(ctx, raw)
+	}
+	return h.resize(ctx, raw)
 }
 
 func (h *Handler) proxyRename(ctx context.Context, raw json.RawMessage) (any, error) {
-	return h.host.Rename(ctx, raw)
+	var p renameParams
+	if err := json.Unmarshal(raw, &p); err != nil || !h.isLocalSession(p.SessionID) {
+		return h.host.Rename(ctx, raw)
+	}
+	return h.rename(ctx, raw)
 }
 
 func (h *Handler) proxyClose(ctx context.Context, raw json.RawMessage) (any, error) {
-	return h.host.CloseSession(ctx, raw)
+	var p closeParams
+	if err := json.Unmarshal(raw, &p); err != nil || !h.isLocalSession(p.SessionID) {
+		return h.host.CloseSession(ctx, raw)
+	}
+	return h.close(ctx, raw)
 }
 
 func (h *Handler) proxyWrite(ctx context.Context, raw json.RawMessage) (any, error) {
-	return h.host.Write(ctx, raw)
+	var p writeParams
+	if err := json.Unmarshal(raw, &p); err != nil || !h.isLocalSession(p.SessionID) {
+		return h.host.Write(ctx, raw)
+	}
+	return h.write(ctx, raw)
 }
 
 func (h *Handler) proxyReattach(ctx context.Context, raw json.RawMessage) (any, error) {
-	return h.host.Reattach(ctx, raw)
+	var p reattachParams
+	if err := json.Unmarshal(raw, &p); err != nil || !h.isLocalSession(p.SessionID) {
+		return h.host.Reattach(ctx, raw)
+	}
+	return h.reattach(ctx, raw)
+}
+
+// isLocalSession returns true if the session lives in the daemon's local registry
+// (i.e., was created via createVMSession), not in pty-host.
+func (h *Handler) isLocalSession(sessionID string) bool {
+	return sessionID != "" && h.reg.Get(sessionID) != nil
 }
 
 // ── DTOs ─────────────────────────────────────────────────────────────────────
