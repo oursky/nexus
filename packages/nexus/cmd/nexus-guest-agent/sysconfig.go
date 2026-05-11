@@ -974,3 +974,100 @@ func dnsConfigLooksUsable(content string) bool {
 	}
 	return false
 }
+
+// prepullBakedDockerImages starts dockerd temporarily during bake mode,
+// pulls commonly-used Docker images, then stops dockerd. This ensures the
+// images are present in the baked rootfs so CI environments (which may not
+// have Docker Hub access) can use them without pulling.
+// Failure is non-fatal — bake continues without pre-pulled images.
+func prepullBakedDockerImages() error {
+	emitDiagnostic("agent bake: pre-pulling Docker images into rootfs")
+
+	// Use /workspace for docker data (the workspace ext4 is writable during bake).
+	dataRoot := "/workspace/.nexus-docker-bake"
+	execRoot := "/workspace/.nexus-docker-bake-exec"
+	socketPath := "/var/run/docker.sock"
+
+	_ = os.Remove(socketPath)
+	_ = os.MkdirAll(dataRoot, 0o755)
+	_ = os.MkdirAll(execRoot, 0o755)
+
+	// Start dockerd with minimal flags — no iptables needed for pull.
+	logFile, err := os.OpenFile("/tmp/nexus-agent-dockerd-bake.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("open dockerd bake log: %w", err)
+	}
+	defer logFile.Close()
+
+	cmd := exec.Command("dockerd",
+		"--host=unix://"+socketPath,
+		"--data-root="+dataRoot,
+		"--exec-root="+execRoot,
+		"--storage-driver=overlay2",
+		"--iptables=false",
+		"--bridge=none",
+	)
+	cmd.Env = append(ensurePathInEnv(os.Environ()), "DOCKER_INSECURE_NO_IPTABLES_RAW=1")
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start dockerd for bake: %w", err)
+	}
+	_ = cmd.Process.Release()
+
+	// Wait for dockerd to be ready.
+	dockerEnv := append(ensurePathInEnv(os.Environ()), "DOCKER_HOST=unix://"+socketPath)
+	ready := false
+	for i := 0; i < 30; i++ {
+		check := exec.Command("docker", "info")
+		check.Env = dockerEnv
+		if check.Run() == nil {
+			ready = true
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+	if !ready {
+		return fmt.Errorf("dockerd did not become ready within 30s during bake")
+	}
+	emitDiagnostic("agent bake: dockerd ready for image pre-pull")
+
+	// Pull images with retry.
+	images := []string{"nginx:alpine", "alpine"}
+	for _, image := range images {
+		emitDiagnostic("agent bake: pulling %s", image)
+		var pullErr error
+		for attempt := 1; attempt <= 3; attempt++ {
+			if attempt > 1 {
+				emitDiagnostic("agent bake: retrying pull %s (%d/3)", image, attempt)
+				time.Sleep(time.Duration(attempt) * 2 * time.Second)
+			}
+			pullCmd := exec.Command("docker", "pull", image)
+			pullCmd.Env = dockerEnv
+			if out, err := pullCmd.CombinedOutput(); err == nil {
+				emitDiagnostic("agent bake: pulled %s OK", image)
+				pullErr = nil
+				break
+			} else {
+				pullErr = fmt.Errorf("pull %s: %w: %s", image, err, strings.TrimSpace(string(out)))
+			}
+		}
+		if pullErr != nil {
+			emitDiagnostic("agent bake: WARNING — failed to pull %s (non-fatal): %v", image, pullErr)
+		}
+	}
+
+	// Stop dockerd gracefully.
+	emitDiagnostic("agent bake: stopping dockerd after image pre-pull")
+	stopCmd := exec.Command("docker", "-H", "unix://"+socketPath, "info")
+	stopCmd.Env = dockerEnv
+	if stopCmd.Run() == nil {
+		// Send SIGTERM to dockerd for clean shutdown.
+		_ = exec.Command("pkill", "-TERM", "dockerd").Run()
+		time.Sleep(3 * time.Second)
+	}
+	_ = os.Remove(socketPath)
+
+	emitDiagnostic("agent bake: Docker image pre-pull complete")
+	return nil
+}

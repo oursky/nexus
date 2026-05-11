@@ -54,6 +54,9 @@ func main() {
 			time.Sleep(5 * time.Second)
 		} else {
 			emitDiagnostic("agent bake: all tools installed — syncing filesystems before power off")
+			if err := prepullBakedDockerImages(); err != nil {
+				emitDiagnostic("agent bake: Docker image pre-pull failed (non-fatal): %v", err)
+			}
 			// Force dirty buffers to disk so the host sees all writes even if
 			// libkrun's virtio-blk flush is lazy.
 			_ = exec.Command("sync").Run()
