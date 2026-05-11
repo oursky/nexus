@@ -101,16 +101,12 @@ jobs:
             -o ../../dist/nexus-linux-arm64 ./cmd/nexus
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
             -o ../../dist/pty-host-linux-arm64 ./cmd/pty-host
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
-            -o ../../dist/nexus-darwin-arm64 ./cmd/nexus
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
-            -o ../../dist/pty-host-darwin-arm64 ./cmd/pty-host
 
       - name: Create checksums
         if: steps.semantic.outputs.released == 'true'
         run: |
           cd dist
-          sha256sum nexus-linux-amd64 nexus-linux-arm64 nexus-darwin-arm64 pty-host-linux-amd64 pty-host-linux-arm64 pty-host-darwin-arm64 > sha256sums.txt
+          sha256sum nexus-linux-amd64 nexus-linux-arm64 pty-host-linux-amd64 pty-host-linux-arm64 > sha256sums.txt
 
       - name: Upload binaries to GitHub Release
         if: steps.semantic.outputs.released == 'true'
@@ -121,10 +117,8 @@ jobs:
           gh release upload "$tag" \
             dist/nexus-linux-amd64 \
             dist/nexus-linux-arm64 \
-            dist/nexus-darwin-arm64 \
             dist/pty-host-linux-amd64 \
             dist/pty-host-linux-arm64 \
-            dist/pty-host-darwin-arm64 \
             dist/sha256sums.txt \
             --clobber
 
@@ -138,6 +132,32 @@ jobs:
       BUNDLE_PATH: ${{ github.workspace }}/.bundle/vendor
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      - name: Build macOS binaries
+        working-directory: packages/nexus
+        run: |
+          set -euo pipefail
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          GIT_COMMIT="${GITHUB_SHA::8}"
+          VERSION="${{ needs.release.outputs.version }}"
+          PLIST="../../packages/nexus-swift/Resources/nexus-info.plist"
+          LDFLAGS="-s -w \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
+            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${VERSION}"
+          # Build nexus CLI with embedded Info.plist (required for sandbox child process)
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath \
+            -ldflags "${LDFLAGS} -linkmode=external -extldflags=-Wl,-sectcreate,__TEXT,__info_plist,${PLIST}" \
+            -o ../../packages/nexus-swift/Resources/nexus ./cmd/nexus
+          # Build pty-host (no plist needed — not a sandboxed child)
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
+            -o ../../dist/pty-host-darwin-arm64 ./cmd/pty-host
 
       - name: Install sops
         run: |
