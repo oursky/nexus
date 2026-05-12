@@ -26,8 +26,16 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
     public var sshDir: String { Self.sshDir() }
 
     private static func sshDir() -> String {
-        (NSHomeDirectoryForUser(NSUserName()) ?? NSHomeDirectory())
-            .appending("/.ssh")
+        // Use getpwuid to reliably get the real home directory under sandbox.
+        // NSHomeDirectoryForUser may return nil or the container home.
+        let home: String = {
+            let uid = getuid()
+            if let pw = getpwuid(uid), let dir = pw.pointee.pw_dir {
+                return String(cString: dir)
+            }
+            return NSHomeDirectory()
+        }()
+        return (home as NSString).appendingPathComponent(".ssh")
     }
 
     /// Auto-detect identity from ~/.ssh/ if not explicitly set.
