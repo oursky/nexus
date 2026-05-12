@@ -69,8 +69,12 @@ platform :mac do
 
     scheme = variant['scheme']
     # Export .app only (skip .pkg) so we can re-sign the CLI binary
-    # before packaging for the App Store
+    # before packaging for the App Store.
+    # Use explicit output_directory because SharedValues::APP_PATH
+    # is nil with skip_package_pkg: true.
+    output_dir = File.expand_path('..')
     build_mac_app(
+      output_directory: output_dir,
       project: variant['project'],
       scheme: scheme,
       configuration: 'Release',
@@ -85,8 +89,7 @@ platform :mac do
       xcargs: "CURRENT_PROJECT_VERSION=#{build_number} MARKETING_VERSION=#{get_version_number(xcodeproj: variant['project'], target: scheme)} SWIFT_STRICT_CONCURRENCY=minimal NEXUS_APP_BUNDLE_ID=#{variant['app_identifier']} CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=#{variant['team_id']} CODE_SIGN_IDENTITY='#{variant['code_sign_identity']}'"
     )
 
-    app_path = Actions.lane_context[SharedValues::APP_PATH]
-    UI.user_error!('No built app found') if app_path.nil? || !File.exist?(app_path)
+    app_path = File.join(output_dir, "#{scheme}.app")
 
     cli_path = File.join(app_path, 'Contents', 'Resources', 'nexus')
     ent_path = File.expand_path('../Sources/NexusApp/nexus-cli-no-sandbox.entitlements', __dir__)
@@ -179,8 +182,7 @@ platform :mac do
       xcargs: "CURRENT_PROJECT_VERSION=#{build_number} MARKETING_VERSION=#{get_version_number(xcodeproj: variant['project'], target: variant['scheme'])} SWIFT_STRICT_CONCURRENCY=minimal NEXUS_APP_BUNDLE_ID=#{variant['app_identifier']} CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=#{variant['team_id']} CODE_SIGN_IDENTITY='Developer ID Application: Oursky Limited (M7HB6C3N6X)'"
     )
 
-    app_path = Actions.lane_context[SharedValues::APP_PATH]
-    UI.user_error!('No built app found') if app_path.nil? || !File.exist?(app_path)
+    app_path = File.join(output_dir, "#{scheme}.app")
 
     dist_dir = File.join(File.dirname(__dir__), 'dist')
     FileUtils.mkdir_p(dist_dir)
