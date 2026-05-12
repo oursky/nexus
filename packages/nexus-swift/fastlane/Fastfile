@@ -68,16 +68,15 @@ platform :mac do
     )
 
     scheme = variant['scheme']
-    # Build and package normally — the main app's entitlements already include
-    # com.apple.security.inherit which exportArchive applies to the bundled CLI
-    # binary. The CLI is built with -sectcreate for its CFBundleIdentifier, so
-    # macOS's sandbox init can resolve the child process identity.
+    # Export .app only (skip .pkg) so we can re-sign the CLI binary
+    # before packaging for the App Store
     build_mac_app(
       project: variant['project'],
       scheme: scheme,
       configuration: 'Release',
       export_method: 'app-store',
       installer_cert_name: variant['installer_sign_identity'],
+      skip_package_pkg: true,
       export_options: {
         provisioningProfiles: {
           variant['app_identifier'] => variant['provisioning_profile_name'],
@@ -85,6 +84,30 @@ platform :mac do
       },
       xcargs: "CURRENT_PROJECT_VERSION=#{build_number} MARKETING_VERSION=#{get_version_number(xcodeproj: variant['project'], target: scheme)} SWIFT_STRICT_CONCURRENCY=minimal NEXUS_APP_BUNDLE_ID=#{variant['app_identifier']} CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=#{variant['team_id']} CODE_SIGN_IDENTITY='#{variant['code_sign_identity']}'"
     )
+
+    app_path = Actions.lane_context[SharedValues::APP_PATH]
+    UI.user_error!('No built app found') if app_path.nil? || !File.exist?(app_path)
+
+    cli_path = File.join(app_path, 'Contents', 'Resources', 'nexus')
+    ent_path = File.expand_path('../Sources/NexusApp/nexus-cli-no-sandbox.entitlements', __dir__)
+
+    if File.exist?(cli_path) && File.exist?(ent_path)
+      UI.message "Re-signing CLI binary with network-only entitlements"
+      sh("codesign", "--force", "--sign", variant['code_sign_identity'],
+         "--entitlements", ent_path, cli_path)
+      UI.message "Re-signed CLI binary"
+    else
+      UI.error("CLI binary not found at #{cli_path}") unless File.exist?(cli_path)
+      UI.error("Entitlements file not found at #{ent_path}") unless File.exist?(ent_path)
+    end
+
+    app_pkg = File.expand_path("../#{scheme}.pkg", __dir__)
+
+    sh("productbuild", "--component", app_path, "/Applications",
+       "--sign", variant['installer_sign_identity'], app_pkg)
+    UI.success "Created signed .pkg: #{app_pkg}"
+
+    Actions.lane_context[SharedValues::PKG_OUTPUT_PATH] = app_pkg
   end
 
   desc 'Build and notarize a DMG for direct distribution'
