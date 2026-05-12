@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import os
+import AppKit
 
 /// Root app state — owns the daemon client and drives all views.
 /// **Remote daemon only:** connects over SSH (local port forward) + WebSocket to the Linux host.
@@ -571,59 +572,242 @@ public final class AppState: ObservableObject {
         log.info("open-editor start workspaceID=\(workspaceID, privacy: .public) app=\(app, privacy: .public) checkOnly=\(checkOnly, privacy: .public)")
         log.debug("open-editor daemonURL=\(wsURL ?? "(nil)", privacy: .public) hasToken=\(tok != nil, privacy: .public)")
 
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let nexusBin = Self.nexusBinaryPath()
-                log.info("open-editor binary=\(nexusBin, privacy: .public)")
+        // --- Native implementation (no bundled nexus CLI) ---
 
-                var env = ProcessInfo.processInfo.environment
-                env["SHELL"] = "/bin/sh"
-                if let u = wsURL    { env["NEXUS_E2E_DAEMON_WEBSOCKET"] = u }
-                if let t = tok      { env["NEXUS_DAEMON_TOKEN"] = t }
-                if let h = sshHost, !h.isEmpty { env["NEXUS_DAEMON_SSH_HOST"] = h }
-                if let p = sshPort, p > 0 { env["NEXUS_DAEMON_SSH_PORT"] = "\(p)" }
-                if let id = sshIdentity, !id.isEmpty {
-                    env["NEXUS_DAEMON_SSH_IDENTITY"] = id
-                }
+        let workspace = repos.flatMap(\.workspaces).first(where: { $0.id == workspaceID })
 
-                var args = ["workspace", "open-editor", workspaceID, "--app", app]
-                if checkOnly { args.append("--check") }
-                log.info("open-editor running: \(nexusBin) \(args.joined(separator: " "), privacy: .public)")
+        guard let workspace else {
+            log.error("open-editor: native lookup failed workspace=\(workspaceID, privacy: .public)")
+            return (false, "Workspace not found: \(workspaceID)")
+        }
+        guard let sshHost, !sshHost.isEmpty else {
+            log.error("open-editor: no engine SSH target configured")
+            return (false, "Not connected to a remote engine host. Connect first via 'nexus daemon connect'.")
+        }
+        guard let spec = workspace.remoteSSHFolderOpen(jumpHost: sshHost, identityFile: sshIdentity) else {
+            log.error("open-editor: could not compute folder-open spec for \(workspaceID, privacy: .public)")
+            return (false, "Workspace is not available for remote editor access. Start it first.")
+        }
 
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: nexusBin)
-                proc.arguments = args
-                proc.environment = env
+        let editorApp = RemoteEditorApp(rawValue: app.lowercased()) ?? .cursor
 
-                let outPipe = Pipe()
-                let errPipe = Pipe()
-                proc.standardOutput = outPipe
-                proc.standardError  = errPipe
+        if let guestIP = spec.vmGuestIP?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !guestIP.isEmpty {
+            // ── VM workspace (libkrun) ──
+            let (sshOK, sshDetail) = await Self.runLocalSSHCheck(
+                guestIP: guestIP,
+                proxyJump: spec.proxyJump,
+                jumpPort: (sshPort ?? 22),
+                jumpIdentity: spec.identityFile
+            )
 
-                do {
-                    try proc.run()
-                } catch {
-                    log.error("open-editor launch failed: \(error.localizedDescription, privacy: .public)")
-                    continuation.resume(returning: (false, "Could not launch nexus: \(error.localizedDescription)"))
-                    return
-                }
-                proc.waitUntilExit()
+            if checkOnly {
+                return sshOK
+                    ? (true, sshDetail.isEmpty ? "SSH check passed" : sshDetail)
+                    : (false, "SSH check failed: \(sshDetail)")
+            }
 
-                let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                let combined = [out, err].filter { !$0.isEmpty }.joined(separator: "\n")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                let ok = proc.terminationStatus == 0
+            guard sshOK else {
+                log.error("open-editor: SSH check failed for workspace \(workspaceID, privacy: .public): \(sshDetail, privacy: .public)")
+                return (false, "SSH check failed: \(sshDetail)")
+            }
 
-                if ok {
-                    log.info("open-editor succeeded workspaceID=\(workspaceID, privacy: .public)")
-                    continuation.resume(returning: (true, combined))
+            guard let url = RemoteEditorURLBuilder.folderURL(
+                app: editorApp,
+                sshTarget: spec.sshHostForURI,
+                absoluteRemotePath: spec.remotePath
+            ) else {
+                return (false, "Could not build editor URL for \(app)")
+            }
+
+            let (opened, msg): (Bool, String) = await MainActor.run {
+                let configured = NSWorkspace.shared.open(url)
+                if configured {
+                    log.info("open-editor: opened \(editorApp.rawValue, privacy: .public) for \(workspaceID, privacy: .public)")
+                    return (true, "Opened \(editorApp.rawValue)")
                 } else {
-                    log.error("open-editor failed (exit \(proc.terminationStatus, privacy: .public)): \(combined, privacy: .public)")
-                    continuation.resume(returning: (false, combined))
+                    log.error("open-editor: NSWorkspace.open returned false for \(url.absoluteString, privacy: .public)")
+                    return (false, "Could not open \(editorApp.rawValue) — is it installed?")
+                }
+            }
+
+            // Best-effort ensure remote editor server dirs on the VM (fire-and-forget)
+            Task.detached(priority: .utility) { [guestIP, spec, sshPort, sshIdentity] in
+                await Self.ensureRemoteDirs(
+                    guestIP: guestIP,
+                    proxyJump: spec.proxyJump,
+                    jumpPort: (sshPort ?? 22),
+                    jumpIdentity: sshIdentity
+                )
+            }
+
+            return (opened, msg)
+        } else {
+            // ── Non-VM workspace ──
+            guard !checkOnly else {
+                return (true, "Non-VM workspace — SSH check not applicable")
+            }
+
+            guard let url = RemoteEditorURLBuilder.folderURL(
+                app: editorApp,
+                sshTarget: spec.sshHostForURI,
+                absoluteRemotePath: spec.remotePath
+            ) else {
+                return (false, "Could not build editor URL for \(app)")
+            }
+
+            return await MainActor.run {
+                let configured = NSWorkspace.shared.open(url)
+                if configured {
+                    log.info("open-editor: opened \(editorApp.rawValue, privacy: .public) for \(workspaceID, privacy: .public) (non-VM)")
+                    return (true, "Opened \(editorApp.rawValue)")
+                } else {
+                    log.error("open-editor: NSWorkspace.open returned false for \(url.absoluteString, privacy: .public)")
+                    return (false, "Could not open \(editorApp.rawValue) — is it installed?")
                 }
             }
         }
+    }
+
+    // MARK: - Native SSH helpers (replaces nexus CLI subprocess for editor open)
+
+    /// Runs an SSH connectivity check from this Mac through the engine ProxyJump to the VM guest.
+    /// Equivalent to Go `runLocalSSHCheck` in `openeditor.go`.
+    private static func runLocalSSHCheck(
+        guestIP: String,
+        proxyJump: String,
+        jumpPort: Int,
+        jumpIdentity: String?
+    ) async -> (Bool, String) {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let (host, port) = Self.parseGuestIPPort(guestIP)
+                let proxyCmd = Self.buildProxyCommand(
+                    proxyJump: proxyJump,
+                    jumpPort: jumpPort,
+                    jumpIdentity: jumpIdentity
+                )
+                let args: [String] = [
+                    "-o", "BatchMode=yes",
+                    "-o", "ConnectTimeout=15",
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "UserKnownHostsFile=/dev/null",
+                    "-o", "GlobalKnownHostsFile=/dev/null",
+                    "-o", "LogLevel=ERROR",
+                    "-o", "ProxyCommand=\(proxyCmd)",
+                    "-p", port,
+                    "root@\(host)",
+                    "whoami",
+                ]
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+                proc.arguments = args
+                var env = ProcessInfo.processInfo.environment
+                env["SHELL"] = "/bin/sh"
+                proc.environment = env
+
+                let errPipe = Pipe()
+                proc.standardError = errPipe
+                proc.standardOutput = FileHandle.nullDevice
+
+                do {
+                    try proc.run()
+                    proc.waitUntilExit()
+                    if proc.terminationStatus == 0 {
+                        continuation.resume(returning: (true, ""))
+                    } else {
+                        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                        let errStr = String(data: errData, encoding: .utf8)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        let detail = errStr.isEmpty
+                            ? "SSH exited with status \(proc.terminationStatus)"
+                            : errStr
+                        continuation.resume(returning: (false, detail))
+                    }
+                } catch {
+                    continuation.resume(returning: (
+                        false,
+                        "Could not launch ssh: \(error.localizedDescription)"
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Best-effort: creates `.cursor-server` and `.vscode-server` directories on the VM guest.
+    /// Equivalent to Go `ensureRemoteDir` in `openeditor.go`.
+    private static func ensureRemoteDirs(
+        guestIP: String,
+        proxyJump: String,
+        jumpPort: Int,
+        jumpIdentity: String?
+    ) async {
+        let (host, port) = Self.parseGuestIPPort(guestIP)
+        let proxyCmd = Self.buildProxyCommand(
+            proxyJump: proxyJump,
+            jumpPort: jumpPort,
+            jumpIdentity: jumpIdentity
+        )
+        let dirs = ["/workspace/.cursor-server", "/workspace/.vscode-server"]
+        for dir in dirs {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            proc.arguments = [
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=10",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "GlobalKnownHostsFile=/dev/null",
+                "-o", "LogLevel=ERROR",
+                "-o", "ProxyCommand=\(proxyCmd)",
+                "-p", port,
+                "root@\(host)",
+                "mkdir", "-p", dir,
+            ]
+            var env = ProcessInfo.processInfo.environment
+            env["SHELL"] = "/bin/sh"
+            proc.environment = env
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            try? proc.run()
+            proc.waitUntilExit()
+        }
+        openEditorLogger.info("ensureRemoteDirs completed for guest \(guestIP, privacy: .public)")
+    }
+
+    /// Splits "host:port" → (host, port); plain IP → (ip, "22").
+    private static func parseGuestIPPort(_ guestIP: String) -> (host: String, port: String) {
+        if guestIP.contains(":"), let colonIdx = guestIP.lastIndex(of: ":") {
+            let host = String(guestIP[guestIP.startIndex..<colonIdx])
+            let port = String(guestIP[guestIP.index(after: colonIdx)...])
+            return (host, port)
+        }
+        return (guestIP, "22")
+    }
+
+    /// Builds the SSH ProxyCommand string for jumping through the engine host to the VM.
+    private static func buildProxyCommand(
+        proxyJump: String,
+        jumpPort: Int,
+        jumpIdentity: String?
+    ) -> String {
+        var jumpArgs: [String] = [
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=15",
+            "-o", "LogLevel=ERROR",
+        ]
+        if jumpPort > 0 {
+            jumpArgs += ["-p", String(jumpPort)]
+        }
+        if let idf = jumpIdentity?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !idf.isEmpty {
+            jumpArgs += ["-i", idf]
+        }
+        jumpArgs += ["-W", "%h:%p", proxyJump]
+        return "ssh " + jumpArgs.joined(separator: " ")
     }
 
     // MARK: - Workspace export / import via CLI
