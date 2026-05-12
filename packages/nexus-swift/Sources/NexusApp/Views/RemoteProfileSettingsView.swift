@@ -130,7 +130,7 @@ private struct ProfileEditSheet: View {
 
             LabeledField("Identity") {
                 HStack(spacing: 6) {
-                    TextField("~/.ssh/id_ed25519", text: $sshIdentityText)
+                    TextField("~/.ssh/id_ed25519 (optional)", text: $sshIdentityText)
                         .textFieldStyle(.roundedBorder)
                     Button("Browse…") { chooseSSHIdentityFile() }
                     if !sshIdentityText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -142,7 +142,7 @@ private struct ProfileEditSheet: View {
                 }
             }
 
-            LabeledField("SSH Config") {
+            LabeledField("SSH Config*") {
                 HStack(spacing: 6) {
                     TextField("~/.ssh/config", text: $sshConfigText)
                         .textFieldStyle(.roundedBorder)
@@ -169,7 +169,7 @@ private struct ProfileEditSheet: View {
                             Text(testState == .running ? "Testing…" : "Test Connection")
                         }
                     }
-                    .disabled(testState == .running || sshTargetText.isEmpty || sshIdentityText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(testState == .running || sshTargetText.isEmpty)
 
                     switch testState {
                     case .ok:
@@ -284,10 +284,6 @@ private struct ProfileEditSheet: View {
             guard let port = Int(sshPort), (1...65535).contains(port) else {
                 return "SSH port must be between 1 and 65535."
             }
-        }
-        let identity = sshIdentityText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if identity.isEmpty {
-            return "SSH identity key is required. Click Browse… to select your private key."
         }
         let config = sshConfigText.trimmingCharacters(in: .whitespacesAndNewlines)
         if config.isEmpty {
