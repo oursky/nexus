@@ -63,11 +63,11 @@ public struct SSHClientArgs {
     public var baseArgs: [String] {
         var args: [String] = []
 
-        // Strict-key mode: bypass ~/.ssh/config entirely.
-        if let identity = identityPath {
-            args += ["-F", "/dev/null"]
-            args += ["-i", identity, "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none"]
-        } else if let config = configPath {
+        // Use SSH config mode (never strict-key).  Under app sandbox
+        // the child ssh process cannot read the key file directly
+        // (Operation not permitted), so we always rely on the SSH
+        // agent + config-based authentication.
+        if let config = configPath {
             args += ["-F", config]
         }
 

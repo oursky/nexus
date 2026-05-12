@@ -93,14 +93,11 @@ public actor SSHTunnelManager {
                 _reversePort = rp
                 let resolvedPaths = resolveScopedPaths()
                 let identityPath = resolvedPaths.identityPath
-                guard let identityPath, !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    throw TunnelError.identityRequired
-                }
-                // When an explicit identity is provided, always use strict-key mode
-                // (SSHClientArgs passes -F /dev/null so ~/.ssh/config is bypassed).
-                // Never fall back to a config-based mode — that would allow the agent
-                // or config to inject the real key and mask a wrong-key error.
-                try launchControlTunnel(localPort: port, configPath: nil, identityPath: identityPath)
+                // Use the SSH config file for proxyjump and agent configuration.
+                // Sandboxed subprocesses cannot open() identity files from
+                // ~/.ssh/, so strict-key mode (-i <key>) is not usable.
+                // Instead, SSH agent handles key presentation via -F <config>.
+                try launchControlTunnel(localPort: port, configPath: resolvedPaths.configPath, identityPath: identityPath)
                 try await waitForHealthz(localPort: port)
                 setState(.connected)
                 AppLifecycleLog.info("ssh-tunnel", "start success localPort=\(port)")
@@ -180,11 +177,8 @@ public actor SSHTunnelManager {
         }
         let resolvedPaths = resolveScopedPaths()
         let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
-        guard let identityPath = resolvedPaths.identityPath,
-              !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw TunnelError.identityRequired
-        }
-
+        // Sandboxed subprocesses cannot open() identity files from
+        // ~/.ssh/, so rely on SSH agent via -F <config> instead.
         let tunnel = try launchSpotlightTunnel(
             localPort: localPort,
             remotePort: remotePort,
@@ -267,10 +261,8 @@ public actor SSHTunnelManager {
         let remoteBin = "~/.local/bin/nexus"
         #endif
         let resolvedPaths = resolveScopedPaths()
-        guard let identityPath = resolvedPaths.identityPath,
-              !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw TunnelError.identityRequired
-        }
+        // Token fetch uses SSH config for proxyjump/agent; sandbox prevents
+        // subprocess key loading, so identity is not required here.
         let client = SSHClientArgs(profile: profile, scopedPaths: resolvedPaths)
         let token = try runSSH(client: client, command: [remoteBin, "daemon", "token"])
         if token.isEmpty { throw TunnelError.tokenFetchFailed }
