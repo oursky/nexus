@@ -63,13 +63,10 @@ public struct SSHClientArgs {
     public var baseArgs: [String] {
         var args: [String] = []
 
-        // Use SSH config mode (never strict-key).  Under app sandbox
-        // the child ssh process cannot read the key file directly
-        // (Operation not permitted), so we always rely on the SSH
-        // agent + config-based authentication.
-        if let config = configPath {
-            args += ["-F", config]
-        }
+        // NEVER use ~/.ssh/config under sandbox — the child /usr/bin/ssh
+        // process cannot open() files in ~/.ssh/ (Operation not permitted).
+        // Instead rely on the SSH agent for key authentication.
+        args += ["-F", "/dev/null"]
 
         args += ["-p", "\(port ?? 22)"]
         args += ["-o", "BatchMode=yes"]
