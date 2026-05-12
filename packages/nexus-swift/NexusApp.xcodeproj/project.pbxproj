@@ -41,6 +41,7 @@
 		CBD8EF15A85756F63CF36229 /* AsyncDeadline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E4D7D285580F1646BA523C0 /* AsyncDeadline.swift */; };
 		DA15791279FE3FB2D12D1CC2 /* AsyncDeadlineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1299EB3EDDA3B0AD4AA85C6 /* AsyncDeadlineTests.swift */; };
 		DCD55CD52BA08D65FF1A4C57 /* PTYSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE2B07751BE8ACCB41EBA453 /* PTYSessionManager.swift */; };
+		DE7B5C7EEC947D3B6CF66202 /* SpotlightManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DDF3C50A7260E08B398CC62 /* SpotlightManager.swift */; };
 		DF2C4D97A2B64D2BC0771EEE /* MultiTabTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F4BBF609F635803ECB96420 /* MultiTabTerminalView.swift */; };
 		E077E0C9ABB308CD757BA03E /* NewWorkspaceSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B13EB4886DD523ACF011861C /* NewWorkspaceSheet.swift */; };
 		E339CD09AB98290F2BD040F1 /* TerminalRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14DE7269B3B6401897CF20B5 /* TerminalRegistry.swift */; };
@@ -77,6 +78,7 @@
 		1075C8BF288888AA4624C6B0 /* NexusAppTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusAppTests.swift; sourceTree = "<group>"; };
 		14DE7269B3B6401897CF20B5 /* TerminalRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalRegistry.swift; sourceTree = "<group>"; };
 		16B5A328A971277066265E01 /* SSHClientArgs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHClientArgs.swift; sourceTree = "<group>"; };
+		21257507DF17D00227008C9D /* nexus-cli-no-sandbox.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "nexus-cli-no-sandbox.entitlements"; sourceTree = "<group>"; };
 		2B1758E3987EA79C35151F7B /* BottomPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BottomPanelView.swift; sourceTree = "<group>"; };
 		2E3741BD5102248BC1C00360 /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
 		38E21B28FFABA6F3CC3615AD /* HeadlessRPCServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeadlessRPCServer.swift; sourceTree = "<group>"; };
@@ -91,6 +93,7 @@
 		578374C9B41398139FEF60DE /* RemoteEditorURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteEditorURL.swift; sourceTree = "<group>"; };
 		59B54A26C62C6D8473AD660D /* DaemonSettingsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonSettingsPanel.swift; sourceTree = "<group>"; };
 		5CBA4800536CF2D77E40B4F3 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		5DDF3C50A7260E08B398CC62 /* SpotlightManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpotlightManager.swift; sourceTree = "<group>"; };
 		6231766FDA3F470858042A87 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
 		659564BF098092F19E1351D0 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		672D7B0442C4E1B8A74B7083 /* RemoteEngineFolderPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteEngineFolderPicker.swift; sourceTree = "<group>"; };
@@ -100,6 +103,7 @@
 		85417139225FD79454603276 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		88535B8DEC2991EA5557D322 /* EngineRemotePathBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineRemotePathBrowser.swift; sourceTree = "<group>"; };
 		9A570BFC62A722A8BE1F84B9 /* NexusAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NexusAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		9B2296E26B5C9F7FE767CC2F /* nexus.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = nexus.entitlements; sourceTree = "<group>"; };
 		A1299EB3EDDA3B0AD4AA85C6 /* AsyncDeadlineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncDeadlineTests.swift; sourceTree = "<group>"; };
 		A2BFDE21D93B71D9558A8EB6 /* WebSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketClient.swift; sourceTree = "<group>"; };
 		ADCBCD9E06B53B830CCD0102 /* GitLogReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLogReader.swift; sourceTree = "<group>"; };
@@ -144,6 +148,8 @@
 			children = (
 				E3984D60065231C71CC97564 /* Assets.xcassets */,
 				85417139225FD79454603276 /* Info.plist */,
+				21257507DF17D00227008C9D /* nexus-cli-no-sandbox.entitlements */,
+				9B2296E26B5C9F7FE767CC2F /* nexus.entitlements */,
 				528623899FCE30A5FBC238F4 /* NexusApp-DMG.entitlements */,
 				72A481E34E338F542786AE6F /* NexusApp.entitlements */,
 				804B2FADD0C5143C198F46DA /* NexusApp.swift */,
@@ -216,6 +222,7 @@
 				BE2B07751BE8ACCB41EBA453 /* PTYSessionManager.swift */,
 				578374C9B41398139FEF60DE /* RemoteEditorURL.swift */,
 				4F536D8D8113B5D7DEAFEEFC /* RemoteProvisioner.swift */,
+				5DDF3C50A7260E08B398CC62 /* SpotlightManager.swift */,
 				16B5A328A971277066265E01 /* SSHClientArgs.swift */,
 				8119AFD4BCAD21CF77FBC6FA /* SSHSecurityScope.swift */,
 				4813F94247C8246742DEA82F /* SSHTunnelManager.swift */,
@@ -410,7 +417,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Every Mach-O executable in the .app must declare App Sandbox for Mac App Store.\n# Copied CLIs are ad-hoc signed or unsigned; re-sign with the app entitlements.\nRES=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources\"\nENT=\"${SRCROOT}/Sources/NexusApp/NexusApp.entitlements\"\nsign_macho() {\n  local bin=\"$1\"\n  [ -f \"$bin\" ] || return 0\n  case \"$(file -b \"$bin\")\" in\n    Mach-O*) ;;\n    *) echo \"Sign bundled CLI: skip non-Mach-O $(basename \"$bin\")\"; return 0 ;;\n  esac\n  if [ -z \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ] || [ \"${EXPANDED_CODE_SIGN_IDENTITY}\" = \"-\" ]; then\n    echo \"Sign bundled CLI: skip (no EXPANDED_CODE_SIGN_IDENTITY): $bin\"\n    return 0\n  fi\n  codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" \\\n    --entitlements \"${ENT}\" \\\n    --timestamp \\\n    --options runtime \\\n    \"$bin\"\n  echo \"Sign bundled CLI: ok $(basename \"$bin\")\"\n}\nsign_macho \"${RES}/nexus\"\nsign_macho \"${RES}/nexus-daemon\"\nif [ -d \"${RES}/tools\" ]; then\n  for bin in \"${RES}/tools/\"*; do\n    [ -f \"$bin\" ] || continue\n    [ -x \"$bin\" ] || continue\n    sign_macho \"$bin\"\n  done\nfi\nmkdir -p \"${DERIVED_FILE_DIR}\"\ntouch \"${DERIVED_FILE_DIR}/nexus-sign-bundled-cli.stamp\"\n";
+			shellScript = "# Every Mach-O executable in the .app must declare App Sandbox for Mac App Store.\n# Copied CLIs are ad-hoc signed or unsigned; re-sign with the app entitlements.\nRES=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources\"\nENT=\"${SRCROOT}/Sources/NexusApp/NexusApp.entitlements\"\nsign_macho() {\n  local bin=\"$1\"\n  local ent=\"${2:-${ENT}}\"\n  [ -f \"$bin\" ] || return 0\n  case \"$(file -b \"$bin\")\" in\n    Mach-O*) ;;\n    *) echo \"Sign bundled CLI: skip non-Mach-O $(basename \"$bin\")\"; return 0 ;;\n  esac\n  if [ -z \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ] || [ \"${EXPANDED_CODE_SIGN_IDENTITY}\" = \"-\" ]; then\n    echo \"Sign bundled CLI: skip (no EXPANDED_CODE_SIGN_IDENTITY): $bin\"\n    return 0\n  fi\n  codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" \\\n    --entitlements \"${ent}\" \\\n    --timestamp \\\n    --options runtime \\\n    \"$bin\"\n  echo \"Sign bundled CLI: ok $(basename \"$bin\")\"\n}\nsign_macho \"${RES}/nexus\"\n# nexus-daemon runs independently → use app entitlements\nsign_macho \"${RES}/nexus-daemon\"\nif [ -d \"${RES}/tools\" ]; then\n  for bin in \"${RES}/tools/\"*; do\n    [ -f \"$bin\" ] || continue\n    [ -x \"$bin\" ] || continue\n    sign_macho \"$bin\"\n  done\nfi\nmkdir -p \"${DERIVED_FILE_DIR}\"\ntouch \"${DERIVED_FILE_DIR}/nexus-sign-bundled-cli.stamp\"\n";
 		};
 		77F45765587B63B666448DE8 /* Copy bundled tools to app Resources */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -491,6 +498,7 @@
 				BEE0BBA0EFDB9C6FFE9212B9 /* SSHClientArgs.swift in Sources */,
 				0602F286F9E4B1D94A9855F4 /* SSHSecurityScope.swift in Sources */,
 				C1C7D99C12055E99522AC87F /* SSHTunnelManager.swift in Sources */,
+				DE7B5C7EEC947D3B6CF66202 /* SpotlightManager.swift in Sources */,
 				5142C089169B296EB634FB67 /* StartupTrace.swift in Sources */,
 				E339CD09AB98290F2BD040F1 /* TerminalRegistry.swift in Sources */,
 				A512F81B9A51ED222CBECA5F /* WebSocketClient.swift in Sources */,
@@ -667,7 +675,7 @@
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = FEATURE_EXPORT_IMPORT;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG FEATURE_EXPORT_IMPORT";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_STRICT_CONCURRENCY = strict;
 				SWIFT_VERSION = 5.10;
