@@ -94,7 +94,7 @@ public final class AppState: ObservableObject {
     /// The auto-reconnect loop skips retries while this is true.  Cleared on reconnect().
     @Published public private(set) var needsSetup: Bool = false
 
-    /// Headless HTTP RPC server for terminal automation (active when NEXUS_HEADLESS_RPC=1).
+    /// Headless HTTP RPC server for terminal automation (active in DEBUG builds only).
     public private(set) var rpcServer: HeadlessRPCServer?
 
 

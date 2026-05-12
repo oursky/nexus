@@ -4,7 +4,7 @@ import OSLog
 
 /// A minimal local HTTP/1.1 server that exposes headless control over terminal tabs,
 /// workspace lifecycle, and remote provisioning for automated end-to-end testing.
-/// Only active when NEXUS_HEADLESS_RPC=1 or ~/.nexus-headless-rpc sentinel file exists.
+/// Active in DEBUG builds only. Disabled in release/production builds.
 ///
 /// Terminal endpoints:
 ///   GET  /status
@@ -100,20 +100,12 @@ public final class HeadlessRPCServer {
 
     public func start() {
         // Debug builds: always start on the configured port (default 7778).
-        // Release/TestFlight builds: start on port 7779 only when the sentinel
-        // file ~/.nexus-headless-rpc (or env NEXUS_HEADLESS_RPC=1) is present.
-        #if DEBUG
-        let effectivePort = self.port
-        #else
-        let effectivePort: UInt16 = 7779
-        let sentinelPath = NSHomeDirectory() + "/.nexus-headless-rpc"
-        let sentinelActive = ProcessInfo.processInfo.environment["NEXUS_HEADLESS_RPC"] == "1"
-            || FileManager.default.fileExists(atPath: sentinelPath)
-        guard sentinelActive else {
-            Self.logger.debug("rpc.server disabled (release build; touch ~/.nexus-headless-rpc to enable)")
-            return
-        }
+        // Release/production builds: headless RPC is never available.
+        #if !DEBUG
+        Self.logger.debug("rpc.server disabled (release/production build)")
+        return
         #endif
+        let effectivePort = self.port
         Self.logger.notice("rpc.server starting on port \(effectivePort, privacy: .public)")
         do {
             let params = NWParameters.tcp
