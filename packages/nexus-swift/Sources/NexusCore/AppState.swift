@@ -1075,7 +1075,7 @@ public final class AppState: ObservableObject {
     /// Called on app termination to clean up SSH tunnels and WebSocket connections.
     public func shutdown() {
         // Stop all spotlight SSH tunnels and daemon-side spotlight
-        spotlightManager.stopAll()
+        Task { await spotlightManager.stopAll() }
         // Stop the tunnel manager (kills all SSH processes)
         let tm = tunnelManager
         tunnelManager = nil
@@ -1097,7 +1097,7 @@ public final class AppState: ObservableObject {
     /// Re-reads the default profile and reconnects (e.g. after the user changes the active profile).
     public func reconnect() async {
         // Stop all spotlight SSH tunnels and daemon-side spotlight before reconnecting
-        spotlightManager.stopAll()
+        await spotlightManager.stopAll()
         // Clear any config error that was blocking the auto-reconnect loop.
         needsSetup = false
         daemonLogStream?.stop()
@@ -1614,7 +1614,7 @@ public final class AppState: ObservableObject {
 
     private func killSpotlightCLI(workspaceID: String) {
         // Kill SSH tunnels
-        spotlightManager.stopSSHTunnels(workspaceID: workspaceID)
+        Task { await spotlightManager.stopSSHTunnels(workspaceID: workspaceID) }
         // Stop spotlight on daemon
         Task {
             try? await spotlightManager.stopSpotlight(workspaceID: workspaceID)
