@@ -185,7 +185,7 @@ public actor SSHTunnelManager {
             remotePort: remotePort,
             sshTarget: sshTarget,
             configPath: configPath,
-            identityPath: identityPath
+            identityPath: identityPath ?? ""
         )
         spotlightTunnels[localPort] = tunnel
         AppLifecycleLog.info("ssh-tunnel", "spotlight opened localPort=\(localPort) remotePort=\(remotePort)")
@@ -350,7 +350,7 @@ public actor SSHTunnelManager {
         let client = SSHClientArgs(
             sshTarget: sshTarget,
             port: profile.sshPort,
-            identityPath: identityPath,
+            identityPath: identityPath ?? "",
             configPath: configPath
         )
         let args = client.tunnelArgs(localPort: localPort, remotePort: remotePort)
@@ -382,7 +382,7 @@ public actor SSHTunnelManager {
         let client = SSHClientArgs(
             sshTarget: sshTarget,
             port: sshPort,
-            identityPath: identityPath,
+            identityPath: identityPath ?? "",
             configPath: configPath
         )
         // Build args WITHOUT ExitOnForwardFailure — reverse tunnel is best-effort
@@ -414,7 +414,7 @@ public actor SSHTunnelManager {
         let client = SSHClientArgs(
             sshTarget: sshTarget,
             port: profile.sshPort,
-            identityPath: identityPath,
+            identityPath: identityPath ?? "",
             configPath: configPath
         )
         let args = client.tunnelArgs(localPort: localPort, remotePort: remotePort)
