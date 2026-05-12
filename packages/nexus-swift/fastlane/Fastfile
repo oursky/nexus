@@ -68,16 +68,16 @@ platform :mac do
     )
 
     scheme = variant['scheme']
-    # Explicit output dir so we can find the .app after build.
-    output_dir = File.expand_path('..')
+    # Build and package normally — the main app's entitlements already include
+    # com.apple.security.inherit which exportArchive applies to the bundled CLI
+    # binary. The CLI is built with -sectcreate for its CFBundleIdentifier, so
+    # macOS's sandbox init can resolve the child process identity.
     build_mac_app(
       project: variant['project'],
       scheme: scheme,
       configuration: 'Release',
       export_method: 'app-store',
       installer_cert_name: variant['installer_sign_identity'],
-      output_directory: output_dir,
-      skip_package_pkg: true,
       export_options: {
         provisioningProfiles: {
           variant['app_identifier'] => variant['provisioning_profile_name'],
@@ -85,34 +85,6 @@ platform :mac do
       },
       xcargs: "CURRENT_PROJECT_VERSION=#{build_number} MARKETING_VERSION=#{get_version_number(xcodeproj: variant['project'], target: scheme)} SWIFT_STRICT_CONCURRENCY=minimal NEXUS_APP_BUNDLE_ID=#{variant['app_identifier']} CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=#{variant['team_id']} CODE_SIGN_IDENTITY='#{variant['code_sign_identity']}'"
     )
-
-    # Re-sign the bundled CLI binary without sandbox.
-    # ExportArchive deep-signs it with the app's full entitlements (app-sandbox,
-    # the full app entitlements (app-sandbox + inherit + bookmarks + network + 
-    # temp-exceptions) which causes _libsecinit_appsandbox to crash on macOS 26.4.1.
-    # Re-sign with ONLY app-sandbox + inherit. App Store requires app-sandbox on
-    # all executables; inherit tells macOS to inherit the parent's sandbox (including
-    # network access) instead of creating a separate child sandbox.
-    begin
-      app_path = File.join(output_dir, "#{scheme}.app")
-      cli_binary = File.join(app_path, 'Contents', 'Resources', 'nexus')
-      entitlements_file = File.expand_path('../Sources/NexusApp/nexus-cli-no-sandbox.entitlements')
-      if File.exist?(cli_binary) && File.exist?(entitlements_file)
-        sh("codesign", "--force", "--sign", variant['sign_identity'],
-           "--entitlements", entitlements_file, cli_binary)
-        UI.success("Re-signed nexus CLI with app-sandbox+inherit")
-      else
-        UI.important("Skipping CLI re-sign: binary=#{File.exist?(cli_binary)}, entitlements=#{File.exist?(entitlements_file)}")
-      end
-    rescue => e
-      UI.error("Failed to re-sign CLI binary: #{e.message}")
-    end
-
-    # Create signed .pkg from the re-signed .app
-    app_pkg = File.join(output_dir, "#{scheme}.pkg")
-    sh("productbuild", "--component", File.join(output_dir, "#{scheme}.app"), "/Applications",
-       "--sign", variant['installer_sign_identity'], app_pkg)
-    Actions.lane_context[SharedValues::PKG_OUTPUT_PATH] = app_pkg
   end
 
   desc 'Build and notarize a DMG for direct distribution'
