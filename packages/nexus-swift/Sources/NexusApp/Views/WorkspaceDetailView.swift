@@ -317,15 +317,6 @@ private struct WorkspaceOverflowMenu: View {
 
     var body: some View {
         Menu {
-            #if FEATURE_EXPORT_IMPORT
-            Button {
-                exportWorkspace()
-            } label: {
-                Label("Export Bundle…", systemImage: "square.and.arrow.up")
-            }
-            .disabled(isBusy)
-            #endif
-
             Button(role: .destructive) {
                 Task { await appState.remove(workspace) }
             } label: {
@@ -338,33 +329,6 @@ private struct WorkspaceOverflowMenu: View {
         }
     }
 
-    #if FEATURE_EXPORT_IMPORT
-    private func exportWorkspace() {
-        let panel = NSSavePanel()
-        panel.message = "Export workspace as bundle"
-        panel.prompt = "Export"
-        panel.nameFieldStringValue = "\(workspace.name).nxbundle"
-        panel.canCreateDirectories = true
-        panel.allowedContentTypes = [] // Allow any; bundle path validated by CLI
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        Task {
-            let (ok, output) = await appState.exportWorkspaceViaCLI(
-                workspaceID: workspace.id,
-                outPath: url.path
-            )
-            await MainActor.run {
-                let alert = NSAlert()
-                alert.messageText = ok ? "Export Complete" : "Export Failed"
-                alert.informativeText = output.isEmpty ? (ok ? "Bundle saved." : "Unknown error.") : output
-                alert.alertStyle = ok ? .informational : .critical
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
-            }
-        }
-    }
-    #endif
 }
 
 private struct WorkspaceStartStopButton: View {
