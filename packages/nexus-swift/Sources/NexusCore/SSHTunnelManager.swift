@@ -177,6 +177,7 @@ public actor SSHTunnelManager {
         }
         let resolvedPaths = resolveScopedPaths()
         let configPath = resolvedPaths.configPath ?? existingSSHConfigPath()
+        let identityPath = resolvedPaths.identityPath
         // Sandboxed subprocesses cannot open() identity files from
         // ~/.ssh/, so rely on SSH agent via -F <config> instead.
         let tunnel = try launchSpotlightTunnel(
