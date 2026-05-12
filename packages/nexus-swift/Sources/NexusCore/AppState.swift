@@ -552,8 +552,10 @@ public final class AppState: ObservableObject {
            let spec = workspace.remoteSSHFolderOpen(jumpHost: sshHost, identityFile: sshIdentity),
            let guestIP = spec.vmGuestIP,
            !guestIP.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Write SSH alias to ~/.nexus/ssh/ — this path is NOT blocked
+            // by the sandbox and must succeed even when the Include line
+            // into ~/.ssh/config fails (sandbox grants read-only .ssh/).
             do {
-                try NexusSSHConfigSnippet.installIncludeIfNeeded()
                 try NexusSSHConfigSnippet.writeVMJumpHost(
                     hostAlias: spec.sshHostForURI,
                     guestIP: guestIP,
@@ -562,10 +564,18 @@ public final class AppState: ObservableObject {
                 )
                 log.info("open-editor prewrote SSH alias \(spec.sshHostForURI, privacy: .public)")
             } catch {
+                log.error("open-editor SSH alias write failed: \(error.localizedDescription, privacy: .public)")
+            }
+            // Best-effort Include line in ~/.ssh/config — may fail under
+            // sandbox (read-only .ssh/ entitlement); alias still works via
+            // global Include if set previously or via explicit -F flag.
+            do {
+                try NexusSSHConfigSnippet.installIncludeIfNeeded()
+            } catch {
                 // Sandboxed app builds may not have direct access to the real
-                // ~/.ssh config. Fall back to the CLI path, which still writes
-                // its own alias snippet before opening the editor.
-                log.error("open-editor prewrite skipped: \(error.localizedDescription, privacy: .public)")
+                // ~/.ssh config. The alias snippet above is still valid — the
+                // user can add the Include line manually if needed.
+                log.info("open-editor Include line skipped (sandbox likely): \(error.localizedDescription, privacy: .public)")
             }
         }
 
