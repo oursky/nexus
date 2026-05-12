@@ -49,79 +49,27 @@ targets:
     sources:
       - path: Sources/NexusApp
     postCompileScripts:
-      - name: Copy bundled tools to app Resources
+      - name: Copy Linux nexus binaries for provisioning
         inputFiles:
-          - $(SRCROOT)/Resources/nexus
           - $(SRCROOT)/Resources/nexus-linux-amd64
           - $(SRCROOT)/Resources/nexus-linux-arm64
         outputFiles:
-          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus
           - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-linux-amd64
           - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-linux-arm64
         script: |
-          copy_tool() {
-            local src="$1"
-            local dst="$2"
-            local label="$3"
-            if [ -f "$src" ]; then
-              mkdir -p "$(dirname "$dst")"
-              cp "$src" "$dst"
-              chmod +x "$dst"
-              echo "Bundled ${label} -> ${dst}"
-            else
-              echo "warning: ${label} not found at ${src}; run 'go build -o packages/nexus-swift/Resources/nexus ./packages/nexus/cmd/nexus'"
-            fi
-          }
-
-          # macOS nexus CLI — used by the app for workspace open-editor and daemon operations.
-          copy_tool "${SRCROOT}/Resources/nexus" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus" "nexus"
-
-          # Linux nexus binaries for remote provisioning (uploading to fresh Linux hosts).
+          set -euo pipefail
           for arch in amd64 arm64; do
-            copy_tool "${SRCROOT}/Resources/nexus-linux-${arch}" "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-linux-${arch}" "nexus-linux-${arch}"
-          done
-      - name: Sign bundled macOS CLI (App Store)
-        inputFiles:
-          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus
-        outputFiles:
-          # Stamp only: Xcode rejects the same path as both input and output (mutable output).
-          - $(DERIVED_FILE_DIR)/nexus-sign-bundled-cli.stamp
-        script: |
-          # Every Mach-O executable in the .app must declare App Sandbox for Mac App Store.
-          # Copied CLIs are ad-hoc signed or unsigned; re-sign with the app entitlements.
-          RES="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources"
-          ENT="${SRCROOT}/Sources/NexusApp/NexusApp.entitlements"
-          sign_macho() {
-            local bin="$1"
-            local ent="${2:-${ENT}}"
-            [ -f "$bin" ] || return 0
-            case "$(file -b "$bin")" in
-              Mach-O*) ;;
-              *) echo "Sign bundled CLI: skip non-Mach-O $(basename "$bin")"; return 0 ;;
-            esac
-            if [ -z "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] || [ "${EXPANDED_CODE_SIGN_IDENTITY}" = "-" ]; then
-              echo "Sign bundled CLI: skip (no EXPANDED_CODE_SIGN_IDENTITY): $bin"
-              return 0
+            SRC="${SRCROOT}/Resources/nexus-linux-${arch}"
+            DST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-linux-${arch}"
+            if [ -f "$SRC" ]; then
+              mkdir -p "$(dirname "$DST")"
+              cp "$SRC" "$DST"
+              chmod +x "$DST"
+              echo "Bundled nexus-linux-${arch} -> ${DST}"
+            else
+              echo "warning: nexus-linux-${arch} not found at ${SRC}; run 'go build'"
             fi
-            codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY}" \
-              --entitlements "${ent}" \
-              --timestamp \
-              --options runtime \
-              "$bin"
-            echo "Sign bundled CLI: ok $(basename "$bin")"
-          }
-          sign_macho "${RES}/nexus"
-          # nexus-daemon runs independently → use app entitlements
-          sign_macho "${RES}/nexus-daemon"
-          if [ -d "${RES}/tools" ]; then
-            for bin in "${RES}/tools/"*; do
-              [ -f "$bin" ] || continue
-              [ -x "$bin" ] || continue
-              sign_macho "$bin"
-            done
-          fi
-          mkdir -p "${DERIVED_FILE_DIR}"
-          touch "${DERIVED_FILE_DIR}/nexus-sign-bundled-cli.stamp"
+          done
     dependencies:
       - target: NexusCore
         link: true
@@ -153,6 +101,28 @@ targets:
     platform: macOS
     sources:
       - path: Tests/NexusAppTests
+    postCompileScripts:
+      - name: Copy Linux nexus binaries for provisioning
+        inputFiles:
+          - $(SRCROOT)/Resources/nexus-linux-amd64
+          - $(SRCROOT)/Resources/nexus-linux-arm64
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-linux-amd64
+          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-linux-arm64
+        script: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            SRC="${SRCROOT}/Resources/nexus-linux-${arch}"
+            DST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-linux-${arch}"
+            if [ -f "$SRC" ]; then
+              mkdir -p "$(dirname "$DST")"
+              cp "$SRC" "$DST"
+              chmod +x "$DST"
+              echo "Bundled nexus-linux-${arch} -> ${DST}"
+            else
+              echo "warning: nexus-linux-${arch} not found at ${SRC}; run 'go build'"
+            fi
+          done
     dependencies:
       - target: NexusCore
         embed: false
