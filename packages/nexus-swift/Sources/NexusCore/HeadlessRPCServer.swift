@@ -54,7 +54,7 @@ import OSLog
 ///   POST /linuxbox/clean-room   { sshTarget, sshPort? }  — remove ~/.local/{share,state,run}/nexus + binaries
 @MainActor
 public final class HeadlessRPCServer {
-    private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "HeadlessRPCServer")
+    private static let logger = Logger(subsystem: "com.oursky.nexus", category: "HeadlessRPCServer")
     public static let defaultPort: UInt16 = 7778
 
     private var listener: NWListener?
@@ -99,16 +99,26 @@ public final class HeadlessRPCServer {
     }
 
     public func start() {
-        #if !DEBUG
-        // Headless RPC is disabled in Release/TestFlight builds.
-        Self.logger.debug("rpc.server disabled (release build)")
-        return
+        // Debug builds: always start on the configured port (default 7778).
+        // Release/TestFlight builds: start on port 7779 only when the sentinel
+        // file ~/.nexus-headless-rpc (or env NEXUS_HEADLESS_RPC=1) is present.
+        #if DEBUG
+        let effectivePort = self.port
+        #else
+        let effectivePort: UInt16 = 7779
+        let sentinelPath = NSHomeDirectory() + "/.nexus-headless-rpc"
+        let sentinelActive = ProcessInfo.processInfo.environment["NEXUS_HEADLESS_RPC"] == "1"
+            || FileManager.default.fileExists(atPath: sentinelPath)
+        guard sentinelActive else {
+            Self.logger.debug("rpc.server disabled (release build; touch ~/.nexus-headless-rpc to enable)")
+            return
+        }
         #endif
-        Self.logger.notice("rpc.server starting on port \(self.port, privacy: .public)")
+        Self.logger.notice("rpc.server starting on port \(effectivePort, privacy: .public)")
         do {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
-            let nwPort = NWEndpoint.Port(rawValue: port)!
+            let nwPort = NWEndpoint.Port(rawValue: effectivePort)!
             let listener = try NWListener(using: params, on: nwPort)
             self.listener = listener
 
@@ -117,10 +127,10 @@ public final class HeadlessRPCServer {
                     self?.handleConnection(conn)
                 }
             }
-            listener.stateUpdateHandler = { state in
+            listener.stateUpdateHandler = { [effectivePort] state in
                 switch state {
                 case .ready:
-                    Self.logger.notice("rpc.server listening on 127.0.0.1:\(HeadlessRPCServer.defaultPort, privacy: .public)")
+                    Self.logger.notice("rpc.server listening on 127.0.0.1:\(effectivePort, privacy: .public)")
                 case .failed(let err):
                     Self.logger.error("rpc.server failed: \(err.localizedDescription, privacy: .public)")
                 default:

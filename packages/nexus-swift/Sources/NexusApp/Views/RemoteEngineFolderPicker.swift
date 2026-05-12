@@ -4,7 +4,7 @@ import SwiftUI
 
 /// VS Code Remote–style folder browser: lists directories on the daemon host over SSH.
 struct RemoteEngineFolderPicker: View {
-    private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "remote-folder-picker")
+    private static let logger = Logger(subsystem: "com.oursky.nexus", category: "remote-folder-picker")
 
     let profile: DaemonProfile
     /// Starting directory when the sheet opens; ignored if empty (defaults to $HOME).

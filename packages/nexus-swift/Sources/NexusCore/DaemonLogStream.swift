@@ -5,7 +5,7 @@ import os
 /// and forwards each push entry to `os.Logger` under the DaemonLog category.
 @MainActor
 public final class DaemonLogStream {
-    private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "DaemonLog")
+    private static let logger = Logger(subsystem: "com.oursky.nexus", category: "DaemonLog")
     private var streamTask: Task<Void, Never>?
     private let client: WebSocketDaemonClient
 

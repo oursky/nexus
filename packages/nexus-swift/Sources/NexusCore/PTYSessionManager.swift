@@ -5,7 +5,7 @@ import OSLog
 /// Manages multiple PTY sessions (tabs) for a workspace
 @MainActor
 public final class PTYSessionManager: ObservableObject {
-    private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "PTYSessionManager")
+    private static let logger = Logger(subsystem: "com.oursky.nexus", category: "PTYSessionManager")
 
     /// A single terminal tab
     public struct Tab: Identifiable, Equatable {

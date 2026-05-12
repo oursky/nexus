@@ -54,7 +54,7 @@ public actor SSHTunnelManager {
     private var _reversePort: Int = 0
     private var restartTask: Task<Void, Never>?
     private var activeScopedPaths: SSHSecurityScopedPaths = .empty
-    private let logger = Logger(subsystem: "com.nexus.NexusApp", category: "SSHTunnel")
+    private let logger = Logger(subsystem: "com.oursky.nexus", category: "SSHTunnel")
 
     public init(profile: DaemonProfile) {
         self.profile = profile
@@ -259,7 +259,13 @@ public actor SSHTunnelManager {
             throw TunnelError.noTarget
         }
 
+        // Debug builds target the dev daemon (nexus-dev, port 7778).
+        // Release/TestFlight builds target the prod daemon (nexus, port 7777).
+        #if DEBUG
         let remoteBin = "~/.local/bin/nexus-dev"
+        #else
+        let remoteBin = "~/.local/bin/nexus"
+        #endif
         let resolvedPaths = resolveScopedPaths()
         guard let identityPath = resolvedPaths.identityPath,
               !identityPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

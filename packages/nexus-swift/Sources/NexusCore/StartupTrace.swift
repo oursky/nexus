@@ -2,7 +2,7 @@ import Foundation
 import os
 
 /// Writes a line-oriented trace to `~/.config/nexus/run/app-startup-trace.log`
-/// and mirrors checkpoints to the unified log (Console.app: subsystem `com.nexus.NexusApp`, category `startup-trace`).
+/// and mirrors checkpoints to the unified log (Console.app: subsystem `com.oursky.nexus`, category `startup-trace`).
 ///
 /// **Durability:** Lines are written **synchronously** (no `DispatchQueue.async`) and `FileHandle.synchronize()` runs
 /// after each append so a force-quit or SIGKILL often still leaves the **last checkpoint** on disk. Async logging
@@ -14,7 +14,7 @@ import os
 /// Disable file output: `NEXUS_STARTUP_TRACE=0`.
 /// Per-RPC lines (noisy; off by default): `NEXUS_STARTUP_TRACE_RPC=1`.
 public enum StartupTrace {
-    private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "startup-trace")
+    private static let logger = Logger(subsystem: "com.oursky.nexus", category: "startup-trace")
     private static let lock = NSLock()
 
     private static var fileEnabled = true

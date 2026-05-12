@@ -5,7 +5,7 @@ import SwiftUI
 // MARK: - Sheet root
 
 struct NewWorkspaceSheet: View {
-    private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "remote-folder-picker")
+    private static let logger = Logger(subsystem: "com.oursky.nexus", category: "remote-folder-picker")
 
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss

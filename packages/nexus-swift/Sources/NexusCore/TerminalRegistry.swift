@@ -10,7 +10,7 @@ import OSLog
 @MainActor
 public final class TerminalRegistry {
     public static let shared = TerminalRegistry()
-    private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "TerminalRegistry")
+    private static let logger = Logger(subsystem: "com.oursky.nexus", category: "TerminalRegistry")
 
     /// Output ring-buffer for each PTY session ID.
     /// Populated by TabTerminalView.Coordinator when it feeds data to SwiftTerm.

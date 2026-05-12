@@ -8,7 +8,7 @@ import AppKit
 /// There is no embedded or localhost daemon path in production.
 @MainActor
 public final class AppState: ObservableObject {
-    private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "AppState")
+    private static let logger = Logger(subsystem: "com.oursky.nexus", category: "AppState")
 
     // MARK: - PTY state (sidebar accessibility markers for automation / assistive tech)
 
@@ -534,7 +534,7 @@ public final class AppState: ObservableObject {
 
     // MARK: - Editor open via CLI
 
-    private static let openEditorLogger = Logger(subsystem: "com.nexus.NexusApp", category: "OpenEditor")
+    private static let openEditorLogger = Logger(subsystem: "com.oursky.nexus", category: "OpenEditor")
 
     /// Spawns `nexus workspace open-editor <id> [--check]` and returns (ok, combinedOutput).
     /// Passes the app's current daemon WebSocket URL + token so the subprocess reuses
@@ -822,7 +822,7 @@ public final class AppState: ObservableObject {
 
     // MARK: - Daemon health check (runs on daemon host via SSH)
 
-    private static let daemonCheckLogger = Logger(subsystem: "com.nexus.NexusApp", category: "DaemonCheck")
+    private static let daemonCheckLogger = Logger(subsystem: "com.oursky.nexus", category: "DaemonCheck")
 
     /// Runs `nexus daemon check [--driver <driver>]` **on the daemon host** via SSH and
     /// returns (allPassed, combinedOutput).

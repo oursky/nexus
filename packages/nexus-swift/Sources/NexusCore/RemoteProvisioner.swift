@@ -29,7 +29,7 @@ public actor RemoteProvisioner {
     public typealias ProgressHandler = @Sendable (Step) async -> Void
 
     private let profile: DaemonProfile
-    private let logger = Logger(subsystem: "com.nexus.NexusApp", category: "RemoteProvisioner")
+    private let logger = Logger(subsystem: "com.oursky.nexus", category: "RemoteProvisioner")
     private var sshScopedPaths: SSHSecurityScopedPaths = .empty
 
     /// Probe SSH connectivity only — no daemon check, no upload, no tunnel.

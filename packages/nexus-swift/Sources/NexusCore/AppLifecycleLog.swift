@@ -10,7 +10,7 @@ public enum AppLifecycleLogLevel: String {
 /// Durable app lifecycle log to support post-crash diagnosis from disk.
 /// File location: ~/.config/nexus/run/nexusapp.log
 public enum AppLifecycleLog {
-    private static let logger = Logger(subsystem: "com.nexus.NexusApp", category: "lifecycle")
+    private static let logger = Logger(subsystem: "com.oursky.nexus", category: "lifecycle")
     private static let lock = NSLock()
     private static var enabled = true
     private static var logPath = ""
