@@ -81,6 +81,8 @@ private struct ProfileEditSheet: View {
     @State private var sshPortText: String = ""
     @State private var sshIdentityText: String = ""
     @State private var sshIdentityBookmark: Data?
+    @State private var sshConfigText: String = ""
+    @State private var sshConfigBookmark: Data?
 
     private enum TestState: Equatable {
         case idle, running, ok, failed(String)
@@ -135,6 +137,20 @@ private struct ProfileEditSheet: View {
                         Button("Clear") {
                             sshIdentityText = ""
                             sshIdentityBookmark = nil
+                        }
+                    }
+                }
+            }
+
+            LabeledField("SSH Config") {
+                HStack(spacing: 6) {
+                    TextField("~/.ssh/config", text: $sshConfigText)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Browse…") { chooseSSHConfigFile() }
+                    if !sshConfigText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Button("Clear") {
+                            sshConfigText = ""
+                            sshConfigBookmark = nil
                         }
                     }
                 }
@@ -219,12 +235,19 @@ private struct ProfileEditSheet: View {
                     } else {
                         p.sshIdentityBookmark = sshIdentityBookmark
                     }
+                    let configChanged = sshConfigText != (profile.sshConfigPath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if configChanged, sshConfigBookmark == profile.sshConfigBookmark {
+                        p.sshConfigBookmark = nil
+                    } else {
+                        p.sshConfigBookmark = sshConfigBookmark
+                    }
+                    p.sshConfigPath = sshConfigText.isEmpty ? nil : sshConfigText
                     validationMessage = nil
                     onSave(p)
                 }
                 .keyboardShortcut(.return)
                 .buttonStyle(.borderedProminent)
-                .disabled(profile.name.isEmpty || sshTargetText.isEmpty)
+                .disabled(profile.name.isEmpty || sshTargetText.isEmpty || sshConfigText.isEmpty)
             }
         }
         .padding(Theme.spaceXl)
@@ -235,6 +258,8 @@ private struct ProfileEditSheet: View {
             sshPortText = profile.sshPort.map { String($0) } ?? ""
             sshIdentityText = profile.sshIdentity ?? ""
             sshIdentityBookmark = profile.sshIdentityBookmark
+            sshConfigText = profile.sshConfigPath ?? ""
+            sshConfigBookmark = profile.sshConfigBookmark
         }
         .onChange(of: sshTargetText) { _ in testState = .idle }
         .onChange(of: sshPortText) { _ in testState = .idle }
@@ -263,6 +288,10 @@ private struct ProfileEditSheet: View {
         let identity = sshIdentityText.trimmingCharacters(in: .whitespacesAndNewlines)
         if identity.isEmpty {
             return "SSH identity key is required. Click Browse… to select your private key."
+        }
+        let config = sshConfigText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if config.isEmpty {
+            return "SSH config file is required. Click Browse… to select ~/.ssh/config."
         }
         return nil
     }
@@ -302,19 +331,39 @@ private struct ProfileEditSheet: View {
         panel.directoryURL = URL(fileURLWithPath: (NSHomeDirectory() as NSString).appendingPathComponent(".ssh"))
 
         if panel.runModal() == .OK, let url = panel.url {
-            captureBookmark(from: url, targetPath: &sshIdentityText, targetBookmark: &sshIdentityBookmark)
+            captureBookmark(from: url, targetPath: &sshIdentityText, targetBookmark: &sshIdentityBookmark, readOnly: true)
             testState = .idle
         }
     }
 
-    private func captureBookmark(from url: URL, targetPath: inout String, targetBookmark: inout Data?) {
+    private func chooseSSHConfigFile() {
+        let panel = NSOpenPanel()
+        panel.message = "Select your SSH config file (~/.ssh/config)"
+        panel.prompt = "Select"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.showsHiddenFiles = true
+        panel.directoryURL = URL(fileURLWithPath: (NSHomeDirectory() as NSString).appendingPathComponent(".ssh"))
+
+        if panel.runModal() == .OK, let url = panel.url {
+            captureBookmark(from: url, targetPath: &sshConfigText, targetBookmark: &sshConfigBookmark, readOnly: false)
+        }
+    }
+
+    private func captureBookmark(from url: URL, targetPath: inout String, targetBookmark: inout Data?, readOnly: Bool) {
         let started = url.startAccessingSecurityScopedResource()
         defer {
             if started { url.stopAccessingSecurityScopedResource() }
         }
         do {
+            var options: URL.BookmarkCreationOptions = [.withSecurityScope]
+            if readOnly {
+                options.insert(.securityScopeAllowOnlyReadAccess)
+            }
             let bookmark = try url.bookmarkData(
-                options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+                options: options,
                 includingResourceValuesForKeys: nil,
                 relativeTo: nil
             )
@@ -444,6 +493,24 @@ public struct RemoteProfileSettingsView: View {
             profiles = profiles.map { p in p.profileId == profile.profileId ? profile : p }
         }
         store.save(profiles)
+        writeSSHConfigIncludes(profile)
         Task { await appState.reconnect() }
+    }
+
+    /// Resolves the SSH config security-scoped bookmark and writes
+    /// the Nexus Include lines into `~/.ssh/config`.  The bookmark was
+    /// captured by `ProfileEditSheet.captureBookmark` with read-write
+    /// access so the app can modify the file despite the sandbox.
+    private func writeSSHConfigIncludes(_ profile: DaemonProfile) {
+        guard let bookmarkData = profile.sshConfigBookmark else { return }
+        do {
+            var stale = false
+            let url = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &stale)
+            guard url.startAccessingSecurityScopedResource() else { return }
+            defer { url.stopAccessingSecurityScopedResource() }
+            try NexusSSHConfigSnippet.installIncludeIfNeeded(at: url)
+        } catch {
+            print("Failed to write SSH config includes: \(error.localizedDescription)")
+        }
     }
 }

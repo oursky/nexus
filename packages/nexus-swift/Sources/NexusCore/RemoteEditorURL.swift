@@ -61,6 +61,23 @@ public enum NexusSSHConfigSnippet {
         let cfgPath = sshConfigPath()
         try FileManager.default.createDirectory(atPath: sshDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try FileManager.default.createDirectory(atPath: nexusSSHDir(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try installIncludeBlock(at: cfgPath)
+    }
+
+    /// Identical to `installIncludeIfNeeded()` but reads from and writes to a
+    /// security-scoped file `URL` obtained through an `NSOpenPanel` bookmark.
+    /// Caller must have called `startAccessingSecurityScopedResource()` on the URL
+    /// and must call `stopAccessingSecurityScopedResource()` after.
+    public static func installIncludeIfNeeded(at sshConfigURL: URL) throws {
+        // Ensure the container .nexus/ssh/ exists for later writeVMJumpHost calls.
+        try FileManager.default.createDirectory(atPath: containerSSHDir(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try installIncludeBlock(at: sshConfigURL.path)
+    }
+
+    // MARK: Internal helpers
+
+    /// Core Include-line logic shared by both entry points.
+    private static func installIncludeBlock(at cfgPath: String) throws {
         var body = ""
         if FileManager.default.fileExists(atPath: cfgPath) {
             body = try String(contentsOfFile: cfgPath, encoding: .utf8)
