@@ -1,22 +1,26 @@
 import Foundation
 
-/// Builds SSH argument lists with consistent, correct option handling.
+/// Builds SSH argument lists for child `/usr/bin/ssh` processes running under
+/// macOS app sandbox. All SSH invocations that talk to the remote daemon host
+/// must go through this builder so that sandbox-safe arguments are applied
+/// consistently everywhere.
 ///
-/// All SSH invocations that talk to the remote daemon host must go through
-/// this builder so that key-selection enforcement, config-file handling, and
-/// common safety options are applied identically everywhere.
+/// ## Sandbox compliance
+/// Under app-sandbox, child processes CANNOT access `~/.ssh/` files
+/// (Operation not permitted). This builder enforces:
+///   -F /dev/null                    — bypass ~/.ssh/config entirely
+///   -o BatchMode=yes                — never prompt interactively
+///   -o StrictHostKeyChecking=no     — host key validation is the caller's job
+///   -o UserKnownHostsFile=/dev/null — never write to ~/.ssh/known_hosts
+///   -o GlobalKnownHostsFile=/dev/null
 ///
-/// ## Key-selection enforcement
-/// When an explicit identity file is provided the builder adds:
-///   -F /dev/null        — skip ~/.ssh/config so it cannot inject extra keys
-///   -o IdentitiesOnly=yes   — only the explicitly specified key is offered
-///   -o IdentityAgent=none   — SSH agent is not consulted
-///
-/// This means a wrong key fails immediately with "Permission denied" (exit 255)
-/// instead of silently succeeding because the agent or config supplied the real key.
-///
-/// When no identity is given, the SSH config file (-F <path>) is used as
-/// normal so that ProxyJump or custom Hostname entries continue to work.
+/// ## Authentication
+/// All key authentication is handled exclusively through `ssh-agent`
+/// (SSH_AUTH_SOCK). No `-i <key>` flags are ever passed to child processes.
+/// The `identityPath` and `configPath` fields on this struct are retained for
+/// caller API compatibility but have no effect on the generated arguments.
+/// The caller is responsible for ensuring a suitable key is loaded into
+/// ssh-agent before invoking any SSH operation.
 public struct SSHClientArgs {
 
     // MARK: - Inputs

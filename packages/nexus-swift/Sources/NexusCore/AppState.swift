@@ -698,6 +698,7 @@ public final class AppState: ObservableObject {
                     jumpIdentity: jumpIdentity
                 )
                 var args: [String] = [
+                    "-F", "/dev/null",
                     "-o", "BatchMode=yes",
                     "-o", "ConnectTimeout=15",
                     "-o", "StrictHostKeyChecking=no",
@@ -706,13 +707,6 @@ public final class AppState: ObservableObject {
                     "-o", "LogLevel=ERROR",
                     "-o", "ProxyCommand=\(proxyCmd)",
                 ]
-                // In sandboxed builds, SSH cannot access ~/.ssh/id_* defaults.
-                // Explicit -i is required for both the ProxyCommand AND the main
-                // connection to the VM guest.
-                if let idf = jumpIdentity?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !idf.isEmpty {
-                    args += ["-i", idf]
-                }
                 args += [
                     "-p", port,
                     "root@\(host)",
@@ -772,6 +766,7 @@ public final class AppState: ObservableObject {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             proc.arguments = [
+                "-F", "/dev/null",
                 "-o", "BatchMode=yes",
                 "-o", "ConnectTimeout=10",
                 "-o", "StrictHostKeyChecking=no",
@@ -805,12 +800,16 @@ public final class AppState: ObservableObject {
     }
 
     /// Builds the SSH ProxyCommand string for jumping through the engine host to the VM.
+    /// NOTE: `jumpIdentity` is accepted for API compatibility but IGNORED —
+    /// child `/usr/bin/ssh` processes cannot read key files under app-sandbox.
+    /// Authentication is handled exclusively through ssh-agent (SSH_AUTH_SOCK).
     private static func buildProxyCommand(
         proxyJump: String,
         jumpPort: Int,
         jumpIdentity: String?
     ) -> String {
         var jumpArgs: [String] = [
+            "-F", "/dev/null",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "GlobalKnownHostsFile=/dev/null",
@@ -820,10 +819,6 @@ public final class AppState: ObservableObject {
         ]
         if jumpPort > 0 {
             jumpArgs += ["-p", String(jumpPort)]
-        }
-        if let idf = jumpIdentity?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !idf.isEmpty {
-            jumpArgs += ["-i", idf]
         }
         jumpArgs += ["-W", "%h:%p", proxyJump]
         return "ssh " + jumpArgs.joined(separator: " ")
@@ -1612,10 +1607,13 @@ public final class AppState: ObservableObject {
                     let proc = Process()
                     proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
                     proc.arguments = [
-                        "-o", "StrictHostKeyChecking=accept-new",
+                        "-F", "/dev/null",
+                        "-o", "BatchMode=yes",
+                        "-o", "StrictHostKeyChecking=no",
+                        "-o", "UserKnownHostsFile=/dev/null",
+                        "-o", "GlobalKnownHostsFile=/dev/null",
                         "-o", "ConnectTimeout=5",
                         "-p", String(sshPort),
-                        "-i", identity,
                         sshHost, "echo ok"
                     ]
                     let outPipe = Pipe()

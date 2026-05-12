@@ -1055,6 +1055,9 @@ public final class HeadlessRPCServer {
         }
         let sshPort = dict["sshPort"] as? Int ?? 22
         let sshIdentity = dict["sshIdentity"] as? String
+        // NOTE: sshIdentity was previously passed via -i but is now IGNORED —
+        // child /usr/bin/ssh cannot read key files under app-sandbox.
+        // Auth is via ssh-agent exclusively.
 
         var args = [
             "-p", "\(sshPort)",
@@ -1063,10 +1066,8 @@ public final class HeadlessRPCServer {
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "GlobalKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=15",
+            "-o", "BatchMode=yes",
         ]
-        if let identity = sshIdentity, !identity.isEmpty {
-            args += ["-i", identity]
-        }
 
         // Pipe the clean-room script via stdin to `bash -s` to avoid:
         // - SIGPIPE from broken stdout pipe (trap '' PIPE + exec to /dev/null)

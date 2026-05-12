@@ -56,13 +56,21 @@ actor SpotlightManager {
 
     /// Start daemon-side port forwarding tunnels (replaces Go's `sshtunnel.MultiWithOptions`).
     /// Returns the tunnel status and the list of (localPort, targetPort) pairs.
+    /// NOTE: `identityFile` is accepted for API compatibility but IGNORED —
+    /// child `/usr/bin/ssh` processes cannot read key files under app-sandbox.
+    /// Authentication is handled exclusively through ssh-agent (SSH_AUTH_SOCK).
     func startDaemonTunnels(workspaceID: String, host: String, sshPort: Int, identityFile: String) async throws {
         let (_, forwards) = try await client.startTunnels(workspaceId: workspaceID)
 
         // Build SSH command args
-        var args = ["-N", "-o", "StrictHostKeyChecking=accept-new", "-o", "ExitOnForwardFailure=yes"]
+        var args = ["-F", "/dev/null"]
+        args += ["-N"]
+        args += ["-o", "StrictHostKeyChecking=no"]
+        args += ["-o", "ExitOnForwardFailure=yes"]
+        args += ["-o", "UserKnownHostsFile=/dev/null"]
+        args += ["-o", "GlobalKnownHostsFile=/dev/null"]
+        args += ["-o", "BatchMode=yes"]
         args += ["-p", String(sshPort)]
-        args += ["-i", identityFile]
         for (localPort, targetPort) in forwards {
             args += ["-L", "\(localPort):127.0.0.1:\(targetPort)"]
         }
