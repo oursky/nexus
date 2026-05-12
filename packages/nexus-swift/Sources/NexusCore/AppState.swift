@@ -545,7 +545,7 @@ public final class AppState: ObservableObject {
         let tok = daemonToken
         let sshHost = cachedProfile?.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines)
         let sshPort = cachedProfile?.sshPort
-        let sshIdentity = cachedProfile?.sshIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sshIdentity = cachedProfile?.resolvedIdentity()
 
         if let sshHost, !sshHost.isEmpty,
            let workspace = repos.flatMap(\.workspaces).first(where: { $0.id == workspaceID }),
@@ -860,7 +860,7 @@ public final class AppState: ObservableObject {
                 let client = SSHClientArgs(
                     sshTarget: sshTarget,
                     port: profile.sshPort,
-                    identityPath: profile.sshIdentity,
+                    identityPath: profile.resolvedIdentity(),
                     configPath: nil
                 )
                 let sshArgs = client.commandArgs(remoteCommand: [remoteCmd])
@@ -1606,7 +1606,7 @@ public final class AppState: ObservableObject {
         if args.contains("ssh") && args.contains("check") {
             let sshHost = cachedProfile?.sshTarget ?? ""
             let sshPort = cachedProfile?.sshPort ?? 22
-            let identity = cachedProfile?.sshIdentity ?? ""
+            let identity = cachedProfile?.resolvedIdentity() ?? ""
             return try await withCheckedThrowingContinuation { cont in
                 DispatchQueue.global(qos: .userInitiated).async {
                     let proc = Process()
@@ -1646,7 +1646,7 @@ public final class AppState: ObservableObject {
     private func runSpotlightRun(workspaceID: String) async throws -> String {
         let sshHost = cachedProfile?.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let sshPort = cachedProfile?.sshPort ?? 22
-        let sshIdentity = cachedProfile?.sshIdentity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sshIdentity = cachedProfile?.resolvedIdentity() ?? ""
 
         // 1. Discover ports
         let ports = try await spotlightManager.discoverPorts(workspaceID: workspaceID)

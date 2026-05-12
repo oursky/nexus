@@ -79,8 +79,6 @@ private struct ProfileEditSheet: View {
 
     @State private var sshTargetText: String = ""
     @State private var sshPortText: String = ""
-    @State private var sshDirPath: String = ""
-    @State private var sshDirBookmark: Data?
 
     private enum TestState: Equatable {
         case idle, running, ok, failed(String)
@@ -123,20 +121,6 @@ private struct ProfileEditSheet: View {
                         .frame(width: 80)
                     Stepper("", value: $profile.port, in: 1...65535)
                         .labelsHidden()
-                }
-            }
-
-            LabeledField("SSH Directory*") {
-                HStack(spacing: 6) {
-                    TextField("~/.ssh", text: $sshDirPath)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Browse…") { chooseSSHDirectory() }
-                    if !sshDirPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Button("Clear") {
-                            sshDirPath = ""
-                            sshDirBookmark = nil
-                        }
-                    }
                 }
             }
 
@@ -211,15 +195,12 @@ private struct ProfileEditSheet: View {
                     var p = profile
                     p.sshTarget = sshTargetText.trimmingCharacters(in: .whitespacesAndNewlines)
                     p.sshPort = Int(sshPortText)
-                    let dirPath = sshDirPath.trimmingCharacters(in: .whitespacesAndNewlines)
-                    p.sshDir = dirPath.isEmpty ? nil : dirPath
-                    p.sshDirBookmark = sshDirBookmark
                     validationMessage = nil
                     onSave(p)
                 }
                 .keyboardShortcut(.return)
                 .buttonStyle(.borderedProminent)
-                .disabled(profile.name.isEmpty || sshTargetText.isEmpty || sshDirPath.isEmpty)
+                .disabled(profile.name.isEmpty || sshTargetText.isEmpty)
             }
         }
         .padding(Theme.spaceXl)
@@ -228,15 +209,11 @@ private struct ProfileEditSheet: View {
         .onAppear {
             sshTargetText = profile.sshTarget ?? ""
             sshPortText = profile.sshPort.map { String($0) } ?? ""
-            sshDirPath = profile.sshDir ?? ""
-            sshDirBookmark = profile.sshDirBookmark
         }
         .onChange(of: sshTargetText) { _ in testState = .idle }
         .onChange(of: sshPortText) { _ in testState = .idle }
-        .onChange(of: sshDirPath) { _ in testState = .idle }
         .onChange(of: sshTargetText) { _ in validationMessage = nil }
         .onChange(of: sshPortText) { _ in validationMessage = nil }
-        .onChange(of: sshDirPath) { _ in validationMessage = nil }
     }
 
     private func validateInputs() -> String? {
@@ -255,10 +232,6 @@ private struct ProfileEditSheet: View {
                 return "SSH port must be between 1 and 65535."
             }
         }
-        let dir = sshDirPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        if dir.isEmpty {
-            return "SSH directory is required. Click Browse… to select ~/.ssh."
-        }
         return nil
     }
 
@@ -268,9 +241,7 @@ private struct ProfileEditSheet: View {
             name: profile.name,
             port: profile.port,
             sshTarget: sshTargetText.isEmpty ? nil : sshTargetText,
-            sshPort: Int(sshPortText),
-            sshDir: sshDirPath.isEmpty ? nil : sshDirPath,
-            sshDirBookmark: sshDirBookmark
+            sshPort: Int(sshPortText)
         )
         Task {
             // Test Connection only verifies SSH auth — not daemon connectivity.
@@ -285,39 +256,6 @@ private struct ProfileEditSheet: View {
         }
     }
 
-    private func chooseSSHDirectory() {
-        let panel = NSOpenPanel()
-        panel.message = "Select your .ssh folder to grant access to all SSH files"
-        panel.prompt = "Select"
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = false
-        panel.showsHiddenFiles = true
-        panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory())
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        captureDirBookmark(from: url)
-    }
-
-    private func captureDirBookmark(from url: URL) {
-        let started = url.startAccessingSecurityScopedResource()
-        defer {
-            if started { url.stopAccessingSecurityScopedResource() }
-        }
-        do {
-            let bookmark = try url.bookmarkData(
-                options: [.withSecurityScope],
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )
-            sshDirPath = url.path
-            sshDirBookmark = bookmark
-            validationMessage = nil
-        } catch {
-            validationMessage = "Failed to store directory permission: \(error.localizedDescription)"
-        }
-    }
 }
 
 // MARK: - Labeled field helper
@@ -437,25 +375,6 @@ public struct RemoteProfileSettingsView: View {
             profiles = profiles.map { p in p.profileId == profile.profileId ? profile : p }
         }
         store.save(profiles)
-        writeSSHConfigIncludes(profile)
         Task { await appState.reconnect() }
-    }
-
-    /// Resolves the .ssh directory security-scoped bookmark and writes
-    /// the Nexus Include lines into `~/.ssh/config`.  The bookmark grants
-    /// read-write access to the directory, so the app can modify config
-    /// despite the sandbox.
-    private func writeSSHConfigIncludes(_ profile: DaemonProfile) {
-        guard let bookmarkData = profile.sshDirBookmark else { return }
-        do {
-            var stale = false
-            let url = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &stale)
-            guard url.startAccessingSecurityScopedResource() else { return }
-            defer { url.stopAccessingSecurityScopedResource() }
-            let configURL = url.appendingPathComponent("config")
-            try NexusSSHConfigSnippet.installIncludeIfNeeded(at: configURL)
-        } catch {
-            print("Failed to write SSH config includes: \(error.localizedDescription)")
-        }
     }
 }

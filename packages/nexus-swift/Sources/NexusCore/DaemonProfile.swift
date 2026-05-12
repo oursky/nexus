@@ -18,20 +18,25 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
     public var lastKnownStatus: ProfileStatus
     public var sshTarget: String?
     public var sshPort: Int?
-    /// Path to the user's `.ssh` directory (resolved from security-scoped bookmark).
-    public var sshDir: String?
-    /// Security-scoped bookmark for the `.ssh` directory (grants access to all files within).
-    public var sshDirBookmark: Data?
-    /// Legacy: kept for Codable backward compatibility — maps to sshDir + "/config".
-    public var sshConfigPath: String? {
-        guard let dir = sshDir?.trimmingCharacters(in: .whitespacesAndNewlines), !dir.isEmpty else { return nil }
-        return (dir as NSString).appendingPathComponent("config")
+    /// Optional explicit SSH identity path. If nil, auto-detected from ~/.ssh/.
+    public var sshIdentity: String?
+    /// Always ~/.ssh/config (app has read-write entitlement for ~/.ssh/).
+    public var sshConfigPath: String { sshDir() + "/config" }
+    /// SSH directory (always ~/.ssh/ — entitlement grants read-write access).
+    public var sshDir: String { Self.sshDir() }
+
+    private static func sshDir() -> String {
+        (NSHomeDirectoryForUser(NSUserName()) ?? NSHomeDirectory())
+            .appending("/.ssh")
     }
-    /// Not persisted — auto-detected from .ssh directory at runtime.
-    public var sshIdentity: String? {
-        guard let dir = sshDir?.trimmingCharacters(in: .whitespacesAndNewlines), !dir.isEmpty else { return nil }
-        let candidates = ["id_ed25519", "id_rsa"]
-        for name in candidates {
+
+    /// Auto-detect identity from ~/.ssh/ if not explicitly set.
+    public func resolvedIdentity() -> String? {
+        if let id = sshIdentity?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+            return id
+        }
+        let dir = sshDir
+        for name in ["id_ed25519", "id_rsa"] {
             let path = (dir as NSString).appendingPathComponent(name)
             if FileManager.default.fileExists(atPath: path) { return path }
         }
@@ -46,8 +51,7 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         lastKnownStatus: ProfileStatus = .unknown,
         sshTarget: String? = nil,
         sshPort: Int? = nil,
-        sshDir: String? = nil,
-        sshDirBookmark: Data? = nil
+        sshIdentity: String? = nil
     ) {
         self.profileId = profileId
         self.name = name
@@ -56,13 +60,12 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         self.lastKnownStatus = lastKnownStatus
         self.sshTarget = sshTarget
         self.sshPort = sshPort
-        self.sshDir = sshDir
-        self.sshDirBookmark = sshDirBookmark
+        self.sshIdentity = sshIdentity
     }
 
     private enum CodingKeys: String, CodingKey {
         case profileId, name, port, isDefault, lastKnownStatus, sshTarget, sshPort
-        case sshDir, sshDirBookmark
+        case sshIdentity
     }
 
     public init(from decoder: Decoder) throws {
@@ -84,9 +87,8 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
             sshPort = nil
         }
 
-        let dir = (try container.decodeIfPresent(String.self, forKey: .sshDir) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        sshDir = dir.isEmpty ? nil : dir
-        sshDirBookmark = try container.decodeIfPresent(Data.self, forKey: .sshDirBookmark)
+        let identity = (try container.decodeIfPresent(String.self, forKey: .sshIdentity) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        sshIdentity = identity.isEmpty ? nil : identity
     }
 
     private static func clampPort(_ value: Int, fallback: Int) -> Int {

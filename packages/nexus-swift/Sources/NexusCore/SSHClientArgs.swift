@@ -50,7 +50,7 @@ public struct SSHClientArgs {
         self.init(
             sshTarget: profile.sshTarget ?? "",
             port: profile.sshPort,
-            identityPath: scopedPaths.identityPath ?? profile.sshIdentity,
+            identityPath: scopedPaths.identityPath ?? profile.resolvedIdentity(),
             configPath: scopedPaths.configPath
         )
     }

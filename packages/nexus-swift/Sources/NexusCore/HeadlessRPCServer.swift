@@ -799,7 +799,6 @@ public final class HeadlessRPCServer {
         }
         let port = dict["port"] as? Int ?? 7777
         let sshIdentity = dict["sshIdentity"] as? String
-        let sshDir = dict["sshDir"] as? String ?? sshIdentity.map { ($0 as NSString).deletingLastPathComponent }
         let sshPort = dict["sshPort"] as? Int
 
         let profile = DaemonProfile(
@@ -807,7 +806,7 @@ public final class HeadlessRPCServer {
             port: port,
             sshTarget: sshTarget,
             sshPort: sshPort,
-            sshDir: sshDir
+            sshIdentity: sshIdentity
         )
         let provisioner = RemoteProvisioner(profile: profile)
         var phases: [[String: String]] = []
@@ -896,7 +895,6 @@ public final class HeadlessRPCServer {
         let port = dict["port"] as? Int ?? 7777
         let sshPort = dict["sshPort"] as? Int
         let sshIdentity = dict["sshIdentity"] as? String
-        let sshDir = dict["sshDir"] as? String ?? sshIdentity.map { ($0 as NSString).deletingLastPathComponent }
         let isDefault = (dict["isDefault"] as? Bool) ?? true
         let profile = DaemonProfile(
             name: name,
@@ -905,7 +903,7 @@ public final class HeadlessRPCServer {
             lastKnownStatus: .unknown,
             sshTarget: sshTarget,
             sshPort: sshPort,
-            sshDir: sshDir
+            sshIdentity: sshIdentity
         )
         guard let action = daemonProfilesSaveAction else {
             return (503, jsonError("profile save action not registered"))
@@ -952,7 +950,6 @@ public final class HeadlessRPCServer {
         }
         let port = dict["port"] as? Int ?? 7777
         let sshIdentity = dict["sshIdentity"] as? String
-        let sshDir = dict["sshDir"] as? String ?? sshIdentity.map { ($0 as NSString).deletingLastPathComponent }
         let sshPort = dict["sshPort"] as? Int
 
         let profile = DaemonProfile(
@@ -960,7 +957,7 @@ public final class HeadlessRPCServer {
             port: port,
             sshTarget: sshTarget,
             sshPort: sshPort,
-            sshDir: sshDir
+            sshIdentity: sshIdentity
         )
         let provisioner = RemoteProvisioner(profile: profile)
         do {
