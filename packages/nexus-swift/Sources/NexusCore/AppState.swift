@@ -1599,18 +1599,17 @@ public final class AppState: ObservableObject {
         }
 
         // 2. Start spotlight on daemon
-        let forwards = try await spotlightManager.startSpotlight(workspaceID: workspaceID, ports: ports)
+        try await spotlightManager.startSpotlight(workspaceID: workspaceID, ports: ports)
 
         // 3. Start SSH tunnels
-        try await spotlightManager.startSSHTunnels(
+        try await spotlightManager.startDaemonTunnels(
             workspaceID: workspaceID,
             host: sshHost,
             sshPort: sshPort,
-            identityFile: sshIdentity,
-            forwards: forwards
+            identityFile: sshIdentity
         )
 
-        return "forwarded \(forwards.count)/\(ports.count) ports"
+        return "forwarded \(ports.count)/\(ports.count) ports"
     }
 
     private func killSpotlightCLI(workspaceID: String) {
