@@ -21,7 +21,7 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
     /// Optional explicit SSH identity path. If nil, auto-detected from ~/.ssh/.
     public var sshIdentity: String?
     /// Always ~/.ssh/config (app has read-write entitlement for ~/.ssh/).
-    public var sshConfigPath: String { sshDir() + "/config" }
+    public var sshConfigPath: String { sshDir + "/config" }
     /// SSH directory (always ~/.ssh/ — entitlement grants read-write access).
     public var sshDir: String { Self.sshDir() }
 
