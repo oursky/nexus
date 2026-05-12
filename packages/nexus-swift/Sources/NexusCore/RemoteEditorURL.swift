@@ -24,11 +24,15 @@ public struct RemoteSSHFolderOpenSpec: Sendable {
     }
 }
 
-/// Writes `~/.config/nexus/ssh` snippets so Remote-SSH can reach libkrun VM guests via `ProxyJump` through the engine host.
-/// `~/.ssh/config` must already contain `Include ~/.config/nexus/ssh/*.ssh.config` (added by `installIncludeIfNeeded`).
+/// Writes `~/.nexus/ssh` snippets so Remote-SSH can reach libkrun VM guests via `ProxyJump` through the engine host.
+/// `~/.ssh/config` must already contain `Include ~/.nexus/ssh/*.ssh.config` (added by `installIncludeIfNeeded`).
 public enum NexusSSHConfigSnippet {
-    private static let marker = "# nexus-vm-remote-editor (managed by Nexus — do not remove)"
-    private static let includeLine = "Include ~/.config/nexus/ssh/*.ssh.config"
+    private static let marker = "# nexus VM remote-editor (managed by Nexus — must be first)"
+    private static let includeLines = [
+        "Include ~/.nexus/ssh/*.ssh.config",
+        "Include ~/Library/Containers/com.oursky.nexus/Data/.nexus/ssh/*.ssh.config",
+        "Include ~/Library/Containers/com.oursky.nexus.local/Data/.nexus/ssh/*.ssh.config",
+    ]
 
     private static func realUserHome() -> String {
         if let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir {
@@ -41,15 +45,17 @@ public enum NexusSSHConfigSnippet {
     }
 
     private static func nexusSSHDir() -> String {
-        (realUserHome() as NSString).appendingPathComponent(".config/nexus/ssh")
+        (realUserHome() as NSString).appendingPathComponent(".nexus/ssh")
     }
 
     private static func sshConfigPath() -> String {
         (realUserHome() as NSString).appendingPathComponent(".ssh/config")
     }
 
-    /// Ensures `~/.ssh/config` contains `Include ~/.config/nexus/ssh/*.ssh.config`.
-    /// If the line is already present (e.g. added by the Lima setup) this is a no-op.
+    /// Ensures `~/.ssh/config` contains the `Include ~/.nexus/ssh/*.ssh.config` block
+    /// (plus sandbox container path variants). If the line is already present this is a no-op.
+    /// The include must be the very first line so that nexus VM host aliases are resolved
+    /// before any catch-all `Host *` block.
     public static func installIncludeIfNeeded() throws {
         let sshDir = (realUserHome() as NSString).appendingPathComponent(".ssh")
         let cfgPath = sshConfigPath()
@@ -60,43 +66,53 @@ public enum NexusSSHConfigSnippet {
             body = try String(contentsOfFile: cfgPath, encoding: .utf8)
         }
 
-        // If the include already exists but not at the top, move it there. This
-        // must come before any `Host *` block or OpenSSH will keep using the raw
-        // alias as HostName, causing Remote-SSH to fail to resolve `nexus-vm-*`.
-        if body.contains(includeLine) || body.contains(marker) {
+        let hasAllIncludes = includeLines.allSatisfy { body.contains($0) }
+        if hasAllIncludes {
+            // Already present — ensure the first managed Include line is at the top.
             let lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-            var firstMeaningfulLine: String?
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
-                firstMeaningfulLine = trimmed
+                if trimmed == includeLines[0] {
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cfgPath)
+                    return
+                }
                 break
-            }
-            if firstMeaningfulLine == includeLine {
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cfgPath)
-                return
-            }
-
-            let filteredLines = lines.filter { line in
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                return trimmed != marker && trimmed != includeLine
-            }
-            body = filteredLines.joined(separator: "\n")
-            if !body.isEmpty, !body.hasPrefix("\n") {
-                body = "\n" + body
             }
         }
 
-        let block = "\(marker)\n\(includeLine)\n"
-        try (block + body).write(toFile: cfgPath, atomically: true, encoding: .utf8)
+        // Remove any previous managed block and any existing copies of our include lines.
+        if let range = body.range(of: "\(marker)\n") {
+            body.removeSubrange(range)
+        }
+        for inc in includeLines {
+            body = body.replacingOccurrences(of: inc, with: "")
+        }
+        // Clean up blank lines resulting from removals.
+        body = body.replacingOccurrences(of: "\n\n\n", with: "\n\n")
+
+        let block = marker + "\n" + includeLines.joined(separator: "\n") + "\n\n"
+        let newBody = block + body
+        try newBody.write(toFile: cfgPath, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cfgPath)
     }
 
-    /// Overwrites `~/.config/nexus/ssh/<hostAlias>.ssh.config` with a ProxyJump stanza for the guest bridge IP.
+    /// Overwrites `~/.nexus/ssh/<hostAlias>.ssh.config` with a ProxyJump stanza for the guest bridge IP.
     /// Sets `VSCODE_AGENT_FOLDER` and `CURSOR_AGENT_FOLDER` to `/workspace/.cursor-server` so
     /// VS Code / Cursor install their server on the large workspace disk, not the small rootfs.
+    /// Returns the sandbox-safe SSH config directory for writing VM jump-host snippets.
+    /// In a sandboxed app, `NSHomeDirectory()` returns the container home
+    /// (e.g. `~/Library/Containers/com.oursky.nexus.local/Data/`), NOT the real home.
+    /// The Include lines in `~/.ssh/config` already reference this container path,
+    /// so OpenSSH clients find the snippets written here.
+    private static func containerSSHDir() -> String {
+        (NSHomeDirectory() as NSString).appendingPathComponent(".nexus/ssh")
+    }
+
     public static func writeVMJumpHost(hostAlias: String, guestIP: String, proxyJump: String, user: String = "root", identityFile: String?) throws {
-        let sshDir = nexusSSHDir()
+        // Write to the sandbox container's .nexus/ssh so the file is accessible
+        // to the app AND picked up by the container-path Include line in ~/.ssh/config.
+        let sshDir = containerSSHDir()
         try FileManager.default.createDirectory(atPath: sshDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let path = (sshDir as NSString).appendingPathComponent("\(hostAlias).ssh.config")
 
