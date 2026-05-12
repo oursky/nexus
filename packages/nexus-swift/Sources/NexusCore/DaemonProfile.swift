@@ -18,10 +18,25 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
     public var lastKnownStatus: ProfileStatus
     public var sshTarget: String?
     public var sshPort: Int?
-    public var sshIdentity: String?
-    public var sshConfigPath: String?
-    public var sshConfigBookmark: Data?
-    public var sshIdentityBookmark: Data?
+    /// Path to the user's `.ssh` directory (resolved from security-scoped bookmark).
+    public var sshDir: String?
+    /// Security-scoped bookmark for the `.ssh` directory (grants access to all files within).
+    public var sshDirBookmark: Data?
+    /// Legacy: kept for Codable backward compatibility — maps to sshDir + "/config".
+    public var sshConfigPath: String? {
+        guard let dir = sshDir?.trimmingCharacters(in: .whitespacesAndNewlines), !dir.isEmpty else { return nil }
+        return (dir as NSString).appendingPathComponent("config")
+    }
+    /// Not persisted — auto-detected from .ssh directory at runtime.
+    public var sshIdentity: String? {
+        guard let dir = sshDir?.trimmingCharacters(in: .whitespacesAndNewlines), !dir.isEmpty else { return nil }
+        let candidates = ["id_ed25519", "id_rsa"]
+        for name in candidates {
+            let path = (dir as NSString).appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: path) { return path }
+        }
+        return nil
+    }
 
     public init(
         profileId: String = UUID().uuidString,
@@ -31,10 +46,8 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         lastKnownStatus: ProfileStatus = .unknown,
         sshTarget: String? = nil,
         sshPort: Int? = nil,
-        sshIdentity: String? = nil,
-        sshConfigPath: String? = nil,
-        sshConfigBookmark: Data? = nil,
-        sshIdentityBookmark: Data? = nil
+        sshDir: String? = nil,
+        sshDirBookmark: Data? = nil
     ) {
         self.profileId = profileId
         self.name = name
@@ -43,15 +56,13 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         self.lastKnownStatus = lastKnownStatus
         self.sshTarget = sshTarget
         self.sshPort = sshPort
-        self.sshIdentity = sshIdentity
-        self.sshConfigPath = sshConfigPath
-        self.sshConfigBookmark = sshConfigBookmark
-        self.sshIdentityBookmark = sshIdentityBookmark
+        self.sshDir = sshDir
+        self.sshDirBookmark = sshDirBookmark
     }
 
     private enum CodingKeys: String, CodingKey {
-        case profileId, name, port, isDefault, lastKnownStatus, sshTarget, sshPort, sshIdentity
-        case sshConfigPath, sshConfigBookmark, sshIdentityBookmark
+        case profileId, name, port, isDefault, lastKnownStatus, sshTarget, sshPort
+        case sshDir, sshDirBookmark
     }
 
     public init(from decoder: Decoder) throws {
@@ -72,12 +83,10 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         } else {
             sshPort = nil
         }
-        let identity = (try container.decodeIfPresent(String.self, forKey: .sshIdentity) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        sshIdentity = identity.isEmpty ? nil : identity
-        let cfgPath = (try container.decodeIfPresent(String.self, forKey: .sshConfigPath) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        sshConfigPath = cfgPath.isEmpty ? nil : cfgPath
-        sshConfigBookmark = try container.decodeIfPresent(Data.self, forKey: .sshConfigBookmark)
-        sshIdentityBookmark = try container.decodeIfPresent(Data.self, forKey: .sshIdentityBookmark)
+
+        let dir = (try container.decodeIfPresent(String.self, forKey: .sshDir) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        sshDir = dir.isEmpty ? nil : dir
+        sshDirBookmark = try container.decodeIfPresent(Data.self, forKey: .sshDirBookmark)
     }
 
     private static func clampPort(_ value: Int, fallback: Int) -> Int {

@@ -697,7 +697,7 @@ public final class AppState: ObservableObject {
                     jumpPort: jumpPort,
                     jumpIdentity: jumpIdentity
                 )
-                let args: [String] = [
+                var args: [String] = [
                     "-o", "BatchMode=yes",
                     "-o", "ConnectTimeout=15",
                     "-o", "StrictHostKeyChecking=no",
@@ -705,6 +705,15 @@ public final class AppState: ObservableObject {
                     "-o", "GlobalKnownHostsFile=/dev/null",
                     "-o", "LogLevel=ERROR",
                     "-o", "ProxyCommand=\(proxyCmd)",
+                ]
+                // In sandboxed builds, SSH cannot access ~/.ssh/id_* defaults.
+                // Explicit -i is required for both the ProxyCommand AND the main
+                // connection to the VM guest.
+                if let idf = jumpIdentity?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !idf.isEmpty {
+                    args += ["-i", idf]
+                }
+                args += [
                     "-p", port,
                     "root@\(host)",
                     "whoami",
