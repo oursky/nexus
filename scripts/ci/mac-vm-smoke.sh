@@ -150,6 +150,8 @@ for i in $(seq 1 60); do
 done
 if ! nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
   echo "ERROR: daemon did not open port $PORT" >&2
+  echo "==> Daemon log:" >&2
+  cat "$XDG_STATE_HOME/nexus/daemon.log" >&2 || true
   exit 1
 fi
 

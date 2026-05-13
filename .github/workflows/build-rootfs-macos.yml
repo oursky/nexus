@@ -164,8 +164,8 @@ jobs:
       - name: Run smoke test (workspace create/start/exec/destroy)
         env:
           NEXUS_MAC_VM_STATE: ${{ runner.temp }}/nexus-mac-vm-smoke-state
-          # Skip keychain-dependent network key storage in headless CI
-          NEXUS_DAEMON_NETWORK: "false"
+          # Set static token so daemon skips keychain lookup in headless CI
+          NEXUS_DAEMON_TOKEN: nexus-ci-mac-vm-test
         run: bash scripts/ci/mac-vm-smoke.sh
 
   # ──────────────────────────────────────────────────────────────────────────
