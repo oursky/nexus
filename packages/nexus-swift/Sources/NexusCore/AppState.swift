@@ -607,7 +607,8 @@ public final class AppState: ObservableObject {
             let (sshOK, sshDetail) = await Self.runLocalSSHCheck(
                 guestIP: guestIP,
                 proxyJump: spec.proxyJump,
-                jumpPort: (sshPort ?? 22)
+                jumpPort: (sshPort ?? 22),
+                identityFile: sshIdentity
             )
 
             if checkOnly {
@@ -645,7 +646,8 @@ public final class AppState: ObservableObject {
                 await Self.ensureRemoteDirs(
                     guestIP: guestIP,
                     proxyJump: spec.proxyJump,
-                    jumpPort: (sshPort ?? 22)
+                    jumpPort: (sshPort ?? 22),
+                    identityFile: sshIdentity
                 )
             }
 
@@ -686,24 +688,30 @@ public final class AppState: ObservableObject {
     private static func runLocalSSHCheck(
         guestIP: String,
         proxyJump: String,
-        jumpPort: Int
+        jumpPort: Int,
+        identityFile: String? = nil
     ) async -> (Bool, String) {
         let (host, port) = Self.parseGuestIPPort(guestIP)
         guard let portInt = Int(port) else {
             return (false, "Invalid guest port: \(port)")
         }
 
+        let auth: SSHAuthMethod = identityFile.flatMap { path in
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !trimmed.isEmpty ? .identityFile(URL(fileURLWithPath: trimmed)) : nil
+        } ?? .agent
+
         // Build configs for JumpHostClient
         let jumpConfig = SSHConnectionConfig(
             host: proxyJump,
             port: jumpPort,
-            authMethod: .agent,  // jump host auth via ssh-agent
+            authMethod: auth,  // same key for jump + target
             hostKeyValidation: .acceptOnceThenStrict
         )
         let targetConfig = SSHConnectionConfig(
             host: host,
             port: portInt,
-            authMethod: .agent,  // guest auth via ssh-agent
+            authMethod: auth,
             hostKeyValidation: .acceptOnceThenStrict
         )
 
@@ -725,21 +733,27 @@ public final class AppState: ObservableObject {
     private static func ensureRemoteDirs(
         guestIP: String,
         proxyJump: String,
-        jumpPort: Int
+        jumpPort: Int,
+        identityFile: String? = nil
     ) async {
         let (host, port) = Self.parseGuestIPPort(guestIP)
         guard let portInt = Int(port) else { return }
 
+        let auth: SSHAuthMethod = identityFile.flatMap { path in
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !trimmed.isEmpty ? .identityFile(URL(fileURLWithPath: trimmed)) : nil
+        } ?? .agent
+
         let jumpConfig = SSHConnectionConfig(
             host: proxyJump,
             port: jumpPort,
-            authMethod: .agent,
+            authMethod: auth,
             hostKeyValidation: .acceptOnceThenStrict
         )
         let targetConfig = SSHConnectionConfig(
             host: host,
             port: portInt,
-            authMethod: .agent,
+            authMethod: auth,
             hostKeyValidation: .acceptOnceThenStrict
         )
 
