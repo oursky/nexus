@@ -194,6 +194,8 @@ done
 
 if [[ "$READY_OK" != true ]]; then
   echo "ERROR: workspace did not reach running state in time" >&2
+  echo '==> Daemon log:' >&2
+  cat "$XDG_STATE_HOME/nexus/daemon.log" >&2 || true
   "$NEXUS_BIN" workspace info "$WS_ID" || true
   exit 1
 fi
