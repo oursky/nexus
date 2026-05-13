@@ -17,8 +17,19 @@ import (
 // buildLibkrunDriver builds the macOS libkrun driver bundle.
 func buildLibkrunDriver(cfg Config, _ *store.WorkspaceStore, _ *transport.Hub) (libkrunDriverBundle, error) {
 	shareDir := macvmShareDir()
+	libDir := filepath.Join(shareDir, "lib")
+	for _, name := range []string{"libkrun.dylib", "libkrunfw.dylib"} {
+		p := filepath.Join(libDir, name)
+		if _, err := os.Stat(p); err != nil {
+			if os.IsNotExist(err) {
+				return libkrunDriverBundle{}, ErrLibkrunNotBootstrapped
+			}
+			return libkrunDriverBundle{}, err
+		}
+	}
+
 	driver := macvm.NewDriver(macvm.ManagerConfig{
-		LibDir:          filepath.Join(shareDir, "lib"),
+		LibDir:          libDir,
 		VMWorkDir:       filepath.Join(shareDir, "macvm-workspaces"),
 		RootFSCachePath: cfg.RootFSPath,
 		EmbeddedAgentFn: cfg.EmbeddedAgentFn,
