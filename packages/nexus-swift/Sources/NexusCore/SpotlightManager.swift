@@ -12,9 +12,15 @@ struct DiscoveredPort: Codable, Sendable {
 actor SpotlightManager {
     private let client: any DaemonClient
     private var sshProcesses: [String: Process] = [:]  // key: workspaceID
+    /// Set by AppState after the app-owned ssh-agent is started.
+    var authSocket: String?
 
     init(client: any DaemonClient) {
         self.client = client
+    }
+
+    func setAuthSocket(_ sock: String?) {
+        authSocket = sock
     }
 
     /// Discover forwarded ports for a workspace using the DaemonClient protocol method.
@@ -79,6 +85,10 @@ actor SpotlightManager {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         proc.arguments = args
+
+        var env = ProcessInfo.processInfo.environment
+        if let sock = authSocket { env["SSH_AUTH_SOCK"] = sock }
+        proc.environment = env
 
         let errPipe = Pipe()
         proc.standardError = errPipe

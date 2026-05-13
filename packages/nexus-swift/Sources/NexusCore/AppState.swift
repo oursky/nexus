@@ -84,6 +84,10 @@ public final class AppState: ObservableObject {
     private var tunnelManager: SSHTunnelManager?
     private var daemonLogStream: DaemonLogStream?
     private var workspaceCreateMonitorTasks: [String: Task<Void, Never>] = [:]
+    private var sandboxAgent = SandboxSSHAgent()
+    /// Socket path of the running app-owned ssh-agent, or nil if it hasn't started.
+    /// Updated in connectRemoteAndLoad() and used to inject SSH_AUTH_SOCK into child processes.
+    private var agentAuthSocket: String?
     /// PIDs of long-lived `nexus spotlight run <workspaceID>` processes.
     /// Key = workspaceID. SIGTERM on stop.
     private var spotlightCLIProcesses: [String: Int32] = [:]
@@ -569,13 +573,29 @@ public final class AppState: ObservableObject {
             // Best-effort Include line in ~/.ssh/config — may fail under
             // sandbox (read-only .ssh/ entitlement); alias still works via
             // global Include if set previously or via explicit -F flag.
-            do {
-                try NexusSSHConfigSnippet.installIncludeIfNeeded()
-            } catch {
-                // Sandboxed app builds may not have direct access to the real
-                // ~/.ssh config. The alias snippet above is still valid — the
-                // user can add the Include line manually if needed.
-                log.info("open-editor Include line skipped (sandbox likely): \(error.localizedDescription, privacy: .public)")
+            // Try the security-scoped bookmark first (required for TestFlight/App Sandbox).
+            if let bookmark = cachedProfile?.sshConfigBookmark {
+                var isStale = false
+                if let configURL = try? URL(resolvingBookmarkData: bookmark,
+                                            options: .withSecurityScope,
+                                            relativeTo: nil,
+                                            bookmarkDataIsStale: &isStale),
+                   !isStale,
+                   configURL.startAccessingSecurityScopedResource() {
+                    defer { configURL.stopAccessingSecurityScopedResource() }
+                    do {
+                        try NexusSSHConfigSnippet.installIncludeIfNeeded(at: configURL)
+                        log.info("open-editor Include line installed via bookmark")
+                    } catch {
+                        log.info("open-editor Include (bookmark) failed: \(error.localizedDescription, privacy: .public)")
+                    }
+                }
+            } else {
+                do {
+                    try NexusSSHConfigSnippet.installIncludeIfNeeded()
+                } catch {
+                    log.info("open-editor Include line skipped (sandbox likely): \(error.localizedDescription, privacy: .public)")
+                }
             }
         }
 
@@ -608,7 +628,8 @@ public final class AppState: ObservableObject {
                 guestIP: guestIP,
                 proxyJump: spec.proxyJump,
                 jumpPort: (sshPort ?? 22),
-                jumpIdentity: spec.identityFile
+                jumpIdentity: spec.identityFile,
+                authSocket: agentAuthSocket
             )
 
             if checkOnly {
@@ -642,12 +663,14 @@ public final class AppState: ObservableObject {
             }
 
             // Best-effort ensure remote editor server dirs on the VM (fire-and-forget)
-            Task.detached(priority: .utility) { [guestIP, spec, sshPort, sshIdentity] in
+            let capturedAgentSock = agentAuthSocket
+            Task.detached(priority: .utility) { [guestIP, spec, sshPort, sshIdentity, capturedAgentSock] in
                 await Self.ensureRemoteDirs(
                     guestIP: guestIP,
                     proxyJump: spec.proxyJump,
                     jumpPort: (sshPort ?? 22),
-                    jumpIdentity: sshIdentity
+                    jumpIdentity: sshIdentity,
+                    authSocket: capturedAgentSock
                 )
             }
 
@@ -687,20 +710,12 @@ public final class AppState: ObservableObject {
         guestIP: String,
         proxyJump: String,
         jumpPort: Int,
-        jumpIdentity: String?
+        jumpIdentity: String?,
+        authSocket: String? = nil
     ) async -> (Bool, String) {
-        // Ensure the identity is loaded into ssh-agent before child ssh runs.
-        // Child processes cannot read ~/.ssh/ files (sandbox), so all auth
-        // must go through SSH_AUTH_SOCK.
-        if let idf = jumpIdentity, !idf.isEmpty {
-            _ = Self.ensureIdentityInAgent(identityFile: idf)
-        }
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                if let idf = jumpIdentity, !idf.isEmpty {
-            _ = Self.ensureIdentityInAgent(identityFile: idf)
-        }
-        let (host, port) = Self.parseGuestIPPort(guestIP)
+                let (host, port) = Self.parseGuestIPPort(guestIP)
                 let proxyCmd = Self.buildProxyCommand(
                     proxyJump: proxyJump,
                     jumpPort: jumpPort,
@@ -726,6 +741,7 @@ public final class AppState: ObservableObject {
                 proc.arguments = args
                 var env = ProcessInfo.processInfo.environment
                 env["SHELL"] = "/bin/sh"
+                if let sock = authSocket { env["SSH_AUTH_SOCK"] = sock }
                 proc.environment = env
 
                 let errPipe = Pipe()
@@ -762,11 +778,9 @@ public final class AppState: ObservableObject {
         guestIP: String,
         proxyJump: String,
         jumpPort: Int,
-        jumpIdentity: String?
+        jumpIdentity: String?,
+        authSocket: String? = nil
     ) async {
-        if let idf = jumpIdentity, !idf.isEmpty {
-            _ = Self.ensureIdentityInAgent(identityFile: idf)
-        }
         let (host, port) = Self.parseGuestIPPort(guestIP)
         let proxyCmd = Self.buildProxyCommand(
             proxyJump: proxyJump,
@@ -792,6 +806,7 @@ public final class AppState: ObservableObject {
             ]
             var env = ProcessInfo.processInfo.environment
             env["SHELL"] = "/bin/sh"
+            if let sock = authSocket { env["SSH_AUTH_SOCK"] = sock }
             proc.environment = env
             proc.standardOutput = FileHandle.nullDevice
             proc.standardError = FileHandle.nullDevice
@@ -809,54 +824,6 @@ public final class AppState: ObservableObject {
             return (host, port)
         }
         return (guestIP, "22")
-    }
-
-    // MARK: - SSH Identity Agent
-
-    /// Loads the identity file into ssh-agent so child ssh processes (which use
-    /// -F /dev/null and no -i) can authenticate via SSH_AUTH_SOCK.
-    ///
-    /// Passphrase-protected keys require the passphrase to be in the macOS Keychain
-    /// or entered via ssh-add before opening the app. This method does not handle
-    /// passphrase prompts (no TTY in a GUI app).
-    private static func ensureIdentityInAgent(identityFile path: String) -> Bool {
-        // Under app-sandbox child processes cannot read ~/.ssh/ files.
-        // Read the key in the parent (which has security-scoped access),
-        // then pipe it to ssh-add via stdin so the child never touches the filesystem.
-        let keyURL = URL(fileURLWithPath: path)
-        let keyData: Data
-        do {
-            keyData = try Data(contentsOf: keyURL)
-        } catch {
-            AppLifecycleLog.warn("ssh-tunnel", "cannot read identity file \(path): \(error.localizedDescription)")
-            return false
-        }
-
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-add")
-        proc.arguments = ["-"]
-        proc.standardOutput = FileHandle.nullDevice
-        let errPipe = Pipe()
-        proc.standardError = errPipe
-        let inPipe = Pipe()
-        proc.standardInput = inPipe
-        proc.environment = ProcessInfo.processInfo.environment
-        do {
-            try proc.run()
-            inPipe.fileHandleForWriting.write(keyData)
-            inPipe.fileHandleForWriting.closeFile()
-            proc.waitUntilExit()
-            if proc.terminationStatus == 0 { return true }
-            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-            let errStr = String(data: errData, encoding: .utf8) ?? ""
-            if errStr.localizedCaseInsensitiveContains("already") { return true }
-            if errStr.localizedCaseInsensitiveContains("Identity added") { return true }
-            AppLifecycleLog.warn("ssh-tunnel", "ssh-add failed: \(errStr)")
-            return false
-        } catch {
-            AppLifecycleLog.warn("ssh-tunnel", "ssh-add exception: \(error.localizedDescription)")
-            return false
-        }
     }
 
     /// Builds the SSH ProxyCommand string for jumping through the engine host to the VM.
@@ -904,6 +871,7 @@ public final class AppState: ObservableObject {
             return (false, "No daemon profile configured — connect to a daemon host first.")
         }
 
+        let capturedAgentSock = agentAuthSocket
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 // Build the remote nexus command.
@@ -931,6 +899,7 @@ public final class AppState: ObservableObject {
 
                 var env = ProcessInfo.processInfo.environment
                 env["SHELL"] = "/bin/sh"
+                if let sock = capturedAgentSock { env["SSH_AUTH_SOCK"] = sock }
                 proc.environment = env
 
                 do {
@@ -1050,17 +1019,53 @@ public final class AppState: ObservableObject {
         connectionState = .connecting
         StartupTrace.checkpoint("remote.tunnel.start", "sshTarget=\(sshTarget) port=\(profile.port)")
 
-        // ── Load identity file into ssh-agent (child ssh uses -F /dev/null + no -i) ──
-        if let identityPath = profile.resolvedIdentity() {
-            let loaded = Self.ensureIdentityInAgent(identityFile: identityPath)
-            AppLifecycleLog.info("ssh-tunnel",
-                "ssh-add \(identityPath): \(loaded ? "ok" : "failed")")
+        // ── Start app-owned ssh-agent so sandboxed child ssh processes can auth ──
+        // The parent app reads the identity file (security-scoped access via bookmark)
+        // and loads it into an agent whose socket lives in the app container.
+        // Child /usr/bin/ssh processes then use -o IdentityAgent=<sock> pointing at
+        // our agent, so they can authenticate without opening ~/.ssh/ files directly.
+        //
+        // We resolve the identity path via SSHSecurityScope which starts security-scoped
+        // resource access when a bookmark is stored. The scoped access is released once
+        // the key is loaded into the in-process agent (the file is no longer needed).
+        //
+        // We only set agentAuthSocket when the agent has a key loaded. If loading fails,
+        // agentAuthSocket stays nil and child SSH processes inherit the system SSH_AUTH_SOCK
+        // (launchd agent, which may already have the key from the macOS Keychain).
+        let scopedPaths = SSHSecurityScope.resolve(profile: profile, category: "ssh-agent")
+        let agentSock: String? = await sandboxAgent.start()
+        if let sock = agentSock {
+            if let identityPath = scopedPaths.identityPath, !identityPath.isEmpty {
+                let loaded = await sandboxAgent.loadIdentity(identityPath)
+                // Security-scoped access no longer needed — key is in agent memory.
+                SSHSecurityScope.stop(scopedPaths)
+                AppLifecycleLog.info("ssh-tunnel",
+                    "sandbox agent started sock=\(sock) identity=\(identityPath) loaded=\(loaded)")
+                agentAuthSocket = loaded ? sock : nil
+                if !loaded {
+                    AppLifecycleLog.info("ssh-tunnel",
+                        "identity not loaded into app agent — falling back to inherited SSH_AUTH_SOCK")
+                }
+            } else {
+                SSHSecurityScope.stop(scopedPaths)
+                AppLifecycleLog.info("ssh-tunnel", "sandbox agent started sock=\(sock) no identity configured")
+                agentAuthSocket = nil
+            }
+        } else {
+            SSHSecurityScope.stop(scopedPaths)
+            AppLifecycleLog.warn("ssh-tunnel",
+                "sandbox agent failed to start — child ssh processes will inherit system SSH_AUTH_SOCK")
+            agentAuthSocket = nil
         }
 
         // ── Skip auto-provision on start; user must manually provision via Settings ──
         // Provisioning is available via the "Provision Daemon" button in Daemon Settings.
         // This avoids unexpected binary uploads / daemon restarts on every app launch.
         let mgr = SSHTunnelManager(profile: profile)
+        // Only wire child SSH processes to our agent when a key is actually loaded.
+        // Using agentAuthSocket (not agentSock) prevents child SSH from hitting an
+        // empty app agent when key loading fails, preserving SSH_AUTH_SOCK fallback.
+        await mgr.setAuthSocket(agentAuthSocket)
         self.tunnelManager = mgr
         startTunnelStateObserver(mgr)
         let daemonURL: URL
@@ -1225,6 +1230,8 @@ public final class AppState: ObservableObject {
         daemonLogStream = nil
         await tunnelManager?.stop()
         tunnelManager = nil
+        await sandboxAgent.stop()
+        agentAuthSocket = nil
         TerminalRegistry.shared.reset()
         let profile = DaemonProfileStore().defaultProfile()
         self.cachedProfile = profile
@@ -1672,6 +1679,7 @@ public final class AppState: ObservableObject {
             let sshHost = cachedProfile?.sshTarget ?? ""
             let sshPort = cachedProfile?.sshPort ?? 22
             let identity = cachedProfile?.resolvedIdentity() ?? ""
+            let capturedAgentSock = agentAuthSocket
             return try await withCheckedThrowingContinuation { cont in
                 DispatchQueue.global(qos: .userInitiated).async {
                     let proc = Process()
@@ -1686,6 +1694,9 @@ public final class AppState: ObservableObject {
                         "-p", String(sshPort),
                         sshHost, "echo ok"
                     ]
+                    var env = ProcessInfo.processInfo.environment
+                    if let sock = capturedAgentSock { env["SSH_AUTH_SOCK"] = sock }
+                    proc.environment = env
                     let outPipe = Pipe()
                     let errPipe = Pipe()
                     proc.standardOutput = outPipe
@@ -1725,7 +1736,8 @@ public final class AppState: ObservableObject {
         // 2. Start spotlight on daemon
         try await spotlightManager.startSpotlight(workspaceID: workspaceID, ports: ports)
 
-        // 3. Start SSH tunnels
+        // 3. Start SSH tunnels (propagate agent socket so sandboxed child ssh can auth)
+        await spotlightManager.setAuthSocket(agentAuthSocket)
         try await spotlightManager.startDaemonTunnels(
             workspaceID: workspaceID,
             host: sshHost,

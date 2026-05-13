@@ -20,6 +20,12 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
     public var sshPort: Int?
     /// Optional explicit SSH identity path. If nil, auto-detected from ~/.ssh/.
     public var sshIdentity: String?
+    /// Security-scoped bookmark for the SSH identity file. Created via NSOpenPanel so
+    /// the app can re-open the file after relaunches even under full App Sandbox.
+    public var sshIdentityBookmark: Data?
+    /// Security-scoped bookmark for ~/.ssh/config. Created via NSOpenPanel so the app
+    /// can write the Include directive even under full App Sandbox (TestFlight).
+    public var sshConfigBookmark: Data?
     /// Always ~/.ssh/config (app has read-write entitlement for ~/.ssh/).
     public var sshConfigPath: String { sshDir + "/config" }
     /// SSH directory (always ~/.ssh/ — entitlement grants read-write access).
@@ -59,7 +65,9 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         lastKnownStatus: ProfileStatus = .unknown,
         sshTarget: String? = nil,
         sshPort: Int? = nil,
-        sshIdentity: String? = nil
+        sshIdentity: String? = nil,
+        sshIdentityBookmark: Data? = nil,
+        sshConfigBookmark: Data? = nil
     ) {
         self.profileId = profileId
         self.name = name
@@ -69,11 +77,13 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         self.sshTarget = sshTarget
         self.sshPort = sshPort
         self.sshIdentity = sshIdentity
+        self.sshIdentityBookmark = sshIdentityBookmark
+        self.sshConfigBookmark = sshConfigBookmark
     }
 
     private enum CodingKeys: String, CodingKey {
         case profileId, name, port, isDefault, lastKnownStatus, sshTarget, sshPort
-        case sshIdentity
+        case sshIdentity, sshIdentityBookmark, sshConfigBookmark
     }
 
     public init(from decoder: Decoder) throws {
@@ -97,6 +107,9 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
 
         let identity = (try container.decodeIfPresent(String.self, forKey: .sshIdentity) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         sshIdentity = identity.isEmpty ? nil : identity
+
+        sshIdentityBookmark = try container.decodeIfPresent(Data.self, forKey: .sshIdentityBookmark)
+        sshConfigBookmark = try container.decodeIfPresent(Data.self, forKey: .sshConfigBookmark)
     }
 
     private static func clampPort(_ value: Int, fallback: Int) -> Int {

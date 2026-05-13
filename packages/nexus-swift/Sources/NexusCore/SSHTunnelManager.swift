@@ -55,6 +55,7 @@ public actor SSHTunnelManager {
     private var restartTask: Task<Void, Never>?
     private var activeScopedPaths: SSHSecurityScopedPaths = .empty
     private let logger = Logger(subsystem: "com.oursky.nexus", category: "SSHTunnel")
+    private var _authSocket: String?
 
     public init(profile: DaemonProfile) {
         self.profile = profile
@@ -69,6 +70,22 @@ public actor SSHTunnelManager {
     /// The port on the REMOTE host that tunnels back to this Mac's SSH server (port 22).
     /// Zero if no reverse tunnel has been established.
     public var reversePort: Int { _reversePort }
+
+    /// Set the app-owned ssh-agent socket path. Call this before start() so that
+    /// all spawned /usr/bin/ssh child processes can find the agent.
+    public func setAuthSocket(_ sock: String?) {
+        _authSocket = sock
+    }
+
+    /// Build an environment dict for child /usr/bin/ssh processes, merging the
+    /// current process environment with SSH_AUTH_SOCK pointing at the app-owned agent.
+    private func sshProcessEnv() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        if let sock = _authSocket {
+            env["SSH_AUTH_SOCK"] = sock
+        }
+        return env
+    }
 
     // MARK: - setState helper
 
@@ -284,9 +301,9 @@ public actor SSHTunnelManager {
         let remoteBin = "~/.local/bin/nexus"
         #endif
         let resolvedPaths = resolveScopedPaths()
-        // Token fetch uses SSH config for proxyjump/agent; sandbox prevents
-        // subprocess key loading, so identity is not required here.
-        let client = SSHClientArgs(profile: profile, scopedPaths: resolvedPaths)
+        // Token fetch uses SSH agent for auth; IdentityAgent points to the app-owned
+        // agent so child ssh processes don't need to access ~/.ssh/ directly.
+        let client = SSHClientArgs(profile: profile, scopedPaths: resolvedPaths, agentSocket: _authSocket)
         let token = try runSSH(client: client, command: [remoteBin, "daemon", "token"])
         if token.isEmpty { throw TunnelError.tokenFetchFailed }
         return token
@@ -302,6 +319,7 @@ public actor SSHTunnelManager {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         proc.arguments = args
+        proc.environment = sshProcessEnv()
         let pipe = Pipe()
         proc.standardOutput = pipe
         let errPipe = Pipe()
@@ -373,7 +391,8 @@ public actor SSHTunnelManager {
             sshTarget: sshTarget,
             port: profile.sshPort,
             identityPath: identityPath ?? "",
-            configPath: configPath
+            configPath: configPath,
+            agentSocket: _authSocket
         )
         let args = client.tunnelArgs(localPort: localPort, remotePort: remotePort)
         AppLifecycleLog.info(
@@ -385,6 +404,7 @@ public actor SSHTunnelManager {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         proc.arguments = args
+        proc.environment = sshProcessEnv()
 
         let outPipe = Pipe()
         proc.standardOutput = outPipe
@@ -405,7 +425,8 @@ public actor SSHTunnelManager {
             sshTarget: sshTarget,
             port: sshPort,
             identityPath: identityPath ?? "",
-            configPath: configPath
+            configPath: configPath,
+            agentSocket: _authSocket
         )
         // Build args WITHOUT ExitOnForwardFailure — reverse tunnel is best-effort
         var args = client.baseArgs + [
@@ -417,6 +438,7 @@ public actor SSHTunnelManager {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         proc.arguments = args
+        proc.environment = sshProcessEnv()
         let outPipe = Pipe()
         let errPipe = Pipe()
         proc.standardOutput = outPipe
@@ -436,14 +458,16 @@ public actor SSHTunnelManager {
         let client = SSHClientArgs(
             sshTarget: sshTarget,
             port: profile.sshPort,
-            identityPath: identityPath ?? "",
-            configPath: configPath
+            identityPath: identityPath,
+            configPath: configPath,
+            agentSocket: _authSocket
         )
         let args = client.tunnelArgs(localPort: localPort, remotePort: remotePort)
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         proc.arguments = args
+        proc.environment = sshProcessEnv()
 
         let outPipe = Pipe()
         proc.standardOutput = outPipe

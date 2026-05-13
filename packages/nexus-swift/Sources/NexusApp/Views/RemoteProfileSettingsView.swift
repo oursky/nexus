@@ -79,6 +79,8 @@ private struct ProfileEditSheet: View {
 
     @State private var sshTargetText: String = ""
     @State private var sshPortText: String = ""
+    @State private var sshIdentityDisplayPath: String = ""
+    @State private var sshConfigDisplayPath: String = ""
 
     private enum TestState: Equatable {
         case idle, running, ok, failed(String)
@@ -121,6 +123,75 @@ private struct ProfileEditSheet: View {
                         .frame(width: 80)
                     Stepper("", value: $profile.port, in: 1...65535)
                         .labelsHidden()
+                }
+            }
+
+            // SSH Identity (security-scoped bookmark for App Sandbox key access)
+            LabeledField("SSH Key") {
+                HStack(spacing: 6) {
+                    if sshIdentityDisplayPath.isEmpty {
+                        Label("Required for sandbox", systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(.orange)
+                    } else {
+                        Text((sshIdentityDisplayPath as NSString).lastPathComponent)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(Theme.label)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer()
+                    if sshIdentityDisplayPath.isEmpty {
+                        Button("Open Key...") { pickIdentityKey() }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                    } else {
+                        Button("Open Key...") { pickIdentityKey() }
+                            .font(.system(size: 11))
+                    }
+                    if !sshIdentityDisplayPath.isEmpty {
+                        Button {
+                            sshIdentityDisplayPath = ""
+                            profile.sshIdentity = nil
+                            profile.sshIdentityBookmark = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(Theme.labelSecondary)
+                                .font(.system(size: 11))
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+
+            // SSH Config bookmark (security-scoped for Include-line write under App Sandbox)
+            LabeledField("SSH Config") {
+                HStack(spacing: 6) {
+                    if sshConfigDisplayPath.isEmpty {
+                        Text("Auto-detect")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(Theme.labelSecondary)
+                    } else {
+                        Text((sshConfigDisplayPath as NSString).lastPathComponent)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(Theme.label)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer()
+                    Button("Open Config...") { pickSSHConfig() }
+                        .font(.system(size: 11))
+                    if !sshConfigDisplayPath.isEmpty {
+                        Button {
+                            sshConfigDisplayPath = ""
+                            profile.sshConfigBookmark = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(Theme.labelSecondary)
+                                .font(.system(size: 11))
+                        }
+                        .buttonStyle(.borderless)
+                    }
                 }
             }
 
@@ -209,11 +280,108 @@ private struct ProfileEditSheet: View {
         .onAppear {
             sshTargetText = profile.sshTarget ?? ""
             sshPortText = profile.sshPort.map { String($0) } ?? ""
+            // Show the current identity path (from bookmark or explicit path).
+            sshIdentityDisplayPath = resolveBookmarkDisplayPath(profile: profile)
+            // Show the SSH config path if a bookmark is stored.
+            sshConfigDisplayPath = resolveConfigBookmarkDisplayPath(profile: profile)
         }
         .onChange(of: sshTargetText) { _ in testState = .idle }
         .onChange(of: sshPortText) { _ in testState = .idle }
         .onChange(of: sshTargetText) { _ in validationMessage = nil }
         .onChange(of: sshPortText) { _ in validationMessage = nil }
+    }
+
+    private func resolveBookmarkDisplayPath(profile: DaemonProfile) -> String {
+        if let bookmark = profile.sshIdentityBookmark {
+            var isStale = false
+            if let url = try? URL(resolvingBookmarkData: bookmark,
+                                  options: .withSecurityScope,
+                                  relativeTo: nil,
+                                  bookmarkDataIsStale: &isStale) {
+                return url.path
+            }
+        }
+        return profile.sshIdentity ?? ""
+    }
+
+    private func resolveConfigBookmarkDisplayPath(profile: DaemonProfile) -> String {
+        if let bookmark = profile.sshConfigBookmark {
+            var isStale = false
+            if let url = try? URL(resolvingBookmarkData: bookmark,
+                                  options: .withSecurityScope,
+                                  relativeTo: nil,
+                                  bookmarkDataIsStale: &isStale) {
+                return url.path
+            }
+        }
+        return ""
+    }
+
+    private func pickIdentityKey() {
+        let panel = NSOpenPanel()
+        panel.title = "Select SSH Private Key"
+        panel.message = "Choose your SSH private key file (e.g. id_ed25519, id_rsa)"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true
+        // Start in ~/.ssh if it exists; fall back to home dir.
+        let sshDir = (NSHomeDirectory() as NSString).appendingPathComponent(".ssh")
+        if FileManager.default.fileExists(atPath: sshDir) {
+            panel.directoryURL = URL(fileURLWithPath: sshDir)
+        }
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            // Create a security-scoped bookmark so the sandboxed app can re-open
+            // the key file across relaunches (required under proper App Sandbox).
+            let bookmarkData = try url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            profile.sshIdentityBookmark = bookmarkData
+            profile.sshIdentity = url.path
+            sshIdentityDisplayPath = url.path
+            NSLog("[ssh-key] created security-scoped bookmark bytes=%d path=%@", bookmarkData.count, url.path)
+        } catch {
+            // Bookmark creation can fail if the entitlement is missing or the file
+            // is on a volume that doesn't support bookmarks. Fall back to path only.
+            NSLog("[ssh-key] bookmark creation FAILED: %@ path=%@", error.localizedDescription, url.path)
+            profile.sshIdentityBookmark = nil
+            profile.sshIdentity = url.path
+            sshIdentityDisplayPath = url.path
+        }
+    }
+
+    private func pickSSHConfig() {
+        let panel = NSOpenPanel()
+        panel.title = "Select SSH Config File"
+        panel.message = "Choose your ~/.ssh/config file to allow Include-line writes in TestFlight"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true
+        let sshDir = (NSHomeDirectory() as NSString).appendingPathComponent(".ssh")
+        if FileManager.default.fileExists(atPath: sshDir) {
+            panel.directoryURL = URL(fileURLWithPath: sshDir)
+        }
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            let bookmarkData = try url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            profile.sshConfigBookmark = bookmarkData
+            sshConfigDisplayPath = url.path
+        } catch {
+            profile.sshConfigBookmark = nil
+            sshConfigDisplayPath = url.path
+        }
     }
 
     private func validateInputs() -> String? {
