@@ -689,9 +689,18 @@ public final class AppState: ObservableObject {
         jumpPort: Int,
         jumpIdentity: String?
     ) async -> (Bool, String) {
+        // Ensure the identity is loaded into ssh-agent before child ssh runs.
+        // Child processes cannot read ~/.ssh/ files (sandbox), so all auth
+        // must go through SSH_AUTH_SOCK.
+        if let idf = jumpIdentity, !idf.isEmpty {
+            _ = Self.ensureIdentityInAgent(identityFile: idf)
+        }
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let (host, port) = Self.parseGuestIPPort(guestIP)
+                if let idf = jumpIdentity, !idf.isEmpty {
+            _ = Self.ensureIdentityInAgent(identityFile: idf)
+        }
+        let (host, port) = Self.parseGuestIPPort(guestIP)
                 let proxyCmd = Self.buildProxyCommand(
                     proxyJump: proxyJump,
                     jumpPort: jumpPort,
@@ -755,6 +764,9 @@ public final class AppState: ObservableObject {
         jumpPort: Int,
         jumpIdentity: String?
     ) async {
+        if let idf = jumpIdentity, !idf.isEmpty {
+            _ = Self.ensureIdentityInAgent(identityFile: idf)
+        }
         let (host, port) = Self.parseGuestIPPort(guestIP)
         let proxyCmd = Self.buildProxyCommand(
             proxyJump: proxyJump,
