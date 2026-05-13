@@ -51,6 +51,17 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         return nil
     }
 
+    /// Citadel authentication method derived from the profile's identity file.
+    /// Identity files are read in-process (compatible with app-sandbox).
+    /// Falls back to ssh-agent when no identity file is configured.
+    public var authMethod: SSHAuthMethod {
+        if let path = sshIdentity?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !path.isEmpty {
+            return .identityFile(URL(fileURLWithPath: path))
+        }
+        return .agent
+    }
+
     public init(
         profileId: String = UUID().uuidString,
         name: String,

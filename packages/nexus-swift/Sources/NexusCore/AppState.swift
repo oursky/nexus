@@ -607,8 +607,7 @@ public final class AppState: ObservableObject {
             let (sshOK, sshDetail) = await Self.runLocalSSHCheck(
                 guestIP: guestIP,
                 proxyJump: spec.proxyJump,
-                jumpPort: (sshPort ?? 22),
-                jumpIdentity: spec.identityFile
+                jumpPort: (sshPort ?? 22)
             )
 
             if checkOnly {
@@ -646,8 +645,7 @@ public final class AppState: ObservableObject {
                 await Self.ensureRemoteDirs(
                     guestIP: guestIP,
                     proxyJump: spec.proxyJump,
-                    jumpPort: (sshPort ?? 22),
-                    jumpIdentity: sshIdentity
+                    jumpPort: (sshPort ?? 22)
                 )
             }
 
@@ -683,110 +681,84 @@ public final class AppState: ObservableObject {
 
     /// Runs an SSH connectivity check from this Mac through the engine ProxyJump to the VM guest.
     /// Equivalent to Go `runLocalSSHCheck` in `openeditor.go`.
+    /// Checks SSH connectivity to a VM guest via a jump host using Citadel.
+    /// Replaces the old `/usr/bin/ssh -o ProxyCommand=...` Process() call.
     private static func runLocalSSHCheck(
         guestIP: String,
         proxyJump: String,
-        jumpPort: Int,
-        jumpIdentity: String?
+        jumpPort: Int
     ) async -> (Bool, String) {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let (host, port) = Self.parseGuestIPPort(guestIP)
-                let proxyCmd = Self.buildProxyCommand(
-                    proxyJump: proxyJump,
-                    jumpPort: jumpPort,
-                    jumpIdentity: jumpIdentity
-                )
-                var args: [String] = [
-                    "-F", "/dev/null",
-                    "-o", "BatchMode=yes",
-                    "-o", "ConnectTimeout=15",
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "UserKnownHostsFile=/dev/null",
-                    "-o", "GlobalKnownHostsFile=/dev/null",
-                    "-o", "LogLevel=ERROR",
-                    "-o", "ProxyCommand=\(proxyCmd)",
-                ]
-                args += [
-                    "-p", port,
-                    "root@\(host)",
-                    "whoami",
-                ]
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-                proc.arguments = args
-                var env = ProcessInfo.processInfo.environment
-                env["SHELL"] = "/bin/sh"
-                proc.environment = env
+        let (host, port) = Self.parseGuestIPPort(guestIP)
+        guard let portInt = Int(port) else {
+            return (false, "Invalid guest port: \(port)")
+        }
 
-                let errPipe = Pipe()
-                proc.standardError = errPipe
-                proc.standardOutput = FileHandle.nullDevice
+        // Build configs for JumpHostClient
+        let jumpConfig = SSHConnectionConfig(
+            host: proxyJump,
+            port: jumpPort,
+            authMethod: .agent,  // jump host auth via ssh-agent
+            hostKeyValidation: .acceptOnceThenStrict
+        )
+        let targetConfig = SSHConnectionConfig(
+            host: host,
+            port: portInt,
+            authMethod: .agent,  // guest auth via ssh-agent
+            hostKeyValidation: .acceptOnceThenStrict,
+            username: "root"
+        )
 
-                do {
-                    try proc.run()
-                    proc.waitUntilExit()
-                    if proc.terminationStatus == 0 {
-                        continuation.resume(returning: (true, ""))
-                    } else {
-                        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-                        let errStr = String(data: errData, encoding: .utf8)?
-                            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                        let detail = errStr.isEmpty
-                            ? "SSH exited with status \(proc.terminationStatus)"
-                            : errStr
-                        continuation.resume(returning: (false, detail))
-                    }
-                } catch {
-                    continuation.resume(returning: (
-                        false,
-                        "Could not launch ssh: \(error.localizedDescription)"
-                    ))
-                }
-            }
+        let jumpClient = JumpHostClient(factory: SSHClientFactory())
+        do {
+            let result = try await jumpClient.execute(
+                target: targetConfig,
+                via: jumpConfig,
+                command: "whoami"
+            )
+            return (true, result.trimmingCharacters(in: .whitespacesAndNewlines))
+        } catch {
+            return (false, "SSH through jump host failed: \(error.localizedDescription)")
         }
     }
 
-    /// Best-effort: creates `.cursor-server` and `.vscode-server` directories on the VM guest.
-    /// Equivalent to Go `ensureRemoteDir` in `openeditor.go`.
+    /// Best-effort: creates `.cursor-server` and `.vscode-server` directories on the VM guest
+    /// via Citadel jump host (replaces the old `/usr/bin/ssh -o ProxyCommand=...` Process() call).
     private static func ensureRemoteDirs(
         guestIP: String,
         proxyJump: String,
-        jumpPort: Int,
-        jumpIdentity: String?
+        jumpPort: Int
     ) async {
         let (host, port) = Self.parseGuestIPPort(guestIP)
-        let proxyCmd = Self.buildProxyCommand(
-            proxyJump: proxyJump,
-            jumpPort: jumpPort,
-            jumpIdentity: jumpIdentity
+        guard let portInt = Int(port) else { return }
+
+        let jumpConfig = SSHConnectionConfig(
+            host: proxyJump,
+            port: jumpPort,
+            authMethod: .agent,
+            hostKeyValidation: .acceptOnceThenStrict
         )
+        let targetConfig = SSHConnectionConfig(
+            host: host,
+            port: portInt,
+            authMethod: .agent,
+            hostKeyValidation: .acceptOnceThenStrict,
+            username: "root"
+        )
+
+        let jumpClient = JumpHostClient(factory: SSHClientFactory())
         let dirs = ["/workspace/.cursor-server", "/workspace/.vscode-server"]
         for dir in dirs {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            proc.arguments = [
-                "-F", "/dev/null",
-                "-o", "BatchMode=yes",
-                "-o", "ConnectTimeout=10",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "GlobalKnownHostsFile=/dev/null",
-                "-o", "LogLevel=ERROR",
-                "-o", "ProxyCommand=\(proxyCmd)",
-                "-p", port,
-                "root@\(host)",
-                "mkdir", "-p", dir,
-            ]
-            var env = ProcessInfo.processInfo.environment
-            env["SHELL"] = "/bin/sh"
-            proc.environment = env
-            proc.standardOutput = FileHandle.nullDevice
-            proc.standardError = FileHandle.nullDevice
-            try? proc.run()
-            proc.waitUntilExit()
+            do {
+                _ = try await jumpClient.execute(
+                    target: targetConfig,
+                    via: jumpConfig,
+                    command: "mkdir -p \(dir)"
+                )
+            } catch {
+                openEditorLogger.warning("ensureRemoteDirs: failed to create \(dir): \(error.localizedDescription)")
+            }
         }
-        openEditorLogger.info("ensureRemoteDirs completed for guest \(guestIP, privacy: .public)")
+        openEditorLogger.info("ensureRemoteDirs completed for guest \(guestIP)")
     }
 
     /// Splits "host:port" → (host, port); plain IP → (ip, "22").
@@ -800,30 +772,6 @@ public final class AppState: ObservableObject {
     }
 
     /// Builds the SSH ProxyCommand string for jumping through the engine host to the VM.
-    /// NOTE: `jumpIdentity` is accepted for API compatibility but IGNORED —
-    /// child `/usr/bin/ssh` processes cannot read key files under app-sandbox.
-    /// Authentication is handled exclusively through ssh-agent (SSH_AUTH_SOCK).
-    private static func buildProxyCommand(
-        proxyJump: String,
-        jumpPort: Int,
-        jumpIdentity: String?
-    ) -> String {
-        var jumpArgs: [String] = [
-            "-F", "/dev/null",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=15",
-            "-o", "LogLevel=ERROR",
-        ]
-        if jumpPort > 0 {
-            jumpArgs += ["-p", String(jumpPort)]
-        }
-        jumpArgs += ["-W", "%h:%p", proxyJump]
-        return "ssh " + jumpArgs.joined(separator: " ")
-    }
-
     // MARK: - Daemon health check (runs on daemon host via SSH)
 
     private static let daemonCheckLogger = Logger(subsystem: "com.oursky.nexus", category: "DaemonCheck")
@@ -844,52 +792,28 @@ public final class AppState: ObservableObject {
             return (false, "No daemon profile configured — connect to a daemon host first.")
         }
 
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                // Build the remote nexus command.
-                var remoteCmd = "~/.local/bin/nexus daemon check"
-                if let d = driver, !d.isEmpty { remoteCmd += " --driver \(d)" }
-                log.info("daemon check ssh target=\(sshTarget, privacy: .public) cmd=\(remoteCmd, privacy: .public)")
+        let config = SSHConnectionConfig(
+            host: sshTarget,
+            port: profile.sshPort ?? 22,
+            authMethod: profile.authMethod,
+            hostKeyValidation: .acceptOnceThenStrict
+        )
 
-                // Build ssh arguments via shared builder (strict-key enforcement included).
-                let client = SSHClientArgs(
-                    sshTarget: sshTarget,
-                    port: profile.sshPort,
-                    identityPath: profile.resolvedIdentity(),
-                    configPath: nil
-                )
-                let sshArgs = client.commandArgs(remoteCommand: [remoteCmd])
+        do {
+            let factory = SSHClientFactory()
+            let client = try await factory.makeClient(config: config)
+            defer { Task { try? await client.close() } }
 
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-                proc.arguments = sshArgs
+            var remoteCmd = "~/.local/bin/nexus daemon check"
+            if let d = driver, !d.isEmpty { remoteCmd += " --driver \(d)" }
+            log.info("daemon check cmd=\(remoteCmd, privacy: .public)")
 
-                let outPipe = Pipe()
-                let errPipe = Pipe()
-                proc.standardOutput = outPipe
-                proc.standardError  = errPipe
-
-                var env = ProcessInfo.processInfo.environment
-                env["SHELL"] = "/bin/sh"
-                proc.environment = env
-
-                do {
-                    try proc.run()
-                } catch {
-                    log.error("daemon check ssh failed: \(error.localizedDescription, privacy: .public)")
-                    continuation.resume(returning: (false, "SSH launch failed: \(error.localizedDescription)"))
-                    return
-                }
-                proc.waitUntilExit()
-
-                let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                let combined = [out, err].filter { !$0.isEmpty }.joined(separator: "\n")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                let ok = proc.terminationStatus == 0
-                log.info("daemon check finished ok=\(ok, privacy: .public)")
-                continuation.resume(returning: (ok, combined))
-            }
+            let output = try await client.executeCommand(remoteCmd)
+            log.info("daemon check finished ok=true")
+            return (true, output.trimmingCharacters(in: .whitespacesAndNewlines))
+        } catch {
+            log.error("daemon check failed: \(error.localizedDescription, privacy: .public)")
+            return (false, "SSH failed: \(error.localizedDescription)")
         }
     }
 
@@ -1594,55 +1518,6 @@ public final class AppState: ObservableObject {
         }
     }
 
-    /// Run a nexus CLI subcommand with the current daemon connection injected via env vars.
-    /// Returns combined stdout+stderr. Throws if the process exits non-zero.
-    @discardableResult
-    private func runSpotlightCLI(args: [String]) async throws -> String {
-        // This was used for SSH connectivity check and other short CLI operations.
-        // Since client is already connected to daemon, connectivity is verified.
-        // For SSH-specific checks, we can test SSH connectivity directly.
-        if args.contains("ssh") && args.contains("check") {
-            let sshHost = cachedProfile?.sshTarget ?? ""
-            let sshPort = cachedProfile?.sshPort ?? 22
-            let identity = cachedProfile?.resolvedIdentity() ?? ""
-            return try await withCheckedThrowingContinuation { cont in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    let proc = Process()
-                    proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-                    proc.arguments = [
-                        "-F", "/dev/null",
-                        "-o", "BatchMode=yes",
-                        "-o", "StrictHostKeyChecking=no",
-                        "-o", "UserKnownHostsFile=/dev/null",
-                        "-o", "GlobalKnownHostsFile=/dev/null",
-                        "-o", "ConnectTimeout=5",
-                        "-p", String(sshPort),
-                        sshHost, "echo ok"
-                    ]
-                    let outPipe = Pipe()
-                    let errPipe = Pipe()
-                    proc.standardOutput = outPipe
-                    proc.standardError = errPipe
-                    do {
-                        try proc.run()
-                        proc.waitUntilExit()
-                        let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                        let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                        if proc.terminationStatus == 0 {
-                            cont.resume(returning: "SSH connection successful: \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
-                        } else {
-                            cont.resume(throwing: RPCError(message: "SSH check failed (exit \(proc.terminationStatus)): \(err.trimmingCharacters(in: .whitespacesAndNewlines))"))
-                        }
-                    } catch {
-                        cont.resume(throwing: error)
-                    }
-                }
-            }
-        }
-        // For any other args, return success (daemon is connected)
-        return "connected"
-    }
-
     @discardableResult
     private func runSpotlightRun(workspaceID: String) async throws -> String {
         let sshHost = cachedProfile?.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -1658,7 +1533,13 @@ public final class AppState: ObservableObject {
         // 2. Start spotlight on daemon
         try await spotlightManager.startSpotlight(workspaceID: workspaceID, ports: ports)
 
-        // 3. Start SSH tunnels
+        // 3. Start SSH tunnels via Citadel (not child ssh Process)
+        spotlightManager.openTunnel = { [weak self] localPort, remotePort, timeout in
+            guard let tm = self?.tunnelManager else {
+                throw TunnelError.noTarget
+            }
+            return try await tm.openSpotlightTunnel(localPort: localPort, remotePort: remotePort, timeout: timeout)
+        }
         try await spotlightManager.startDaemonTunnels(
             workspaceID: workspaceID,
             host: sshHost,

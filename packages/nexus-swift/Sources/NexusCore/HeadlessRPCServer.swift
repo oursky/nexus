@@ -1,6 +1,8 @@
 import Foundation
+import Foundation
 import Network
 import OSLog
+import Citadel
 
 /// A minimal local HTTP/1.1 server that exposes headless control over terminal tabs,
 /// workspace lifecycle, and remote provisioning for automated end-to-end testing.
@@ -1055,24 +1057,33 @@ public final class HeadlessRPCServer {
         }
         let sshPort = dict["sshPort"] as? Int ?? 22
         let sshIdentity = dict["sshIdentity"] as? String
-        // NOTE: sshIdentity was previously passed via -i but is now IGNORED —
-        // child /usr/bin/ssh cannot read key files under app-sandbox.
-        // Auth is via ssh-agent exclusively.
 
-        var args = [
-            "-p", "\(sshPort)",
-            "-F", "/dev/null",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=15",
-            "-o", "BatchMode=yes",
-        ]
+        let authMethod: SSHAuthMethod
+        if let identity = sshIdentity, !identity.isEmpty {
+            authMethod = .identityFile(URL(fileURLWithPath: identity))
+        } else {
+            authMethod = .agent
+        }
 
-        // Pipe the clean-room script via stdin to `bash -s` to avoid:
-        // - SIGPIPE from broken stdout pipe (trap '' PIPE + exec to /dev/null)
-        // - quoting complexity of inline command strings
-        // - `set -e` interaction with `test && echo` patterns
+        let config = SSHConnectionConfig(
+            host: sshTarget,
+            port: sshPort,
+            authMethod: authMethod,
+            hostKeyValidation: .disabled,
+            connectTimeout: 15
+        )
+
+        let factory = SSHClientFactory()
+        let client: SSHClient
+        do {
+            client = try await factory.makeClient(config: config)
+        } catch {
+            return (500, jsonError("ssh connection failed: \(error.localizedDescription)"))
+        }
+        defer {
+            Task { await client.close() }
+        }
+
         let cleanRoomScript = """
             trap '' PIPE
             set -uo pipefail
@@ -1096,56 +1107,12 @@ public final class HeadlessRPCServer {
             echo "==> Clean-room complete"
             """
 
-        // Pass script via stdin to `bash -s` to avoid quoting/SIGPIPE issues.
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        proc.arguments = args + [sshTarget, "bash -s"]
-
-        let stdinPipe = Pipe()
-        proc.standardInput = stdinPipe
-        if let scriptData = cleanRoomScript.data(using: .utf8) {
-            stdinPipe.fileHandleForWriting.write(scriptData)
-            stdinPipe.fileHandleForWriting.closeFile()
-        }
-
-        // Forward SSH_AUTH_SOCK so SSH key agent works from sandboxed context.
-        var env = ProcessInfo.processInfo.environment
-        if let authSock = env["SSH_AUTH_SOCK"], !authSock.isEmpty {
-            env["SSH_AUTH_SOCK"] = authSock
-        }
-        proc.environment = env
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        proc.standardOutput = outPipe
-        proc.standardError = errPipe
-
-        // Drain both pipes concurrently to prevent buffer deadlock when the process
-        // produces output faster than the caller reads (pipe buffer ~64 KB on macOS).
-        nonisolated(unsafe) var out = ""
-        nonisolated(unsafe) var err = ""
-        let group = DispatchGroup()
-        group.enter()
-        DispatchQueue.global().async {
-            out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            group.leave()
-        }
-        group.enter()
-        DispatchQueue.global().async {
-            err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            group.leave()
-        }
-
+        let out: String
         do {
-            try proc.run()
+            let result = try await client.executeCommandPair(cleanRoomScript)
+            out = String(buffer: result.stdout)
         } catch {
-            return (500, jsonError("ssh failed: \(error.localizedDescription)"))
-        }
-        proc.waitUntilExit()
-        group.wait()
-
-        if proc.terminationStatus != 0 {
-            return (500, jsonError("clean-room script failed (exit \(proc.terminationStatus)): \(err.trimmingCharacters(in: .whitespacesAndNewlines))"))
+            return (500, jsonError("clean-room script failed: \(error.localizedDescription)"))
         }
 
         let payload: [String: Any] = [
