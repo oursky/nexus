@@ -176,9 +176,9 @@ echo "==> workspace start $WS_ID"
 # ---------------------------------------------------------------------------
 # Step 6: Wait for workspace to reach running state
 # ---------------------------------------------------------------------------
-echo "==> Waiting for workspace ready (up to 4 minutes)"
+echo "==> Waiting for workspace ready (up to 8 minutes)"
 READY_OK=false
-for i in $(seq 1 120); do
+for i in $(seq 1 240); do
   STATE="$("$NEXUS_BIN" workspace info "$WS_ID" 2>/dev/null | awk '/^state:/{print $2}')"
   if [[ "$STATE" == "running" ]]; then
     echo "  workspace running after ~$((i * 2))s"
