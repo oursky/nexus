@@ -115,7 +115,9 @@ cmd_start() {
   fi
 
   if ! pgrep -x NexusApp >/dev/null 2>&1; then
-    open "$APP_PATH"
+    # Strip SSH agent env vars so the debug app behaves like a sandboxed
+    # TestFlight install (no inherited launchd ssh-agent).
+    env -u SSH_AUTH_SOCK -u SSH_AGENT_PID open "$APP_PATH"
   fi
 
   if ! wait_for_status "$wait_seconds"; then
