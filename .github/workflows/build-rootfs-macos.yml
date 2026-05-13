@@ -1,0 +1,148 @@
+name: Build macOS VM rootfs
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Rootfs version number (integer, e.g. 1)"
+        required: true
+        default: "1"
+  push:
+    tags:
+      - "rootfs-macos-arm64-v*"
+
+permissions:
+  contents: write   # needed to create releases + upload assets
+
+jobs:
+  build-rootfs:
+    name: Build pre-baked arm64 rootfs
+    runs-on: macos-14   # Apple Silicon, public runner
+    timeout-minutes: 60
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+
+    steps:
+      - name: Checkout oursky/nexus
+        uses: actions/checkout@v4
+        with:
+          repository: oursky/nexus
+          ref: ${{ github.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      - name: Install e2fsprogs (mkfs.ext4)
+        run: brew install e2fsprogs
+
+      - name: Download smolvm dylibs (libkrun)
+        run: bash scripts/local/build-libkrun-darwin.sh
+
+      - name: Build nexus darwin binary
+        working-directory: packages/nexus
+        run: |
+          # Build guest agent for embedding (linux/arm64 static binary)
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+            -trimpath -ldflags='-s -w' \
+            -o cmd/nexus/agent-linux-arm64 \
+            ./cmd/nexus-guest-agent/
+          # Build darwin CLI with embedded dylibs
+          go build -o /usr/local/bin/nexus-build ./cmd/nexus/
+
+      - name: Bootstrap daemon (extract dylibs)
+        run: |
+          nexus-build daemon start --driver vm --network=false --foreground &
+          DAEMON_PID=$!
+          sleep 5
+          kill $DAEMON_PID 2>/dev/null || true
+
+      - name: Bake rootfs
+        run: |
+          NEXUS_DAEMON_TOKEN=ci-token nexus-build daemon start \
+            --driver vm --network=false --foreground 2>&1 | tee /tmp/daemon-bake.log &
+          DAEMON_PID=$!
+
+          # Wait up to 10 minutes for daemon to report ready
+          for i in $(seq 1 120); do
+            if grep -q 'daemon.ready' /tmp/daemon-bake.log 2>/dev/null; then
+              echo "Daemon ready after ${i}x5s"
+              break
+            fi
+            sleep 5
+          done
+
+          kill $DAEMON_PID 2>/dev/null || true
+          ls -lh ~/.cache/nexus/vm/ || ls -lh ~/.local/share/nexus/vm/ || true
+
+      - name: Compress rootfs
+        run: |
+          # Prefer XDG cache location, fall back to legacy share location
+          ROOTFS=""
+          for candidate in \
+            "$HOME/.cache/nexus/vm/rootfs.ext4" \
+            "$HOME/.local/share/nexus/vm/rootfs.ext4"; do
+            if [[ -f "$candidate" ]]; then
+              ROOTFS="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$ROOTFS" ]]; then
+            echo "ERROR: rootfs.ext4 not found" >&2
+            exit 1
+          fi
+          echo "Found rootfs: $ROOTFS ($(du -sh "$ROOTFS" | cut -f1))"
+          gzip -9 -k "$ROOTFS" -c > /tmp/rootfs-macos-arm64.ext4.gz
+          ls -lh /tmp/rootfs-macos-arm64.ext4.gz
+          sha256sum /tmp/rootfs-macos-arm64.ext4.gz | tee /tmp/rootfs-macos-arm64.sha256
+
+      - name: Determine version tag
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="rootfs-macos-arm64-v${{ github.event.inputs.version }}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building rootfs tag: $TAG"
+
+      - name: Create GitHub release + upload asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          SHA256=$(awk '{print $1}' /tmp/rootfs-macos-arm64.sha256)
+
+          gh release create "$TAG" \
+            --repo oursky/nexus \
+            --prerelease \
+            --title "macOS VM rootfs $TAG" \
+            --notes "Pre-baked arm64 Ubuntu rootfs for macOS libkrun VM workspaces.
+
+          SHA256: \`${SHA256}\`
+
+          Built from: ${{ github.sha }}" \
+            /tmp/rootfs-macos-arm64.ext4.gz \
+            /tmp/rootfs-macos-arm64.sha256
+
+          echo "Release created: https://github.com/oursky/nexus/releases/tag/$TAG"
+          echo "Update macvm/bake_version.go: RootFSSHA256 = \"${SHA256}\""
+
+  test-download:
+    name: Verify rootfs download
+    runs-on: macos-14
+    needs: build-rootfs
+    steps:
+      - name: Download and verify
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ needs.build-rootfs.outputs.tag }}"
+          curl -fL \
+            "https://github.com/oursky/nexus/releases/download/${TAG}/rootfs-macos-arm64.ext4.gz" \
+            -o /tmp/rootfs-test.ext4.gz
+          gzip -t /tmp/rootfs-test.ext4.gz && echo "gzip integrity OK"
+          ls -lh /tmp/rootfs-test.ext4.gz
