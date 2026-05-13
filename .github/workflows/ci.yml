@@ -365,9 +365,41 @@ jobs:
             **/coverage/
           retention-days: 1
 
+  # Bubble Tea TUI — runs on GitHub-hosted runners with driver=sandbox (no KVM/libkrun).
+  tui-e2e:
+    name: TUI E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      - name: Build embedded Linux guest-agent (embed prerequisite)
+        if: runner.os == 'Linux'
+        working-directory: packages/nexus
+        run: go generate ./cmd/nexus/
+
+      - name: Run TUI e2e tests
+        working-directory: packages/nexus
+        env:
+          CI: true
+        run: go test -tags e2e -count=1 -timeout=5m -v ./test/e2e/tui/...
+
   # Matches hkfc-style macOS builds: use repository variable NEXUS_MACOS_DEVELOPER_DIR
   # (e.g. /Applications/Xcode_16.2.app/Contents/Developer) on self-hosted runners
   # that install Xcode outside the default path.
+  #
+  # Paused — macOS app development is on hold; keep job skeleton for easy re-enable.
   nexus-swift-macos:
     name: NexusApp (macOS)
     if: false  # disabled: requires self-hosted runner with Xcode; run manually
