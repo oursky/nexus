@@ -11,9 +11,6 @@ packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm.git
     from: "1.2.0"
-  Citadel:
-    url: https://github.com/orlandos-nl/Citadel.git
-    from: "0.8.0"
 
 settings:
   base:
@@ -41,8 +38,6 @@ targets:
     platform: macOS
     sources:
       - path: Sources/NexusCore
-    dependencies:
-      - package: Citadel
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nexus.NexusCore

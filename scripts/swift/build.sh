@@ -20,9 +20,26 @@ else
   echo "✓ BuildInfo updated in NexusRPC.swift (commit=${GIT_COMMIT})"
 fi
 
-echo "Building NexusApp (swift build)..."
-swift build --package-path "$SWIFT_DIR" -c debug 2>&1
+echo "Generating Xcode project..."
+/opt/homebrew/bin/xcodegen generate --spec "$SWIFT_DIR/project.yml" --project "$SWIFT_DIR" --quiet 2>&1 || {
+  echo "⚠ xcodegen not available, continuing with existing project"
+}
+
+echo "Building NexusApp..."
+LOG=$(mktemp)
+set +e
+xcodebuild \
+  -scheme NexusApp \
+  -project "$SWIFT_DIR/NexusApp.xcodeproj" \
+  -configuration Debug \
+  -derivedDataPath "$SWIFT_DIR/.build/xcbuild" \
+  build > "$LOG" 2>&1
 EXIT=$?
+set -e
+
+# Always show errors and the final status line
+grep -E "^.*(error:|BUILD (SUCCEEDED|FAILED))" "$LOG" || true
+rm -f "$LOG"
 
 if [ "$EXIT" -ne 0 ]; then
   echo "✗ NexusApp build FAILED (exit $EXIT)"
@@ -30,39 +47,3 @@ if [ "$EXIT" -ne 0 ]; then
 fi
 
 echo "✓ NexusApp built"
-
-# Create minimal .app bundle for open.sh compatibility
-APP_DIR="$SWIFT_DIR/.build/xcbuild/Build/Products/Debug/NexusApp.app"
-mkdir -p "$APP_DIR/Contents/MacOS"
-mkdir -p "$APP_DIR/Contents/Resources"
-
-# Copy executable (swift build output)
-BINARY_PATH="$SWIFT_DIR/.build/arm64-apple-macosx/debug/NexusApp"
-if [ -f "$BINARY_PATH" ]; then
-  cp "$BINARY_PATH" "$APP_DIR/Contents/MacOS/NexusApp"
-  chmod +x "$APP_DIR/Contents/MacOS/NexusApp"
-fi
-
-# Minimal Info.plist
-if [ ! -f "$APP_DIR/Contents/Info.plist" ]; then
-  cat > "$APP_DIR/Contents/Info.plist" << 'INFOEOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key>
-    <string>NexusApp</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.oursky.nexus</string>
-    <key>CFBundleName</key>
-    <string>NexusApp</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-</dict>
-</plist>
-INFOEOF
-fi

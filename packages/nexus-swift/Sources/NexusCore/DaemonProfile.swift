@@ -51,22 +51,6 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         return nil
     }
 
-    /// Citadel authentication method derived from the profile's identity file.
-    /// Identity files are read in-process (compatible with app-sandbox).
-    /// Falls back to ssh-agent when no identity file is configured.
-    /// NOTE: Citadel does not yet support ssh-agent natively.
-    /// If no identity file is found, connections will fail with identityRequired.
-    /// Users must configure an identity file in Settings.
-    public var authMethod: SSHAuthMethod {
-        if let path = resolvedIdentity(),
-           !path.isEmpty {
-            return .identityFile(URL(fileURLWithPath: path))
-        }
-        // Citadel does not support ssh-agent.
-        // User must configure an explicit identity file.
-        return .agent  // Will cause SSHClientFactory to throw identityRequired
-    }
-
     public init(
         profileId: String = UUID().uuidString,
         name: String,

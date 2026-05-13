@@ -13,17 +13,8 @@ actor SpotlightManager {
     private let client: any DaemonClient
     private var sshProcesses: [String: Process] = [:]  // key: workspaceID
 
-    /// Callback to open a port-forward tunnel via Citadel instead of spawning child ssh.
-    /// Set by AppState when connecting — bridges to SSHTunnelManager.openSpotlightTunnel().
-    private var openTunnel: ((_ localPort: Int, _ remotePort: Int, _ timeout: TimeInterval) async throws -> Int)?
-
     init(client: any DaemonClient) {
         self.client = client
-    }
-
-    /// Set the tunnel callback. Must be called before startDaemonTunnels().
-    func setOpenTunnel(_ callback: @escaping (_ localPort: Int, _ remotePort: Int, _ timeout: TimeInterval) async throws -> Int) {
-        self.openTunnel = callback
     }
 
     /// Discover forwarded ports for a workspace using the DaemonClient protocol method.
@@ -63,37 +54,41 @@ actor SpotlightManager {
         try await client.spotlightStopWorkspace(workspaceId: workspaceID)
     }
 
-    /// Start daemon-side port forwarding tunnels via Citadel instead of child ssh.
+    /// Start daemon-side port forwarding tunnels (replaces Go's `sshtunnel.MultiWithOptions`).
     /// Returns the tunnel status and the list of (localPort, targetPort) pairs.
     /// NOTE: `identityFile` is accepted for API compatibility but IGNORED —
-    /// authentication is handled by the tunnel manager (ssh-agent or Citadel in-process key).
+    /// child `/usr/bin/ssh` processes cannot read key files under app-sandbox.
+    /// Authentication is handled exclusively through ssh-agent (SSH_AUTH_SOCK).
     func startDaemonTunnels(workspaceID: String, host: String, sshPort: Int, identityFile: String) async throws {
         let (_, forwards) = try await client.startTunnels(workspaceId: workspaceID)
 
-        guard let openTunnel = openTunnel else {
-            throw TunnelError.noTarget
-        }
-
-        // Open a Citadel tunnel for each forward. The tunnel manager reuses SSH connections
-        // via spotlightTunnels cache and validates each with a TCP readiness probe.
-        var opened: [Int] = []
+        // Build SSH command args
+        var args = ["-F", "/dev/null"]
+        args += ["-N"]
+        args += ["-o", "StrictHostKeyChecking=no"]
+        args += ["-o", "ExitOnForwardFailure=yes"]
+        args += ["-o", "UserKnownHostsFile=/dev/null"]
+        args += ["-o", "GlobalKnownHostsFile=/dev/null"]
+        args += ["-o", "BatchMode=yes"]
+        args += ["-p", String(sshPort)]
         for (localPort, targetPort) in forwards {
-            do {
-                let port = try await openTunnel(localPort, targetPort, 5)
-                opened.append(port)
-            } catch {
-                // Clean up already-opened tunnels on failure
-                for port in opened {
-                    _ = try? await openTunnel(port, 0, 0) // force close via reuse detection will clean stale
-                }
-                throw error
-            }
+            args += ["-L", "\(localPort):127.0.0.1:\(targetPort)"]
         }
+        args.append(host)
 
-        // Track workspace for cleanup (store local ports instead of Process handles)
-        sshProcesses[workspaceID] = Process() // placeholder — actual lifecycle managed by SSHTunnelManager
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        proc.arguments = args
 
-        AppLifecycleLog.info("spotlight", "started \(opened.count) Citadel tunnels for \(workspaceID): \(forwards.map { "\($0.0)→\($0.1)" }.joined(separator: ", "))")
+        let errPipe = Pipe()
+        proc.standardError = errPipe
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardInput = FileHandle.nullDevice
+
+        try proc.run()
+        sshProcesses[workspaceID] = proc
+
+        AppLifecycleLog.info("spotlight", "started SSH tunnels for \(workspaceID): \(forwards.map { "\($0.0)→\($0.1)" }.joined(separator: ", "))")
     }
 
     /// Kill SSH tunnel process for a workspace.
