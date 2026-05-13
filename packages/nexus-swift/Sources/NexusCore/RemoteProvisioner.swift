@@ -29,14 +29,15 @@ public actor RemoteProvisioner {
     public typealias ProgressHandler = @Sendable (Step) async -> Void
 
     private let profile: DaemonProfile
+    private let agentSocket: String?
     private let logger = Logger(subsystem: "com.oursky.nexus", category: "RemoteProvisioner")
     private var sshScopedPaths: SSHSecurityScopedPaths = .empty
 
     /// Probe SSH connectivity only — no daemon check, no upload, no tunnel.
     /// Runs `echo ok` over SSH and returns true on success.
     /// Throws a descriptive error (with raw SSH stderr) if auth fails or host is unreachable.
-    public static func probeSSH(profile: DaemonProfile) async throws -> Bool {
-        let provisioner = RemoteProvisioner(profile: profile)
+    public static func probeSSH(profile: DaemonProfile, agentSocket: String? = nil) async throws -> Bool {
+        let provisioner = RemoteProvisioner(profile: profile, agentSocket: agentSocket)
         return try await provisioner._probeSSH()
     }
 
@@ -57,8 +58,9 @@ public actor RemoteProvisioner {
     /// Minimum daemon version we require on the remote.
     static let minimumVersion = "0.0.1"
 
-    public init(profile: DaemonProfile) {
+    public init(profile: DaemonProfile, agentSocket: String? = nil) {
         self.profile = profile
+        self.agentSocket = agentSocket
     }
 
     /// Ensure the remote host has a running nexus daemon.
@@ -227,6 +229,9 @@ public actor RemoteProvisioner {
             mv "$TMPFILE" "$HOME/.local/bin/nexus"
             echo installed
             """)
+        var uploadEnv = ProcessInfo.processInfo.environment
+        if let sock = agentSocket { uploadEnv["SSH_AUTH_SOCK"] = sock }
+        proc.environment = uploadEnv
 
         let inputPipe = Pipe()
         let outputPipe = Pipe()
@@ -377,6 +382,9 @@ public actor RemoteProvisioner {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         proc.arguments = makeSSHClient(sshTarget: sshTarget).shellArgs(script: cmd)
+        var daemonEnv = ProcessInfo.processInfo.environment
+        if let sock = agentSocket { daemonEnv["SSH_AUTH_SOCK"] = sock }
+        proc.environment = daemonEnv
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -559,7 +567,7 @@ public actor RemoteProvisioner {
     // MARK: - SSH helpers
 
     private func makeSSHClient(sshTarget: String) -> SSHClientArgs {
-        let client = SSHClientArgs(profile: profile, scopedPaths: sshScopedPaths)
+        let client = SSHClientArgs(profile: profile, scopedPaths: sshScopedPaths, agentSocket: agentSocket)
         AppLifecycleLog.info("provision", "ssh \(client.logDescription)")
         logger.info("provision: SSH command: ssh \(client.commandArgs(remoteCommand: ["<cmd>"]).joined(separator: " "), privacy: .public)")
         return client
@@ -571,6 +579,9 @@ public actor RemoteProvisioner {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         proc.arguments = client.shellArgs(script: script)
+        var env = ProcessInfo.processInfo.environment
+        if let sock = agentSocket { env["SSH_AUTH_SOCK"] = sock }
+        proc.environment = env
         let outPipe = Pipe()
         let errPipe = Pipe()
         proc.standardOutput = outPipe

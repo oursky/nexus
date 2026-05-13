@@ -74,6 +74,7 @@ private struct ProfileRow: View {
 private struct ProfileEditSheet: View {
     @Binding var profile: DaemonProfile
     let isNew: Bool
+    let agentSocket: String?
     let onCancel: () -> Void
     let onSave: (DaemonProfile) -> Void
 
@@ -409,14 +410,19 @@ private struct ProfileEditSheet: View {
             name: profile.name,
             port: profile.port,
             sshTarget: sshTargetText.isEmpty ? nil : sshTargetText,
-            sshPort: Int(sshPortText)
+            sshPort: Int(sshPortText),
+            sshIdentity: profile.sshIdentity,
+            sshIdentityBookmark: profile.sshIdentityBookmark
         )
         Task {
             // Test Connection only verifies SSH auth — not daemon connectivity.
             // The daemon may not exist yet (it gets provisioned after Save).
             // Running a full tunnel here would hang for 30s on hosts with no daemon.
             do {
-                let result = try await RemoteProvisioner.probeSSH(profile: testProfile)
+                let result = try await RemoteProvisioner.probeSSH(
+                    profile: testProfile,
+                    agentSocket: agentSocket
+                )
                 await MainActor.run { testState = result ? .ok : .failed("SSH connected but remote command failed.") }
             } catch {
                 await MainActor.run { testState = .failed(error.localizedDescription) }
@@ -505,6 +511,7 @@ public struct RemoteProfileSettingsView: View {
             ProfileEditSheet(
                 profile: $editingProfile,
                 isNew: isNewProfile,
+                agentSocket: appState.agentAuthSocket,
                 onCancel: { showSheet = false },
                 onSave: { saved in
                     saveProfile(saved)

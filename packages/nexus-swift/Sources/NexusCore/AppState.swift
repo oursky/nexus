@@ -87,7 +87,7 @@ public final class AppState: ObservableObject {
     private var sandboxAgent = SandboxSSHAgent()
     /// Socket path of the running app-owned ssh-agent, or nil if it hasn't started.
     /// Updated in connectRemoteAndLoad() and used to inject SSH_AUTH_SOCK into child processes.
-    private var agentAuthSocket: String?
+    public private(set) var agentAuthSocket: String?
     /// PIDs of long-lived `nexus spotlight run <workspaceID>` processes.
     /// Key = workspaceID. SIGTERM on stop.
     private var spotlightCLIProcesses: [String: Int32] = [:]
