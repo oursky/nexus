@@ -35,6 +35,7 @@
 		AD51BA2C3901D464D639F60D /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9C9A878181FBC6C382D9F0 /* SidebarView.swift */; };
 		B5EC8D397B7A962CD2BDF820 /* debug_pty.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D96DD4872B23F7851C58FC /* debug_pty.swift */; };
 		BDC55CBE4A8A0411ED521DA7 /* GitLogReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADCBCD9E06B53B830CCD0102 /* GitLogReader.swift */; };
+		A1B2C3D4E5F6A7B8C9D0E1F2 /* SandboxSSHAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2E1D0C9B8A7F6E5D4C3B2A1 /* SandboxSSHAgent.swift */; };
 		BEE0BBA0EFDB9C6FFE9212B9 /* SSHClientArgs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16B5A328A971277066265E01 /* SSHClientArgs.swift */; };
 		BFA6AE086469802D3B4DB201 /* LocalWorkspaceState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 005481512D95B12DFBE232BB /* LocalWorkspaceState.swift */; };
 		C1C7D99C12055E99522AC87F /* SSHTunnelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4813F94247C8246742DEA82F /* SSHTunnelManager.swift */; };
@@ -78,6 +79,7 @@
 		1075C8BF288888AA4624C6B0 /* NexusAppTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NexusAppTests.swift; sourceTree = "<group>"; };
 		14DE7269B3B6401897CF20B5 /* TerminalRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalRegistry.swift; sourceTree = "<group>"; };
 		16B5A328A971277066265E01 /* SSHClientArgs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHClientArgs.swift; sourceTree = "<group>"; };
+		F2E1D0C9B8A7F6E5D4C3B2A1 /* SandboxSSHAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SandboxSSHAgent.swift; sourceTree = "<group>"; };
 		21257507DF17D00227008C9D /* nexus-cli-no-sandbox.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "nexus-cli-no-sandbox.entitlements"; sourceTree = "<group>"; };
 		2B1758E3987EA79C35151F7B /* BottomPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BottomPanelView.swift; sourceTree = "<group>"; };
 		2E3741BD5102248BC1C00360 /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
@@ -223,6 +225,7 @@
 				578374C9B41398139FEF60DE /* RemoteEditorURL.swift */,
 				4F536D8D8113B5D7DEAFEEFC /* RemoteProvisioner.swift */,
 				5DDF3C50A7260E08B398CC62 /* SpotlightManager.swift */,
+				F2E1D0C9B8A7F6E5D4C3B2A1 /* SandboxSSHAgent.swift */,
 				16B5A328A971277066265E01 /* SSHClientArgs.swift */,
 				8119AFD4BCAD21CF77FBC6FA /* SSHSecurityScope.swift */,
 				4813F94247C8246742DEA82F /* SSHTunnelManager.swift */,
@@ -495,6 +498,7 @@
 				DCD55CD52BA08D65FF1A4C57 /* PTYSessionManager.swift in Sources */,
 				FDB08C96B9DB1ED11E82C5B5 /* RemoteEditorURL.swift in Sources */,
 				2837D8E1C547498450A97FFE /* RemoteProvisioner.swift in Sources */,
+				A1B2C3D4E5F6A7B8C9D0E1F2 /* SandboxSSHAgent.swift in Sources */,
 				BEE0BBA0EFDB9C6FFE9212B9 /* SSHClientArgs.swift in Sources */,
 				0602F286F9E4B1D94A9855F4 /* SSHSecurityScope.swift in Sources */,
 				C1C7D99C12055E99522AC87F /* SSHTunnelManager.swift in Sources */,
