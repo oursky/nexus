@@ -719,7 +719,8 @@ public final class AppState: ObservableObject {
                 let proxyCmd = Self.buildProxyCommand(
                     proxyJump: proxyJump,
                     jumpPort: jumpPort,
-                    jumpIdentity: jumpIdentity
+                    jumpIdentity: jumpIdentity,
+                    agentSocket: authSocket
                 )
                 var args: [String] = [
                     "-F", "/dev/null",
@@ -731,6 +732,7 @@ public final class AppState: ObservableObject {
                     "-o", "LogLevel=ERROR",
                     "-o", "ProxyCommand=\(proxyCmd)",
                 ]
+                if let sock = authSocket { args += ["-o", "IdentityAgent=\(sock)"] }
                 args += [
                     "-p", port,
                     "root@\(host)",
@@ -833,7 +835,8 @@ public final class AppState: ObservableObject {
     private static func buildProxyCommand(
         proxyJump: String,
         jumpPort: Int,
-        jumpIdentity: String?
+        jumpIdentity: String?,
+        agentSocket: String? = nil
     ) -> String {
         var jumpArgs: [String] = [
             "-F", "/dev/null",
@@ -844,11 +847,14 @@ public final class AppState: ObservableObject {
             "-o", "ConnectTimeout=15",
             "-o", "LogLevel=ERROR",
         ]
+        if let sock = agentSocket {
+            jumpArgs += ["-o", "IdentityAgent=\(sock)"]
+        }
         if jumpPort > 0 {
             jumpArgs += ["-p", String(jumpPort)]
         }
         jumpArgs += ["-W", "%h:%p", proxyJump]
-        return "ssh " + jumpArgs.joined(separator: " ")
+        return "/usr/bin/ssh " + jumpArgs.joined(separator: " ")
     }
 
     // MARK: - Daemon health check (runs on daemon host via SSH)

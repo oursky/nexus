@@ -76,6 +76,7 @@ actor SpotlightManager {
         args += ["-o", "UserKnownHostsFile=/dev/null"]
         args += ["-o", "GlobalKnownHostsFile=/dev/null"]
         args += ["-o", "BatchMode=yes"]
+        if let sock = authSocket { args += ["-o", "IdentityAgent=\(sock)"] }
         args += ["-p", String(sshPort)]
         for (localPort, targetPort) in forwards {
             args += ["-L", "\(localPort):127.0.0.1:\(targetPort)"]
