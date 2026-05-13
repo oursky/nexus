@@ -67,20 +67,103 @@ platform :mac do
       path: variant['provisioning_profile']
     )
 
-    build_mac_app(
-      project: variant['project'],
-      scheme: variant['scheme'],
-      configuration: 'Release',
-      export_method: 'app-store',
-      installer_cert_name: variant['installer_sign_identity'],
-      skip_package_pkg: false,
-      export_options: {
-        provisioningProfiles: {
-          variant['app_identifier'] => variant['provisioning_profile_name'],
-        },
-      },
-      xcargs: "CURRENT_PROJECT_VERSION=#{build_number} MARKETING_VERSION=#{get_version_number(xcodeproj: variant['project'], target: variant['scheme'])} SWIFT_STRICT_CONCURRENCY=minimal NEXUS_APP_BUNDLE_ID=#{variant['app_identifier']} CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=#{variant['team_id']} CODE_SIGN_IDENTITY='#{variant['code_sign_identity']}'"
-    )
+    # ── Build with swift build (avoids xcodegen/xcodebuild SPM transitive C-target issues) ──
+    version = get_version_number(xcodeproj: variant['project'], target: variant['scheme'])
+    UI.message "Running swift build --configuration release..."
+    sh("cd '#{File.dirname(__dir__)}' && swift build --package-path . -c release")
+
+    # ── Create .app bundle ──
+    build_dir = '.build/arm64-apple-macosx/release'
+    app_name = variant['scheme']
+    app_dir = "#{build_dir}/#{app_name}.app"
+    contents = "#{app_dir}/Contents"
+    macros_dir = "#{contents}/MacOS"
+    resources_dir = "#{contents}/Resources"
+
+    FileUtils.rm_rf(app_dir)
+    FileUtils.mkdir_p(macros_dir)
+    FileUtils.mkdir_p(resources_dir)
+
+    # Copy executable
+    binary = "#{build_dir}/#{app_name}"
+    dest_binary = "#{macros_dir}/#{app_name}"
+    FileUtils.cp(binary, dest_binary)
+    FileUtils.chmod('+x', dest_binary)
+
+    # Copy Resources from original project
+    resources_src = 'Sources/NexusApp'
+    if File.directory?(resources_src)
+      Dir.glob("#{resources_src}/*.entitlements").each { |f| FileUtils.cp(f, resources_dir) }
+      if File.directory?("#{resources_src}/Assets.xcassets")
+        FileUtils.cp_r("#{resources_src}/Assets.xcassets", resources_dir)
+      end
+    end
+
+    # Copy resource files next to binary
+    Dir.glob('.build/arm64-apple-macosx/release/*.bundle').each do |bundle|
+      FileUtils.cp_r(bundle, resources_dir)
+    end
+
+    # Copy provisioning profile
+    profile_dest = "#{contents}/embedded.provisionprofile"
+    FileUtils.cp(variant['provisioning_profile'], profile_dest)
+
+    # Write Info.plist
+    File.write("#{contents}/Info.plist", <<~PLIST)
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+      <plist version="1.0">
+      <dict>
+        <key>CFBundleExecutable</key>
+        <string>#{app_name}</string>
+        <key>CFBundleIdentifier</key>
+        <string>#{variant['app_identifier']}</string>
+        <key>CFBundleName</key>
+        <string>#{app_name}</string>
+        <key>CFBundlePackageType</key>
+        <string>APPL</string>
+        <key>CFBundleShortVersionString</key>
+        <string>#{version}</string>
+        <key>CFBundleVersion</key>
+        <string>#{build_number}</string>
+        <key>LSMinimumSystemVersion</key>
+        <string>14.0</string>
+      </dict>
+      </plist>
+    PLIST
+
+    # Write entitlements for codesign
+    entitlements_src = 'Sources/NexusApp/NexusApp.entitlements'
+    unless File.exist?(entitlements_src)
+      entitlements_src = 'Sources/NexusApp/nexus.entitlements'
+    end
+    if File.exist?(entitlements_src)
+      FileUtils.cp(entitlements_src, "#{contents}/app.entitlements")
+    else
+      UI.important "No entitlements file found; signing without entitlements"
+    end
+
+    # ── Code sign the .app ──
+    UI.message "Code signing #{app_name}.app..."
+    sign_args = [
+      '--force',
+      '--timestamp',
+      '--options=runtime',
+      '--sign', "'#{variant['code_sign_identity']}'",
+      '--keychain', "'#{ENV['HOME']}/Library/Keychains/#{variant['keychain_name']}-db'",
+      '--generate-entitlement-der'
+    ]
+    if File.exist?("#{contents}/app.entitlements")
+      sign_args += ['--entitlements', "#{contents}/app.entitlements"]
+    end
+    sh("codesign #{sign_args.join(' ')} '#{app_dir}'")
+
+    # ── Create .pkg ──
+    pkg_name = "#{app_name}-#{version}-#{build_number}.pkg"
+    UI.message "Creating installer package: #{pkg_name}"
+    sh("productbuild --component '#{app_dir}' /Applications --sign '#{variant['installer_sign_identity']}' --keychain '#{ENV['HOME']}/Library/Keychains/#{variant['keychain_name']}-db' '#{pkg_name}'")
+
+    UI.success "#{pkg_name} created"
   end
 
   desc 'Build and notarize a DMG for direct distribution'
