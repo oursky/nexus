@@ -86,7 +86,7 @@ jobs:
       - name: Create 10 GiB sparse ext4 image (mke2fs -d)
         run: |
           echo "Creating sparse ext4 image..."
-          mke2fs -F -t ext4 -L nexus-root \
+          sudo mke2fs -F -t ext4 -L nexus-root \
             -d /tmp/rootfs-staging \
             /tmp/rootfs-macos-arm64.ext4 10G
           ls -lh /tmp/rootfs-macos-arm64.ext4
