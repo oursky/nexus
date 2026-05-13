@@ -43,6 +43,21 @@ func TestLoadDefaultMissing(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultEnvLocalTokenAndPort(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("NEXUS_DAEMON_TOKEN", "env-token")
+	t.Setenv("NEXUS_DAEMON_PORT", "8811")
+
+	p, err := LoadDefault()
+	if err != nil {
+		t.Fatalf("LoadDefault: %v", err)
+	}
+	if p.Name != "env-local" || p.Host != "127.0.0.1" || p.Port != 8811 || p.Token != "env-token" {
+		t.Fatalf("unexpected profile: %+v", p)
+	}
+}
+
 func TestDeleteDefault(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)

@@ -31,7 +31,7 @@ func (m *Manager) Start(ctx context.Context, ws *domainws.Workspace) error {
 		return nil
 	}
 
-	if err := ensureRootFS(ctx, m.cfg); err != nil {
+	if err := EnsureRootFS(ctx, m.cfg); err != nil {
 		return fmt.Errorf("macvm: ensure rootfs: %w", err)
 	}
 

@@ -3,10 +3,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/macvm"
 )
 
 // smolvmLibDir returns the default smolvm installation lib directory (dev fallback).
@@ -90,5 +93,26 @@ func RunDarwinBootstrap(w io.Writer, emitJSON bool, driver string) error {
 		}
 	}
 	emitPhase(w, emitJSON, "runtime-verify", "ok", "libkrun dylibs verified")
+
+	emitPhase(w, emitJSON, "kernel-install", "start", "extracting embedded VM kernel")
+	kernelPath, err := extractEmbeddedKernel()
+	if err != nil {
+		emitPhase(w, emitJSON, "kernel-install", "error", err.Error())
+		return fmt.Errorf("kernel-install: %w", err)
+	}
+	if kernelPath != "" {
+		emitPhase(w, emitJSON, "kernel-install", "ok", fmt.Sprintf("kernel ready at %s", kernelPath))
+	} else {
+		emitPhase(w, emitJSON, "kernel-install", "ok", "skipped (no embedded kernel in this build)")
+	}
+
+	emitPhase(w, emitJSON, "rootfs-prefetch", "start", "ensuring base VM rootfs cache")
+	rootcfg := macvm.DefaultManagerConfig()
+	if prefetchErr := macvm.EnsureRootFS(context.Background(), rootcfg); prefetchErr != nil {
+		emitPhase(w, emitJSON, "rootfs-prefetch", "error", prefetchErr.Error())
+		fmt.Fprintf(w, "  warning: VM rootfs prefetch failed (will retry on workspace start): %v\n", prefetchErr)
+	} else {
+		emitPhase(w, emitJSON, "rootfs-prefetch", "ok", fmt.Sprintf("rootfs cache %s", rootcfg.RootFSCachePath))
+	}
 	return nil
 }

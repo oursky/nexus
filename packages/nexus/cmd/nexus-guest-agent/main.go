@@ -87,6 +87,8 @@ func main() {
 				log.Fatalf("agent base packages: %v", err)
 			}
 		}
+	} else if os.Getenv("NEXUS_SKIP_BASE_PACKAGES") == "1" {
+		emitDiagnostic("agent base packages: NEXUS_SKIP_BASE_PACKAGES=1 — skipping installation (macOS pre-baked rootfs)")
 	} else {
 		// Legacy path: install the full base toolchain synchronously before accepting connections.
 		if err := ensureGuestBasePackages(); err != nil {

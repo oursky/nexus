@@ -96,7 +96,7 @@ jobs:
           echo "Found rootfs: $ROOTFS ($(du -sh "$ROOTFS" | cut -f1))"
           gzip -9 -k "$ROOTFS" -c > /tmp/rootfs-macos-arm64.ext4.gz
           ls -lh /tmp/rootfs-macos-arm64.ext4.gz
-          sha256sum /tmp/rootfs-macos-arm64.ext4.gz | tee /tmp/rootfs-macos-arm64.sha256
+          shasum -a 256 /tmp/rootfs-macos-arm64.ext4.gz | tee /tmp/rootfs-macos-arm64.sha256
 
       - name: Determine version tag
         id: version

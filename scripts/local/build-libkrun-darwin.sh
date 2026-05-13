@@ -21,7 +21,7 @@ TARBALL="$DEST_DIR/libkrun-darwin-arm64.tar.gz"
 echo "Downloading smolvm ${SMOLVM_VERSION} (${SMOLVM_TARBALL_URL})..."
 curl -fsSL "${SMOLVM_TARBALL_URL}" -o "$TARBALL"
 
-echo "${SMOLVM_SHA256}  ${TARBALL}" | sha256sum -c -
+echo "${SMOLVM_SHA256}  ${TARBALL}" | shasum -a 256 -c -
 
 tmp="$(mktemp -d)"
 cleanup() {

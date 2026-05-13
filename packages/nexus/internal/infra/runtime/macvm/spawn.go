@@ -48,7 +48,8 @@ func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 	}
 
 	dockerExt := filepath.Join(cfg.workDir, "docker-data.ext4")
-	if err := ensureDockerDataExt4(dockerExt); err != nil {
+	skipDocker, err := ensureDockerDataExt4(dockerExt)
+	if err != nil {
 		return nil, fmt.Errorf("macvm: docker-data image: %w", err)
 	}
 
@@ -101,8 +102,10 @@ func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 	if err := vmCtx.AddDisk("rootfs", cfg.rootFSPath, 0, false); err != nil {
 		return fail(fmt.Errorf("macvm: add rootfs: %w", err))
 	}
-	if err := vmCtx.AddDisk("docker_data", dockerExt, 0, false); err != nil {
-		return fail(fmt.Errorf("macvm: add docker-data: %w", err))
+	if !skipDocker {
+		if err := vmCtx.AddDisk("docker_data", dockerExt, 0, false); err != nil {
+			return fail(fmt.Errorf("macvm: add docker-data: %w", err))
+		}
 	}
 
 	if cfg.configDir != "" {
@@ -175,14 +178,20 @@ func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 	guestEnv := []string{
 		"NEXUS_CONTAINER_MODE=1",
 		"NEXUS_WORKSPACE_MODE=virtiofs",
-		"NEXUS_DOCKER_DEV=/dev/vdb",
 		"HOME=/root",
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"TERM=xterm-256color",
 	}
+	if skipDocker {
+		guestEnv = append(guestEnv, "NEXUS_VIRTIOFS_SKIP_DOCKER=1")
+	} else {
+		guestEnv = append(guestEnv, "NEXUS_DOCKER_DEV=/dev/vdb")
+	}
 	if cfg.configDir != "" {
 		guestEnv = append(guestEnv, "NEXUS_CONFIG_TAG=nexus-host-config")
 	}
+	// macOS VMs use a pre-baked rootfs; skip the heavy apt-get package installation.
+	guestEnv = append(guestEnv, "NEXUS_SKIP_BASE_PACKAGES=1")
 	if err := vmCtx.SetWorkdir("/"); err != nil {
 		_ = gvp.Stop()
 		return fail(fmt.Errorf("macvm: set workdir: %w", err))

@@ -21,6 +21,11 @@ func applyConfigDefaults(cfg ManagerConfig) ManagerConfig {
 	return cfg
 }
 
+// DefaultManagerConfig returns ManagerConfig with macOS defaults (cache paths, lib dir).
+func DefaultManagerConfig() ManagerConfig {
+	return applyConfigDefaults(ManagerConfig{})
+}
+
 func nexusCacheDir() string {
 	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
 		return filepath.Join(xdg, "nexus")

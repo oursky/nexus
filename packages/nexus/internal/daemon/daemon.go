@@ -528,8 +528,11 @@ func resolvePTYHostBinary() string {
 	if resolved, err := exec.LookPath("pty-host"); err == nil {
 		return resolved
 	}
-	daemonBin := os.Args[0]
-	daemonDir := filepath.Dir(daemonBin)
+	exePath := os.Args[0]
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		exePath = exe
+	}
+	daemonDir := filepath.Dir(exePath)
 	if daemonDir != "" && daemonDir != "." {
 		candidate := filepath.Join(daemonDir, "pty-host")
 		if _, err := os.Stat(candidate); err == nil {

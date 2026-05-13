@@ -81,6 +81,10 @@ func SaveDefault(p *Profile) error {
 // instead of reading from disk. This allows the Mac app to inject connection details
 // when running the CLI binary from a sandboxed environment.
 func LoadDefault() (*Profile, error) {
+	if p := localDaemonProfileFromEnv(); p != nil {
+		return p, nil
+	}
+
 	if host := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_HOST")); host != "" {
 		p := &Profile{
 			Name:  "env",
@@ -122,6 +126,23 @@ func LoadDefault() (*Profile, error) {
 		p.Token = tok
 	}
 	return &p, nil
+}
+
+// localDaemonProfileFromEnv returns a localhost WebSocket profile when both
+// NEXUS_DAEMON_TOKEN and NEXUS_DAEMON_PORT are set. This avoids reading the
+// default profile / OS keychain (which often fails over SSH) while targeting a
+// local daemon started with the same token.
+func localDaemonProfileFromEnv() *Profile {
+	tok := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_TOKEN"))
+	portStr := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_PORT"))
+	if tok == "" || portStr == "" {
+		return nil
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 {
+		return nil
+	}
+	return &Profile{Name: "env-local", Host: "127.0.0.1", Port: port, Token: tok}
 }
 
 // DeleteDefault removes the default profile file and its keychain token.
