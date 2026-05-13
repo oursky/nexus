@@ -5,15 +5,15 @@ import Foundation
 /// Configuration for an SSH connection.
 /// Replaces the ad-hoc ["-F", "/dev/null", "-o", ...] argument arrays
 /// used with Process("/usr/bin/ssh").
-struct SSHConnectionConfig {
-    let host: String
-    let port: Int
-    let authMethod: SSHAuthMethod
-    let hostKeyValidation: HostKeyValidation
-    let connectTimeout: TimeInterval
-    let jumpHost: JumpHostConfig?
+public struct SSHConnectionConfig {
+    public let host: String
+    public let port: Int
+    public let authMethod: SSHAuthMethod
+    public let hostKeyValidation: HostKeyValidation
+    public let connectTimeout: TimeInterval
+    public let jumpHost: JumpHostConfig?
 
-    init(
+    public init(
         host: String,
         port: Int = 22,
         authMethod: SSHAuthMethod,
@@ -33,12 +33,12 @@ struct SSHConnectionConfig {
 // MARK: - Jump Host
 
 /// Configuration for an intermediate jump/bastion host.
-struct JumpHostConfig {
-    let host: String
-    let port: Int
-    let authMethod: SSHAuthMethod
+public struct JumpHostConfig {
+    public let host: String
+    public let port: Int
+    public let authMethod: SSHAuthMethod
 
-    init(
+    public init(
         host: String,
         port: Int = 22,
         authMethod: SSHAuthMethod
@@ -52,7 +52,7 @@ struct JumpHostConfig {
 // MARK: - Authentication Method
 
 /// How the SSH client authenticates.
-enum SSHAuthMethod {
+public enum SSHAuthMethod {
     /// Authenticate via ssh-agent (SSH_AUTH_SOCK). Default for sandbox compatibility.
     case agent
     /// Read an identity file in-process and authenticate with it.
@@ -64,7 +64,7 @@ enum SSHAuthMethod {
 // MARK: - Host Key Validation
 
 /// How the SSH client validates the remote host key.
-enum HostKeyValidation {
+public enum HostKeyValidation {
     /// Validate against known_hosts. Fails if key is unknown or mismatched.
     case strict
     /// Accept on first connection, add to known_hosts, then switch to strict.
