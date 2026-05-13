@@ -15,10 +15,15 @@ actor SpotlightManager {
 
     /// Callback to open a port-forward tunnel via Citadel instead of spawning child ssh.
     /// Set by AppState when connecting — bridges to SSHTunnelManager.openSpotlightTunnel().
-    var openTunnel: ((_ localPort: Int, _ remotePort: Int, _ timeout: TimeInterval) async throws -> Int)?
+    private var openTunnel: ((_ localPort: Int, _ remotePort: Int, _ timeout: TimeInterval) async throws -> Int)?
 
     init(client: any DaemonClient) {
         self.client = client
+    }
+
+    /// Set the tunnel callback. Must be called before startDaemonTunnels().
+    func setOpenTunnel(_ callback: @escaping (_ localPort: Int, _ remotePort: Int, _ timeout: TimeInterval) async throws -> Int) {
+        self.openTunnel = callback
     }
 
     /// Discover forwarded ports for a workspace using the DaemonClient protocol method.

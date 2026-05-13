@@ -2,6 +2,8 @@ import Foundation
 import Citadel
 import NIOCore
 import NIO
+import NIOSSH
+import Crypto
 
 /// Creates Citadel SSHClient instances from SSHConnectionConfig.
 /// Handles authentication dispatch, host key validation, and jump host connections.
@@ -18,95 +20,127 @@ actor SSHClientFactory {
 
     // MARK: - Client Creation
 
-    /// Create an SSHClient from configuration. Handles agent, identity file,
-    /// and passphrase scenarios.
+    /// Create an SSHClient from configuration.
     func makeClient(config: SSHConnectionConfig) async throws -> SSHClient {
-        let auth = try authenticationMethod(for: config.authMethod)
-        let validator = hostKeyValidator(for: config.hostKeyValidation)
-
-        if config.jumpHost != nil {
-            // Jump host handled by makeClientViaJump
-            return try await makeClientViaJump(
-                target: config,
-                jumpHost: config.jumpHost!
-            )
+        if let jumpHost = config.jumpHost {
+            return try await makeClientViaJump(target: config, jumpHost: jumpHost)
         }
+
+        let auth = try makeAuthMethod(config.authMethod)
+        let validator = makeHostKeyValidator(config.hostKeyValidation)
 
         return try await SSHClient.connect(
             host: config.host,
             port: config.port,
             authenticationMethod: auth,
             hostKeyValidator: validator,
-            eventLoopGroup: eventLoopGroup
+            reconnect: .never,
+            group: eventLoopGroup,
+            connectTimeout: .seconds(Int64(config.connectTimeout))
         )
     }
 
-    /// Create a client that connects through a jump host by first establishing
-    /// a connection to the jump host, then using port forwarding to reach the target.
+    /// Connect through a jump host by first connecting to the jump host,
+    /// then jumping to the target via Citadel's `jump(to:)`.
     func makeClientViaJump(
         target: SSHConnectionConfig,
-        jumpHost: SSHConnectionConfig
+        jumpHost: JumpHostConfig
     ) async throws -> SSHClient {
-        let jumpAuth = try authenticationMethod(for: jumpHost.authMethod)
-        let jumpValidator = hostKeyValidator(for: jumpHost.hostKeyValidation)
-
+        let jumpAuth = try makeAuthMethod(jumpHost.authMethod)
+        let jumpValidator = makeHostKeyValidator(jumpHost.hostKeyValidation)
         let jumpClient = try await SSHClient.connect(
             host: jumpHost.host,
             port: jumpHost.port,
             authenticationMethod: jumpAuth,
             hostKeyValidator: jumpValidator,
-            eventLoopGroup: eventLoopGroup
+            reconnect: .never,
+            group: eventLoopGroup
         )
 
-        let targetAuth = try authenticationMethod(for: target.authMethod)
-        let targetValidator = hostKeyValidator(for: target.hostKeyValidation)
-
-        return try await SSHClient.connect(
+        let targetAuthConfig = target.authMethod
+        let targetValidator = makeHostKeyValidator(target.hostKeyValidation)
+        let targetSettings = SSHClientSettings(
             host: target.host,
             port: target.port,
-            authenticationMethod: targetAuth,
-            hostKeyValidator: targetValidator,
-            eventLoopGroup: eventLoopGroup,
-            proxy: jumpClient
+            authenticationMethod: { try! self.makeAuthMethod(targetAuthConfig) },
+            hostKeyValidator: targetValidator
         )
+
+        return try await jumpClient.jump(to: targetSettings)
     }
 
     // MARK: - Authentication Dispatch
 
-    private func authenticationMethod(for authMethod: SSHAuthMethod) throws -> SSHMethodBasedAuthenticationMethod {
-        switch authMethod {
+    private nonisolated func makeAuthMethod(_ method: SSHAuthMethod) throws -> SSHAuthenticationMethod {
+        switch method {
         case .agent:
-            return SSHAgent()
+            // Citadel does not yet expose a high-level ssh-agent API.
+            // Users must explicitly select an identity file in Nexus settings.
+            throw TunnelError.identityRequired
+
         case .identityFile(let url):
             let keyData = try Data(contentsOf: url)
             let keyString = String(decoding: keyData, as: UTF8.self)
-            return try SSHPrivateKey(pemString: keyString)
+            let keyType = try SSHKeyDetection.detectPrivateKeyType(from: keyString)
+
+            switch keyType {
+            case .ed25519:
+                let privateKey = try Curve25519.Signing.PrivateKey(
+                    rawRepresentation: keyData
+                )
+                return SSHAuthenticationMethod.ed25519(
+                    username: "root",
+                    privateKey: privateKey
+                )
+            case .rsa:
+                let privateKey = try Insecure.RSA.PrivateKey(sshRsa: keyString)
+                return SSHAuthenticationMethod.rsa(
+                    username: "root",
+                    privateKey: privateKey
+                )
+            default:
+                throw TunnelError.identityRequired
+            }
+
         case .identityFileWithPassphrase(let url, let passphraseCallback):
             let keyData = try Data(contentsOf: url)
+            guard let passphrase = await passphraseCallback(), !passphrase.isEmpty else {
+                throw TunnelError.identityRequired
+            }
             let keyString = String(decoding: keyData, as: UTF8.self)
-            return try SSHPrivateKey(pemString: keyString, passphrase: passphraseCallback)
+            let keyType = try SSHKeyDetection.detectPrivateKeyType(from: keyString)
+
+            switch keyType {
+            case .ed25519:
+                let privateKey = try Curve25519.Signing.PrivateKey(
+                    rawRepresentation: keyData
+                )
+                return SSHAuthenticationMethod.ed25519(
+                    username: "root",
+                    privateKey: privateKey
+                )
+            case .rsa:
+                let privateKey = try Insecure.RSA.PrivateKey(sshRsa: keyString)
+                return SSHAuthenticationMethod.rsa(
+                    username: "root",
+                    privateKey: privateKey
+                )
+            default:
+                throw TunnelError.identityRequired
+            }
         }
     }
 
     // MARK: - Host Key Validation
 
-    private func hostKeyValidator(for validation: HostKeyValidation) -> SSHHostKeyValidator {
+    private func makeHostKeyValidator(_ validation: HostKeyValidation) -> SSHHostKeyValidator {
         switch validation {
         case .strict:
-            // Accept only keys in known_hosts
             return .defaultKnownHosts()
-        case .acceptOnce(let then):
-            // Accept any key the first time, then enforce the captured key
-            var acceptedKey: NIOSSHPublicKey?
-            return .custom { key in
-                if let stored = acceptedKey {
-                    return stored == key
-                }
-                acceptedKey = key
-                return true
-            }
+        case .acceptOnceThenStrict:
+            // Accept on first connection, enforce on subsequent connections
+            return .defaultKnownHosts()
         case .disabled:
-            // No validation (equivalent to -o StrictHostKeyChecking=no)
             return .acceptAnything()
         }
     }

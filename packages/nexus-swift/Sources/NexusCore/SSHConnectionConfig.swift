@@ -37,15 +37,26 @@ public struct JumpHostConfig {
     public let host: String
     public let port: Int
     public let authMethod: SSHAuthMethod
+    public let hostKeyValidation: HostKeyValidation
 
     public init(
         host: String,
         port: Int = 22,
-        authMethod: SSHAuthMethod
+        authMethod: SSHAuthMethod = .agent,
+        hostKeyValidation: HostKeyValidation = .disabled
     ) {
         self.host = host
         self.port = port
         self.authMethod = authMethod
+        self.hostKeyValidation = hostKeyValidation
+    }
+
+    /// Create from a full SSHConnectionConfig, keeping only host/port/auth.
+    public init(_ config: SSHConnectionConfig) {
+        self.host = config.host
+        self.port = config.port
+        self.authMethod = config.authMethod
+        self.hostKeyValidation = config.hostKeyValidation
     }
 }
 

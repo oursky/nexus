@@ -1081,7 +1081,7 @@ public final class HeadlessRPCServer {
             return (500, jsonError("ssh connection failed: \(error.localizedDescription)"))
         }
         defer {
-            Task { await client.close() }
+            Task { try? await client.close() }
         }
 
         let cleanRoomScript = """
@@ -1109,8 +1109,8 @@ public final class HeadlessRPCServer {
 
         let out: String
         do {
-            let result = try await client.executeCommandPair(cleanRoomScript)
-            out = String(buffer: result.stdout)
+            let result = try await client.executeCommand(cleanRoomScript)
+            out = String(buffer: result)
         } catch {
             return (500, jsonError("clean-room script failed: \(error.localizedDescription)"))
         }

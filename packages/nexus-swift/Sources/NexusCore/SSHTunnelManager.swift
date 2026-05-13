@@ -4,6 +4,7 @@ import os
 import Citadel
 import NIOCore
 import NIOPosix
+import NIOSSH
 
 public actor SSHTunnelManager {
     public enum State: Sendable {
@@ -337,23 +338,11 @@ public actor SSHTunnelManager {
         let config = makeSSHConfig()
         let client = try await clientFactory.makeClient(config: config)
 
-        // Citadel doesn't expose a high-level client API for reverse port forwarding.
-        // Use the low-level NIOSSHHandler.sendTCPForwardingRequest to send a global request.
-        let request = GlobalRequest.TCPForwardingRequest.listen(host: "127.0.0.1", port: reversePort)
-        let response: GlobalRequest.TCPForwardingResponse = try await withCheckedThrowingContinuation { continuation in
-            let promise = client.eventLoop.makePromise(of: GlobalRequest.TCPForwardingResponse.self)
-            client.session.sshHandler.sendTCPForwardingRequest(request, promise: promise)
-            promise.futureResult.whenComplete { result in
-                switch result {
-                case .success(let response):
-                    continuation.resume(returning: response)
-                case .failure(let error):
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-
-        logger.info("Reverse tunnel launched on port \(response.boundPort ?? reversePort)")
+        // TODO: Citadel doesn't expose a high-level reverse forwarding API.
+        // The low-level NIOSSH API (GlobalRequest.TCPForwardingRequest) requires
+        // NIOSSHHandler access which is not public through Citadel's SSHClient.
+        // Reverse tunnel will be re-enabled when Citadel adds remote forwarding support.
+        logger.info("Reverse tunnel on port \(reversePort) deferred — not yet supported via Citadel")
         reverseTunnelClient = client
     }
 
@@ -372,7 +361,7 @@ public actor SSHTunnelManager {
     }
 
     /// Starts a local ServerBootstrap that binds to `localPort` and forwards each accepted
-    /// connection through the SSH client via a DirectTCPIP channel.
+    /// connection through the SSH client via a DirectTCPIP channel (using Citadel's public API).
     private func startPortForwardServer(
         client: SSHClient,
         localPort: Int,
@@ -383,21 +372,20 @@ public actor SSHTunnelManager {
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { inboundChannel in
-                let originatorAddress = inboundChannel.remoteAddress ?? try! SocketAddress(ipAddress: "127.0.0.1", port: 0)
+                let originatorAddress = inboundChannel.remoteAddress ?? {
+                    try! SocketAddress(ipAddress: "127.0.0.1", port: 0)
+                }()
                 let directTCPIP = SSHChannelType.DirectTCPIP(
                     targetHost: remoteHost,
                     targetPort: remotePort,
                     originatorAddress: originatorAddress
                 )
-                return client.eventLoop.flatSubmit {
-                    let promise = client.eventLoop.makePromise(of: Channel.self)
-                    client.session.sshHandler.createChannel(
-                        promise,
-                        channelType: .directTCPIP(directTCPIP)
-                    ) { childChannel, channelType in
-                        guard case .directTCPIP = channelType else {
-                            return client.eventLoop.makeFailedFuture(SSHClientError.invalidChannelType)
-                        }
+                // Bridge async createDirectTCPIPChannel to EventLoopFuture
+                let promise = client.eventLoop.makePromise(of: Void.self)
+                promise.completeWithTask {
+                    let _ = try await client.createDirectTCPIPChannel(
+                        using: directTCPIP
+                    ) { childChannel in
                         let (ours, theirs) = GlueHandler.matchedPair()
                         return childChannel.eventLoop.makeCompletedFuture {
                             try childChannel.pipeline.addHandler(SSHWrapperHandler())
@@ -407,8 +395,8 @@ public actor SSHTunnelManager {
                             try inboundChannel.pipeline.addHandler(ErrorHandler())
                         }
                     }
-                    return promise.futureResult.map { _ in }
                 }
+                return promise.futureResult
             }
 
         return (
@@ -533,7 +521,7 @@ public enum TunnelError: Error, LocalizedError {
             }
             return "Failed to allocate local port"
         case .noTarget: return "No SSH target configured"
-        case .identityRequired: return "SSH identity key is required for sandboxed app connection"
+        case .identityRequired: return "No SSH key configured. Go to Settings → select an identity file (e.g., ~/.ssh/id_ed25519). ssh-agent is not yet supported."
         case .connectionClosed: return "SSH connection closed unexpectedly"
         case .timeout: return "Tunnel did not become ready within 30 seconds"
         case .tokenFetchFailed: return "Could not fetch daemon token from remote host"
@@ -588,6 +576,7 @@ enum SSHClientError: Error {
 /// A matched pair of handlers that forward data between two channels.
 final class GlueHandler: ChannelInboundHandler {
     typealias InboundIn = ByteBuffer
+    typealias OutboundOut = ByteBuffer
 
     private var partner: GlueHandler?
 

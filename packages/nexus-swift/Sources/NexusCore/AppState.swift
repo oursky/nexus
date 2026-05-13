@@ -704,8 +704,7 @@ public final class AppState: ObservableObject {
             host: host,
             port: portInt,
             authMethod: .agent,  // guest auth via ssh-agent
-            hostKeyValidation: .acceptOnceThenStrict,
-            username: "root"
+            hostKeyValidation: .acceptOnceThenStrict
         )
 
         let jumpClient = JumpHostClient(factory: SSHClientFactory())
@@ -715,7 +714,7 @@ public final class AppState: ObservableObject {
                 via: jumpConfig,
                 command: "whoami"
             )
-            return (true, result.trimmingCharacters(in: .whitespacesAndNewlines))
+            return (true, result.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines))
         } catch {
             return (false, "SSH through jump host failed: \(error.localizedDescription)")
         }
@@ -741,8 +740,7 @@ public final class AppState: ObservableObject {
             host: host,
             port: portInt,
             authMethod: .agent,
-            hostKeyValidation: .acceptOnceThenStrict,
-            username: "root"
+            hostKeyValidation: .acceptOnceThenStrict
         )
 
         let jumpClient = JumpHostClient(factory: SSHClientFactory())
@@ -810,7 +808,7 @@ public final class AppState: ObservableObject {
 
             let output = try await client.executeCommand(remoteCmd)
             log.info("daemon check finished ok=true")
-            return (true, output.trimmingCharacters(in: .whitespacesAndNewlines))
+            return (true, String(buffer: output).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines))
         } catch {
             log.error("daemon check failed: \(error.localizedDescription, privacy: .public)")
             return (false, "SSH failed: \(error.localizedDescription)")
@@ -957,7 +955,7 @@ public final class AppState: ObservableObject {
         connectionState = .connecting
         StartupTrace.checkpoint("remote.connect", daemonURL.absoluteString)
         let wsStartTime = CFAbsoluteTimeGetCurrent()
-        NSLog("[AppState] WebSocket connecting to ws://127.0.0.1:\(localPort)/ ...")
+        NSLog("[AppState] WebSocket connecting to \(daemonURL.absoluteString) ...")
         do {
             try await AsyncDeadline.withSecondsOnMainActor(30) {
                 await self.load()
@@ -1534,7 +1532,7 @@ public final class AppState: ObservableObject {
         try await spotlightManager.startSpotlight(workspaceID: workspaceID, ports: ports)
 
         // 3. Start SSH tunnels via Citadel (not child ssh Process)
-        spotlightManager.openTunnel = { [weak self] localPort, remotePort, timeout in
+        await spotlightManager.setOpenTunnel { [weak self] localPort, remotePort, timeout in
             guard let tm = self?.tunnelManager else {
                 throw TunnelError.noTarget
             }
