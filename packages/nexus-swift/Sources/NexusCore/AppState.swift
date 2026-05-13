@@ -999,7 +999,7 @@ public final class AppState: ObservableObject {
         let daemonURL: URL
         let resolvedToken: String
         do {
-            let localPort = try await mgr.start()
+            let localPort = try await mgr.startWithRetry(profile: profile)
             reverseTunnelPort = await mgr.reversePort
             StartupTrace.checkpoint("remote.tunnel.ok", "localPort=\(localPort) reversePort=\(reverseTunnelPort)")
             resolvedToken = try await mgr.fetchRemoteToken()
@@ -1032,10 +1032,13 @@ public final class AppState: ObservableObject {
         client = WebSocketDaemonClient(daemonURL: daemonURL, token: resolvedToken.isEmpty ? nil : resolvedToken)
         connectionState = .connecting
         StartupTrace.checkpoint("remote.connect", daemonURL.absoluteString)
+        let wsStartTime = CFAbsoluteTimeGetCurrent()
+        NSLog("[AppState] WebSocket connecting to ws://127.0.0.1:\(localPort)/ ...")
         do {
             try await AsyncDeadline.withSecondsOnMainActor(30) {
                 await self.load()
             }
+            NSLog("[AppState] WebSocket connection attempt started after \(CFAbsoluteTimeGetCurrent() - wsStartTime)s")
             if let wsClient = self.client as? WebSocketDaemonClient {
                 let stream = DaemonLogStream(client: wsClient)
                 self.daemonLogStream = stream

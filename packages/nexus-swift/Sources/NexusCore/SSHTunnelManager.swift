@@ -80,6 +80,7 @@ public actor SSHTunnelManager {
     // MARK: - Control tunnel
 
     public func start() async throws -> Int {
+        let startTime = Date()
         setState(.connecting)
         AppLifecycleLog.info("ssh-tunnel", "start target=\(profile.sshTarget ?? "") daemonPort=\(profile.port)")
         let maxAttempts = 5
@@ -100,6 +101,7 @@ public actor SSHTunnelManager {
                 try launchControlTunnel(localPort: port, configPath: resolvedPaths.configPath, identityPath: identityPath)
                 try await waitForHealthz(localPort: port)
                 setState(.connected)
+                NSLog("[SSHTunnelManager] Tunnel healthy: pid=\(controlTunnel?.process.processIdentifier ?? 0) port=\(port) after=\(Date().timeIntervalSince(startTime))s")
                 AppLifecycleLog.info("ssh-tunnel", "start success localPort=\(port)")
                 // Launch reverse tunnel as best-effort (non-blocking)
                 if rp > 0, let sshTarget = profile.sshTarget {
@@ -140,6 +142,26 @@ public actor SSHTunnelManager {
         setState(.failed(lastError))
         AppLifecycleLog.error("ssh-tunnel", "start failed after retries: \(lastError.localizedDescription)")
         throw lastError
+    }
+
+    public func startWithRetry(profile: DaemonProfile, retries: Int = 3) async throws -> Int {
+        var lastError: Error?
+        for attempt in 1...retries {
+            do {
+                let port = try await start()
+                if attempt > 1 {
+                    NSLog("[SSHTunnelManager] Tunnel started on attempt \(attempt)/\(retries)")
+                }
+                return port
+            } catch {
+                lastError = error
+                NSLog("[SSHTunnelManager] Tunnel attempt \(attempt)/\(retries) failed: \(error.localizedDescription)")
+                if attempt < retries {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
+            }
+        }
+        throw lastError ?? NSError(domain: "SSHTunnelManager", code: -1)
     }
 
     public func stop() async {
