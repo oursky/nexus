@@ -7,6 +7,9 @@ struct RemoteEngineFolderPicker: View {
     private static let logger = Logger(subsystem: "com.oursky.nexus", category: "remote-folder-picker")
 
     let profile: DaemonProfile
+    /// App-owned ssh-agent socket (from SandboxSSHAgent). Passed to SSH calls so
+    /// `-o IdentityAgent` is set even when SSH_AUTH_SOCK is absent (App Sandbox).
+    var agentSocket: String?
     /// Starting directory when the sheet opens; ignored if empty (defaults to $HOME).
     let startPath: String
     let onPathChange: (String) -> Void
@@ -189,11 +192,11 @@ struct RemoteEngineFolderPicker: View {
         isLoading = true
         errorText = nil
 
-        let outcome: Result<(String, [RemoteListingEntry]), Error> = await Task.detached { [profile, requested] in
+        let outcome: Result<(String, [RemoteListingEntry]), Error> = await Task.detached { [profile, agentSocket, requested] in
             do {
                 // Validate requested path by listing it directly; keep requested path as source
                 // of truth to avoid accidental jump caused by remote canonicalization quirks.
-                let list = try EngineRemotePathBrowser.listDirectory(path: requested, profile: profile)
+                let list = try EngineRemotePathBrowser.listDirectory(path: requested, profile: profile, agentSocket: agentSocket)
                 let resolved = Self.normalizeAbsolutePath(requested)
                 return .success((resolved, list))
             } catch {
@@ -237,8 +240,8 @@ struct RemoteEngineFolderPicker: View {
     @MainActor
     private func goHome() async {
         let fallback = startPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        let home: String = await Task.detached { [profile] in
-            (try? EngineRemotePathBrowser.remoteHome(profile: profile)) ?? "/"
+        let home: String = await Task.detached { [profile, agentSocket] in
+            (try? EngineRemotePathBrowser.remoteHome(profile: profile, agentSocket: agentSocket)) ?? "/"
         }.value
         let target = home.hasPrefix("/") ? home : (fallback.hasPrefix("/") ? fallback : "/")
         Self.logger.notice("picker.goHome resolvedHome=\(home, privacy: .public) fallback=\(fallback, privacy: .public) target=\(target, privacy: .public)")

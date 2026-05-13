@@ -136,6 +136,47 @@ public struct SSHClientArgs {
         ]
     }
 
+    /// Args for a background multi-port-forward tunnel (e.g. Spotlight's dynamic port list).
+    ///
+    /// Produces: `ssh <baseArgs> -N -o ExitOnForwardFailure=yes -L <p1> [-L <p2> ...] <target>`
+    ///
+    /// Use this instead of `tunnelArgs` when you need to forward several ports in a single
+    /// SSH connection (fewer processes, fewer auth round-trips).
+    ///
+    /// Each element is `(localPort, remotePort)` — labels are ignored so callers can pass
+    /// tuples with any label names (e.g. `targetPort` from `DaemonClient.startTunnels`).
+    public func multiTunnelArgs(forwards: [(Int, Int)]) -> [String] {
+        var args = baseArgs + ["-N", "-o", "ExitOnForwardFailure=yes"]
+        for (local, remote) in forwards {
+            args += ["-L", "\(local):127.0.0.1:\(remote)"]
+        }
+        args.append(sshTarget)
+        return args
+    }
+
+    // MARK: - Process factory
+
+    /// Returns a `Process` wired to `/usr/bin/ssh` with `arguments` set to `args` and
+    /// the environment configured for sandbox-safe operation:
+    ///   - `SHELL=/bin/sh` — prevents ssh from picking up a non-POSIX login shell
+    ///   - `SSH_AUTH_SOCK=<sock>` (belt-and-suspenders, when agentSocket is set) — ensures
+    ///     any further child processes spawned by ssh also find the agent
+    ///
+    /// The caller is responsible for setting `standardOutput`, `standardError`, and
+    /// `standardInput` before calling `proc.run()`.
+    public func makeProcess(args: [String]) -> Process {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        proc.arguments = args
+        var env = ProcessInfo.processInfo.environment
+        env["SHELL"] = "/bin/sh"
+        if let sock = agentSocket {
+            env["SSH_AUTH_SOCK"] = sock
+        }
+        proc.environment = env
+        return proc
+    }
+
     // MARK: - Diagnostics
 
     public var logDescription: String {

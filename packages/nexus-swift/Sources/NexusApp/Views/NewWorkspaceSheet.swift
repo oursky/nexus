@@ -215,8 +215,9 @@ struct NewWorkspaceSheet: View {
                                     return
                                 }
                                 Task {
-                                    let home = await Task.detached { [prof] in
-                                        (try? EngineRemotePathBrowser.remoteHome(profile: prof)) ?? "/"
+                                    let agentSock = appState.agentAuthSocket
+                                    let home = await Task.detached { [prof, agentSock] in
+                                        (try? EngineRemotePathBrowser.remoteHome(profile: prof, agentSocket: agentSock)) ?? "/"
                                     }.value
                                     await MainActor.run {
                                         enginePickerPath = home
@@ -329,6 +330,7 @@ struct NewWorkspaceSheet: View {
             if let profile = DaemonProfileStore().defaultProfile() {
                 RemoteEngineFolderPicker(
                     profile: profile,
+                    agentSocket: appState.agentAuthSocket,
                     startPath: enginePickerPath,
                     onPathChange: { path in
                         enginePickerPath = path

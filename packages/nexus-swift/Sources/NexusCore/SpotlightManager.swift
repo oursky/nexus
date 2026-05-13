@@ -68,28 +68,11 @@ actor SpotlightManager {
     func startDaemonTunnels(workspaceID: String, host: String, sshPort: Int, identityFile: String) async throws {
         let (_, forwards) = try await client.startTunnels(workspaceId: workspaceID)
 
-        // Build SSH command args
-        var args = ["-F", "/dev/null"]
-        args += ["-N"]
-        args += ["-o", "StrictHostKeyChecking=no"]
-        args += ["-o", "ExitOnForwardFailure=yes"]
-        args += ["-o", "UserKnownHostsFile=/dev/null"]
-        args += ["-o", "GlobalKnownHostsFile=/dev/null"]
-        args += ["-o", "BatchMode=yes"]
-        if let sock = authSocket { args += ["-o", "IdentityAgent=\(sock)"] }
-        args += ["-p", String(sshPort)]
-        for (localPort, targetPort) in forwards {
-            args += ["-L", "\(localPort):127.0.0.1:\(targetPort)"]
-        }
-        args.append(host)
-
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        proc.arguments = args
-
-        var env = ProcessInfo.processInfo.environment
-        if let sock = authSocket { env["SSH_AUTH_SOCK"] = sock }
-        proc.environment = env
+        // Use SSHClientArgs so -o IdentityAgent and all sandbox-safe flags are applied
+        // consistently with every other SSH site in the app.
+        let sshClient = SSHClientArgs(sshTarget: host, port: sshPort, agentSocket: authSocket)
+        let args = sshClient.multiTunnelArgs(forwards: forwards)
+        let proc = sshClient.makeProcess(args: args)
 
         let errPipe = Pipe()
         proc.standardError = errPipe

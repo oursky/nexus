@@ -784,16 +784,16 @@ public final class AppState: ObservableObject {
         authSocket: String? = nil
     ) async {
         let (host, port) = Self.parseGuestIPPort(guestIP)
+        // Pass agentSocket so the ProxyCommand jump hop also gets -o IdentityAgent.
         let proxyCmd = Self.buildProxyCommand(
             proxyJump: proxyJump,
             jumpPort: jumpPort,
-            jumpIdentity: jumpIdentity
+            jumpIdentity: jumpIdentity,
+            agentSocket: authSocket
         )
         let dirs = ["/workspace/.cursor-server", "/workspace/.vscode-server"]
         for dir in dirs {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            proc.arguments = [
+            var args: [String] = [
                 "-F", "/dev/null",
                 "-o", "BatchMode=yes",
                 "-o", "ConnectTimeout=10",
@@ -802,10 +802,12 @@ public final class AppState: ObservableObject {
                 "-o", "GlobalKnownHostsFile=/dev/null",
                 "-o", "LogLevel=ERROR",
                 "-o", "ProxyCommand=\(proxyCmd)",
-                "-p", port,
-                "root@\(host)",
-                "mkdir", "-p", dir,
             ]
+            if let sock = authSocket { args += ["-o", "IdentityAgent=\(sock)"] }
+            args += ["-p", port, "root@\(host)", "mkdir", "-p", dir]
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            proc.arguments = args
             var env = ProcessInfo.processInfo.environment
             env["SHELL"] = "/bin/sh"
             if let sock = authSocket { env["SSH_AUTH_SOCK"] = sock }
@@ -885,28 +887,21 @@ public final class AppState: ObservableObject {
                 if let d = driver, !d.isEmpty { remoteCmd += " --driver \(d)" }
                 log.info("daemon check ssh target=\(sshTarget, privacy: .public) cmd=\(remoteCmd, privacy: .public)")
 
-                // Build ssh arguments via shared builder (strict-key enforcement included).
+                // Build ssh arguments via shared builder — agentSocket wires -o IdentityAgent
+                // so child ssh can reach the app-owned agent even under App Sandbox.
                 let client = SSHClientArgs(
                     sshTarget: sshTarget,
                     port: profile.sshPort,
                     identityPath: profile.resolvedIdentity(),
-                    configPath: nil
+                    configPath: nil,
+                    agentSocket: capturedAgentSock
                 )
                 let sshArgs = client.commandArgs(remoteCommand: [remoteCmd])
-
-                let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-                proc.arguments = sshArgs
-
+                let proc = client.makeProcess(args: sshArgs)
                 let outPipe = Pipe()
                 let errPipe = Pipe()
                 proc.standardOutput = outPipe
                 proc.standardError  = errPipe
-
-                var env = ProcessInfo.processInfo.environment
-                env["SHELL"] = "/bin/sh"
-                if let sock = capturedAgentSock { env["SSH_AUTH_SOCK"] = sock }
-                proc.environment = env
 
                 do {
                     try proc.run()
@@ -1684,25 +1679,15 @@ public final class AppState: ObservableObject {
         if args.contains("ssh") && args.contains("check") {
             let sshHost = cachedProfile?.sshTarget ?? ""
             let sshPort = cachedProfile?.sshPort ?? 22
-            let identity = cachedProfile?.resolvedIdentity() ?? ""
             let capturedAgentSock = agentAuthSocket
             return try await withCheckedThrowingContinuation { cont in
                 DispatchQueue.global(qos: .userInitiated).async {
-                    let proc = Process()
-                    proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-                    proc.arguments = [
-                        "-F", "/dev/null",
-                        "-o", "BatchMode=yes",
-                        "-o", "StrictHostKeyChecking=no",
-                        "-o", "UserKnownHostsFile=/dev/null",
-                        "-o", "GlobalKnownHostsFile=/dev/null",
-                        "-o", "ConnectTimeout=5",
-                        "-p", String(sshPort),
-                        sshHost, "echo ok"
-                    ]
-                    var env = ProcessInfo.processInfo.environment
-                    if let sock = capturedAgentSock { env["SSH_AUTH_SOCK"] = sock }
-                    proc.environment = env
+                    let client = SSHClientArgs(
+                        sshTarget: sshHost,
+                        port: sshPort,
+                        agentSocket: capturedAgentSock
+                    )
+                    let proc = client.makeProcess(args: client.commandArgs(remoteCommand: ["echo ok"]))
                     let outPipe = Pipe()
                     let errPipe = Pipe()
                     proc.standardOutput = outPipe

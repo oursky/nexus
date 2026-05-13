@@ -31,10 +31,10 @@ public enum EngineRemotePathBrowser {
     }
 
     /// Remote user home directory (`$HOME` on the engine).
-    public static func remoteHome(profile: DaemonProfile) throws -> String {
+    public static func remoteHome(profile: DaemonProfile, agentSocket: String? = nil) throws -> String {
         // echo doesn't have the quoting issues printf had.
         let script = "echo '\(markerPrefix)'\"$HOME\""
-        let out = try runRemoteBash(profile: profile, script: script)
+        let out = try runRemoteBash(profile: profile, script: script, agentSocket: agentSocket)
         guard let h = firstMarkedAbsoluteLine(out) else {
             throw BrowserError.remoteCommandFailed("Could not resolve home directory on the engine.")
         }
@@ -42,7 +42,7 @@ public enum EngineRemotePathBrowser {
     }
 
     /// Lists immediate children of `path` on the engine.
-    public static func listDirectory(path: String, profile: DaemonProfile) throws -> [RemoteListingEntry] {
+    public static func listDirectory(path: String, profile: DaemonProfile, agentSocket: String? = nil) throws -> [RemoteListingEntry] {
         // Build a python3 script as a plain Swift string (no multiline literal — Python
         // indentation must be preserved at column 0, which conflicts with Swift multiline rules).
         let escapedPath = path.replacingOccurrences(of: "\\", with: "\\\\")
@@ -90,7 +90,7 @@ public enum EngineRemotePathBrowser {
             "fi",
         ].joined(separator: "\n")
 
-        let raw = try runRemoteBash(profile: profile, script: script)
+        let raw = try runRemoteBash(profile: profile, script: script, agentSocket: agentSocket)
         var entries: [RemoteListingEntry] = []
         for line in raw.split(whereSeparator: \.isNewline) {
             let s = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -125,7 +125,7 @@ public enum EngineRemotePathBrowser {
     /// passed as a single Swift string argument still gets split by the remote shell, causing
     /// bash's `-c` option to receive only the first word.  Base64-encoding the script and
     /// piping it to `bash -l` completely sidesteps all quoting/tokenisation issues.
-    private static func runRemoteBash(profile: DaemonProfile, script: String) throws -> String {
+    private static func runRemoteBash(profile: DaemonProfile, script: String, agentSocket: String? = nil) throws -> String {
         guard let target = profile.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !target.isEmpty else {
             throw BrowserError.noSSHTarget
         }
@@ -136,7 +136,6 @@ public enum EngineRemotePathBrowser {
         // Pass as a single SSH argument so the remote shell receives it as one command.
         let remoteCmd = "echo \(b64) | base64 -d | bash -l"
 
-        var args: [String] = []
         let cfg = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/nexus/ssh/nexus.ssh.config", isDirectory: false).path
         let configPath = FileManager.default.fileExists(atPath: cfg) ? cfg : nil
@@ -144,13 +143,11 @@ public enum EngineRemotePathBrowser {
             sshTarget: target,
             port: profile.sshPort,
             identityPath: profile.sshIdentity,
-            configPath: configPath
+            configPath: configPath,
+            agentSocket: agentSocket
         )
-        args = client.commandArgs(remoteCommand: [remoteCmd])
-
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        proc.arguments = args
+        let args = client.commandArgs(remoteCommand: [remoteCmd])
+        let proc = client.makeProcess(args: args)
         let outPipe = Pipe()
         let errPipe = Pipe()
         proc.standardOutput = outPipe
