@@ -19,6 +19,8 @@ else
   # Kill any running instance first so we get a clean relaunch.
   pkill -x NexusApp 2>/dev/null || true
   sleep 0.5
-  open "$APP_PATH"
-  echo "✓ NexusApp launched"
+  # Strip SSH_AUTH_SOCK so the debug app behaves like a TestFlight install:
+  # no inherited launchd ssh-agent, must use SandboxSSHAgent + bookmarks.
+  env -u SSH_AUTH_SOCK open "$APP_PATH"
+  echo "✓ NexusApp launched (SSH_AUTH_SOCK unset — simulates App Sandbox)"
 fi
