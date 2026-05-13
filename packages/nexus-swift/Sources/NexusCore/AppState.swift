@@ -799,6 +799,36 @@ public final class AppState: ObservableObject {
         return (guestIP, "22")
     }
 
+    // MARK: - SSH Identity Agent
+
+    /// Loads the identity file into ssh-agent so child ssh processes (which use
+    /// -F /dev/null and no -i) can authenticate via SSH_AUTH_SOCK.
+    ///
+    /// Passphrase-protected keys require the passphrase to be in the macOS Keychain
+    /// or entered via ssh-add before opening the app. This method does not handle
+    /// passphrase prompts (no TTY in a GUI app).
+    private static func ensureIdentityInAgent(identityFile path: String) -> Bool {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-add")
+        proc.arguments = [path]
+        proc.standardOutput = FileHandle.nullDevice
+        let errPipe = Pipe()
+        proc.standardError = errPipe
+        proc.environment = ProcessInfo.processInfo.environment
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            if proc.terminationStatus == 0 { return true }
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let errStr = String(data: errData, encoding: .utf8) ?? ""
+            if errStr.localizedCaseInsensitiveContains("already") { return true }
+            if errStr.localizedCaseInsensitiveContains("Identity added") { return true }
+            return false
+        } catch {
+            return false
+        }
+    }
+
     /// Builds the SSH ProxyCommand string for jumping through the engine host to the VM.
     /// NOTE: `jumpIdentity` is accepted for API compatibility but IGNORED —
     /// child `/usr/bin/ssh` processes cannot read key files under app-sandbox.
@@ -990,6 +1020,13 @@ public final class AppState: ObservableObject {
         connectionState = .connecting
         StartupTrace.checkpoint("remote.tunnel.start", "sshTarget=\(sshTarget) port=\(profile.port)")
 
+        // ── Load identity file into ssh-agent (child ssh uses -F /dev/null + no -i) ──
+        if let identityPath = profile.resolvedIdentity() {
+            let loaded = Self.ensureIdentityInAgent(identityFile: identityPath)
+            AppLifecycleLog.info("ssh-tunnel",
+                "ssh-add \(identityPath): \(loaded ? "ok" : "failed")")
+        }
+
         // ── Skip auto-provision on start; user must manually provision via Settings ──
         // Provisioning is available via the "Provision Daemon" button in Daemon Settings.
         // This avoids unexpected binary uploads / daemon restarts on every app launch.
@@ -1033,7 +1070,7 @@ public final class AppState: ObservableObject {
         connectionState = .connecting
         StartupTrace.checkpoint("remote.connect", daemonURL.absoluteString)
         let wsStartTime = CFAbsoluteTimeGetCurrent()
-        NSLog("[AppState] WebSocket connecting to ws://127.0.0.1:\(localPort)/ ...")
+        NSLog("[AppState] WebSocket connecting to \(daemonURL.absoluteString) ...")
         do {
             try await AsyncDeadline.withSecondsOnMainActor(30) {
                 await self.load()
