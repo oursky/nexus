@@ -62,7 +62,7 @@ jobs:
           mkdir -p "$STAGING"
 
           echo "Extracting Ubuntu minimal rootfs..."
-          tar -xJf /tmp/ubuntu-arm64-root.tar.xz -C "$STAGING"
+          sudo tar --no-same-owner -xJf /tmp/ubuntu-arm64-root.tar.xz -C "$STAGING"
 
           # Install nexus-guest-agent as PID-1 init
           mkdir -p "$STAGING/usr/local/bin"
