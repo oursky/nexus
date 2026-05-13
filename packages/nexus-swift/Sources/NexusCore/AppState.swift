@@ -820,23 +820,41 @@ public final class AppState: ObservableObject {
     /// or entered via ssh-add before opening the app. This method does not handle
     /// passphrase prompts (no TTY in a GUI app).
     private static func ensureIdentityInAgent(identityFile path: String) -> Bool {
+        // Under app-sandbox child processes cannot read ~/.ssh/ files.
+        // Read the key in the parent (which has security-scoped access),
+        // then pipe it to ssh-add via stdin so the child never touches the filesystem.
+        let keyURL = URL(fileURLWithPath: path)
+        let keyData: Data
+        do {
+            keyData = try Data(contentsOf: keyURL)
+        } catch {
+            AppLifecycleLog.warn("ssh-tunnel", "cannot read identity file \(path): \(error.localizedDescription)")
+            return false
+        }
+
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-add")
-        proc.arguments = [path]
+        proc.arguments = ["-"]
         proc.standardOutput = FileHandle.nullDevice
         let errPipe = Pipe()
         proc.standardError = errPipe
+        let inPipe = Pipe()
+        proc.standardInput = inPipe
         proc.environment = ProcessInfo.processInfo.environment
         do {
             try proc.run()
+            inPipe.fileHandleForWriting.write(keyData)
+            inPipe.fileHandleForWriting.closeFile()
             proc.waitUntilExit()
             if proc.terminationStatus == 0 { return true }
             let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
             let errStr = String(data: errData, encoding: .utf8) ?? ""
             if errStr.localizedCaseInsensitiveContains("already") { return true }
             if errStr.localizedCaseInsensitiveContains("Identity added") { return true }
+            AppLifecycleLog.warn("ssh-tunnel", "ssh-add failed: \(errStr)")
             return false
         } catch {
+            AppLifecycleLog.warn("ssh-tunnel", "ssh-add exception: \(error.localizedDescription)")
             return false
         }
     }
