@@ -41,9 +41,12 @@ public final class AppState: ObservableObject {
         didSet {
             if connectionState == .disconnected {
                 TerminalRegistry.shared.reset()
+                daemonCapabilities = []
             }
         }
     }
+    /// Capability names from the last successful `node.info` (see `hasCapability`).
+    @Published public var daemonCapabilities: Set<String> = []
     @Published public var daemonStatus: DaemonStatus = .unknown
     @Published public var showNewWorkspace = false
     @Published public var createIntent: CreateIntent?
@@ -170,6 +173,10 @@ public final class AppState: ObservableObject {
         }
     }
 
+    public func hasCapability(_ name: String) -> Bool {
+        daemonCapabilities.contains(name)
+    }
+
     // MARK: - Load
 
     /// Wall-clock cap for markWorkspaceReady / ports / tunnel fan-out (many actives can wedge the daemon).
@@ -216,6 +223,7 @@ public final class AppState: ObservableObject {
 
             // Phase 1 — connect the UI as soon as lists return (no per-workspace side effects yet).
             applyLoadedWorkspaces(workspaces, projects: projects)
+            await refreshDaemonCapabilities()
             StartupTrace.checkpoint("load.phase1_ok", "workspaces=\(workspaces.count) projects=\(projects.count)")
             // Update daemon status from /version — best-effort, must not block phase 2.
             Task { await self.refreshDaemonStatus() }
@@ -507,6 +515,12 @@ public final class AppState: ObservableObject {
     private func validateProfile(_ profile: DaemonProfile) -> (Bool, String) {
         let name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty { return (false, "Profile name is required") }
+        if profile.isLocal {
+            if !(1...65535).contains(profile.port) {
+                return (false, "port must be 1..65535")
+            }
+            return (true, "ok")
+        }
         let target = (profile.sshTarget ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if target.isEmpty { return (false, "SSH target is required") }
         if !target.contains("@") || target.hasPrefix("@") || target.hasSuffix("@") {
@@ -978,6 +992,12 @@ public final class AppState: ObservableObject {
 
     /// Fetches /version from the current client and updates daemonStatus.
     /// Best-effort: silently skips if the client is not a WebSocketDaemonClient.
+    private func refreshDaemonCapabilities() async {
+        guard let wsClient = client as? WebSocketDaemonClient else { return }
+        guard let info = try? await wsClient.nodeInfo() else { return }
+        daemonCapabilities = Set(info.capabilities.filter { $0.available }.map { $0.name })
+    }
+
     private func refreshDaemonStatus() async {
         guard let wsClient = client as? WebSocketDaemonClient else { return }
         if let info = await wsClient.fetchDaemonInfo() {
@@ -999,6 +1019,10 @@ public final class AppState: ObservableObject {
             needsSetup = true
             StartupTrace.checkpoint("remote.noProfile")
             AppLifecycleLog.warn("remote", "connect aborted: no profile")
+            return
+        }
+        if profile.isLocal {
+            await connectLocalAndLoad(profile: profile)
             return
         }
         guard let sshTarget = profile.sshTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !sshTarget.isEmpty else {
@@ -1102,9 +1126,42 @@ public final class AppState: ObservableObject {
             return
         }
 
+        await finishDaemonWebSocketSession(daemonURL: daemonURL, resolvedToken: resolvedToken, profile: profile, tunnelMgr: mgr)
+    }
+
+    private func connectLocalAndLoad(profile: DaemonProfile) async {
+        StartupTrace.checkpoint("local.enter", "profileId=\(profile.profileId)")
+        AppLifecycleLog.info("local", "connectLocalAndLoad profileId=\(profile.profileId)")
+        connectionState = .connecting
+        needsSetup = false
+        agentAuthSocket = nil
+        await sandboxAgent.stop()
+        tunnelStateTask?.cancel()
+        tunnelStateTask = nil
+        tunnelManager = nil
+        let resolvedToken = WebSocketDaemonClient.readToken()
+        guard let daemonURL = URL(string: "ws://127.0.0.1:\(profile.port)") else {
+            connectionState = .disconnected
+            error = "Invalid local WebSocket URL."
+            needsSetup = true
+            return
+        }
+        daemonWebSocketURL = daemonURL
+        daemonToken = resolvedToken.isEmpty ? nil : resolvedToken
+        reverseTunnelPort = 0
+        await finishDaemonWebSocketSession(daemonURL: daemonURL, resolvedToken: resolvedToken, profile: profile, tunnelMgr: nil)
+    }
+
+    private func finishDaemonWebSocketSession(
+        daemonURL: URL,
+        resolvedToken: String,
+        profile: DaemonProfile,
+        tunnelMgr: SSHTunnelManager?
+    ) async {
         client = WebSocketDaemonClient(daemonURL: daemonURL, token: resolvedToken.isEmpty ? nil : resolvedToken)
         connectionState = .connecting
-        StartupTrace.checkpoint("remote.connect", daemonURL.absoluteString)
+        let traceLabel = tunnelMgr == nil ? "local.connect" : "remote.connect"
+        StartupTrace.checkpoint(traceLabel, daemonURL.absoluteString)
         let wsStartTime = CFAbsoluteTimeGetCurrent()
         NSLog("[AppState] WebSocket connecting to \(daemonURL.absoluteString) ...")
         do {
@@ -1118,9 +1175,6 @@ public final class AppState: ObservableObject {
                 stream.start()
                 Self.logger.info("DaemonLogStream started")
 
-                // Push handler: daemon broadcasts workspace.ref when a git checkout
-                // occurs inside a VM. Patch the matching workspace in-place so the
-                // sidebar and breadcrumb update immediately without a full reload.
                 wsClient.setWorkspaceRefHandler { [weak self] workspaceID, ref in
                     Task { @MainActor [weak self] in
                         guard let self else { return }
@@ -1140,8 +1194,7 @@ public final class AppState: ObservableObject {
             }
             self.updateProfileStatus(profileId: profile.profileId, status: .connected)
 
-            // Register tunnel with daemon via daemon.connect RPC
-            let rp = await mgr.reversePort
+            let rp = tunnelMgr?.reversePort ?? 0
             if rp > 0, let wsClient = self.client as? WebSocketDaemonClient {
                 Task {
                     let clientUser = NSUserName()
@@ -1168,10 +1221,10 @@ public final class AppState: ObservableObject {
         } catch {
             if connectionState != .connected {
                 connectionState = .disconnected
-                self.error = "Remote daemon unreachable: \(daemonURL.host ?? ""):\(daemonURL.port ?? 0) — \(error.localizedDescription)"
-                StartupTrace.checkpoint("remote.connect.failed", error.localizedDescription)
-                Self.logger.error("connectRemoteAndLoad failed: \(error.localizedDescription, privacy: .public)")
-                AppLifecycleLog.error("remote", "connect failed daemonURL=\(daemonURL.absoluteString) error=\(error.localizedDescription)")
+                self.error = "Daemon unreachable: \(daemonURL.host ?? ""):\(daemonURL.port ?? 0) — \(error.localizedDescription)"
+                StartupTrace.checkpoint("\(traceLabel).failed", error.localizedDescription)
+                Self.logger.error("finishDaemonWebSocketSession failed: \(error.localizedDescription, privacy: .public)")
+                AppLifecycleLog.error("ws", "connect failed daemonURL=\(daemonURL.absoluteString) error=\(error.localizedDescription)")
                 self.updateProfileStatus(profileId: profile.profileId, status: .unreachable)
             }
         }

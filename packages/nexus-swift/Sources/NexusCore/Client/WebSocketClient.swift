@@ -1068,6 +1068,39 @@ public struct DaemonInfo: Decodable, Equatable {
     }
 }
 
+}
+
+extension WebSocketDaemonClient {
+    public struct DaemonNodeCapability: Sendable {
+        public let name: String
+        public let available: Bool
+    }
+
+    public struct DaemonNodeInfo: Sendable {
+        public let nodeName: String
+        public let capabilities: [DaemonNodeCapability]
+    }
+
+    /// Calls `node.info` over the authenticated WebSocket.
+    public func nodeInfo() async throws -> DaemonNodeInfo {
+        let result = try await call("node.info", params: [:])
+        guard let dict = result as? [String: Any],
+              let nodeDict = dict["node"] as? [String: Any] else {
+            throw RPCError(message: "invalid node.info response shape")
+        }
+        let name = nodeDict["name"] as? String ?? ""
+        let capArr = dict["capabilities"] as? [Any] ?? []
+        var caps: [DaemonNodeCapability] = []
+        for item in capArr {
+            guard let c = item as? [String: Any],
+                  let capName = c["name"] as? String else { continue }
+            let avail = (c["available"] as? Bool) ?? (c["available"] as? NSNumber)?.boolValue ?? false
+            caps.append(DaemonNodeCapability(name: capName, available: avail))
+        }
+        return DaemonNodeInfo(nodeName: name, capabilities: caps)
+    }
+}
+
 extension WebSocketDaemonClient {
     /// Fetches `/version` over plain HTTP (no auth).
     /// Returns `nil` if the daemon is unreachable or the response can't be decoded.

@@ -41,7 +41,11 @@ private struct ProfileRow: View {
                             .cornerRadius(3)
                     }
                 }
-                if let sshTarget = profile.sshTarget, !sshTarget.isEmpty {
+                if profile.isLocal {
+                    Text("\(profile.name) · 127.0.0.1:\(profile.port)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(Theme.labelSecondary)
+                } else if let sshTarget = profile.sshTarget, !sshTarget.isEmpty {
                     Text("\(profile.name) · \(sshTarget)")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(Theme.labelSecondary)
@@ -98,26 +102,25 @@ private struct ProfileEditSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceMd) {
-            Text(isNew ? "Add Remote Profile" : "Edit Profile")
+            Text(
+                profile.isLocal
+                    ? (isNew ? "Add Local Profile" : "Edit Local Profile")
+                    : (isNew ? "Add Remote Profile" : "Edit Profile")
+            )
                 .font(.headline)
 
             LabeledField("Name") {
-                TextField("My Remote Daemon", text: $profile.name)
+                TextField(profile.isLocal ? "Local" : "My Remote Daemon", text: $profile.name)
                     .textFieldStyle(.roundedBorder)
             }
 
-            LabeledField("SSH Host") {
-                TextField("user@linuxbox", text: $sshTargetText)
-                    .textFieldStyle(.roundedBorder)
+            if profile.isLocal {
+                Text("Connects directly to ws://127.0.0.1:<port> (no SSH tunnel). Uses your Nexus token from Keychain when set.")
+                    .font(.caption)
+                    .foregroundColor(Theme.labelSecondary)
             }
 
-            LabeledField("SSH Port") {
-                TextField("22", text: $sshPortText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 80)
-            }
-
-            LabeledField("Remote Port") {
+            LabeledField(profile.isLocal ? "WebSocket port" : "Remote tunnel port") {
                 HStack {
                     TextField("7777", value: $profile.port, formatter: NumberFormatter())
                         .textFieldStyle(.roundedBorder)
@@ -127,121 +130,136 @@ private struct ProfileEditSheet: View {
                 }
             }
 
-            // SSH Identity (security-scoped bookmark for App Sandbox key access)
-            LabeledField("SSH Key") {
-                HStack(spacing: 6) {
-                    if sshIdentityDisplayPath.isEmpty {
-                        Label("Required for sandbox", systemImage: "exclamationmark.triangle.fill")
-                            .font(.system(size: 11))
-                            .foregroundColor(.orange)
-                    } else {
-                        Text((sshIdentityDisplayPath as NSString).lastPathComponent)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(Theme.label)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    Spacer()
-                    if sshIdentityDisplayPath.isEmpty {
-                        Button("Open Key...") { pickIdentityKey() }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                    } else {
-                        Button("Open Key...") { pickIdentityKey() }
-                            .font(.system(size: 11))
-                    }
-                    if !sshIdentityDisplayPath.isEmpty {
-                        Button {
-                            sshIdentityDisplayPath = ""
-                            profile.sshIdentity = nil
-                            profile.sshIdentityBookmark = nil
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(Theme.labelSecondary)
+            if !profile.isLocal {
+                LabeledField("SSH Host") {
+                    TextField("user@linuxbox", text: $sshTargetText)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                LabeledField("SSH Port") {
+                    TextField("22", text: $sshPortText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                }
+
+                // SSH Identity (security-scoped bookmark for App Sandbox key access)
+                LabeledField("SSH Key") {
+                    HStack(spacing: 6) {
+                        if sshIdentityDisplayPath.isEmpty {
+                            Label("Required for sandbox", systemImage: "exclamationmark.triangle.fill")
+                                .font(.system(size: 11))
+                                .foregroundColor(.orange)
+                        } else {
+                            Text((sshIdentityDisplayPath as NSString).lastPathComponent)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(Theme.label)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer()
+                        if sshIdentityDisplayPath.isEmpty {
+                            Button("Open Key...") { pickIdentityKey() }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                        } else {
+                            Button("Open Key...") { pickIdentityKey() }
                                 .font(.system(size: 11))
                         }
-                        .buttonStyle(.borderless)
-                    }
-                }
-            }
-
-            // SSH Config bookmark (security-scoped for Include-line write under App Sandbox)
-            LabeledField("SSH Config") {
-                HStack(spacing: 6) {
-                    if sshConfigDisplayPath.isEmpty {
-                        Text("Auto-detect")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(Theme.labelSecondary)
-                    } else {
-                        Text((sshConfigDisplayPath as NSString).lastPathComponent)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(Theme.label)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    Spacer()
-                    Button("Open Config...") { pickSSHConfig() }
-                        .font(.system(size: 11))
-                    if !sshConfigDisplayPath.isEmpty {
-                        Button {
-                            sshConfigDisplayPath = ""
-                            profile.sshConfigBookmark = nil
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(Theme.labelSecondary)
-                                .font(.system(size: 11))
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                }
-            }
-
-            // Test Connection
-            LabeledField("") {
-                HStack(spacing: Theme.spaceSm) {
-                    Button {
-                        testConnection()
-                    } label: {
-                        HStack(spacing: 4) {
-                            if testState == .running {
-                                ProgressView().scaleEffect(0.6).frame(width: 12, height: 12)
+                        if !sshIdentityDisplayPath.isEmpty {
+                            Button {
+                                sshIdentityDisplayPath = ""
+                                profile.sshIdentity = nil
+                                profile.sshIdentityBookmark = nil
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(Theme.labelSecondary)
+                                    .font(.system(size: 11))
                             }
-                            Text(testState == .running ? "Testing…" : "Test Connection")
+                            .buttonStyle(.borderless)
                         }
                     }
-                    .disabled(testState == .running || sshTargetText.isEmpty)
+                }
 
-                    switch testState {
-                    case .ok:
-                        Label("OK", systemImage: "checkmark.circle.fill")
-                            .foregroundColor(.green)
+                // SSH Config bookmark (security-scoped for Include-line write under App Sandbox)
+                LabeledField("SSH Config") {
+                    HStack(spacing: 6) {
+                        if sshConfigDisplayPath.isEmpty {
+                            Text("Auto-detect")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(Theme.labelSecondary)
+                        } else {
+                            Text((sshConfigDisplayPath as NSString).lastPathComponent)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(Theme.label)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer()
+                        Button("Open Config...") { pickSSHConfig() }
                             .font(.system(size: 11))
-                    case .failed(let msg):
-                        Label("Failed", systemImage: "xmark.circle.fill")
-                            .foregroundColor(.red)
-                            .font(.system(size: 11))
-                    default:
-                        EmptyView()
+                        if !sshConfigDisplayPath.isEmpty {
+                            Button {
+                                sshConfigDisplayPath = ""
+                                profile.sshConfigBookmark = nil
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(Theme.labelSecondary)
+                                    .font(.system(size: 11))
+                            }
+                            .buttonStyle(.borderless)
+                        }
                     }
                 }
-            }
 
-            if case .failed(let msg) = testState {
-                ScrollView {
-                    Text(msg)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.red)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(6)
+                // Test Connection
+                LabeledField("") {
+                    HStack(spacing: Theme.spaceSm) {
+                        Button {
+                            testConnection()
+                        } label: {
+                            HStack(spacing: 4) {
+                                if testState == .running {
+                                    ProgressView().scaleEffect(0.6).frame(width: 12, height: 12)
+                                }
+                                Text(testState == .running ? "Testing…" : "Test Connection")
+                            }
+                        }
+                        .disabled(testState == .running || sshTargetText.isEmpty)
+
+                        switch testState {
+                        case .ok:
+                            Label("OK", systemImage: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                                .font(.system(size: 11))
+                        case .failed(let msg):
+                            Label("Failed", systemImage: "xmark.circle.fill")
+                                .foregroundColor(.red)
+                                .font(.system(size: 11))
+                        default:
+                            EmptyView()
+                        }
+                    }
                 }
-                .frame(maxHeight: 80)
-                .background(Color(NSColor.textBackgroundColor))
-                .cornerRadius(4)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.red.opacity(0.4), lineWidth: 1))
+
+                if case .failed(let msg) = testState {
+                    ScrollView {
+                        Text(msg)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.red)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6)
+                    }
+                    .frame(maxHeight: 80)
+                    .background(Color(NSColor.textBackgroundColor))
+                    .cornerRadius(4)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.red.opacity(0.4), lineWidth: 1))
+                }
             }
 
-            Text("Token is fetched automatically from the remote host via SSH tunnel.")
+            Text(profile.isLocal
+                 ? "Token is read from the Keychain (or NEXUS_DAEMON_TOKEN), matching this daemon port."
+                 : "Token is fetched automatically from the remote host via SSH tunnel.")
                 .font(.caption)
                 .foregroundColor(Theme.labelSecondary)
 
@@ -265,14 +283,26 @@ private struct ProfileEditSheet: View {
                         return
                     }
                     var p = profile
-                    p.sshTarget = sshTargetText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    p.sshPort = Int(sshPortText)
+                    if p.isLocal {
+                        p.sshTarget = nil
+                        p.sshPort = nil
+                        p.sshIdentity = nil
+                        p.sshIdentityBookmark = nil
+                        p.sshConfigBookmark = nil
+                    } else {
+                        p.sshTarget = sshTargetText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let sp = sshPortText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        p.sshPort = sp.isEmpty ? nil : Int(sp).flatMap { (1...65535).contains($0) ? $0 : nil }
+                    }
                     validationMessage = nil
                     onSave(p)
                 }
                 .keyboardShortcut(.return)
                 .buttonStyle(.borderedProminent)
-                .disabled(profile.name.isEmpty || sshTargetText.isEmpty)
+                .disabled(
+                    profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || (!profile.isLocal && sshTargetText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                )
             }
         }
         .padding(Theme.spaceXl)
@@ -389,6 +419,13 @@ private struct ProfileEditSheet: View {
         let trimmedName = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedName.isEmpty { return "Profile name is required." }
 
+        if profile.isLocal {
+            if !(1...65535).contains(profile.port) {
+                return "Port must be between 1 and 65535."
+            }
+            return nil
+        }
+
         let target = sshTargetText.trimmingCharacters(in: .whitespacesAndNewlines)
         if target.isEmpty { return "SSH host is required." }
         if !target.contains("@") || target.hasPrefix("@") || target.hasSuffix("@") {
@@ -468,6 +505,20 @@ public struct RemoteProfileSettingsView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceSm) {
+            if !profiles.contains(where: { $0.isLocal }) {
+                Button {
+                    guard !profiles.contains(where: { $0.profileId == "local-default" }) else { return }
+                    profiles.append(DaemonProfile.localDefault())
+                    store.save(profiles)
+                    Task { await appState.reconnect() }
+                } label: {
+                    Label("Add Local Profile (127.0.0.1:63987)", systemImage: "laptopcomputer")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                .padding(.bottom, 2)
+            }
+
             HStack {
                 Text("Daemon Profiles")
                     .font(.system(size: 12, weight: .semibold))

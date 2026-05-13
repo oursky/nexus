@@ -59,6 +59,11 @@ func WithGitHookCallback(cb GitHookCallback) DriverOption {
 // Backend returns the driver backend identifier.
 func (d *Driver) Backend() string { return "libkrun" }
 
+// FeatureFlags implements domain/runtime.DriverCapabilities.
+func (d *Driver) FeatureFlags() []string {
+	return []string{"fork", "snapshot"}
+}
+
 // SerialLogPath returns the path to the libkrun VM console log (hvc0) for a
 // running workspace. The hvc0 file contains the guest kernel/agent output and
 // is much smaller than the host-side libkrun.log which contains verbose VMM

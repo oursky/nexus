@@ -12,5 +12,7 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<key>com.apple.security.hypervisor</key>
+	<true/>
 </dict>
 </plist>

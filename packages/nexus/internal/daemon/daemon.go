@@ -545,9 +545,10 @@ func (n *nodeInfo) Capabilities() []rpcdaemon.Capability {
 			{Name: "runtime.libkrun", Available: false},
 		}
 	}
-	caps := make([]rpcdaemon.Capability, 0, len(n.registry.Backends()))
-	for _, backend := range n.registry.Backends() {
-		caps = append(caps, rpcdaemon.Capability{Name: "runtime." + backend, Available: true})
+	names := n.registry.Capabilities()
+	caps := make([]rpcdaemon.Capability, 0, len(names))
+	for _, name := range names {
+		caps = append(caps, rpcdaemon.Capability{Name: name, Available: true})
 	}
 	return caps
 }

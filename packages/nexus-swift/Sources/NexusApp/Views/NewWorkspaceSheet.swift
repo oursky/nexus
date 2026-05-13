@@ -16,7 +16,7 @@ struct NewWorkspaceSheet: View {
     @State private var selectedProjectID = ""
     @State private var createNewProject = false
     @State private var sourceMode: SourceMode = .projectRoot
-    @State private var backend: RuntimeBackend = .libkrun
+    @State private var backend: RuntimeBackend = .process
     @State private var selectedSourceWorkspaceID = ""
     @State private var freshSandbox = false
     @State private var isCreating    = false
@@ -39,19 +39,42 @@ struct NewWorkspaceSheet: View {
     }
 
     private enum RuntimeBackend: String, CaseIterable, Identifiable {
+        case process
         case libkrun
         var id: String { rawValue }
 
         var label: String {
             switch self {
             case .libkrun: return "libkrun (VM)"
+            case .process: return "process (Sandbox)"
             }
         }
 
         static func from(_ raw: String) -> RuntimeBackend {
             let r = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if r == "libkrun" { return .libkrun }
-            return .libkrun
+            if r == "process" { return .process }
+            return .process
+        }
+    }
+
+    private var vmBackendCapabilityAvailable: Bool {
+        appState.hasCapability("runtime.libkrun")
+    }
+
+    private var forkFromSandboxAvailable: Bool {
+        appState.hasCapability("runtime.libkrun.fork")
+    }
+
+    private var forkSourceModes: [SourceMode] {
+        forkFromSandboxAvailable ? [.projectRoot, .specificSandbox, .fresh] : [.projectRoot, .fresh]
+    }
+
+    private func forkSourceLabel(_ mode: SourceMode) -> String {
+        switch mode {
+        case .projectRoot: return "Project root"
+        case .specificSandbox: return "Specific sandbox"
+        case .fresh: return "Fresh"
         }
     }
 
@@ -146,26 +169,39 @@ struct NewWorkspaceSheet: View {
 
                     FormField(label: "Fork source") {
                         Picker("Fork source", selection: $sourceMode) {
-                            Text("Project root").tag(SourceMode.projectRoot)
-                            Text("Specific sandbox").tag(SourceMode.specificSandbox)
-                            Text("Fresh").tag(SourceMode.fresh)
+                            ForEach(forkSourceModes, id: \.self) { mode in
+                                Text(forkSourceLabel(mode)).tag(mode)
+                            }
                         }
                         .labelsHidden()
                         .accessibilityIdentifier("sandbox_fork_source_picker")
                     }
 
-                    FormField(
-                        label: "Runtime backend",
-                        hint: sourceMode == .fresh ? "Used for fresh sandbox creation." : "Applies when Fork source is Fresh."
-                    ) {
-                        Picker("Runtime backend", selection: $backend) {
-                            ForEach(RuntimeBackend.allCases) { option in
-                                Text(option.label).tag(option)
+                    if !forkFromSandboxAvailable {
+                        Text("Fork is not available on this daemon.")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.labelTertiary)
+                    }
+
+                    if vmBackendCapabilityAvailable {
+                        FormField(
+                            label: "Runtime backend",
+                            hint: sourceMode == .fresh ? "Used for fresh sandbox creation." : "Applies when Fork source is Fresh."
+                        ) {
+                            Picker("Runtime backend", selection: $backend) {
+                                Text(RuntimeBackend.process.label).tag(RuntimeBackend.process)
+                                Text(RuntimeBackend.libkrun.label).tag(RuntimeBackend.libkrun)
                             }
+                            .labelsHidden()
+                            .disabled(sourceMode != .fresh)
+                            .accessibilityIdentifier("sandbox_backend_picker")
                         }
-                        .labelsHidden()
-                        .disabled(sourceMode != .fresh)
-                        .accessibilityIdentifier("sandbox_backend_picker")
+                    } else {
+                        FormField(label: "Runtime backend") {
+                            Text("VM workspaces require a daemon with libkrun support.")
+                                .font(.system(size: 12))
+                                .foregroundColor(Theme.labelSecondary)
+                        }
                     }
 
                     if sourceMode == .specificSandbox {
@@ -371,6 +407,12 @@ struct NewWorkspaceSheet: View {
                     selectedProjectID = ""
                 }
             }
+            if !vmBackendCapabilityAvailable {
+                backend = .process
+            }
+            if !forkFromSandboxAvailable, sourceMode == .specificSandbox {
+                sourceMode = .projectRoot
+            }
             if selectedSourceWorkspaceID.isEmpty, let root = projectRootWorkspace {
                 selectedSourceWorkspaceID = root.id
                 backend = RuntimeBackend.from(root.backend ?? "")
@@ -428,6 +470,8 @@ struct NewWorkspaceSheet: View {
         }
         let useFresh = sourceMode == .fresh || freshSandbox
 
+        let resolvedBackend = vmBackendCapabilityAvailable ? backend.rawValue : RuntimeBackend.process.rawValue
+
         let request = SandboxCreateRequest(
             projectId: projectID,
             targetBranch: ref,
@@ -435,7 +479,7 @@ struct NewWorkspaceSheet: View {
             sourceWorkspaceId: explicitSourceID,
             fresh: useFresh,
             workspaceName: name,
-            backend: backend.rawValue
+            backend: resolvedBackend
         )
         await appState.createSandbox(request: request)
 

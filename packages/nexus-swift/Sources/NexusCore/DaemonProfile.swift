@@ -28,6 +28,8 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
     public var sshConfigBookmark: Data?
     /// Always ~/.ssh/config (app has read-write entitlement for ~/.ssh/).
     public var sshConfigPath: String { sshDir + "/config" }
+    /// When true, connect directly to a local WebSocket (no SSH tunnel).
+    public var isLocal: Bool
     /// SSH directory (always ~/.ssh/ — entitlement grants read-write access).
     public var sshDir: String { Self.sshDir() }
 
@@ -67,7 +69,8 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         sshPort: Int? = nil,
         sshIdentity: String? = nil,
         sshIdentityBookmark: Data? = nil,
-        sshConfigBookmark: Data? = nil
+        sshConfigBookmark: Data? = nil,
+        isLocal: Bool = false
     ) {
         self.profileId = profileId
         self.name = name
@@ -79,10 +82,11 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
         self.sshIdentity = sshIdentity
         self.sshIdentityBookmark = sshIdentityBookmark
         self.sshConfigBookmark = sshConfigBookmark
+        self.isLocal = isLocal
     }
 
     private enum CodingKeys: String, CodingKey {
-        case profileId, name, port, isDefault, lastKnownStatus, sshTarget, sshPort
+        case profileId, name, port, isDefault, lastKnownStatus, sshTarget, sshPort, isLocal
         case sshIdentity, sshIdentityBookmark, sshConfigBookmark
     }
 
@@ -110,6 +114,7 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
 
         sshIdentityBookmark = try container.decodeIfPresent(Data.self, forKey: .sshIdentityBookmark)
         sshConfigBookmark = try container.decodeIfPresent(Data.self, forKey: .sshConfigBookmark)
+        isLocal = try container.decodeIfPresent(Bool.self, forKey: .isLocal) ?? false
     }
 
     private static func clampPort(_ value: Int, fallback: Int) -> Int {
@@ -119,6 +124,28 @@ public struct DaemonProfile: Codable, Equatable, Identifiable, Sendable {
 
     private static func validPortOrNil(_ value: Int) -> Int? {
         (1...65535).contains(value) ? value : nil
+    }
+
+    public static func remoteDefault() -> DaemonProfile {
+        DaemonProfile(
+            profileId: "remote-default",
+            name: "Remote",
+            port: 7777,
+            isDefault: true,
+            lastKnownStatus: .unknown
+        )
+    }
+
+    /// Preset for the macOS app's bundled / loopback Nexus daemon.
+    public static func localDefault() -> DaemonProfile {
+        DaemonProfile(
+            profileId: "local-default",
+            name: "Local",
+            port: 63987,
+            isDefault: false,
+            lastKnownStatus: .unknown,
+            isLocal: true
+        )
     }
 }
 
@@ -155,15 +182,5 @@ public final class DaemonProfileStore {
 
     public func defaultProfile() -> DaemonProfile? {
         load().first { $0.isDefault }
-    }
-
-    public static func remoteDefault() -> DaemonProfile {
-        DaemonProfile(
-            profileId: "remote-default",
-            name: "Remote",
-            port: 7777,
-            isDefault: true,
-            lastKnownStatus: .unknown
-        )
     }
 }
