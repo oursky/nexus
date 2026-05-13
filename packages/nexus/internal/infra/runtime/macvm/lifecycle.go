@@ -50,16 +50,24 @@ func (m *Manager) Start(ctx context.Context, ws *domainws.Workspace) error {
 		return fmt.Errorf("macvm: build config share: %w", err)
 	}
 
+	sockDir, err := os.MkdirTemp("", "nx-vm-")
+	if err != nil {
+		_ = os.RemoveAll(configDir)
+		return fmt.Errorf("macvm: create sock dir: %w", err)
+	}
+
 	inst, err := spawnVM(ctx, spawnConfig{
 		workspaceID:    ws.ID,
 		workDir:        wsDir,
 		rootFSPath:     wsRootFS,
 		workspacePath:  ws.Repo,
 		configDir:      configDir,
+		sockDir:        sockDir,
 		libDir:         m.cfg.LibDir,
 	})
 	if err != nil {
 		_ = os.RemoveAll(configDir)
+		_ = os.RemoveAll(sockDir)
 		return fmt.Errorf("macvm: spawn vm: %w", err)
 	}
 
@@ -84,6 +92,9 @@ func (m *Manager) Stop(_ context.Context, ws *domainws.Workspace) error {
 	}
 	if inst.configDir != "" {
 		_ = os.RemoveAll(inst.configDir)
+	}
+	if inst.sockDir != "" {
+		_ = os.RemoveAll(inst.sockDir)
 	}
 	log.Printf("macvm: stopped workspaceID=%s", ws.ID)
 	return nil

@@ -29,6 +29,7 @@ type vmInstance struct {
 	guestSSHPort int    // host port forwarded to guest :22
 	agentPort    int    // host port forwarded to guest nexus-agent (TCP gvproxy fallback)
 	pid          int    // libkrun-vm subprocess PID
+	sockDir      string // short temp dir for all Unix sockets (macOS 104-char path limit)
 	stop         func() // tear down gvproxy / VM goroutine
 	done         <-chan struct{}
 }

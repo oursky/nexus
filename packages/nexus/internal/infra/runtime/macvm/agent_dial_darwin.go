@@ -27,7 +27,7 @@ func (m *Manager) AgentConn(ctx context.Context, workspaceID string) (net.Conn, 
 	}
 	inst := val.(*vmInstance)
 
-	if conn, err := dialUnixRetry(ctx, agentSockPath(inst.workDir)); err == nil {
+	if conn, err := dialUnixRetry(ctx, agentSockPath(inst.sockDir)); err == nil {
 		return conn, nil
 	}
 
@@ -46,7 +46,7 @@ func (m *Manager) DialSpotlight(ctx context.Context, workspaceID string, remoteP
 		return nil, fmt.Errorf("workspace not running: %s", workspaceID)
 	}
 	inst := val.(*vmInstance)
-	return dialSpotlightForward(ctx, spotlightSockPath(inst.workDir), remotePort)
+	return dialSpotlightForward(ctx, spotlightSockPath(inst.sockDir), remotePort)
 }
 
 func (m *Manager) SerialLogPath(workspaceID string) (string, error) {
@@ -88,14 +88,14 @@ func dialUnixRetry(ctx context.Context, sock string) (net.Conn, error) {
 	return nil, fmt.Errorf("unix dial %s: %w", sock, lastErr)
 }
 
-func waitAgentListening(ctx context.Context, workDir string, gvproxyTCPPort int) error {
+func waitAgentListening(ctx context.Context, sockDir string, gvproxyTCPPort int) error {
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		ud := net.Dialer{Timeout: 500 * time.Millisecond}
-		conn, err := ud.DialContext(ctx, "unix", agentSockPath(workDir))
+		conn, err := ud.DialContext(ctx, "unix", agentSockPath(sockDir))
 		if err == nil {
 			_ = conn.Close()
 			return nil
@@ -112,7 +112,7 @@ func waitAgentListening(ctx context.Context, workDir string, gvproxyTCPPort int)
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("timeout waiting for guest agent (unix %s / tcp :%d)", agentSockPath(workDir), gvproxyTCPPort)
+	return fmt.Errorf("timeout waiting for guest agent (unix %s / tcp :%d)", agentSockPath(sockDir), gvproxyTCPPort)
 }
 
 func dialSpotlightForward(ctx context.Context, spotlightSock string, guestPort int) (net.Conn, error) {

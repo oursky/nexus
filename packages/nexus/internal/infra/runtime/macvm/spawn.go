@@ -19,6 +19,7 @@ import (
 type spawnConfig struct {
 	workspaceID   string
 	workDir       string
+	sockDir       string // short temp dir for all Unix sockets (macOS 104-char path limit)
 	rootFSPath    string
 	workspacePath string
 	configDir     string
@@ -146,7 +147,7 @@ func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 	if err != nil {
 		return fail(fmt.Errorf("macvm: gvproxy: %w", err))
 	}
-	sockGV := filepath.Join(cfg.workDir, "gvproxy.sock")
+	sockGV := filepath.Join(cfg.sockDir, "gvproxy.sock")
 	gvp, err := vmnet.StartGVProxy(gvproxyBin, sockGV)
 	if err != nil {
 		return fail(fmt.Errorf("macvm: start gvproxy: %w", err))
@@ -165,11 +166,11 @@ func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 		return fail(fmt.Errorf("macvm: gvproxy agent tcp=%d→guest:%d: %w", agentFwdPort, guestAgentTCPPort, err))
 	}
 
-	if err := vmCtx.AddVsockPort(agentVSockPort, agentSockPath(cfg.workDir), true); err != nil {
+	if err := vmCtx.AddVsockPort(agentVSockPort, agentSockPath(cfg.sockDir), true); err != nil {
 		_ = gvp.Stop()
 		return fail(fmt.Errorf("macvm: vsock agent: %w", err))
 	}
-	if err := vmCtx.AddVsockPort(spotlightVSockPort, spotlightSockPath(cfg.workDir), true); err != nil {
+	if err := vmCtx.AddVsockPort(spotlightVSockPort, spotlightSockPath(cfg.sockDir), true); err != nil {
 		_ = gvp.Stop()
 		return fail(fmt.Errorf("macvm: vsock spotlight: %w", err))
 	}
@@ -219,6 +220,8 @@ func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 		workspaceID:  cfg.workspaceID,
 		workDir:      cfg.workDir,
 		configDir:    cfg.configDir,
+		sockDir:      cfg.sockDir,
+
 		guestSSHPort: sshHostPort,
 		agentPort:    agentFwdPort,
 		pid:          os.Getpid(),
@@ -232,7 +235,7 @@ func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 		done: done,
 	}
 
-	if err := waitAgentListening(ctx, cfg.workDir, agentFwdPort); err != nil {
+	if err := waitAgentListening(ctx, cfg.sockDir, agentFwdPort); err != nil {
 		inst.stop()
 		<-done
 		return nil, fmt.Errorf("macvm: agent not reachable: %w", err)
