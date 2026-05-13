@@ -21,6 +21,7 @@ cd "$REPO_ROOT/packages/nexus"
 
 TOKEN="${NEXUS_DAEMON_TOKEN:-test-mac-vm-smoke}"
 PORT="${NEXUS_DAEMON_PORT:-7799}"
+NETWORK="${NEXUS_DAEMON_NETWORK:-true}"
 STATEDIR="${NEXUS_MAC_VM_STATE:-${TMPDIR:-/tmp}/nexus-mac-vm-smoke-state}"
 
 export XDG_STATE_HOME="$STATEDIR/state"
@@ -134,10 +135,9 @@ echo "==> Starting daemon (VM driver, WebSocket on 127.0.0.1:$PORT)"
 NEXUS_DAEMON_TOKEN="$TOKEN" \
   "$NEXUS_BIN" daemon start \
     --port "$PORT" \
-    --network=true \
+    --network="$NETWORK" \
     --foreground=false \
     --driver vm \
-    --token "$TOKEN" \
     --socket "$SOCK"
 
 echo "==> Waiting for WebSocket listener on port $PORT"
