@@ -26,7 +26,8 @@ type spawnConfig struct {
 }
 
 // spawnVM boots a libkrun microVM for the given workspace (virtio-fs direct layout).
-// Requires libkrun.dylib / libkrunfw.dylib in cfg.libDir. Stage via: task stage:libkrun-macos
+// Requires libkrun.dylib / libkrunfw.dylib in cfg.libDir (installed by daemon start from
+// embedded smolvm dylibs). Dev fallback: ~/.smolvm/lib or task stage:libkrun-macos → Swift Resources.
 func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -35,13 +36,13 @@ func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 	libkrunPath, libkrunfwPath := libkrun.LibPaths(cfg.libDir)
 	if _, err := os.Stat(libkrunPath); err != nil {
 		return nil, fmt.Errorf(
-			"libkrun.dylib not found in %s; stage libs with: task stage:libkrun-macos (%w)",
+			"libkrun.dylib not found in %s; run daemon start once (embedded extract) or task stage:libkrun-macos (%w)",
 			cfg.libDir, err,
 		)
 	}
 	if _, err := os.Stat(libkrunfwPath); err != nil {
 		return nil, fmt.Errorf(
-			"libkrunfw.dylib not found in %s; stage libs with: task stage:libkrun-macos (%w)",
+			"libkrunfw.dylib not found in %s; run daemon start once (embedded extract) or task stage:libkrun-macos (%w)",
 			cfg.libDir, err,
 		)
 	}

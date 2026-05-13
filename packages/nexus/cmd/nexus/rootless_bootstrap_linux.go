@@ -16,13 +16,7 @@ import (
 
 // ── XDG user-scoped paths ─────────────────────────────────────────────────────
 
-func xdgShareNexus() string {
-	if s := os.Getenv("XDG_DATA_HOME"); s != "" {
-		return filepath.Join(s, "nexus")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "nexus")
-}
+func xdgShareNexus() string { return nexusDataShareDir() }
 
 func xdgStateNexus() string {
 	if s := os.Getenv("XDG_STATE_HOME"); s != "" {
@@ -129,26 +123,6 @@ type rootlessState struct {
 	RootfsPath        string `json:"rootfs_path"`
 	KVMAccess         string `json:"kvm_access"`
 	LibkrunLibDir     string `json:"libkrun_lib_dir,omitempty"`
-}
-
-// ── Phase event (for --json output) ──────────────────────────────────────────
-
-type bootstrapPhaseEvent struct {
-	Phase   string `json:"phase"`
-	Status  string `json:"status"` // "start" | "ok" | "error"
-	Message string `json:"message,omitempty"`
-}
-
-func emitPhase(w io.Writer, emitJSON bool, phase, status, msg string) {
-	if emitJSON {
-		ev := bootstrapPhaseEvent{Phase: phase, Status: status, Message: msg}
-		data, _ := json.Marshal(ev)
-		fmt.Fprintf(w, "%s\n", data)
-	} else if msg != "" {
-		fmt.Fprintf(w, "[%s] %s: %s\n", phase, status, msg)
-	} else {
-		fmt.Fprintf(w, "[%s] %s\n", phase, status)
-	}
 }
 
 // ── Prerequisite checks ───────────────────────────────────────────────────────

@@ -205,6 +205,7 @@ tasks:
   stage:nexus-macos:
     desc: "Build macOS arm64 nexus CLI and stage to packages/nexus-swift/Resources/nexus"
     cmds:
+      - task: build:libkrun-darwin
       - |
         BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
@@ -224,6 +225,11 @@ tasks:
             echo "Warning: codesign failed"
         fi
         echo "✓ Staged $(ls -lh packages/nexus-swift/Resources/nexus | awk '{print $5}')"
+
+  build:libkrun-darwin:
+    desc: "Download smolvm darwin-arm64 and stage libkrun dylibs for embedding"
+    cmds:
+      - scripts/local/build-libkrun-darwin.sh
 
   stage:libkrun-macos:
     desc: "Stage libkrun.dylib + libkrunfw.dylib from Homebrew into Swift Resources"

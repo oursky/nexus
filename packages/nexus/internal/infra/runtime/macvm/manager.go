@@ -7,7 +7,7 @@ import "sync"
 // ManagerConfig configures the macOS VM manager.
 type ManagerConfig struct {
 	// LibDir is the directory containing libkrun.dylib and libkrunfw.dylib.
-	// Defaults to ~/.cache/nexus/lib/.
+	// Defaults to ~/.local/share/nexus/lib/ (daemon bootstrap extracts embeds here).
 	LibDir string
 	// VMWorkDir is the root directory for per-workspace VM state (rootfs copies).
 	// Defaults to ~/.cache/nexus/macvm-workspaces/.

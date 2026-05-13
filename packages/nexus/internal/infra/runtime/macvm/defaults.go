@@ -10,7 +10,7 @@ import (
 func applyConfigDefaults(cfg ManagerConfig) ManagerConfig {
 	cacheDir := nexusCacheDir()
 	if cfg.LibDir == "" {
-		cfg.LibDir = filepath.Join(cacheDir, "lib")
+		cfg.LibDir = filepath.Join(nexusShareDir(), "lib")
 	}
 	if cfg.VMWorkDir == "" {
 		cfg.VMWorkDir = filepath.Join(cacheDir, "macvm-workspaces")
@@ -27,4 +27,12 @@ func nexusCacheDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".cache", "nexus")
+}
+
+func nexusShareDir() string {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "nexus")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "nexus")
 }

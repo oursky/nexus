@@ -7,6 +7,13 @@ agent-linux-arm64
 libkrun-embed.so
 libkrunfw-embed.so
 
+# macOS ARM64 dylibs staged for go:embed (scripts/local/build-libkrun-darwin.sh)
+libkrun-darwin-arm64.dylib
+libkrunfw-darwin-arm64.dylib
+
+# Downloaded tarball cache for staging script (optional artifact name)
+libkrun-darwin-arm64.tar.gz
+
 # nexus-libkrun-vm is the pre-built CGO helper binary — it IS committed to git.
 # Only rebuild via scripts/remote/deploy-libkrun.sh when the libkrun C API wrapper
 # (cmd/nexus-libkrun-vm/cgo_linux.go) changes or libkrun is upgraded.
