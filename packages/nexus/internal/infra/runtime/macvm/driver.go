@@ -4,6 +4,8 @@ package macvm
 
 import (
 	"context"
+	"errors"
+	"net"
 	"runtime"
 
 	domainruntime "github.com/oursky/nexus/packages/nexus/internal/domain/runtime"
@@ -70,3 +72,34 @@ func (d *Driver) Destroy(ctx context.Context, ws *domainws.Workspace) error {
 func (d *Driver) GuestSSHHost(ctx context.Context, workspaceID string) (string, bool) {
 	return d.mgr.GuestSSHHost(ctx, workspaceID)
 }
+
+// WorkspaceReady probes guest tooling readiness (implements workspace.runtimeReadinessDriver).
+func (d *Driver) WorkspaceReady(ctx context.Context, ws *domainws.Workspace) (bool, error) {
+	if ws == nil {
+		return false, errors.New("workspace is required")
+	}
+	return d.mgr.workspaceReady(ctx, ws.ID)
+}
+
+// WorkspaceReadyByID is for daemon components that probe by ID (PTY checker, bundles).
+func (d *Driver) WorkspaceReadyByID(ctx context.Context, workspaceID string) (bool, error) {
+	return d.mgr.workspaceReady(ctx, workspaceID)
+}
+
+// AgentConn connects to the guest exec agent (unix vsock shim or gvproxy-tcp fallback).
+func (d *Driver) AgentConn(ctx context.Context, workspaceID string) (net.Conn, error) {
+	return d.mgr.AgentConn(ctx, workspaceID)
+}
+
+// DialPort reaches a guest TCP port via the spotlight vsock mux.
+func (d *Driver) DialPort(ctx context.Context, workspaceID string, remotePort int) (net.Conn, error) {
+	return d.mgr.DialSpotlight(ctx, workspaceID, remotePort)
+}
+
+// SerialLogPath returns a host path hint for VM serial/console logs (may not exist yet).
+func (d *Driver) SerialLogPath(workspaceID string) (string, error) {
+	return d.mgr.SerialLogPath(workspaceID)
+}
+
+// GuestWorkdir is the default working directory for PTY/exec inside the VM.
+func (d *Driver) GuestWorkdir(_ string) string { return "/workspace" }

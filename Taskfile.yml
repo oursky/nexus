@@ -225,6 +225,11 @@ tasks:
         fi
         echo "✓ Staged $(ls -lh packages/nexus-swift/Resources/nexus | awk '{print $5}')"
 
+  stage:libkrun-macos:
+    desc: "Stage libkrun.dylib + libkrunfw.dylib from Homebrew into Swift Resources"
+    cmds:
+      - scripts/local/stage-libkrun-macos.sh
+
   stage:nexus-linux:
     desc: "Build linux/amd64 nexus daemon and stage to packages/nexus-swift/Resources/nexus-linux-amd64 (bundled for remote provisioning)"
     cmds:

@@ -116,6 +116,14 @@ func (g *GVProxy) ExposePort(port int) error {
 	return g.expose("tcp", fmt.Sprintf("127.0.0.1:%d", port), fmt.Sprintf("192.168.127.2:%d", port))
 }
 
+// ExposeTCPForward binds hostPort on 127.0.0.1 and forwards TCP to guestIP:guestPort
+// (typically guest IP 192.168.127.2 inside gvproxy NAT).
+func (g *GVProxy) ExposeTCPForward(hostPort, guestPort int) error {
+	local := fmt.Sprintf("127.0.0.1:%d", hostPort)
+	remote := fmt.Sprintf("192.168.127.2:%d", guestPort)
+	return g.expose("tcp", local, remote)
+}
+
 // UnexposePort removes a previously exposed port forward.
 func (g *GVProxy) UnexposePort(port int) error {
 	return g.unexpose("tcp", fmt.Sprintf("127.0.0.1:%d", port))

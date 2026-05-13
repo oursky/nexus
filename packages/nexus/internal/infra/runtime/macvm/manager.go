@@ -25,17 +25,19 @@ type ManagerConfig struct {
 type vmInstance struct {
 	workspaceID  string
 	workDir      string // ~/.cache/nexus/macvm-workspaces/<wsID>/
+	configDir    string // virtio-fs host config tmpdir (/run/nexus-host); removed on stop
 	guestSSHPort int    // host port forwarded to guest :22
-	agentPort    int    // host port forwarded to guest nexus-agent
+	agentPort    int    // host port forwarded to guest nexus-agent (TCP gvproxy fallback)
 	pid          int    // libkrun-vm subprocess PID
-	stop         func() // cancel the VM context
+	stop         func() // tear down gvproxy / VM goroutine
 	done         <-chan struct{}
 }
 
 // Manager manages macOS libkrun VM instances.
 type Manager struct {
-	cfg ManagerConfig
-	vms sync.Map // workspaceID → *vmInstance
+	cfg         ManagerConfig
+	vms         sync.Map // workspaceID → *vmInstance
+	readyAgents sync.Map // workspaceID marked after successful WorkspaceReady (/bin/true) probe
 }
 
 // NewManager creates a Manager with the given config.
