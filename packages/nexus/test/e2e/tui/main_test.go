@@ -15,7 +15,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "tui e2e embed prep: %v\n", err)
 		os.Exit(1)
 	}
-	bin, err := buildNexusBinary()
+	bin, err := resolveNexusBinary()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tui e2e build: %v\n", err)
 		os.Exit(1)

@@ -76,6 +76,16 @@ func buildNexusBinary() (string, error) {
 	return bin, nil
 }
 
+// resolveNexusBinary returns NEXUS_E2E_BINARY when set (CI supplies /tmp/nexus-bin
+// from scripts/ci/build-nexus-libkrun.sh — same as test/e2e/harness). Otherwise
+// builds a default nexus without libkrun embed (sandbox/local dev).
+func resolveNexusBinary() (string, error) {
+	if binPath := strings.TrimSpace(os.Getenv("NEXUS_E2E_BINARY")); binPath != "" {
+		return binPath, nil
+	}
+	return buildNexusBinary()
+}
+
 func freeTCPPort() (int, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

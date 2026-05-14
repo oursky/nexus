@@ -478,6 +478,7 @@ jobs:
             "HOME=$HOME" \
             "CI=$CI" \
             "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
+            "NEXUS_E2E_BINARY=${NEXUS_E2E_BINARY:-}" \
             "NEXUS_VM_KERNEL=${NEXUS_VM_KERNEL}" \
             "NEXUS_VM_ROOTFS=${NEXUS_VM_ROOTFS}" \
             "NEXUS_LIBKRUN_SKIP_BAKE=${NEXUS_LIBKRUN_SKIP_BAKE}" \
