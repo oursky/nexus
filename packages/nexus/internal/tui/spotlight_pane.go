@@ -27,6 +27,8 @@ func renderSpotlightSidebar(m *Model, width, height int) string {
 	if len(m.sidebarFwds) == 0 {
 		b.WriteString(mutedStyle.Render("No forwards"))
 		b.WriteString("\n")
+		b.WriteString(mutedStyle.Render("  [n] forward port"))
+		b.WriteString("\n")
 	} else {
 		for i, f := range m.sidebarFwds {
 			if f == nil {
@@ -38,12 +40,16 @@ func renderSpotlightSidebar(m *Model, width, height int) string {
 			} else {
 				indicator = mutedStyle.Render("○")
 			}
-			local := "localhost"
-			if f.TargetHost != "" {
-				local = f.TargetHost
+			// Show from the user's perspective: what local port they connect to.
+			// Format: "<localPort>" when local==remote, "<localPort>→<remotePort>"
+			// when they differ (e.g. custom local port assignment).
+			var portStr string
+			if f.LocalPort == f.RemotePort {
+				portStr = fmt.Sprintf("%d", f.LocalPort)
+			} else {
+				portStr = fmt.Sprintf("%d→%d", f.LocalPort, f.RemotePort)
 			}
-			row := fmt.Sprintf(":%d → %s", f.RemotePort, local)
-			row = truncate(row, max(width-3, 8))
+			row := truncate(portStr, max(width-3, 8))
 			var rendered string
 			if i == m.sidebarSel {
 				rendered = lipgloss.NewStyle().

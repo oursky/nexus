@@ -2,12 +2,31 @@ package tui
 
 import (
 	"encoding/json"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/vt"
 
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
 )
+
+// mouseModeEnableSeqs are DEC private mode sequences that enable mouse
+// reporting in a terminal. When a program inside the PTY sends one of these,
+// it means it wants to receive mouse events.
+var mouseModeEnableSeqs = []string{
+	"\x1b[?1000h", // VT200 X10 — button press only
+	"\x1b[?1002h", // button-event tracking
+	"\x1b[?1003h", // any-event tracking
+	"\x1b[?1006h", // SGR extended mouse
+}
+
+// mouseModeDisableSeqs are the corresponding disable sequences.
+var mouseModeDisableSeqs = []string{
+	"\x1b[?1000l",
+	"\x1b[?1002l",
+	"\x1b[?1003l",
+	"\x1b[?1006l",
+}
 
 // PtyPane manages an interactive PTY session rendered as a VT100 terminal
 // inside a Bubble Tea view. It feeds incoming pty.data bytes into a
@@ -19,6 +38,12 @@ type PtyPane struct {
 	sessionID string
 	wsID      string
 	term      *vt.SafeEmulator
+
+	// ptyMouseEnabled is true when the program inside the PTY has requested
+	// mouse reporting (via DEC private mode ?1000/?1002/?1003/?1006). Only
+	// forward mouse events as VT sequences when this is set; otherwise clicks
+	// are used only for TUI pane-focus navigation.
+	ptyMouseEnabled bool
 }
 
 // NewPtyPane creates a PtyPane for the given workspace and session.
@@ -32,9 +57,39 @@ func NewPtyPane(wsID, sessionID string, width, height int) *PtyPane {
 	}
 }
 
-// Write feeds raw PTY output bytes into the VT100 emulator.
+// Write feeds raw PTY output bytes into the VT100 emulator and tracks whether
+// the program inside the PTY has requested mouse-reporting mode.
 func (p *PtyPane) Write(data string) {
+	for _, seq := range mouseModeEnableSeqs {
+		if strings.Contains(data, seq) {
+			p.ptyMouseEnabled = true
+			break
+		}
+	}
+	for _, seq := range mouseModeDisableSeqs {
+		if strings.Contains(data, seq) {
+			// Only clear if no enable sequence also appears in the same chunk.
+			hasEnable := false
+			for _, en := range mouseModeEnableSeqs {
+				if strings.Contains(data, en) {
+					hasEnable = true
+					break
+				}
+			}
+			if !hasEnable {
+				p.ptyMouseEnabled = false
+			}
+			break
+		}
+	}
 	_, _ = p.term.Write([]byte(data))
+}
+
+// MouseEnabled reports whether the program inside the PTY has requested
+// mouse-reporting mode. When false, mouse click events must not be forwarded
+// as VT escape sequences (doing so would paste gibberish into the shell).
+func (p *PtyPane) MouseEnabled() bool {
+	return p.ptyMouseEnabled
 }
 
 // Render returns the current terminal screen as an ANSI-encoded string
