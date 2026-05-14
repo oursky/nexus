@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build compressed Linux/arm64 guest rootfs for macOS libkrun VMs (Apple Silicon).
-# Run on a macOS GitHub Actions runner after: brew install e2fsprogs, checkout, setup-go.
+# Run on Linux CI (ubuntu-latest): native mke2fs reliably populates ext4 from the Ubuntu cloud tarball.
+# macOS runners hit e2fsprogs populate_fs permission errors on the same tarball.
 # Writes dist/rootfs-darwin-arm64.ext4.gz and dist/rootfs-darwin-arm64.ext4.gz.sha256
 set -euo pipefail
 
@@ -13,7 +14,7 @@ if [[ -z "$MKE2FS" ]]; then
   MKE2FS="$(ls /opt/homebrew/opt/e2fsprogs/sbin/mke2fs 2>/dev/null || ls /usr/local/opt/e2fsprogs/sbin/mke2fs 2>/dev/null || true)"
 fi
 if [[ -z "$MKE2FS" || ! -x "$MKE2FS" ]]; then
-  echo "ERROR: mke2fs not found (brew install e2fsprogs)" >&2
+  echo "ERROR: mke2fs not found (apt install e2fsprogs or brew install e2fsprogs)" >&2
   exit 1
 fi
 
@@ -44,4 +45,11 @@ OUT="${GITHUB_WORKSPACE:-$REPO_ROOT}/dist"
 mkdir -p "$OUT"
 gzip -9 -c /tmp/rootfs-darwin-arm64.ext4 > "$OUT/rootfs-darwin-arm64.ext4.gz"
 ls -lh "$OUT/rootfs-darwin-arm64.ext4.gz"
-( cd "$OUT" && shasum -a 256 rootfs-darwin-arm64.ext4.gz | tee rootfs-darwin-arm64.ext4.gz.sha256 )
+(
+  cd "$OUT"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum rootfs-darwin-arm64.ext4.gz | tee rootfs-darwin-arm64.ext4.gz.sha256
+  else
+    shasum -a 256 rootfs-darwin-arm64.ext4.gz | tee rootfs-darwin-arm64.ext4.gz.sha256
+  fi
+)

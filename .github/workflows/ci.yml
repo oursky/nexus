@@ -282,7 +282,9 @@ jobs:
             libkrun-baked-v6-${{ runner.os }}-
 
       - name: Hydrate cached VM assets to host paths
-        timeout-minutes: 5
+        timeout-minutes: 25
+        env:
+          STEP_TIMEOUT_SECONDS: "1200"
         run: scripts/ci/hydrate-libkrun-cache.sh
 
       - name: Verify pre-baked VM assets (cache hint)
@@ -427,7 +429,9 @@ jobs:
             libkrun-baked-v6-${{ runner.os }}-
 
       - name: Hydrate cached VM assets to host paths
-        timeout-minutes: 5
+        timeout-minutes: 25
+        env:
+          STEP_TIMEOUT_SECONDS: "1200"
         run: scripts/ci/hydrate-libkrun-cache.sh
 
       - name: Verify pre-baked VM assets (cache hint)
