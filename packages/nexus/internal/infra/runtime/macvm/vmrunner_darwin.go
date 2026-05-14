@@ -166,6 +166,37 @@ func RunVMSubprocess(configPath string) {
 
 	log.Printf("[macvm-runner] config: vcpus=%d mem_mib=%d rootfs=%s docker_data=%q workspace=%s config_dir=%q gvproxy_sock=%s",
 		vcpus, memMiB, cfg.RootFSPath, cfg.DockerDataPath, cfg.WorkspacePath, cfg.ConfigDir, cfg.GVProxySockPath)
+
+	// Pre-flight: verify disk images exist and are non-empty before entering
+	// the VM. A 0-byte or missing rootfs causes krun_start_enter to return
+	// EINVAL immediately, which is indistinguishable from a Hypervisor.framework
+	// configuration error. Catching it here gives a clear diagnostic instead.
+	for _, check := range []struct{ label, path string }{
+		{"rootfs", cfg.RootFSPath},
+		{"docker_data", cfg.DockerDataPath},
+	} {
+		if check.path == "" {
+			continue
+		}
+		fi, err := os.Stat(check.path)
+		if err != nil {
+			log.Printf("[macvm-runner] pre-flight FAIL: %s not found: %v workspace=%s", check.label, err, cfg.WorkspaceID)
+			os.Exit(2)
+		}
+		if fi.Size() == 0 {
+			log.Printf("[macvm-runner] pre-flight FAIL: %s is 0 bytes at %s workspace=%s", check.label, check.path, cfg.WorkspaceID)
+			os.Exit(2)
+		}
+		log.Printf("[macvm-runner] pre-flight ok: %s size=%d bytes", check.label, fi.Size())
+	}
+
+	// Log available disk space on the volume containing the workspace dirs
+	// to help diagnose ENOSPC / EINVAL failures from krun_start_enter.
+	if stat, err := diskUsage(filepath.Dir(cfg.RootFSPath)); err == nil {
+		log.Printf("[macvm-runner] disk avail: %s avail=%d MiB total=%d MiB",
+			filepath.Dir(cfg.RootFSPath), stat.avail>>20, stat.total>>20)
+	}
+
 	fmt.Fprintf(os.Stderr, "[macvm-runner] booting VM workspace=%s\n", cfg.WorkspaceID)
 
 	// krun_start_enter blocks until the VM exits. If the guest triggers ACPI

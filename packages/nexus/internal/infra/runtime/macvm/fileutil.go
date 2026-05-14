@@ -10,6 +10,23 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+type diskStat struct {
+	avail uint64
+	total uint64
+}
+
+// diskUsage returns available and total bytes for the filesystem containing path.
+func diskUsage(path string) (diskStat, error) {
+	var s unix.Statfs_t
+	if err := unix.Statfs(path, &s); err != nil {
+		return diskStat{}, err
+	}
+	return diskStat{
+		avail: s.Bavail * uint64(s.Bsize), //nolint:gosec
+		total: s.Blocks * uint64(s.Bsize), //nolint:gosec
+	}, nil
+}
+
 // copyFile copies src to dst.  On APFS it uses clonefile(2) for an O(1) CoW
 // clone; on any other filesystem (or if clonefile fails) it falls back to a
 // byte-by-byte io.Copy.  This avoids the multi-minute delay from copying a

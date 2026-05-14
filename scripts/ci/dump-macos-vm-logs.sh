@@ -3,6 +3,14 @@
 # Searches both the XDG cache and legacy data-home locations.
 set +e  # Continue even if individual commands fail; this is a diagnostic script.
 
+echo "=== disk space ==="
+df -h "${XDG_CACHE_HOME:-$HOME/.cache}" 2>/dev/null || df -h "$HOME" 2>/dev/null
+echo ""
+
+echo "=== rootfs cache ==="
+ls -lh "${XDG_CACHE_HOME:-$HOME/.cache}/nexus/vm/" 2>/dev/null || echo "(missing)"
+echo ""
+
 MACVM_CANDIDATES=(
   "${XDG_CACHE_HOME:-$HOME/.cache}/nexus/macvm-workspaces"
   "${XDG_DATA_HOME:-$HOME/.local/share}/nexus/macvm-workspaces"

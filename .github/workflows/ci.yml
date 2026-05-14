@@ -82,9 +82,27 @@ jobs:
 
   # GitHub-hosted Apple Silicon: Go e2e with macOS VM driver (same suite as Linux; vmproof skipped on darwin).
   e2e-macos-vm:
-    name: E2E Tests (macOS / vm)
+    name: E2E Tests (macOS / ${{ matrix.shard.name }})
     runs-on: macos-15
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: core
+            packages: >-
+              ./test/e2e/harness/...
+              ./test/e2e/daemon/...
+              ./test/e2e/auth/...
+              ./test/e2e/fs/...
+              ./test/e2e/project/...
+              ./test/e2e/cli/...
+          - name: vm-heavy
+            packages: >-
+              ./test/e2e/vmproof/...
+              ./test/e2e/workspace/...
+              ./test/e2e/pty/...
+              ./test/e2e/spotlight/...
     env:
       GOTOOLCHAIN: local
       CI: "true"
@@ -97,6 +115,7 @@ jobs:
       # With the subprocess-per-VM fix, boot takes <1 s locally and a few seconds on CI.
       # 90 s gives plenty of headroom while preventing 3-min-per-test hangs on regression.
       NEXUS_READINESS_TIMEOUT_SECONDS: "90"
+      NEXUS_E2E_MACOS_PACKAGES: ${{ matrix.shard.packages }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
