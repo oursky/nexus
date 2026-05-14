@@ -131,8 +131,8 @@ func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 	if cfg.configDir != "" {
 		guestEnv = append(guestEnv, "NEXUS_CONFIG_TAG=nexus-host-config")
 	}
-	// macOS VMs use a pre-baked rootfs; skip the heavy apt-get package installation.
-	guestEnv = append(guestEnv, "NEXUS_SKIP_BASE_PACKAGES=1")
+	// Let the guest agent install base packages and Nexusfile tools.
+	// guestEnv = append(guestEnv, "NEXUS_SKIP_BASE_PACKAGES=1")
 
 	// Determine log level for subprocess.
 	var logLevel uint32

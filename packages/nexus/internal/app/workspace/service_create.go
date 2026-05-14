@@ -3,7 +3,10 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,6 +19,7 @@ func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*works
 	if spec.Repo == "" {
 		return nil, fmt.Errorf("repo is required")
 	}
+	spec.Repo = normalizeWorkspaceRepoPath(spec.Repo)
 	if spec.WorkspaceName == "" {
 		return nil, fmt.Errorf("workspaceName is required")
 	}
@@ -181,6 +185,54 @@ func deriveRepoID(repo string) string {
 	repo = strings.TrimSuffix(repo, ".git")
 	repo = strings.NewReplacer(":", "/", "@", "", "//", "/").Replace(repo)
 	return repo
+}
+
+// normalizeWorkspaceRepoPath expands tilde and resolves filesystem repo paths to
+// absolute paths on the daemon host. Relative paths depend on the daemon's
+// working directory and break VM virtio-fs mounts when mis-resolved.
+// Behaviour matches cmd/nexus/commands/workspace/create.normalizeRepoForCreate.
+func normalizeWorkspaceRepoPath(repo string) string {
+	repo = strings.TrimSpace(repo)
+	if repo == "" || looksLikeRemoteGitRepo(repo) {
+		return repo
+	}
+	repo = expandTildeRepoPath(repo)
+	if filepath.IsAbs(repo) {
+		return filepath.Clean(repo)
+	}
+	if strings.HasPrefix(repo, "./") || strings.HasPrefix(repo, "../") {
+		if abs, err := filepath.Abs(repo); err == nil {
+			return filepath.Clean(abs)
+		}
+		return repo
+	}
+	if info, err := os.Stat(repo); err == nil && info.IsDir() {
+		if abs, absErr := filepath.Abs(repo); absErr == nil {
+			return filepath.Clean(abs)
+		}
+	}
+	return repo
+}
+
+func expandTildeRepoPath(repo string) string {
+	if repo == "~" || strings.HasPrefix(repo, "~/") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			if repo == "~" {
+				return home
+			}
+			return filepath.Join(home, strings.TrimPrefix(repo, "~/"))
+		}
+	}
+	return repo
+}
+
+func looksLikeRemoteGitRepo(repo string) bool {
+	r := strings.TrimSpace(repo)
+	if strings.HasPrefix(r, "git@") || strings.HasPrefix(r, "ssh://") {
+		return true
+	}
+	u, err := url.Parse(r)
+	return err == nil && u.Scheme != "" && u.Host != ""
 }
 
 func isAlreadyExists(err error) bool {

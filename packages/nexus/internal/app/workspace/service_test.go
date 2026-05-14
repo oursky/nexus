@@ -3,6 +3,8 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -1157,6 +1159,60 @@ func TestService_Relations(t *testing.T) {
 	}
 	if len(rels.Groups) == 0 {
 		t.Error("expected at least one relation group")
+	}
+}
+
+func TestNormalizeWorkspaceRepoPath(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		in, want string
+	}{
+		{"git@github.com:org/repo.git", "git@github.com:org/repo.git"},
+		{"  https://github.com/o/r.git  ", "https://github.com/o/r.git"},
+	}
+	for _, tc := range cases {
+		if got := normalizeWorkspaceRepoPath(tc.in); got != tc.want {
+			t.Fatalf("normalizeWorkspaceRepoPath(%q) = %q; want %q", tc.in, got, tc.want)
+		}
+	}
+
+	tmp := t.TempDir()
+	sub := filepath.Join(tmp, "nested")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+
+	got := normalizeWorkspaceRepoPath(filepath.Join(".", "nested"))
+	want := filepath.Clean(sub)
+	gotResolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		gotResolved = got
+	}
+	wantResolved, err := filepath.EvalSymlinks(want)
+	if err != nil {
+		wantResolved = want
+	}
+	if gotResolved != wantResolved {
+		t.Fatalf("relative path: got %q; want %q", gotResolved, wantResolved)
+	}
+
+	absClean := filepath.Join(tmp, "other", "..", "nested")
+	got = normalizeWorkspaceRepoPath(absClean)
+	gotResolved, err = filepath.EvalSymlinks(got)
+	if err != nil {
+		gotResolved = got
+	}
+	if gotResolved != wantResolved {
+		t.Fatalf("non-clean abs: got %q; want %q", got, want)
 	}
 }
 

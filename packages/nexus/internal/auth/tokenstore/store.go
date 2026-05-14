@@ -58,9 +58,10 @@ func generateToken() (string, error) {
 }
 
 // profileTokenStore returns the Store used for the client-side profile token
-// (distinct from the daemon's own token store).
+// (the bearer token for `nexus daemon connect`, distinct from the daemon's
+// own token store).
 func profileTokenStore() Store {
-	return probe()
+	return profileBackingStore()
 }
 
 // SaveProfileToken persists the client-side bearer token (fetched from the

@@ -64,7 +64,7 @@ func EnsureDaemonVerbose(verbose bool) (*websocket.Conn, error) {
 
 	// For localhost connections, skip SSH tunnel and connect directly
 	if isLocalhost(p.Host) {
-		url := fmt.Sprintf("ws://localhost:%d/", p.Port)
+		url := localDaemonWebSocketURL(p.Port)
 		header := http.Header{}
 		header.Set("Authorization", "Bearer "+p.Token)
 		if verbose {
@@ -98,7 +98,7 @@ func EnsureDaemonVerbose(verbose bool) (*websocket.Conn, error) {
 		return nil, tunnelCache.err
 	}
 
-	url := fmt.Sprintf("ws://localhost:%d/", tunnelCache.port)
+	url := localDaemonWebSocketURL(tunnelCache.port)
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+p.Token)
 	if verbose {
@@ -114,6 +114,14 @@ func EnsureDaemonVerbose(verbose bool) (*websocket.Conn, error) {
 	return conn, nil
 }
 
+// localDaemonWebSocketURL is the WebSocket URL for a loopback daemon port.
+// Use 127.0.0.1 instead of "localhost" so macOS does not prefer IPv6 (::1)
+// where another process (e.g. headless RPC on *:7778) can steal the connection
+// while the daemon listens only on 127.0.0.1.
+func localDaemonWebSocketURL(port int) string {
+	return fmt.Sprintf("ws://127.0.0.1:%d/", port)
+}
+
 // isLocalhost checks if the host is a local address (no SSH tunnel needed)
 func isLocalhost(host string) bool {
 	localhostNames := []string{"localhost", "127.0.0.1", "::1", "0.0.0.0"}
@@ -124,6 +132,13 @@ func isLocalhost(host string) bool {
 		}
 	}
 	return false
+}
+
+// IsLoopbackHost reports whether host refers to the local machine for daemon
+// RPC (same rule as direct WebSocket without an SSH tunnel). Used by CLI
+// commands that must avoid SSH for loopback (e.g. local daemon token fetch).
+func IsLoopbackHost(host string) bool {
+	return isLocalhost(host)
 }
 
 // DaemonEndpointIsLocal reports whether the CLI reaches the Nexus daemon on the
@@ -214,7 +229,11 @@ func CachedTunnelPort() (int, bool) {
 
 // DialDirect connects directly to a daemon at host:port without SSH tunnel.
 func DialDirect(host string, port int, token string, verbose bool) (*websocket.Conn, error) {
-	url := fmt.Sprintf("ws://%s:%d/", host, port)
+	dialHost := host
+	if isLocalhost(host) {
+		dialHost = "127.0.0.1"
+	}
+	url := fmt.Sprintf("ws://%s:%d/", dialHost, port)
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+token)
 	if verbose {

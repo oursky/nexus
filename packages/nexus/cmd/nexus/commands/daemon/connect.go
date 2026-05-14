@@ -11,6 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
+	"github.com/oursky/nexus/packages/nexus/internal/auth/tokenstore"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
 	"github.com/spf13/cobra"
 )
@@ -29,9 +30,9 @@ func connectCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			host := args[0]
 
-			token, err := fetchRemoteToken(host, sshPort, identityFile, verbose)
+			token, err := fetchDaemonBearerToken(host, sshPort, identityFile, verbose)
 			if err != nil {
-				return fmt.Errorf("fetch remote token: %w", err)
+				return fmt.Errorf("fetch daemon bearer token: %w", err)
 			}
 
 			p := &profile.Profile{
@@ -127,11 +128,23 @@ func connectCommand() *cobra.Command {
 	return cmd
 }
 
-func fetchRemoteToken(host string, sshPort int, identityFile string, verbose bool) (string, error) {
+func fetchDaemonBearerToken(host string, sshPort int, identityFile string, verbose bool) (string, error) {
+	if rpc.IsLoopbackHost(host) {
+		tok, err := tokenstore.LoadOrGenerate()
+		if err != nil {
+			return "", fmt.Errorf("local daemon token: %w", err)
+		}
+		return tok, nil
+	}
+
 	// Use `nexus daemon token` on the remote host so the token is read from
 	// Use the full installed path because non-interactive SSH sessions do not
 	// source shell profiles, so ~/.local/bin is not in $PATH.
-	args := []string{host, "$HOME/.local/bin/nexus", "daemon", "token"}
+	nexusBin := filepath.Base(os.Args[0])
+	if nexusBin == "" || nexusBin == "." {
+		nexusBin = "nexus"
+	}
+	args := []string{host, "$HOME/.local/bin/" + nexusBin, "daemon", "token"}
 	if sshPort > 0 && sshPort != 22 {
 		args = append([]string{"-p", fmt.Sprintf("%d", sshPort)}, args...)
 	}

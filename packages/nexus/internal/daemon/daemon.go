@@ -493,6 +493,19 @@ func resolvePTYHostBinary() string {
 	if exe, err := os.Executable(); err == nil && exe != "" {
 		return exe
 	}
+	// Executable can fail in some launch contexts; argv[0] is often still usable.
+	if len(os.Args) > 0 {
+		arg0 := os.Args[0]
+		if filepath.IsAbs(arg0) && arg0 != "" {
+			return arg0
+		}
+		base := filepath.Base(arg0)
+		if base != "" && base != "." {
+			if resolved, err := exec.LookPath(base); err == nil && resolved != "" {
+				return resolved
+			}
+		}
+	}
 	if resolved, err := exec.LookPath("pty-host"); err == nil {
 		return resolved
 	}
