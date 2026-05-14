@@ -103,6 +103,22 @@ func randomToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// linuxLibkrunWorkdirBase is where CI mounts XFS with reflink=1 (scripts/ci/setup-xfs-reflink.sh).
+// libkrun requires a reflink-capable filesystem for --workdir-root; /tmp on GitHub runners is ext4.
+const linuxLibkrunWorkdirBase = "/data/nexus/libkrun-vms-tui-e2e"
+
+// mkdirTUIWorkDir creates the daemon workdir root. Under Linux libkrun (NEXUS_VM_KERNEL set)
+// it must live on the reflink-capable volume, same as test/e2e/harness suite.go.
+func mkdirTUIWorkDir() (string, error) {
+	if runtime.GOOS == "linux" && strings.TrimSpace(os.Getenv("NEXUS_VM_KERNEL")) != "" {
+		if err := os.MkdirAll(linuxLibkrunWorkdirBase, 0o755); err != nil {
+			return "", err
+		}
+		return os.MkdirTemp(linuxLibkrunWorkdirBase, "nexus-tui-e2e-work-")
+	}
+	return os.MkdirTemp("", "nexus-tui-e2e-work-*")
+}
+
 // tuiDaemonDriverArgs selects sandbox vs VM-backed daemon flags.
 //
 // Linux VM (libkrun): set NEXUS_VM_KERNEL and NEXUS_VM_ROOTFS (or NEXUS_E2E_ROOTFS),
@@ -161,7 +177,7 @@ func startDaemon(bin string) (*daemonEnv, error) {
 		_ = os.RemoveAll(dbDir)
 		return nil, err
 	}
-	workDir, err := os.MkdirTemp("", "nexus-tui-e2e-work-*")
+	workDir, err := mkdirTUIWorkDir()
 	if err != nil {
 		_ = os.RemoveAll(dbDir)
 		_ = os.RemoveAll(sockDir)
