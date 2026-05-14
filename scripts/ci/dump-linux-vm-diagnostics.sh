@@ -2,6 +2,11 @@
 # Dump libkrun VM, passt, and host-fixture diagnostics on CI failure.
 set +e  # Continue even if individual commands fail; this is a diagnostic script.
 
+echo "=== Disk space ==="
+df -h
+du -sh /tmp/nexus-* 2>/dev/null || true
+echo ""
+
 echo "=== ldd nexus-libkrun-vm ==="
 ldd "$HOME/.local/share/nexus/bin/nexus-libkrun-vm" 2>&1 || true
 

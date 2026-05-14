@@ -219,8 +219,11 @@ jobs:
       NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "1"
       NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
       NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
-      NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
-      NEXUS_RUNNER_ROOTFS_MIN_MIB: "512"
+      # GitHub-hosted runners have ~14 GB disk; parallel E2E VMs each allocate a
+      # workspace ext4 sized from this minimum — 512 MiB × many workspaces
+      # exhausts the host and yields corrupt images / guest I/O errors.
+      NEXUS_WORKSPACE_IMAGE_MIN_MIB: "128"
+      NEXUS_RUNNER_ROOTFS_MIN_MIB: "128"
       NEXUS_LIBKRUN_MEM_MIB: "256"
       NEXUS_PASST_PATH: /tmp/passt-patched
 
