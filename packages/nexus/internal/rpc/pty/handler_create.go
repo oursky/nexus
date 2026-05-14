@@ -99,9 +99,16 @@ func (h *Handler) createVMSession(ctx context.Context, p createParams, ws *domai
 
 	shell := p.Shell
 	if shell == "" {
-		// Default to "sh": the guest rootfs always has /bin/sh (dash/busybox)
-		// but may not have bash. The guest agent resolves "sh" via PATH.
-		shell = "sh"
+		if len(p.Args) == 0 {
+			// Interactive PTY: prefer bash for a good user experience — it handles
+			// .bashrc syntax and completion. The guest agent falls back to sh if
+			// bash is unavailable in the rootfs.
+			shell = "bash"
+		} else {
+			// Non-interactive exec (e.g. -c "cmd"): sh is sufficient and always
+			// present on every POSIX rootfs.
+			shell = "sh"
+		}
 	}
 
 	sessionID := fmt.Sprintf("pty-%d", time.Now().UnixNano())
