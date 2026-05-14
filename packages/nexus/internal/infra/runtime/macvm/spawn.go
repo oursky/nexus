@@ -256,7 +256,7 @@ func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 		}
 	}()
 
-	if err := waitAgentListening(subCtx, cfg.sockDir, agentFwdPort); err != nil {
+	if err := waitAgentListening(subCtx, cfg.sockDir); err != nil {
 		subCancel()
 		inst.stop()
 		<-done

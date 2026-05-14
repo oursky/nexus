@@ -88,7 +88,15 @@ func dialUnixRetry(ctx context.Context, sock string) (net.Conn, error) {
 	return nil, fmt.Errorf("unix dial %s: %w", sock, lastErr)
 }
 
-func waitAgentListening(ctx context.Context, sockDir string, gvproxyTCPPort int) error {
+// waitAgentListening polls the vsock-forwarded unix socket until the guest
+// agent has started and libkrun has materialised the host-side socket file.
+//
+// The TCP/gvproxy port is intentionally NOT checked here: gvproxy listens on
+// the host TCP port regardless of VM state, so a successful TCP dial does not
+// mean the agent is running. Only the vsock unix socket is created by libkrun
+// when the guest actually calls accept() on the vsock device, making it a
+// reliable liveness signal.
+func waitAgentListening(ctx context.Context, sockDir string) error {
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
@@ -100,19 +108,13 @@ func waitAgentListening(ctx context.Context, sockDir string, gvproxyTCPPort int)
 			_ = conn.Close()
 			return nil
 		}
-		td := net.Dialer{Timeout: 500 * time.Millisecond}
-		tcpConn, err := td.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", gvproxyTCPPort))
-		if err == nil {
-			_ = tcpConn.Close()
-			return nil
-		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("timeout waiting for guest agent (unix %s / tcp :%d)", agentSockPath(sockDir), gvproxyTCPPort)
+	return fmt.Errorf("timeout waiting for guest agent vsock unix socket %s", agentSockPath(sockDir))
 }
 
 func dialSpotlightForward(ctx context.Context, spotlightSock string, guestPort int) (net.Conn, error) {

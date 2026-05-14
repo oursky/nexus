@@ -191,8 +191,8 @@ jobs:
             go_p: 2
             go_parallel: 2
             go_run: ""
-            go_timeout: 8m
-            step_timeout_minutes: 10
+            go_timeout: 15m
+            step_timeout_minutes: 20
     env:
       CI: true
       NEXUS_LIBKRUN_SKIP_BAKE: "1"
