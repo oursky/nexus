@@ -17,6 +17,8 @@ import (
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/sshtunnel"
 )
 
 
@@ -128,6 +130,17 @@ type sidebarDiscoveredMsg struct {
 	err   error
 }
 
+// tunnelStartedMsg is delivered when the background SSH tunnel goroutine
+// finishes starting (or fails). tunnel is nil when there's nothing to tunnel
+// (e.g. local daemon, no active forwards, or error).
+type tunnelStartedMsg struct {
+	wsID       string
+	tunnel     *sshtunnel.MultiTunnel
+	boundPorts []int
+	local      bool // true when daemon is local — no SSH tunnel needed
+	err        error
+}
+
 // Model is the root Bubble Tea model for the Nexus TUI.
 type Model struct {
 	list   list.Model
@@ -199,6 +212,14 @@ type Model struct {
 	sidebarSel        int
 	sidebarFwds       []*spotlight.Forward
 	sidebarDiscovered []workspace.DiscoveredPort // workspace.discover-ports result
+
+	// SSH tunnel for spotlight port forwarding (client-side, one per workspace).
+	// nil when no tunnel is running. Closed on quit, workspace switch, or when
+	// all active forwards are removed.
+	sidebarTunnel     *sshtunnel.MultiTunnel
+	sidebarTunnelLive bool   // true once tunnel has successfully started
+	sidebarTunnelWsID string // workspace ID the running tunnel belongs to
+	sidebarTunnelLocal bool  // true when daemon is local (no SSH needed)
 
 	// Pane x-boundaries for mouse hit-testing (0-indexed, inner coordinates,
 	// i.e. after removing the 2-column outer padding).
@@ -616,6 +637,77 @@ func (m Model) loadSpotlightsCmd(wsID string) tea.Cmd {
 			return spotlightsDataMsg{err: err}
 		}
 		return spotlightsDataMsg{forwards: result.Forwards}
+	}
+}
+
+// closeSidebarTunnel shuts down any active spotlight SSH tunnel and resets
+// tunnel state on the model. Safe to call when no tunnel is running.
+func (m *Model) closeSidebarTunnel() {
+	if m.sidebarTunnel != nil {
+		_ = m.sidebarTunnel.Close()
+		m.sidebarTunnel = nil
+	}
+	m.sidebarTunnelLive = false
+	m.sidebarTunnelWsID = ""
+	m.sidebarTunnelLocal = false
+}
+
+// isSidebarTunnelHost returns true when the active profile is a local daemon
+// (no SSH tunnel needed for spotlight port forwarding).
+func isSidebarTunnelLocal(p *profile.Profile) bool {
+	if p == nil {
+		return true
+	}
+	if p.LocalPort > 0 {
+		return true
+	}
+	h := strings.ToLower(strings.TrimSpace(p.Host))
+	for _, local := range []string{"", "localhost", "127.0.0.1", "::1", "0.0.0.0"} {
+		if h == local {
+			return true
+		}
+	}
+	return false
+}
+
+// startSidebarTunnelCmd starts an SSH multi-tunnel for all active spotlight
+// forwards for the given workspace. The result is delivered as tunnelStartedMsg.
+func startSidebarTunnelCmd(wsID string, fwds []*spotlight.Forward) tea.Cmd {
+	return func() tea.Msg {
+		p, err := profile.LoadDefault()
+		if err != nil {
+			return tunnelStartedMsg{wsID: wsID, err: fmt.Errorf("load profile: %w", err)}
+		}
+		if isSidebarTunnelLocal(p) {
+			// Local daemon — ports are directly accessible; no SSH tunnel needed.
+			return tunnelStartedMsg{wsID: wsID, local: true}
+		}
+
+		var specs []sshtunnel.Forward
+		for _, f := range fwds {
+			if f == nil || f.State != spotlight.ForwardStateActive {
+				continue
+			}
+			rh := "127.0.0.1"
+			if f.TargetHost != "" {
+				rh = f.TargetHost
+			}
+			specs = append(specs, sshtunnel.Forward{
+				LocalPort:  f.LocalPort,
+				RemoteHost: rh,
+				RemotePort: f.RemotePort,
+			})
+		}
+		if len(specs) == 0 {
+			return tunnelStartedMsg{wsID: wsID}
+		}
+
+		mt := sshtunnel.NewMultiWithOptions(p.Host, p.SSHPort, p.SSHIdentityFile, false)
+		boundPorts, err := mt.Start(specs, 5*time.Second)
+		if err != nil {
+			return tunnelStartedMsg{wsID: wsID, err: fmt.Errorf("SSH tunnel: %w", err)}
+		}
+		return tunnelStartedMsg{wsID: wsID, tunnel: mt, boundPorts: boundPorts}
 	}
 }
 
@@ -1157,18 +1249,89 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshCmd()
 
 	case sidebarSpotMsg:
-		if msg.err == nil {
-			m.sidebarFwds = msg.forwards
-			if m.sidebarSel >= len(m.sidebarFwds) {
-				m.sidebarSel = max(0, len(m.sidebarFwds)-1)
+		if msg.err != nil {
+			return m, nil
+		}
+		m.sidebarFwds = msg.forwards
+		if m.sidebarSel >= len(m.sidebarFwds) {
+			m.sidebarSel = max(0, len(m.sidebarFwds)-1)
+		}
+
+		selWS := m.selectedWorkspace()
+		selWsID := ""
+		if selWS != nil {
+			selWsID = selWS.ID
+		}
+
+		// Stop the tunnel if the workspace changed.
+		if m.sidebarTunnelWsID != "" && m.sidebarTunnelWsID != selWsID {
+			m.closeSidebarTunnel()
+		}
+
+		// Count active forwards for the current workspace.
+		activeCount := 0
+		for _, f := range m.sidebarFwds {
+			if f != nil && f.State == spotlight.ForwardStateActive {
+				activeCount++
 			}
 		}
-		return m, nil
+
+		var tunnelCmd tea.Cmd
+		if activeCount > 0 && selWsID != "" {
+			tunnelNeedsStart := !m.sidebarTunnelLive ||
+				(m.sidebarTunnel != nil && m.sidebarTunnel.PID() <= 0)
+			if tunnelNeedsStart {
+				// Close any dead tunnel handle before starting a fresh one.
+				if m.sidebarTunnel != nil {
+					_ = m.sidebarTunnel.Close()
+					m.sidebarTunnel = nil
+				}
+				m.sidebarTunnelLive = false
+				m.sidebarTunnelWsID = selWsID
+				tunnelCmd = startSidebarTunnelCmd(selWsID, m.sidebarFwds)
+			}
+		} else if activeCount == 0 {
+			m.closeSidebarTunnel()
+		}
+
+		return m, tunnelCmd
 
 	case sidebarDiscoveredMsg:
 		if msg.err == nil {
 			m.sidebarDiscovered = msg.ports
 		}
+		return m, nil
+
+	case tunnelStartedMsg:
+		if msg.wsID != m.sidebarTunnelWsID {
+			// Workspace changed while tunnel was starting; discard and close.
+			if msg.tunnel != nil {
+				_ = msg.tunnel.Close()
+			}
+			return m, nil
+		}
+		if msg.err != nil {
+			m.statusLine = "spotlight tunnel: " + msg.err.Error()
+			m.sidebarTunnelLive = false
+			return m, nil
+		}
+		if msg.local {
+			// Local daemon — mark as "live" (ports are directly accessible).
+			m.sidebarTunnelLive = true
+			m.sidebarTunnelLocal = true
+			return m, nil
+		}
+		if msg.tunnel == nil {
+			// No active forwards to tunnel; leave live=false.
+			return m, nil
+		}
+		// New tunnel is up; replace any existing one.
+		if m.sidebarTunnel != nil {
+			_ = m.sidebarTunnel.Close()
+		}
+		m.sidebarTunnel = msg.tunnel
+		m.sidebarTunnelLive = true
+		m.sidebarTunnelLocal = false
 		return m, nil
 
 	case sidebarSpotTickMsg:
@@ -1436,6 +1599,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.cancelPTY()
 				m.cancelPTY = nil
 			}
+			m.closeSidebarTunnel()
 			if m.mux != nil {
 				m.mux.Close()
 				m.mux = nil
@@ -1459,6 +1623,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cancelPTY()
 			m.cancelPTY = nil
 		}
+		m.closeSidebarTunnel()
 		if m.mux != nil {
 			m.mux.Close()
 			m.mux = nil
@@ -1812,6 +1977,8 @@ func (m Model) handleSidebarKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if len(m.sidebarFwds) > 0 {
+			// Stopping all — close the client-side SSH tunnel immediately.
+			m.closeSidebarTunnel()
 			return m, m.stopWorkspaceSpotCmd(ws.ID)
 		}
 		return m, m.startAllDiscoveredCmd(ws.ID)
