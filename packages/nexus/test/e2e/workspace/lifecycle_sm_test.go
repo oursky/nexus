@@ -123,6 +123,7 @@ func TestLifecycle_ReadyState(t *testing.T) {
 // TestLifecycle_RestoreFromStopped verifies a stopped workspace can be restored.
 func TestLifecycle_RestoreFromStopped(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfE2EMacVM(t)
 	harness.SkipIfVMBoot(t)
 	h := suite.Harness().ForTest(t)
 	id := createWorkspaceForSM(t, h, "sm-restore")
@@ -225,6 +226,7 @@ func TestLifecycle_StartNotFound(t *testing.T) {
 // inherits the parent's ref and auto-generates a child name when one is not supplied.
 func TestLifecycle_ForkEmptyChildRefInheritsParent(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfE2EMacVM(t)
 	h := suite.Harness().ForTest(t)
 	id := createWorkspaceForSM(t, h, "sm-fork-noref")
 
