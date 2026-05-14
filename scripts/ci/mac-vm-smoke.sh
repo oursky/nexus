@@ -110,6 +110,7 @@ if [[ ! -f "$ROOTFS_CACHE" ]]; then
   echo "  Extracting Ubuntu rootfs..."
   # Skip dev/* (device nodes); macOS tar cannot create them. Use -o so temp dirs stay removable.
   tar -xJf "$UBUNTU_TAR" -C "$UBUNTU_STAGING" -o --exclude='dev/*'
+  chmod -R u+rwX "$UBUNTU_STAGING" 2>/dev/null || true
 
   # Install the nexus-guest-agent into the rootfs
   mkdir -p "$UBUNTU_STAGING/usr/local/bin"

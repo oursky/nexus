@@ -42,6 +42,10 @@ mkdir -p "$UBUNTU_STAGING"
 # -o: do not restore root ownership so CI can rm -rf the temp dir.
 tar -xJf "$UBUNTU_TAR" -C "$UBUNTU_STAGING" -o --exclude='dev/*'
 
+# Noble ships var/lib/snapd/void as 0111 (no user read). mke2fs -d must list dirs; loosen perms
+# for the staging tree so populate and tempdir cleanup succeed on macOS CI.
+chmod -R u+rwX "$UBUNTU_STAGING" 2>/dev/null || true
+
 mkdir -p "$UBUNTU_STAGING/usr/local/bin"
 cp "$ROOTFSDIR/nexus-guest-agent" "$UBUNTU_STAGING/usr/local/bin/nexus-guest-agent"
 chmod 0755 "$UBUNTU_STAGING/usr/local/bin/nexus-guest-agent"
