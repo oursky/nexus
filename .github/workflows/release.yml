@@ -148,30 +148,39 @@ jobs:
               }
             }' > latest.json
 
+      # Org policy allows only GitHub-owned actions, docker/*, or oursky/* — use gh CLI instead of softprops/action-gh-release.
       - name: Create versioned release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-          generate_release_notes: false
-          body: |
-            Automated release build for `${{ github.ref_name }}`.
-
-            Assets include cross-platform CLI binaries, `checksums.txt`, and `latest.json` (update manifest).
-
-            **Note:** Linux binaries embed the Linux guest-agent (`CGO_ENABLED=0`). macOS binaries do not embed the Linux agent bundle.
-          files: |
-            dist/nexus-linux-amd64
-            dist/nexus-linux-arm64
-            dist/nexus-darwin-amd64
-            dist/nexus-darwin-arm64
-            dist/nexus-libkrun-vm-linux-amd64
-            dist/checksums.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          NOTES="$(mktemp)"
+          trap 'rm -f "$NOTES"' EXIT
+          {
+            echo "Automated release build for \`${TAG_NAME}\`."
+            echo ""
+            echo "Assets include cross-platform CLI binaries, \`checksums.txt\`, and \`latest.json\` (update manifest)."
+            echo ""
+            echo "**Note:** Linux binaries embed the Linux guest-agent (\`CGO_ENABLED=0\`). macOS binaries do not embed the Linux agent bundle."
+          } >"$NOTES"
+          gh release create "${TAG_NAME}" \
+            --repo "${GITHUB_REPO}" \
+            --verify-tag \
+            --title "${TAG_NAME}" \
+            --notes-file "$NOTES" \
+            dist/nexus-linux-amd64 \
+            dist/nexus-linux-arm64 \
+            dist/nexus-darwin-amd64 \
+            dist/nexus-darwin-arm64 \
+            dist/nexus-libkrun-vm-linux-amd64 \
+            dist/checksums.txt \
             dist/latest.json
 
       - name: Move rolling "latest" tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions"
@@ -180,18 +189,21 @@ jobs:
           git push origin refs/tags/latest --force
 
       - name: Update latest-channel prerelease
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: latest
-          draft: false
-          prerelease: true
-          generate_release_notes: false
-          body: |
-            Rolling **latest** channel (prerelease). Points at `${{ github.ref_name }}` (${{ github.sha }}).
-
-            Consume `latest.json` from this release for stable URLs on the prerelease channel, or use the tagged semver release above.
-          files: |
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          NOTES_FILE="$(mktemp)"
+          trap 'rm -f "$NOTES_FILE"' EXIT
+          {
+            echo "Rolling **latest** channel (prerelease). Points at \`${TAG_NAME}\` (${SHA})."
+            echo ""
+            echo 'Consume `latest.json` from this release for stable URLs on the prerelease channel, or use the tagged semver release above.'
+          } >"$NOTES_FILE"
+          ASSETS=(
             dist/nexus-linux-amd64
             dist/nexus-linux-arm64
             dist/nexus-darwin-amd64
@@ -199,3 +211,19 @@ jobs:
             dist/nexus-libkrun-vm-linux-amd64
             dist/checksums.txt
             dist/latest.json
+          )
+          if gh release view latest --repo "${GITHUB_REPO}" >/dev/null 2>&1; then
+            gh release edit latest --repo "${GITHUB_REPO}" \
+              --prerelease \
+              --title latest \
+              --notes-file "$NOTES_FILE" \
+              --target "${SHA}"
+            gh release upload latest "${ASSETS[@]}" --repo "${GITHUB_REPO}" --clobber
+          else
+            gh release create latest "${ASSETS[@]}" \
+              --repo "${GITHUB_REPO}" \
+              --prerelease \
+              --title latest \
+              --target "${SHA}" \
+              --notes-file "$NOTES_FILE"
+          fi
