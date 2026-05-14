@@ -1127,8 +1127,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // sendMouseToPTY encodes a BubbleTea mouse event as a VT200 mouse escape
 // sequence and forwards it to the active PTY via the pty.write RPC.
+// It is a no-op unless the program inside the PTY has explicitly requested
+// mouse-reporting mode; forwarding to a plain shell prompt causes gibberish.
 func (m Model) sendMouseToPTY(msg tea.MouseMsg) tea.Cmd {
 	if m.ptyPane == nil || m.mux == nil {
+		return nil
+	}
+	if !m.ptyPane.MouseEnabled() {
 		return nil
 	}
 	leftW, _, _ := m.paneDimensions()
@@ -1237,6 +1242,32 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case layoutPaneLeft:
 			m.ptyFocused = false
 			m.sidebarFocused = false
+			// Click-to-select: map the click's Y coordinate to a list item.
+			//
+			// Layout rows (0-indexed, absolute):
+			//   0            headerTop
+			//   1            headerBottom
+			//   2..3         (optional) tab-separator + tab-bar (2*tabBarOffset lines)
+			//   2+2*T        blank ""
+			//   3+2*T        body/list start
+			//   3+2*T + 0    list title ("Workspaces") — 1 line
+			//   3+2*T + 1 …  list items, each groupedDelegate.Height()=2 lines
+			//
+			// where T = m.tabBarOffset().
+			listItemsStartY := 4 + 2*m.tabBarOffset()
+			relY := msg.Y - listItemsStartY
+			if relY >= 0 && m.list.FilterState() != list.Filtering {
+				slot := relY / 2 // groupedDelegate height = 2
+				firstVisible := m.list.Paginator.Page * m.list.Paginator.PerPage
+				targetIdx := firstVisible + slot
+				items := m.list.Items()
+				if targetIdx >= 0 && targetIdx < len(items) {
+					m.list.Select(targetIdx)
+					m, ptyCmd := m.maybeSwitchPTY()
+					sideCmd := m.loadSidebarSpotCmd()
+					return m, tea.Batch(ptyCmd, sideCmd)
+				}
+			}
 		case layoutPaneCenter:
 			if !m.ptyFocused {
 				m.ptyFocused = true
@@ -2250,11 +2281,29 @@ func renderSpotlightPanel(m *Model, width int) string {
 			if f == nil {
 				continue
 			}
-			line := fmt.Sprintf("%s  local:%d remote:%d  %s", f.ID, f.LocalPort, f.RemotePort, f.State)
-			if i == m.spotSel {
-				fmt.Fprintf(&b, "%s\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFDF5")).Render("› "+line))
+			// Show from user perspective: local port they connect to.
+			var portPart string
+			if f.LocalPort == f.RemotePort {
+				portPart = fmt.Sprintf("localhost:%d", f.LocalPort)
 			} else {
-				fmt.Fprintf(&b, "%s\n", line)
+				portPart = fmt.Sprintf("localhost:%d → :%d", f.LocalPort, f.RemotePort)
+			}
+			stateStr := string(f.State)
+			if i == m.spotSel {
+				icon := "○"
+				if f.State == spotlight.ForwardStateActive {
+					icon = "●"
+				}
+				sel := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFDF5"))
+				fmt.Fprintf(&b, "%s\n", sel.Render(fmt.Sprintf("› %s  %s  (%s)", icon, portPart, stateStr)))
+			} else {
+				var icon string
+				if f.State == spotlight.ForwardStateActive {
+					icon = statusOkStyle.Render("●")
+				} else {
+					icon = mutedStyle.Render("○")
+				}
+				fmt.Fprintf(&b, "  %s  %s  %s\n", icon, portPart, mutedStyle.Render("("+stateStr+")"))
 			}
 		}
 	}
