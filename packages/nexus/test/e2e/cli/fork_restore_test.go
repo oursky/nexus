@@ -13,6 +13,7 @@ import (
 // Spec: VM-PROOF-004, VM-005, CLI-044, CLI-045, CLI-046, CLI-047, CLI-048
 func TestCLI_WorkspaceForkAndRestore(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfE2EMacVM(t)
 	harness.SkipIfVMBoot(t)
 	h := cliSuite.NewCLIHarness(t)
 	clientRepo := harness.MakeLocalGitRepo(t, "fork-restore-cli")

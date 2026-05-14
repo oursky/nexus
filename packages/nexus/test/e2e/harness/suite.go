@@ -29,7 +29,8 @@ type Suite struct {
 // NewSuite runs the preflight check and, if the host supports VM-backed tests,
 // starts a shared daemon process. Call suite.Run(m) from TestMain.
 //
-// On unsupported hosts (e.g. macOS, no /dev/kvm) Run() returns 0 immediately
+// On unsupported hosts Run() returns 0 immediately
+// (e.g. darwin without NEXUS_E2E_DRIVER=vm, or linux without /dev/kvm).
 // so the package exits successfully without running any tests. Individual per-test
 // RequireVM calls would each skip, but by exiting early from TestMain we avoid
 // the overhead of spawning the daemon and the confusion of 100 skip messages.
@@ -111,7 +112,7 @@ func startSharedDaemon() *Harness {
 		socketPath: socketPath,
 		workdir:    workdir,
 		vmKernel:   os.Getenv("NEXUS_VM_KERNEL"),
-		vmRootfs:   os.Getenv("NEXUS_VM_ROOTFS"),
+		vmRootfs:   VMRootfsFromEnv(),
 	}
 	args := buildDaemonArgs(dc)
 	cmd, client := launchAndWait(binPath, socketPath, args)

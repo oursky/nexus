@@ -67,6 +67,7 @@ func forkWorkspace(t *testing.T, h *harness.Harness, parentID, name, ref string)
 // Uses a local repo — no Mutagen required.
 func TestFork_MetadataIntegrity(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfE2EMacVM(t)
 	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeGitRepoWithContent(t, "fork-metadata", map[string]string{
 		"hello.txt": "hello world\n",
@@ -159,6 +160,7 @@ func TestFork_MetadataIntegrity(t *testing.T) {
 // TestFork_LineageChain verifies nested forks inherit the root's lineageRootId.
 func TestFork_LineageChain(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfE2EMacVM(t)
 	h := suite.Harness().ForTest(t)
 	repoPath := harness.MakeLocalGitRepo(t, "fork-lineage")
 	gitRun(t, repoPath, "git", "branch", "feature-a", "main")
@@ -187,6 +189,7 @@ func TestFork_LineageChain(t *testing.T) {
 // With the process backend the child workspace ref is metadata; exec runs in the parent dir.
 func TestFork_ContentVerification(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfE2EMacVM(t)
 	harness.SkipIfVMBoot(t)
 	h := harness.NewCLIHarness(t)
 	repoPath := harness.MakeGitRepoWithContent(t, "fork-content", map[string]string{
@@ -255,6 +258,7 @@ func TestFork_ContentVerification(t *testing.T) {
 // after Mutagen sync. Requires NEXUS_E2E_REMOTE_PROFILE=1.
 func TestFork_WorktreeSync(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfE2EMacVM(t)
 	harness.SkipIfVMBoot(t)
 	harness.RequireE2EFullStack(t)
 	h := harness.NewCLIHarness(t)

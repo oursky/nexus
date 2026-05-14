@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 )
 
 // PreflightStatus is the result taxonomy from the A1 Lima E2E preflight contract.
@@ -85,6 +86,12 @@ func (RealEnvReader) Getenv(key string) string              { return os.Getenv(k
 func (RealEnvReader) Stat(path string) (os.FileInfo, error) { return os.Stat(path) }
 func (RealEnvReader) LookPath(file string) (string, error)  { return exec.LookPath(file) }
 func (RealEnvReader) GOOS() string                          { return runtime.GOOS }
+
+// e2eDarwinVMMode is true when macOS E2E targets the Hypervisor.framework VM backend.
+func e2eDarwinVMMode(env EnvReader) bool {
+	return env.GOOS() == "darwin" &&
+		strings.EqualFold(strings.TrimSpace(env.Getenv("NEXUS_E2E_DRIVER")), "vm")
+}
 
 // RunPreflight executes all A1 contract checks and returns the aggregate result.
 // env is the EnvReader to use; pass RealEnvReader{} in non-test code.
@@ -189,6 +196,32 @@ func checkTooling(env EnvReader) CheckResult {
 // and the referenced paths exist on disk.
 func checkRuntimeArtifacts(env EnvReader) CheckResult {
 	const id = "runtime-artifacts"
+	if e2eDarwinVMMode(env) {
+		root := strings.TrimSpace(env.Getenv("NEXUS_VM_ROOTFS"))
+		if root == "" {
+			root = strings.TrimSpace(env.Getenv("NEXUS_E2E_ROOTFS"))
+		}
+		if root == "" {
+			return CheckResult{
+				ID:          id,
+				Status:      PreflightMisconfigured,
+				Observed:    "NEXUS_VM_ROOTFS and NEXUS_E2E_ROOTFS are unset",
+				Expected:    "path to a pre-built arm64 guest ext4 (e.g. ~/.cache/nexus/vm/rootfs.ext4)",
+				Remediation: "export NEXUS_VM_ROOTFS=$HOME/.cache/nexus/vm/rootfs.ext4 or run scripts/ci/ensure-macos-e2e-rootfs.sh",
+			}
+		}
+		if _, err := env.Stat(root); err != nil {
+			return CheckResult{
+				ID:          id,
+				Status:      PreflightMisconfigured,
+				Observed:    fmt.Sprintf("NEXUS_VM_ROOTFS=%q (not found)", root),
+				Expected:    "ext4 rootfs file must exist",
+				Remediation: "build the cache with scripts/ci/ensure-macos-e2e-rootfs.sh or set NEXUS_VM_ROOTFS to a valid path",
+			}
+		}
+		return CheckResult{ID: id, Status: PreflightReady}
+	}
+
 	kernel := env.Getenv("NEXUS_VM_KERNEL")
 	rootfs := env.Getenv("NEXUS_VM_ROOTFS")
 
@@ -270,17 +303,21 @@ func checkDaemonDiscoverability(env EnvReader) CheckResult {
 }
 
 // checkVMBackend verifies that the host can support VM-backed tests.
-// darwin always fails (libkrun not supported). Linux requires /dev/kvm.
+// darwin succeeds only for NEXUS_E2E_DRIVER=vm (macOS VM / Hypervisor.framework).
+// Linux requires /dev/kvm for libkrun VMs.
 func checkVMBackend(env EnvReader) CheckResult {
 	const id = "vm-backend"
 	goos := env.GOOS()
+	if e2eDarwinVMMode(env) {
+		return CheckResult{ID: id, Status: PreflightReady}
+	}
 	if goos == "darwin" {
 		return CheckResult{
 			ID:          id,
 			Status:      PreflightUnsupportedHost,
-			Observed:    "GOOS=darwin",
-			Expected:    "linux host with /dev/kvm accessible",
-			Remediation: "run VM-backend E2E tests on a Linux host with KVM support; use a remote nexus host",
+			Observed:    "GOOS=darwin (set NEXUS_E2E_DRIVER=vm for macOS VM E2E)",
+			Expected:    "linux host with /dev/kvm, or macOS with NEXUS_E2E_DRIVER=vm",
+			Remediation: "export NEXUS_E2E_DRIVER=vm and NEXUS_VM_ROOTFS, or run on Linux with KVM",
 		}
 	}
 	if _, err := env.Stat("/dev/kvm"); err != nil {

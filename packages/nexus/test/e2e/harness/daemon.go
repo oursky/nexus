@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 // When building from source, the caller must supply a cleanup hook.
 func resolveBinary(t *testing.T) string {
 	t.Helper()
+	ensureDarwinLibkrunDylibs()
 	binPath := os.Getenv("NEXUS_E2E_BINARY")
 	if binPath != "" {
 		return binPath
@@ -33,6 +36,9 @@ func resolveBinary(t *testing.T) string {
 	if out, err := build.Output(); err != nil {
 		t.Fatalf("harness: build nexusd: %v\n%s", err, out)
 	}
+	if err := adhocSignNexusForHypervisor(binPath); err != nil {
+		t.Fatalf("harness: codesign nexusd: %v", err)
+	}
 	return binPath
 }
 
@@ -40,6 +46,7 @@ func resolveBinary(t *testing.T) string {
 // If NEXUS_E2E_BINARY is not set it builds from source into a temp directory
 // and returns both the path and a cleanup function.
 func resolveBinaryNoTest() (binPath string, cleanup func()) {
+	ensureDarwinLibkrunDylibs()
 	binPath = os.Getenv("NEXUS_E2E_BINARY")
 	if binPath != "" {
 		return binPath, func() {}
@@ -56,7 +63,53 @@ func resolveBinaryNoTest() (binPath string, cleanup func()) {
 		_ = os.RemoveAll(tmp)
 		panic("harness: build nexusd: " + err.Error() + "\n" + string(out))
 	}
+	if err := adhocSignNexusForHypervisor(binPath); err != nil {
+		_ = os.RemoveAll(tmp)
+		panic("harness: codesign nexusd: " + err.Error())
+	}
 	return binPath, func() { os.RemoveAll(tmp) }
+}
+
+func repoRoot() string {
+	return filepath.Clean(filepath.Join(moduleRoot, "..", ".."))
+}
+
+func ensureDarwinLibkrunDylibs() {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	lib := filepath.Join(moduleRoot, "cmd", "nexus", "libkrun-darwin-arm64.dylib")
+	if st, err := os.Stat(lib); err == nil && st.Size() > 0 {
+		return
+	}
+	cmd := exec.Command("bash", filepath.Join(repoRoot(), "scripts", "local", "build-libkrun-darwin.sh"))
+	cmd.Dir = repoRoot()
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		panic("harness: build-libkrun-darwin.sh: " + err.Error())
+	}
+}
+
+// e2eVMArgs returns extra daemon start flags for VM-backed E2E (Linux libkrun or macOS vm driver).
+func e2eVMArgs() []string {
+	if runtime.GOOS == "darwin" && strings.EqualFold(strings.TrimSpace(os.Getenv("NEXUS_E2E_DRIVER")), "vm") {
+		root := VMRootfsFromEnv()
+		out := []string{"--driver", "vm"}
+		if root != "" {
+			out = append(out, "--rootfs", root)
+		}
+		return out
+	}
+	kernel := strings.TrimSpace(os.Getenv("NEXUS_VM_KERNEL"))
+	if kernel != "" {
+		return []string{
+			"--kernel", kernel,
+			"--rootfs", VMRootfsFromEnv(),
+			"--driver", "libkrun",
+		}
+	}
+	return nil
 }
 
 type daemonConfig struct {
@@ -78,7 +131,9 @@ func buildDaemonArgs(cfg daemonConfig) []string {
 		"--network=false",
 		"--foreground",
 	}
-	if cfg.vmKernel != "" {
+	if extra := e2eVMArgs(); len(extra) > 0 {
+		args = append(args, extra...)
+	} else if cfg.vmKernel != "" {
 		args = append(args,
 			"--kernel", cfg.vmKernel,
 			"--rootfs", cfg.vmRootfs,
