@@ -24,4 +24,15 @@ var (
 
 	warningStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFB86C"))
+
+	// Tab bar — active tab uses accent colour; inactive tabs are muted.
+	activeTabStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#EE6FF8"))
+
+	inactiveTabStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#626262"))
+
+	tabSepStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#3A3A3A"))
 )

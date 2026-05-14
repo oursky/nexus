@@ -96,7 +96,8 @@ type forkDoneMsg struct {
 }
 
 type shellReturnedMsg struct {
-	err error
+	err  error
+	wsID string // ID of the workspace whose shell just exited
 }
 
 // Model is the root Bubble Tea model for the Nexus TUI.
@@ -131,6 +132,33 @@ type Model struct {
 	refTI      textinput.Model
 
 	pendingSyncPath string
+
+	// session tabs — workspaces attached at least once this TUI session
+	tabs        []string // workspace IDs in order
+	activeTabWS string   // last attached workspace ID
+	autoAttach  bool     // --auto-attach flag
+	autoAttachDone bool  // prevent multiple auto-attaches
+}
+
+// tabBarOffset returns the number of extra lines consumed by the tab bar
+// (1 when tabs are present, 0 otherwise).
+func (m Model) tabBarOffset() int {
+	if len(m.tabs) == 0 {
+		return 0
+	}
+	return 1
+}
+
+// updateListSize recalculates listHeight from terminal dimensions and calls
+// SetSize on the bubbles list. Must be called whenever m.height or m.tabs
+// changes.
+func (m *Model) updateListSize() {
+	if m.height == 0 {
+		return
+	}
+	h := max(m.height-headerLines-footerLines-4-m.tabBarOffset(), 6)
+	m.listHeight = h
+	m.list.SetSize(m.listWidth, h)
 }
 
 func (m Model) blocksOverlayInput() bool {
@@ -152,15 +180,31 @@ func (m Model) blocksOverlayInput() bool {
 	return false
 }
 
+// Options configures a TUI run.
+type Options struct {
+	// AutoAttach re-attaches to the last active workspace on startup
+	// (if it is in running state). Requires --auto-attach flag; NOT default.
+	AutoAttach bool
+}
+
 // Run starts the interactive TUI until the user quits.
-func Run() error {
-	p := tea.NewProgram(NewModel(), tea.WithAltScreen())
+func Run(opts ...Options) error {
+	var o Options
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	p := tea.NewProgram(NewModel(o), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
 
 // NewModel constructs an initial model (connection opens during Init).
-func NewModel() Model {
+func NewModel(opts ...Options) Model {
+	var o Options
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+
 	delegate := styledDelegate()
 	l := newWorkspaceList(delegate, 80, 20)
 	l.SetFilteringEnabled(true)
@@ -170,6 +214,10 @@ func NewModel() Model {
 	pi.CharLimit = 512
 
 	nt, rt, rf := newCreateInputs()
+
+	// Restore session state from disk.
+	ss := loadSessionState()
+
 	return Model{
 		list:        l,
 		statusLine:  "connecting…",
@@ -177,6 +225,9 @@ func NewModel() Model {
 		nameTI:      nt,
 		repoTI:      rt,
 		refTI:       rf,
+		tabs:        ss.Tabs,
+		activeTabWS: ss.Active,
+		autoAttach:  o.AutoAttach,
 	}
 }
 
@@ -451,8 +502,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.listWidth = max(msg.Width-4, 24)
-		m.listHeight = max(msg.Height-headerLines-footerLines-4, 6)
-		m.list.SetSize(m.listWidth, m.listHeight)
+		m.updateListSize()
 		return m, nil
 
 	case connReadyMsg:
@@ -483,6 +533,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					wcopy := w
 					m.detail = &wcopy
 					break
+				}
+			}
+		}
+		// Auto-attach to last active workspace on first load (--auto-attach only).
+		if m.autoAttach && !m.autoAttachDone && m.activeTabWS != "" {
+			m.autoAttachDone = true
+			for _, w := range msg.workspaces {
+				if w.ID == m.activeTabWS && w.State == workspace.StateRunning {
+					return m, m.shellExecCmd(m.activeTabWS)
 				}
 			}
 		}
@@ -580,6 +639,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// ExecProcess may pass non-nil for exit code !=0; still refresh.
 			m.statusLine = msg.err.Error()
 		}
+		// Record in session tabs (addTab is idempotent).
+		if msg.wsID != "" {
+			m.tabs = addTab(m.tabs, msg.wsID)
+			m.activeTabWS = msg.wsID
+			m.updateListSize()
+			saveSessionState(sessionState{Tabs: m.tabs, Active: msg.wsID})
+		}
 		return m, m.refreshCmd()
 
 	case tea.KeyMsg:
@@ -630,6 +696,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "?" {
 		m.showHelp = true
 		return m, nil
+	}
+
+	// Tab jump: 1–9 selects the Nth session tab in the workspace list.
+	if !m.blocksOverlayInput() {
+		key := msg.String()
+		if len(key) == 1 && key >= "1" && key <= "9" {
+			idx := int(key[0]-'0') - 1
+			if idx < len(m.tabs) {
+				wsID := m.tabs[idx]
+				m.activeTabWS = wsID
+				m.detail = nil
+				m.panel = panelNone
+				reselectByID(&m.list, wsID)
+			}
+			return m, nil
+		}
 	}
 
 	if m.createMode {
@@ -962,7 +1044,9 @@ func (m Model) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) runShellExec(wsID string) (tea.Model, tea.Cmd) {
+// shellExecCmd returns a tea.Cmd that runs nexus workspace shell <wsID> via
+// ExecProcess. The TUI resumes when the shell exits, delivering shellReturnedMsg.
+func (m Model) shellExecCmd(wsID string) tea.Cmd {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "nexus"
@@ -972,18 +1056,42 @@ func (m Model) runShellExec(wsID string) (tea.Model, tea.Cmd) {
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	c.Env = os.Environ()
-	return m, tea.ExecProcess(c, func(err error) tea.Msg {
-		return shellReturnedMsg{err: err}
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return shellReturnedMsg{err: err, wsID: wsID}
 	})
 }
 
+func (m Model) runShellExec(wsID string) (tea.Model, tea.Cmd) {
+	m.activeTabWS = wsID
+	// Pre-register tab so it appears immediately after ExecProcess returns.
+	before := len(m.tabs)
+	m.tabs = addTab(m.tabs, wsID)
+	if len(m.tabs) != before {
+		m.updateListSize()
+	}
+	saveSessionState(sessionState{Tabs: m.tabs, Active: wsID})
+	return m, m.shellExecCmd(wsID)
+}
+
 func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "n" {
+	if msg.String() == "n" || msg.String() == "+" {
 		m.createMode = true
 		m.createStep = 0
 		nt, rt, rf := newCreateInputs()
 		m.nameTI, m.repoTI, m.refTI = nt, rt, rf
 		return m, m.nameTI.Focus()
+	}
+
+	if msg.String() == "t" {
+		it := m.list.SelectedItem()
+		if it == nil {
+			return m, nil
+		}
+		wi, ok := it.(workspaceItem)
+		if !ok {
+			return m, nil
+		}
+		return m.runShellExec(wi.w.ID)
 	}
 
 	switch msg.String() {
@@ -1102,7 +1210,7 @@ func (m Model) View() string {
 	}
 
 	help := mutedStyle.Render(
-		"q quit · ? help · enter detail · esc back · r refresh · n new workspace · / filter · s start · x stop · d delete",
+		"q quit · ? help · enter detail · t terminal · esc back · r refresh · n new · / filter · s start · x stop · d delete · 1-9 tab jump",
 	)
 	dhelp := mutedStyle.Render(
 		"q quit · ? · esc · r · c connect · l spotlight · y sync · t terminal · f fork · s/x/d",
@@ -1130,19 +1238,77 @@ func (m Model) View() string {
 	}
 
 	footer := lipgloss.JoinVertical(lipgloss.Left, confirm, footerHelp)
+	// Build the vertical stack. Insert the tab bar when present.
+	rows := []string{headerTop, headerBottom}
+	if tabBar := m.renderTabBar(); tabBar != "" {
+		rows = append(rows, tabSepStyle.Render(strings.Repeat("─", max(m.width-4, 20))))
+		rows = append(rows, tabBar)
+	}
+	rows = append(rows, "", body, "", footer)
+
 	box := lipgloss.NewStyle().
 		MaxWidth(m.width).
 		Padding(0, 2).
-		Render(lipgloss.JoinVertical(lipgloss.Left,
-			headerTop,
-			headerBottom,
-			"",
-			body,
-			"",
-			footer,
-		))
+		Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
 
 	return box
+}
+
+// renderTabBar renders the session tab bar line.
+// Returns an empty string when there are no tabs.
+func (m Model) renderTabBar() string {
+	if len(m.tabs) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for i, wsID := range m.tabs {
+		if i >= 9 {
+			break
+		}
+		num := fmt.Sprintf("[%d]", i+1)
+
+		// Look up workspace name and state from the current list.
+		name := truncate(wsID, 14)
+		badge := mutedStyle.Render("○")
+		for _, it := range m.list.Items() {
+			wi, ok := it.(workspaceItem)
+			if !ok || wi.w.ID != wsID {
+				continue
+			}
+			if wi.w.WorkspaceName != "" {
+				name = truncate(wi.w.WorkspaceName, 14)
+			}
+			badge = tabStateBadge(wi.w.State)
+			break
+		}
+
+		label := num + " " + name + " " + badge
+		if wsID == m.activeTabWS {
+			parts = append(parts, activeTabStyle.Render(label))
+		} else {
+			parts = append(parts, inactiveTabStyle.Render(label))
+		}
+	}
+
+	// [+] hint — press n or + to create a new workspace.
+	parts = append(parts, mutedStyle.Render("[+]"))
+
+	return " " + strings.Join(parts, "  ")
+}
+
+// tabStateBadge returns a compact coloured state symbol for use in the tab bar.
+func tabStateBadge(state workspace.State) string {
+	switch state {
+	case workspace.StateRunning:
+		return statusOkStyle.Render("●")
+	case workspace.StateStarting, workspace.StateSnapshotting, workspace.StateRestored:
+		return warningStyle.Render("⟳")
+	case workspace.StateStopped, workspace.StatePaused, workspace.StateCreated:
+		return mutedStyle.Render("○")
+	default:
+		return mutedStyle.Render("?")
+	}
 }
 
 func renderCreateWizard(m *Model, width int) string {
@@ -1165,10 +1331,12 @@ Global
   ?           Toggle this help
   r           Refresh workspace list
   /           Filter workspaces (when list is focused)
+  1-9         Jump-select session tab N in the workspace list
 
 Main list
-  n           New workspace (wizard)
+  n / +       New workspace (wizard)
   enter       Open workspace detail
+  t           Attach terminal (nexus workspace shell)
   s x d       Start / stop / delete selected workspace
 
 Detail view
@@ -1179,6 +1347,10 @@ Detail view
   t           Terminal (runs: nexus workspace shell)
   f           Fork workspace
   s x d       Start / stop / delete
+
+Tab bar (appears after first terminal attach)
+  Persistent across sessions via ~/.local/state/nexus/tui-sessions.json
+  Use --auto-attach flag to re-enter last shell on startup
 `
 	return lipgloss.NewStyle().MaxWidth(width).Render(s)
 }
