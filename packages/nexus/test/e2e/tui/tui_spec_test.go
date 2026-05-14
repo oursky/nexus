@@ -5,6 +5,7 @@ package tui_test
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -561,6 +562,122 @@ func TestSpec_D1_FilterMode(t *testing.T) {
 	out := strings.ToLower(stripANSI(string(captured)))
 	if !strings.Contains(out, "filter") && !strings.Contains(out, "/") {
 		t.Fatalf("expected filter UI hint; got:\n%s", truncateOut(out, 4000))
+	}
+}
+
+// Spec K.1.1: Session tab bar renders when session file has a known workspace.
+func TestSpec_K1_TabBarRenderedFromSessionFile(t *testing.T) {
+	repo := harness.MakeLocalGitRepo(t, "tui-spec-tabs")
+	client, err := harness.Dial(shared.SocketPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	var created struct {
+		Workspace workspace.Workspace `json:"workspace"`
+	}
+	if err := client.Call("workspace.create", map[string]any{"spec": workspace.CreateSpec{
+		Repo: repo, Ref: "main", WorkspaceName: "tabs-" + time.Now().Format("150405"), AgentProfile: "default", Policy: workspace.Policy{},
+	}}, &created); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	wsID := created.Workspace.ID
+
+	// Write a session file pointing at this workspace.
+	stateDir := t.TempDir()
+	nexusDir := filepath.Join(stateDir, "nexus")
+	if err := os.MkdirAll(nexusDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sessionJSON := `{"tabs":["` + wsID + `"],"active":"` + wsID + `"}`
+	if err := os.WriteFile(filepath.Join(nexusDir, "tui-sessions.json"), []byte(sessionJSON), 0o644); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+
+	// Launch TUI with XDG_STATE_HOME pointing to our temp dir.
+	cmd := exec.Command(shared.BinPath, "tui")
+	cmd.Env = append(shared.CLIEnv(), "XDG_STATE_HOME="+stateDir)
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("pty: %v", err)
+	}
+	defer func() { _ = ptmx.Close() }()
+	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: 35, Cols: 120})
+
+	stopDrain := make(chan struct{})
+	var captured []byte
+	go drainBackground(ptmx, &captured, stopDrain)
+	time.Sleep(900 * time.Millisecond)
+	if _, err := ptmx.Write([]byte{'q'}); err != nil {
+		t.Fatalf("quit: %v", err)
+	}
+	_ = cmd.Wait()
+	close(stopDrain)
+
+	out := stripANSI(string(captured))
+	if !strings.Contains(out, "[1]") {
+		t.Fatalf("expected tab bar '[1]' indicator; got:\n%s", truncateOut(out, 4000))
+	}
+}
+
+// Spec K.2.1: t key from list view triggers terminal action (shell returns quickly
+// when workspace is not running, restoring TUI without crashing).
+func TestSpec_K2_TerminalKeyFromList(t *testing.T) {
+	repo := harness.MakeLocalGitRepo(t, "tui-spec-tkey")
+	client, err := harness.Dial(shared.SocketPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	var created struct {
+		Workspace workspace.Workspace `json:"workspace"`
+	}
+	if err := client.Call("workspace.create", map[string]any{"spec": workspace.CreateSpec{
+		Repo: repo, Ref: "main", WorkspaceName: "tkey-" + time.Now().Format("150405"), AgentProfile: "default", Policy: workspace.Policy{},
+	}}, &created); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	wsID := created.Workspace.ID
+
+	// Use a custom XDG_STATE_HOME so session writes don't pollute host state.
+	stateDir := t.TempDir()
+
+	cmd := exec.Command(shared.BinPath, "tui")
+	cmd.Env = append(shared.CLIEnv(), "XDG_STATE_HOME="+stateDir)
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("pty: %v", err)
+	}
+	defer func() { _ = ptmx.Close() }()
+	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: 35, Cols: 120})
+
+	stopDrain := make(chan struct{})
+	var captured []byte
+	go drainBackground(ptmx, &captured, stopDrain)
+
+	// Navigate to workspace and press t — shell exits immediately (workspace not running).
+	time.Sleep(700 * time.Millisecond)
+	idx := workspaceListIndex(t, client, wsID)
+	selectListIndex(ptmx, idx)
+	if _, err := ptmx.Write([]byte{'t'}); err != nil {
+		t.Fatalf("t key: %v", err)
+	}
+	// Give ExecProcess time to start and exit.
+	time.Sleep(1500 * time.Millisecond)
+	if _, err := ptmx.Write([]byte{'q'}); err != nil {
+		t.Fatalf("quit: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("tui exit: %v\n%s", err, truncateOut(stripANSI(string(captured)), 4000))
+	}
+	close(stopDrain)
+
+	// After shell returns, TUI must have resumed and shown the list again.
+	// Session file should have been written.
+	sessionPath := filepath.Join(stateDir, "nexus", "tui-sessions.json")
+	if _, err := os.Stat(sessionPath); err != nil {
+		t.Fatalf("session file not written after t: %v", err)
 	}
 }
 
