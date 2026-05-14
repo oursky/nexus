@@ -9,63 +9,42 @@ import (
 	"strings"
 
 	"github.com/oursky/nexus/packages/nexus/internal/auth/tokenstore"
+	"github.com/oursky/nexus/packages/nexus/internal/clientstate"
 )
 
 // Profile stores connection details for a remote daemon.
-// Token is intentionally omitted from JSON — it is stored separately in the
-// OS keychain (macOS Keychain / Linux SecretService / headless file store).
+// Token is intentionally absent from the database — it is stored separately
+// in the OS keychain (macOS Keychain / Linux SecretService / headless file
+// store via the tokenstore package).
 type Profile struct {
 	Name            string `json:"name"`
-	Host            string `json:"host"`                      // SSH target, e.g. "newman@linuxbox"
-	Port            int    `json:"port"`                      // Remote daemon port, e.g. 7777
-	Token           string `json:"-"`                         // never written to JSON; use Load/SaveToken
-	SSHPort         int    `json:"sshPort,omitempty"`         // SSH port override (default: 22)
-	SSHIdentityFile string `json:"sshIdentityFile,omitempty"` // SSH identity file (private key path)
-	LocalPort       int    `json:"localPort,omitempty"`       // forward tunnel local port
-
+	Host            string `json:"host"`
+	Port            int    `json:"port"`
+	Token           string `json:"-"` // never persisted; loaded from keychain
+	SSHPort         int    `json:"sshPort,omitempty"`
+	SSHIdentityFile string `json:"sshIdentityFile,omitempty"`
+	LocalPort       int    `json:"localPort,omitempty"`
 }
 
-// ProfilesDir returns the directory where profiles are stored.
-// Uses $XDG_CONFIG_HOME/nexus/profiles/ or ~/.config/nexus/profiles/
-func ProfilesDir() (string, error) {
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("cannot determine home directory: %w", err)
-		}
-		configHome = filepath.Join(home, ".config")
-	}
-	return filepath.Join(configHome, "nexus", "profiles"), nil
-}
-
-// DefaultProfilePath returns the path to the default profile file.
-func DefaultProfilePath() (string, error) {
-	dir, err := ProfilesDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "default.json"), nil
-}
-
-// SaveDefault writes the default profile to disk and stores the token
-// separately in the OS keychain.
+// SaveDefault writes the profile to the client state database and stores the
+// token separately in the OS keychain.
 func SaveDefault(p *Profile) error {
-	dir, err := ProfilesDir()
+	db, err := clientstate.Open()
 	if err != nil {
-		return err
+		return fmt.Errorf("save profile: open client state: %w", err)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create profiles dir: %w", err)
-	}
-	path := filepath.Join(dir, "default.json")
-	// Token is json:"-" so it is never marshalled into the file.
-	data, err := json.MarshalIndent(p, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal profile: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("write profile: %w", err)
+	defer db.Close()
+
+	if err := db.UpsertProfile(clientstate.Profile{
+		Name:            p.Name,
+		Host:            p.Host,
+		Port:            p.Port,
+		SSHPort:         p.SSHPort,
+		SSHIdentityFile: p.SSHIdentityFile,
+		LocalPort:       p.LocalPort,
+		IsDefault:       true,
+	}); err != nil {
+		return fmt.Errorf("save profile: %w", err)
 	}
 	if p.Token != "" {
 		if err := tokenstore.SaveProfileToken(p.Token); err != nil {
@@ -75,11 +54,14 @@ func SaveDefault(p *Profile) error {
 	return nil
 }
 
-// LoadDefault reads the default profile and populates Token from the OS keychain.
-// If NEXUS_DAEMON_SSH_HOST is set, a synthetic profile is constructed from env vars
-// (NEXUS_DAEMON_SSH_HOST, NEXUS_DAEMON_SSH_PORT, NEXUS_DAEMON_SSH_IDENTITY, NEXUS_DAEMON_TOKEN)
-// instead of reading from disk. This allows the Mac app to inject connection details
-// when running the CLI binary from a sandboxed environment.
+// LoadDefault reads the default profile from the client state database and
+// populates Token from the OS keychain.
+//
+// If NEXUS_DAEMON_SSH_HOST is set, a synthetic profile is constructed from
+// environment variables (NEXUS_DAEMON_SSH_HOST, NEXUS_DAEMON_SSH_PORT,
+// NEXUS_DAEMON_SSH_IDENTITY, NEXUS_DAEMON_TOKEN) instead of reading from the
+// database. This allows the Mac app to inject connection details when running
+// the CLI binary from a sandboxed environment.
 func LoadDefault() (*Profile, error) {
 	if p := localDaemonProfileFromEnv(); p != nil {
 		return p, nil
@@ -103,20 +85,31 @@ func LoadDefault() (*Profile, error) {
 		return p, nil
 	}
 
-	path, err := DefaultProfilePath()
+	db, err := clientstate.Open()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load profile: open client state: %w", err)
 	}
-	data, err := os.ReadFile(path)
+	defer db.Close()
+
+	cp, err := db.GetDefaultProfile()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no daemon profile configured. Run: nexus daemon connect <host>")
+		return nil, fmt.Errorf("load profile: %w", err)
+	}
+	if cp == nil {
+		// One-time migration: read old JSON profile written by pre-SQLite versions.
+		if p := migrateFromLegacyJSON(db); p != nil {
+			return p, nil
 		}
-		return nil, fmt.Errorf("read profile: %w", err)
+		return nil, fmt.Errorf("no daemon profile configured — run: nexus daemon connect <host>")
 	}
-	var p Profile
-	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, fmt.Errorf("parse profile: %w", err)
+
+	p := &Profile{
+		Name:            cp.Name,
+		Host:            cp.Host,
+		Port:            cp.Port,
+		SSHPort:         cp.SSHPort,
+		SSHIdentityFile: cp.SSHIdentityFile,
+		LocalPort:       cp.LocalPort,
 	}
 	tok, found, err := tokenstore.LoadProfileToken()
 	if err != nil {
@@ -125,7 +118,7 @@ func LoadDefault() (*Profile, error) {
 	if found {
 		p.Token = tok
 	}
-	return &p, nil
+	return p, nil
 }
 
 // localDaemonProfileFromEnv returns a localhost WebSocket profile when both
@@ -145,14 +138,84 @@ func localDaemonProfileFromEnv() *Profile {
 	return &Profile{Name: "env-local", Host: "127.0.0.1", Port: port, Token: tok}
 }
 
-// DeleteDefault removes the default profile file and its keychain token.
-func DeleteDefault() error {
-	path, err := DefaultProfilePath()
-	if err != nil {
-		return err
+// legacyJSONProfile mirrors the fields stored by pre-SQLite versions of nexus
+// in ~/.config/nexus/profiles/default.json.
+type legacyJSONProfile struct {
+	Name            string `json:"name"`
+	Host            string `json:"host"`
+	Port            int    `json:"port"`
+	SSHPort         int    `json:"sshPort,omitempty"`
+	SSHIdentityFile string `json:"sshIdentityFile,omitempty"`
+	LocalPort       int    `json:"localPort,omitempty"`
+}
+
+// legacyJSONPath returns the path to the old JSON profile file.
+func legacyJSONPath() string {
+	if dir, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(dir, "nexus", "profiles", "default.json")
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove profile: %w", err)
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "nexus", "profiles", "default.json")
+}
+
+// migrateFromLegacyJSON reads the old JSON profile (if present), stores it in
+// SQLite, and returns a Profile ready for use. Non-fatal — returns nil on any
+// error so the caller can fall through to "no profile configured".
+func migrateFromLegacyJSON(db *clientstate.DB) *Profile {
+	data, err := os.ReadFile(legacyJSONPath())
+	if err != nil {
+		return nil
+	}
+	var lp legacyJSONProfile
+	if err := json.Unmarshal(data, &lp); err != nil || lp.Host == "" {
+		return nil
+	}
+	if lp.Name == "" {
+		lp.Name = "default"
+	}
+	if lp.Port == 0 {
+		lp.Port = 7777
+	}
+	_ = db.UpsertProfile(clientstate.Profile{
+		Name:            lp.Name,
+		Host:            lp.Host,
+		Port:            lp.Port,
+		SSHPort:         lp.SSHPort,
+		SSHIdentityFile: lp.SSHIdentityFile,
+		LocalPort:       lp.LocalPort,
+		IsDefault:       true,
+	})
+	p := &Profile{
+		Name:            lp.Name,
+		Host:            lp.Host,
+		Port:            lp.Port,
+		SSHPort:         lp.SSHPort,
+		SSHIdentityFile: lp.SSHIdentityFile,
+		LocalPort:       lp.LocalPort,
+	}
+	if tok, found, _ := tokenstore.LoadProfileToken(); found {
+		p.Token = tok
+	}
+	return p
+}
+
+// DeleteDefault removes the default profile from the database and its keychain
+// token. Idempotent — safe to call when no profile exists.
+func DeleteDefault() error {
+	db, err := clientstate.Open()
+	if err != nil {
+		return fmt.Errorf("delete profile: open client state: %w", err)
+	}
+	defer db.Close()
+
+	cp, err := db.GetDefaultProfile()
+	if err != nil {
+		return fmt.Errorf("delete profile: %w", err)
+	}
+	if cp != nil {
+		if err := db.DeleteProfile(cp.Name); err != nil {
+			return fmt.Errorf("delete profile: %w", err)
+		}
 	}
 	_ = tokenstore.DeleteProfileToken()
 	return nil

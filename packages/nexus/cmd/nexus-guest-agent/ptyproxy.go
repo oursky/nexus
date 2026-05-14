@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -25,6 +26,43 @@ var (
 	shellSessions   = map[string]*shellSession{}
 	shellSessionsMu sync.Mutex
 )
+
+// guestDefaultShell resolves the best available shell inside the guest,
+// using the environment that has already been prepared for the session.
+// It checks $SHELL first (using os.Stat for absolute paths so we never return
+// a path that does not exist), then probes a priority list favouring bash over
+// sh — the workspace rootfs is Ubuntu-based and bash is always available.
+func guestDefaultShell(env []string) string {
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "SHELL=") {
+			sh := strings.TrimPrefix(entry, "SHELL=")
+			if sh == "" {
+				break
+			}
+			if filepath.IsAbs(sh) {
+				// Use os.Stat directly: lookPathInEnv short-circuits for absolute
+				// paths without checking file existence.
+				if fi, err := os.Stat(sh); err == nil && !fi.IsDir() {
+					return sh
+				}
+			} else if resolved, err := lookPathInEnv(sh, env); err == nil {
+				return resolved
+			}
+			break
+		}
+	}
+	// Prefer bash: the workspace rootfs is Ubuntu-based and always has bash.
+	// Fall back to sh for truly minimal images that only ship dash/busybox.
+	for _, candidate := range []string{"/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh"} {
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			return candidate
+		}
+	}
+	if resolved, err := lookPathInEnv("sh", env); err == nil {
+		return resolved
+	}
+	return "/bin/sh"
+}
 
 func handleShellOpen(req execRequest, encoder *json.Encoder) {
 	env := append([]string{}, os.Environ()...)
@@ -44,9 +82,14 @@ func handleShellOpen(req execRequest, encoder *json.Encoder) {
 		}
 	}
 
-	shell := req.Command
-	if strings.TrimSpace(shell) == "" {
-		shell = "bash"
+	shell := strings.TrimSpace(req.Command)
+	if shell == "" {
+		shell = guestDefaultShell(env)
+	} else if resolved, err := lookPathInEnv(shell, env); err == nil {
+		shell = resolved
+	} else if !filepath.IsAbs(shell) {
+		// Requested shell name not found in PATH; fall back to default.
+		shell = guestDefaultShell(env)
 	}
 
 	// If args are provided, honour them (e.g. ["-c", "ip route show"] from

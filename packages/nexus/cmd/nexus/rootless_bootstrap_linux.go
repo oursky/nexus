@@ -164,6 +164,15 @@ func checkNetworkBackend() error {
 // On success, the daemon-launch phase can proceed.
 // emitJSON controls whether phase events are emitted as JSON lines (for --json flag).
 func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
+	d := strings.ToLower(strings.TrimSpace(driver))
+	// Sandbox / process backend starts without libkrun (no KVM, no VM disk images).
+	// Needed for CI and dev machines running `daemon start --driver sandbox`.
+	if d == "sandbox" || d == "process" {
+		emitPhase(w, emitJSON, "preflight", "start", "checking prerequisites")
+		emitPhase(w, emitJSON, "preflight", "ok", "process driver — skipping libkrun/KVM provisioning")
+		return nil
+	}
+
 	// ── Phase: preflight ───────────────────────────────────────────────────────
 	emitPhase(w, emitJSON, "preflight", "start", "checking prerequisites")
 

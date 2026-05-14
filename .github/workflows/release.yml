@@ -1,0 +1,187 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: arm64
+          - runner: macos-latest
+            goos: darwin
+            goarch: amd64
+          - runner: macos-latest
+            goos: darwin
+            goarch: arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      # Linux nexus embeds agent-linux-<arch>; generate runs only for host arch,
+      # so cross-compile paths compile the matching guest-agent explicitly (CGO off).
+      - name: Build embedded Linux guest-agent
+        if: matrix.goos == 'linux'
+        working-directory: packages/nexus/cmd/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          rm -f "agent-linux-${{ matrix.goarch }}"
+          go build -trimpath -ldflags='-s -w' \
+            -o "agent-linux-${{ matrix.goarch }}" \
+            ../nexus-guest-agent/
+
+      - name: Build nexus binary
+        working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          outfile="nexus-${{ matrix.goos }}-${{ matrix.goarch }}"
+          rm -f "$outfile"
+          go build -trimpath -ldflags="-s -w" -o "$outfile" ./cmd/nexus
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: packages/nexus/nexus-${{ matrix.goos }}-${{ matrix.goarch }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Releases
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+
+      - name: Prepare checksums and latest.json
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          # Normalize flat layout (artifact uploads preserve basename).
+          shopt -s nullglob
+          bins=(nexus-*)
+          if [ ${#bins[@]} -eq 0 ]; then
+            echo "no nexus-* binaries in dist/"
+            ls -la
+            exit 1
+          fi
+          sha256sum nexus-* > checksums.txt
+
+          VERSION="${GITHUB_REF_NAME}"
+          PUB_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}"
+
+          hash_for() {
+            local f="$1"
+            grep -F " ${f}" checksums.txt | awk '{print $1}'
+          }
+
+          jq -n \
+            --arg ver "${VERSION}" \
+            --arg pub "${PUB_DATE}" \
+            --arg b "${BASE_URL}" \
+            --arg h_la "$(hash_for nexus-linux-amd64)" \
+            --arg h_larm "$(hash_for nexus-linux-arm64)" \
+            --arg h_da "$(hash_for nexus-darwin-amd64)" \
+            --arg h_darm "$(hash_for nexus-darwin-arm64)" \
+            '{
+              version: $ver,
+              pub_date: $pub,
+              platforms: {
+                "linux-amd64": { url: ($b + "/nexus-linux-amd64"), sha256: $h_la },
+                "linux-arm64": { url: ($b + "/nexus-linux-arm64"), sha256: $h_larm },
+                "darwin-amd64": { url: ($b + "/nexus-darwin-amd64"), sha256: $h_da },
+                "darwin-arm64": { url: ($b + "/nexus-darwin-arm64"), sha256: $h_darm }
+              }
+            }' > latest.json
+
+      - name: Create versioned release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          body: |
+            Automated release build for `${{ github.ref_name }}`.
+
+            Assets include cross-platform CLI binaries, `checksums.txt`, and `latest.json` (update manifest).
+
+            **Note:** Linux binaries embed the Linux guest-agent (`CGO_ENABLED=0`). macOS binaries do not embed the Linux agent bundle.
+          files: |
+            dist/nexus-linux-amd64
+            dist/nexus-linux-arm64
+            dist/nexus-darwin-amd64
+            dist/nexus-darwin-arm64
+            dist/checksums.txt
+            dist/latest.json
+
+      - name: Move rolling "latest" tag
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f latest "${GITHUB_SHA}"
+          git push origin refs/tags/latest --force
+
+      - name: Update latest-channel prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: latest
+          draft: false
+          prerelease: true
+          generate_release_notes: false
+          body: |
+            Rolling **latest** channel (prerelease). Points at `${{ github.ref_name }}` (${{ github.sha }}).
+
+            Consume `latest.json` from this release for stable URLs on the prerelease channel, or use the tagged semver release above.
+          files: |
+            dist/nexus-linux-amd64
+            dist/nexus-linux-arm64
+            dist/nexus-darwin-amd64
+            dist/nexus-darwin-arm64
+            dist/checksums.txt
+            dist/latest.json

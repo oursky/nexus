@@ -99,7 +99,16 @@ func (h *Handler) createVMSession(ctx context.Context, p createParams, ws *domai
 
 	shell := p.Shell
 	if shell == "" {
-		shell = "bash"
+		if len(p.Args) == 0 {
+			// Interactive PTY: prefer bash for a good user experience — it handles
+			// .bashrc syntax and completion. The guest agent falls back to sh if
+			// bash is unavailable in the rootfs.
+			shell = "bash"
+		} else {
+			// Non-interactive exec (e.g. -c "cmd"): sh is sufficient and always
+			// present on every POSIX rootfs.
+			shell = "sh"
+		}
 	}
 
 	sessionID := fmt.Sprintf("pty-%d", time.Now().UnixNano())
@@ -353,6 +362,12 @@ func defaultShell() string {
 			if fi, err := os.Stat(sh); err == nil && !fi.IsDir() {
 				return sh
 			}
+		}
+	}
+	// Try common shell locations in order: bash first, then sh.
+	for _, candidate := range []string{"/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh"} {
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			return candidate
 		}
 	}
 	if sh, err := exec.LookPath("sh"); err == nil {

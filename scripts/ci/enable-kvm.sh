@@ -11,4 +11,11 @@ elif [ -d /etc/udev/rules.d ]; then
 else
   sudo chmod 0666 /dev/kvm 2>/dev/null || true
 fi
+
+# GitHub-hosted Linux runners occasionally leave kvm at root:kvm mode 0660 after
+# udev reload; KVM tests then fail unless they run under sudo or newgrp kvm.
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  sudo chmod 0666 /dev/kvm 2>/dev/null || true
+fi
+
 ls -la /dev/kvm
