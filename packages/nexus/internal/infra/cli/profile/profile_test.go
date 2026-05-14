@@ -1,14 +1,13 @@
 package profile
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
 func TestSaveAndLoadDefault(t *testing.T) {
 	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("XDG_STATE_HOME", tmpDir)  // profile DB
+	t.Setenv("XDG_CONFIG_HOME", tmpDir) // token file (tokenstore FileStore)
 
 	p := &Profile{
 		Name:    "default",
@@ -35,6 +34,7 @@ func TestSaveAndLoadDefault(t *testing.T) {
 
 func TestLoadDefaultMissing(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmpDir)
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
 	_, err := LoadDefault()
@@ -60,6 +60,7 @@ func TestLoadDefaultEnvLocalTokenAndPort(t *testing.T) {
 
 func TestDeleteDefault(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmpDir)
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
 	p := &Profile{Name: "default", Host: "host", Port: 1234}
@@ -71,12 +72,13 @@ func TestDeleteDefault(t *testing.T) {
 		t.Fatalf("DeleteDefault: %v", err)
 	}
 
-	path := filepath.Join(tmpDir, "nexus", "profiles", "default.json")
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("expected file to be removed")
+	// After deletion LoadDefault must return an error.
+	if _, err := LoadDefault(); err == nil {
+		t.Error("expected error after DeleteDefault, got nil")
 	}
 
+	// Idempotent — second delete must not error.
 	if err := DeleteDefault(); err != nil {
-		t.Errorf("DeleteDefault on missing file should not error: %v", err)
+		t.Errorf("DeleteDefault on missing profile should not error: %v", err)
 	}
 }

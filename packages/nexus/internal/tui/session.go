@@ -1,61 +1,65 @@
 package tui
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
+	"time"
+
+	"github.com/oursky/nexus/packages/nexus/internal/clientstate"
 )
 
-// sessionState is persisted to disk between TUI invocations.
+// sessionState is persisted to SQLite between TUI invocations.
 type sessionState struct {
-	// Tabs holds workspace IDs attached at least once this session, in order.
-	Tabs []string `json:"tabs"`
+	// Tabs holds workspace IDs attached at least once, ordered by tab_order.
+	Tabs []string
 	// Active is the ID of the last workspace attached — used by --auto-attach.
-	Active string `json:"active"`
+	Active string
 }
 
-// sessionStateFile returns the path of the session persistence file,
-// honouring $XDG_STATE_HOME (fallback: ~/.local/state).
-func sessionStateFile() string {
-	dir := os.Getenv("XDG_STATE_HOME")
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".local", "state")
-	}
-	return filepath.Join(dir, "nexus", "tui-sessions.json")
-}
-
-// loadSessionState reads the persisted session state. Returns an empty state
-// on any error (missing file, invalid JSON, etc.).
+// loadSessionState reads the persisted session state from the client state DB.
+// Returns an empty state on any error — session state is best-effort.
 func loadSessionState() sessionState {
-	data, err := os.ReadFile(sessionStateFile())
+	db, err := clientstate.Open()
 	if err != nil {
 		return sessionState{}
 	}
-	var s sessionState
-	if err := json.Unmarshal(data, &s); err != nil {
+	defer db.Close()
+
+	sessions, err := db.GetTUISessions()
+	if err != nil {
 		return sessionState{}
 	}
-	return s
+	tabs := make([]string, 0, len(sessions))
+	for _, s := range sessions {
+		tabs = append(tabs, s.WorkspaceID)
+	}
+	active, _ := db.GetTUIPref("active_workspace")
+	return sessionState{Tabs: tabs, Active: active}
 }
 
-// saveSessionState atomically writes the session state to disk.
+// saveSessionState writes the session state to the client state DB.
 // Errors are silently ignored — session state is best-effort.
 func saveSessionState(s sessionState) {
-	path := sessionStateFile()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return
-	}
-	data, err := json.Marshal(s)
+	db, err := clientstate.Open()
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(path, data, 0o644)
+	defer db.Close()
+
+	sessions := make([]clientstate.TUISession, len(s.Tabs))
+	for i, id := range s.Tabs {
+		sessions[i] = clientstate.TUISession{
+			WorkspaceID:  id,
+			LastAttached: time.Now().UTC(),
+			TabOrder:     i,
+		}
+	}
+	_ = db.ReplaceAllTUISessions(sessions)
+	if s.Active != "" {
+		_ = db.SetTUIPref("active_workspace", s.Active)
+	}
 }
 
 // addTab appends wsID to tabs (up to maxTabs), evicting the oldest entry if
-// full. Returns the new tab slice. If wsID is already present, returns tabs
-// unchanged.
+// full. Returns the new tab slice unchanged if wsID is already present.
 func addTab(tabs []string, wsID string) []string {
 	const maxTabs = 9
 	for _, id := range tabs {
