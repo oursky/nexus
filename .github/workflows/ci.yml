@@ -493,27 +493,3 @@ jobs:
       - name: Dump VM diagnostics on failure
         if: failure()
         run: bash scripts/ci/dump-linux-vm-diagnostics.sh
-
-  # Matches hkfc-style macOS builds: use repository variable NEXUS_MACOS_DEVELOPER_DIR
-  # (e.g. /Applications/Xcode_16.2.app/Contents/Developer) on self-hosted runners
-  # that install Xcode outside the default path.
-  #
-  # Paused — macOS app development is on hold; keep job skeleton for easy re-enable.
-  nexus-swift-macos:
-    name: NexusApp (macOS)
-    if: false  # disabled: requires self-hosted runner with Xcode; run manually
-    runs-on: [self-hosted, macOS, ARM64, v2, tw]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Select Xcode
-        env:
-          NEXUS_MACOS_DEVELOPER_DIR: ${{ vars.NEXUS_MACOS_DEVELOPER_DIR }}
-        run: bash scripts/ci/select-xcode.sh
-
-      - name: Download Metal Toolchain (if missing)
-        run: xcodebuild -downloadComponent MetalToolchain 2>&1 | tail -5 || true
-
-      - name: Build NexusApp (Debug)
-        run: scripts/swift/build.sh
