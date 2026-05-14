@@ -6,10 +6,16 @@ on:
   pull_request:
     branches: [main, develop]
 
+# Cancel in-progress runs for the same branch/PR when a new push arrives.
+# This prevents stale queued runs from blocking GitHub-hosted runner slots.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint (nexus)
-    runs-on: [self-hosted, linux, x64, v1]
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
@@ -53,7 +59,7 @@ jobs:
 
   unit-tests:
     name: Unit Tests (nexus)
-    runs-on: [self-hosted, linux, x64, v1]
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
@@ -123,7 +129,15 @@ jobs:
           cache-dependency-path: packages/nexus/go.sum
 
       - name: Install e2fsprogs (mke2fs)
-        run: brew install e2fsprogs
+        # HOMEBREW_NO_AUTO_UPDATE skips the 1-2 min tap refresh on every run.
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          set -euo pipefail
+          brew install --quiet e2fsprogs
+          # e2fsprogs is keg-only; add its sbin to PATH for mke2fs.
+          echo "$(brew --prefix e2fsprogs)/sbin" >> "$GITHUB_PATH"
 
       - name: Stage libkrun dylibs (go:embed)
         run: bash scripts/local/build-libkrun-darwin.sh
@@ -144,19 +158,26 @@ jobs:
         working-directory: packages/nexus
         run: go generate ./cmd/nexus/
 
-      - name: Build nexus binary and pty-host for E2E
+      - name: Build nexus + pty-host, codesign, and pre-install gvproxy
+        # Build and gvproxy download are parallelized with & to save ~20-30 s.
         working-directory: packages/nexus
         env:
           CGO_ENABLED: "0"
         run: |
+          set -euo pipefail
+
+          # Download gvproxy in the background while Go compiles.
+          mkdir -p "$HOME/.cache/nexus/bin"
+          (curl -fsSL --retry 3 -L \
+            "https://github.com/containers/gvisor-tap-vsock/releases/download/v0.8.8/gvproxy-darwin" \
+            -o "$HOME/.cache/nexus/bin/gvproxy" \
+            && chmod +x "$HOME/.cache/nexus/bin/gvproxy") &
+          GVPROXY_PID=$!
+
           go build -o /tmp/nexus-bin ./cmd/nexus/
           go build -o /tmp/pty-host ./cmd/pty-host/
-          echo "NEXUS_E2E_BINARY=/tmp/nexus-bin" >> "$GITHUB_ENV"
-          # Add pty-host dir to PATH so the daemon can launch it.
-          echo "/tmp" >> "$GITHUB_PATH"
 
-      - name: Codesign nexus binary (Hypervisor.framework entitlement)
-        run: |
+          # Codesign nexus binary (Hypervisor.framework + Virtualization.framework).
           ENTITLEMENTS="$(mktemp /tmp/nexus-entitlements.XXXXXX.plist)"
           cat > "$ENTITLEMENTS" << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -173,13 +194,11 @@ jobs:
           codesign --entitlements "$ENTITLEMENTS" --force --sign - /tmp/nexus-bin
           rm -f "$ENTITLEMENTS"
 
-      - name: Pre-install gvproxy (avoids concurrent download race in tests)
-        run: |
-          mkdir -p "$HOME/.cache/nexus/bin"
-          curl -fsSL --retry 3 -L \
-            "https://github.com/containers/gvisor-tap-vsock/releases/download/v0.8.8/gvproxy-darwin" \
-            -o "$HOME/.cache/nexus/bin/gvproxy"
-          chmod +x "$HOME/.cache/nexus/bin/gvproxy"
+          # Wait for gvproxy download to finish.
+          wait $GVPROXY_PID
+
+          echo "NEXUS_E2E_BINARY=/tmp/nexus-bin" >> "$GITHUB_ENV"
+          echo "/tmp" >> "$GITHUB_PATH"
 
       - name: Run Go e2e (vm driver)
         working-directory: packages/nexus
