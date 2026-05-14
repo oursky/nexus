@@ -30,11 +30,23 @@ const (
 )
 
 const (
-	promptNone      = ""
-	promptSpotPort  = "spot_port"
-	promptSyncLocal = "sync_local"
-	promptSyncDir   = "sync_dir"
-	promptForkChild = "fork_child"
+	promptNone            = ""
+	promptSpotPort        = "spot_port"
+	promptSidebarSpotPort = "sidebar_spot_port"
+	promptSyncLocal       = "sync_local"
+	promptSyncDir         = "sync_dir"
+	promptForkChild       = "fork_child"
+)
+
+// layoutPane identifies which pane contains a given screen column (for mouse
+// hit-testing).
+type layoutPane int
+
+const (
+	layoutPaneLeft   layoutPane = iota
+	layoutPaneCenter layoutPane = iota
+	layoutPaneRight  layoutPane = iota
+	layoutPaneNone   layoutPane = iota
 )
 
 type syncRow struct {
@@ -98,6 +110,16 @@ type shellReturnedMsg struct {
 	err  error
 	wsID string // ID of the workspace whose shell just exited
 }
+
+// sidebarSpotMsg delivers spotlight.list results for the three-pane sidebar.
+type sidebarSpotMsg struct {
+	wsID     string
+	forwards []*spotlight.Forward
+	err      error
+}
+
+// sidebarSpotTickMsg fires every 3s to refresh the spotlight sidebar.
+type sidebarSpotTickMsg struct{}
 
 // Model is the root Bubble Tea model for the Nexus TUI.
 type Model struct {
@@ -164,6 +186,22 @@ type Model struct {
 	activeTabWS    string   // last attached workspace ID
 	autoAttach     bool     // --auto-attach flag
 	autoAttachDone bool     // prevent multiple auto-attaches
+
+	// Three-pane spotlight sidebar (visible when width >= 110).
+	sidebarFocused bool
+	sidebarSel     int
+	sidebarFwds    []*spotlight.Forward
+
+	// Pane x-boundaries for mouse hit-testing (0-indexed, inner coordinates,
+	// i.e. after removing the 2-column outer padding).
+	// leftPaneRight  = last inner column of the left pane (= leftW - 1)
+	// centerPaneRight = last inner column of the center pane (= leftW + centerW)
+	leftPaneRight   int
+	centerPaneRight int
+
+	// mouseSupportEnabled is set to true after the first WindowSizeMsg so that
+	// mouse coordinates are valid before we start hit-testing.
+	mouseSupportEnabled bool
 }
 
 // tabBarOffset returns the number of extra lines consumed by the tab bar
@@ -181,23 +219,75 @@ func (m Model) isSplitMode() bool {
 	return m.width >= 90
 }
 
-// leftPaneWidth returns the width the workspace list should occupy. In split
-// mode this is 28% of the inner width; otherwise it is the full inner width.
-func (m Model) leftPaneWidth() int {
-	inner := max(m.width-4, 24)
-	if m.isSplitMode() {
-		return int(float64(inner) * 0.28)
-	}
-	return inner
+// isThreePaneMode reports whether the terminal is wide enough for the
+// three-pane layout (workspace list | PTY | spotlight sidebar).
+func (m Model) isThreePaneMode() bool {
+	return m.width >= 110
 }
 
-// ptyPaneDimensions returns the (cols, rows) the PTY right pane should use.
-func (m Model) ptyPaneDimensions() (cols, rows int) {
+// paneDimensions returns (leftW, centerW, rightW) for the current layout.
+//
+//   - Three-pane (>= 110 cols): leftW=22%, centerW=55%-ish, rightW=23%.
+//   - Two-pane   (>= 90 cols):  leftW=28%, centerW=72%-ish, rightW=0.
+//   - Single-pane:              leftW=centerW=full inner, rightW=0.
+//
+// The widths already account for the separator column(s) so that
+// leftW + centerW + rightW + numSeparators == inner.
+func (m Model) paneDimensions() (leftW, centerW, rightW int) {
 	inner := max(m.width-4, 24)
-	left := int(float64(inner) * 0.28)
-	cols = max(inner-left-1, 20) // 1 column for the separator
+	if m.isThreePaneMode() {
+		leftW = int(float64(inner) * 0.22)
+		rightW = int(float64(inner) * 0.23)
+		centerW = max(inner-leftW-rightW-2, 20) // 2 separator columns
+		return
+	}
+	if m.isSplitMode() {
+		leftW = int(float64(inner) * 0.28)
+		centerW = max(inner-leftW-1, 20) // 1 separator column
+		rightW = 0
+		return
+	}
+	leftW = inner
+	centerW = inner
+	rightW = 0
+	return
+}
+
+// leftPaneWidth returns the width the workspace list should occupy.
+func (m Model) leftPaneWidth() int {
+	leftW, _, _ := m.paneDimensions()
+	return leftW
+}
+
+// ptyPaneDimensions returns the (cols, rows) the PTY center pane should use.
+func (m Model) ptyPaneDimensions() (cols, rows int) {
+	_, centerW, _ := m.paneDimensions()
+	cols = centerW
 	rows = max(m.height-7-2*m.tabBarOffset(), 4)
 	return cols, rows
+}
+
+// paneAtX returns which layout pane contains terminal column x.
+// x is an absolute terminal column (0-indexed).
+func (m Model) paneAtX(x int) layoutPane {
+	if !m.isSplitMode() {
+		return layoutPaneNone
+	}
+	// Subtract the 2-column outer padding to get an inner-relative index.
+	adj := x - 2
+	if adj < 0 {
+		return layoutPaneNone
+	}
+	if adj <= m.leftPaneRight {
+		return layoutPaneLeft
+	}
+	if !m.isThreePaneMode() {
+		return layoutPaneCenter
+	}
+	if adj <= m.centerPaneRight {
+		return layoutPaneCenter
+	}
+	return layoutPaneRight
 }
 
 // selectedWorkspace returns the workspace currently highlighted in the list,
@@ -314,7 +404,7 @@ func Run(opts ...Options) error {
 	if len(opts) > 0 {
 		o = opts[0]
 	}
-	p := tea.NewProgram(NewModel(o), tea.WithAltScreen())
+	p := tea.NewProgram(NewModel(o), tea.WithAltScreen(), tea.WithMouseAllMotion())
 	_, err := p.Run()
 	return err
 }
@@ -506,6 +596,33 @@ func (m Model) loadSpotlightsCmd(wsID string) tea.Cmd {
 	}
 }
 
+// loadSidebarSpotCmd fetches spotlight.list for the currently selected
+// workspace and delivers a sidebarSpotMsg.
+func (m Model) loadSidebarSpotCmd() tea.Cmd {
+	ws := m.selectedWorkspace()
+	if ws == nil || m.mux == nil {
+		return nil
+	}
+	wsID := ws.ID
+	mux := m.mux
+	return func() tea.Msg {
+		var result struct {
+			Forwards []*spotlight.Forward `json:"forwards"`
+		}
+		if err := mux.Call("spotlight.list", map[string]any{"workspaceId": wsID}, &result); err != nil {
+			return sidebarSpotMsg{wsID: wsID, err: err}
+		}
+		return sidebarSpotMsg{wsID: wsID, forwards: result.Forwards}
+	}
+}
+
+// sidebarSpotTickCmd schedules the next sidebar spotlight refresh (3s).
+func sidebarSpotTickCmd() tea.Cmd {
+	return tea.Every(3*time.Second, func(time.Time) tea.Msg {
+		return sidebarSpotTickMsg{}
+	})
+}
+
 func (m Model) loadSyncListCmd(wsID string) tea.Cmd {
 	mux := m.mux
 	return func() tea.Msg {
@@ -664,8 +781,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.mouseSupportEnabled = true
 		m.listWidth = m.leftPaneWidth()
 		m.updateListSize()
+
+		// Update pane x-boundaries for mouse hit-testing.
+		leftW, centerW, _ := m.paneDimensions()
+		m.leftPaneRight = leftW - 1
+		m.centerPaneRight = leftW + centerW // leftW + sep(1) + centerW - 1
+
 		// Resize the PTY pane if visible and send pty.resize to daemon.
 		var resizeCmd tea.Cmd
 		if m.ptyPane != nil && m.mux != nil {
@@ -684,6 +808,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			m.refreshCmd(),
 			tickRefresh(),
+			sidebarSpotTickCmd(),
 		)
 
 	case connErrMsg:
@@ -868,7 +993,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.panel == panelSync && m.detail != nil {
 			return m, m.loadSyncListCmd(m.detail.ID)
 		}
-		return m, m.refreshCmd()
+		cmds := []tea.Cmd{m.refreshCmd()}
+		if m.isThreePaneMode() && m.mux != nil {
+			cmds = append(cmds, m.loadSidebarSpotCmd())
+		}
+		return m, tea.Batch(cmds...)
 
 	case spotlightsDataMsg:
 		if msg.err != nil {
@@ -933,6 +1062,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.refreshCmd()
 
+	case sidebarSpotMsg:
+		if msg.err == nil {
+			m.sidebarFwds = msg.forwards
+			if m.sidebarSel >= len(m.sidebarFwds) {
+				m.sidebarSel = max(0, len(m.sidebarFwds)-1)
+			}
+		}
+		return m, nil
+
+	case sidebarSpotTickMsg:
+		if m.quitting {
+			return m, nil
+		}
+		var cmds []tea.Cmd
+		if m.isThreePaneMode() && m.mux != nil && !m.blocksOverlayInput() {
+			cmds = append(cmds, m.loadSidebarSpotCmd())
+		}
+		cmds = append(cmds, sidebarSpotTickCmd())
+		return m, tea.Batch(cmds...)
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -973,12 +1125,162 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// sendMouseToPTY encodes a BubbleTea mouse event as a VT200 mouse escape
+// sequence and forwards it to the active PTY via the pty.write RPC.
+func (m Model) sendMouseToPTY(msg tea.MouseMsg) tea.Cmd {
+	if m.ptyPane == nil || m.mux == nil {
+		return nil
+	}
+	leftW, _, _ := m.paneDimensions()
+	// PTY view origin (absolute terminal coordinates, 0-indexed):
+	//   X: outer padding (2) + left pane (leftW) + separator (1)
+	//   Y: 2 header lines + 1 blank line + 2*tabBarOffset tab lines
+	ptyX := 2 + leftW + 1
+	ptyY := 3 + 2*m.tabBarOffset()
+
+	// PTY-relative, 1-indexed.
+	px := msg.X - ptyX + 1
+	py := msg.Y - ptyY + 1
+	if px < 1 {
+		px = 1
+	}
+	if py < 1 {
+		py = 1
+	}
+	// VT200 X10 mouse: coordinates encoded as char+32, max 223.
+	if px > 223 {
+		px = 223
+	}
+	if py > 223 {
+		py = 223
+	}
+
+	var btn int
+	switch msg.Button {
+	case tea.MouseButtonLeft:
+		btn = 0
+		if msg.Action == tea.MouseActionRelease {
+			btn = 3
+		}
+	case tea.MouseButtonMiddle:
+		btn = 1
+	case tea.MouseButtonRight:
+		btn = 2
+	case tea.MouseButtonWheelUp:
+		btn = 64
+	case tea.MouseButtonWheelDown:
+		btn = 65
+	default:
+		return nil
+	}
+
+	data := fmt.Sprintf("\x1b[M%c%c%c", rune(btn+32), rune(px+32), rune(py+32))
+	sessionID := m.ptyPane.sessionID
+	mux := m.mux
+	return func() tea.Msg {
+		_ = mux.Send("pty.write", map[string]any{
+			"sessionId": sessionID,
+			"data":      data,
+		})
+		return nil
+	}
+}
+
+// handleMouse handles tea.MouseMsg events for click-to-focus, scroll, and PTY
+// mouse forwarding.
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.blocksOverlayInput() || !m.mouseSupportEnabled {
+		return m, nil
+	}
+
+	pane := m.paneAtX(msg.X)
+
+	switch msg.Button {
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+		switch pane {
+		case layoutPaneLeft:
+			var listCmd tea.Cmd
+			if msg.Button == tea.MouseButtonWheelUp {
+				m.list, listCmd = m.list.Update(tea.KeyMsg{Type: tea.KeyUp})
+			} else {
+				m.list, listCmd = m.list.Update(tea.KeyMsg{Type: tea.KeyDown})
+			}
+			m, ptyCmd := m.maybeSwitchPTY()
+			return m, tea.Batch(listCmd, ptyCmd)
+		case layoutPaneCenter:
+			if m.ptyPane != nil {
+				return m, m.sendMouseToPTY(msg)
+			}
+		case layoutPaneRight:
+			if msg.Button == tea.MouseButtonWheelUp {
+				if m.sidebarSel > 0 {
+					m.sidebarSel--
+				}
+			} else {
+				if m.sidebarSel < len(m.sidebarFwds)-1 {
+					m.sidebarSel++
+				}
+			}
+		}
+
+	case tea.MouseButtonLeft:
+		if msg.Action == tea.MouseActionRelease {
+			if pane == layoutPaneCenter && m.ptyPane != nil {
+				return m, m.sendMouseToPTY(msg)
+			}
+			return m, nil
+		}
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		switch pane {
+		case layoutPaneLeft:
+			m.ptyFocused = false
+			m.sidebarFocused = false
+		case layoutPaneCenter:
+			if !m.ptyFocused {
+				m.ptyFocused = true
+				m.sidebarFocused = false
+			}
+			if m.ptyPane != nil {
+				return m, m.sendMouseToPTY(msg)
+			}
+		case layoutPaneRight:
+			m.sidebarFocused = true
+			m.ptyFocused = false
+			// Best-effort click-to-select: sidebar content starts after 2 header
+			// rows (title + separator). ptyY gives the body start.
+			bodyY := 3 + 2*m.tabBarOffset()
+			relY := msg.Y - bodyY - 2 // -2 for "SPOTLIGHT\n────\n"
+			if relY >= 0 && relY < len(m.sidebarFwds) {
+				m.sidebarSel = relY
+			}
+		}
+
+	default:
+		if pane == layoutPaneCenter && m.ptyPane != nil {
+			return m, m.sendMouseToPTY(msg)
+		}
+	}
+
+	return m, nil
+}
+
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// When the spotlight sidebar has focus, route keys there.
+	if m.sidebarFocused && m.isThreePaneMode() && !m.blocksOverlayInput() {
+		return m.handleSidebarKeys(msg)
+	}
+
 	// When the PTY right pane has focus, forward all keys to it.
-	// ctrl+a detaches from the PTY pane (returns focus to the left pane).
+	// ctrl+a detaches from the PTY pane; in three-pane mode it moves focus to
+	// the spotlight sidebar instead of the left pane.
 	if m.ptyFocused && m.ptyPane != nil && !m.blocksOverlayInput() {
 		if msg.String() == "ctrl+a" {
 			m.ptyFocused = false
+			if m.isThreePaneMode() {
+				m.sidebarFocused = true
+			}
 			return m, nil
 		}
 		// Forward all other keys (including ctrl+c, q) to the PTY.
@@ -1230,6 +1532,18 @@ func (m Model) handlePromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.loadSpotlightsCmd(m.detail.ID)
 			}
 			return m, m.startSpotlightCmd(m.detail.ID, p)
+		case promptSidebarSpotPort:
+			m.prompt = promptNone
+			ws := m.selectedWorkspace()
+			if ws == nil {
+				return m, nil
+			}
+			p, err := strconv.Atoi(line)
+			if err != nil || p <= 0 || p > 65535 {
+				m.statusLine = "invalid port"
+				return m, m.loadSidebarSpotCmd()
+			}
+			return m, m.startSpotlightCmd(ws.ID, p)
 		case promptSyncLocal:
 			if line == "" {
 				m.prompt = promptNone
@@ -1343,6 +1657,49 @@ func (m Model) handleSyncKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// handleSidebarKeys handles keyboard input when the spotlight sidebar pane has
+// focus (three-pane layout only).
+func (m Model) handleSidebarKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "tab", "esc":
+		m.sidebarFocused = false
+		return m, nil
+	case "n":
+		ws := m.selectedWorkspace()
+		if ws == nil {
+			return m, nil
+		}
+		m.prompt = promptSidebarSpotPort
+		m.promptInput.Placeholder = "remote port"
+		return m, m.promptInput.Focus()
+	case "x", "delete":
+		ws := m.selectedWorkspace()
+		if ws == nil || len(m.sidebarFwds) == 0 {
+			return m, nil
+		}
+		if m.sidebarSel < 0 || m.sidebarSel >= len(m.sidebarFwds) {
+			return m, nil
+		}
+		f := m.sidebarFwds[m.sidebarSel]
+		if f == nil {
+			return m, nil
+		}
+		return m, m.removeForwardCmd(ws.ID, f.ID)
+	case "up", "k":
+		if m.sidebarSel > 0 {
+			m.sidebarSel--
+		}
+		return m, nil
+	case "down", "j":
+		if m.sidebarSel < len(m.sidebarFwds)-1 {
+			m.sidebarSel++
+		}
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
 func (m Model) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "enter" {
 		m.detail = nil
@@ -1411,10 +1768,19 @@ func (m Model) runShellExec(wsID string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// In split mode, Tab transfers focus to the right PTY pane.
+	// l key in three-pane mode focuses the spotlight sidebar directly.
+	if m.isThreePaneMode() && msg.String() == "l" {
+		m.sidebarFocused = true
+		m.ptyFocused = false
+		return m, nil
+	}
+
+	// In split mode, Tab transfers focus: left → PTY → (three-pane: sidebar).
 	if m.isSplitMode() && msg.String() == "tab" {
 		if m.ptyPane != nil {
 			m.ptyFocused = true
+		} else if m.isThreePaneMode() {
+			m.sidebarFocused = true
 		}
 		return m, nil
 	}
@@ -1531,10 +1897,23 @@ func (m Model) renderFooterHelp(innerWidth int) string {
 		raw = "tab next field   ↵ next/submit   esc cancel"
 	case m.detail != nil && m.panel == panelNone && !m.showHelp:
 		raw = "q quit   ? help   esc back   r refresh   c connect   l spotlight   y sync   t terminal   f fork   s/x/d"
+	case m.sidebarFocused && m.isThreePaneMode():
+		raw = "tab→left  n add  x del  j/k navigate  l unfocus"
 	case m.ptyFocused && m.ptyPane != nil:
-		raw = "ctrl+a unfocus terminal   t full-screen shell"
+		if m.isThreePaneMode() {
+			raw = "ctrl+a→spotlight   t full-screen shell"
+		} else {
+			raw = "ctrl+a unfocus terminal   t full-screen shell"
+		}
 	default:
-		if m.isSplitMode() {
+		if m.isThreePaneMode() {
+			switch {
+			case m.width < 140:
+				raw = "q quit   ? help   tab focus PTY   l spotlight   t full-screen"
+			default:
+				raw = "q quit   ? help   tab focus PTY   l spotlight   t full-screen   ↵ detail   n new   / filter   s start   x stop   d delete"
+			}
+		} else if m.isSplitMode() {
 			switch {
 			case m.width < 120:
 				raw = "q quit   ? help   tab focus terminal   t full-screen"
@@ -1663,54 +2042,71 @@ func (m Model) View() string {
 	return box
 }
 
-// renderSplitLayout renders the split-pane view: workspace list on the left
-// (28%) and an interactive PTY terminal (or workspace details) on the right
-// (72%), separated by a vertical bar.
+// renderSplitLayout renders the split-pane view.
+//
+// Two-pane  (90–109 cols): workspace list (28%) | PTY (72%).
+// Three-pane (≥110 cols):  workspace list (22%) | PTY (55%) | spotlight (23%).
 func (m Model) renderSplitLayout() string {
-	inner := max(m.width-4, 24)
-	leftWidth := int(float64(inner) * 0.28)
-	rightWidth := inner - leftWidth - 1 // 1 column for the separator
+	leftW, centerW, rightW := m.paneDimensions()
 	bodyH := max(m.height-7-2*m.tabBarOffset(), 4)
 
 	// Left pane: workspace list.
 	leftContent := m.list.View()
-	leftPane := lipgloss.NewStyle().Width(leftWidth).Height(bodyH).Render(leftContent)
+	leftPane := lipgloss.NewStyle().Width(leftW).Height(bodyH).Render(leftContent)
 
-	// Separator colour: accent when right pane is focused, muted otherwise.
-	sepColor := colorBorder
+	// First separator: accent when PTY pane is focused.
+	sep1Color := colorBorder
 	if m.ptyFocused {
-		sepColor = colorAccent
+		sep1Color = colorAccent
 	}
-	sep := lipgloss.NewStyle().Foreground(sepColor).Render("│")
+	sep1 := lipgloss.NewStyle().Foreground(sep1Color).Render("│")
 
-	// Right pane: PTY terminal or workspace info.
-	var rightContent string
+	// Center pane content: PTY or workspace info.
+	var centerContent string
 	if m.ptyPane != nil {
-		rightContent = m.ptyPane.Render()
+		centerContent = m.ptyPane.Render()
 	} else {
 		selWS := m.selectedWorkspace()
 		switch {
 		case selWS != nil && selWS.State == workspace.StateRunning:
-			rightContent = mutedStyle.Render("Opening terminal…")
+			centerContent = mutedStyle.Render("Opening terminal…")
 		case selWS != nil:
-			rightContent = renderWorkspaceDetail(selWS, rightWidth)
+			centerContent = renderWorkspaceDetail(selWS, centerW)
 		default:
-			rightContent = mutedStyle.Render("Select a workspace")
+			centerContent = mutedStyle.Render("Select a workspace")
 		}
 	}
 
-	rightBorderColor := colorBorder
-	if m.ptyFocused {
-		rightBorderColor = colorAccent
+	if !m.isThreePaneMode() {
+		// Two-pane layout: center pane has a left border rendered as part of
+		// the pane box (matches the original layout).
+		centerBorderColor := colorBorder
+		if m.ptyFocused {
+			centerBorderColor = colorAccent
+		}
+		centerPane := lipgloss.NewStyle().
+			Width(centerW).
+			Height(bodyH).
+			Border(lipgloss.NormalBorder(), false, false, false, true).
+			BorderForeground(centerBorderColor).
+			Render(centerContent)
+		return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, sep1, centerPane)
 	}
-	rightPane := lipgloss.NewStyle().
-		Width(rightWidth).
-		Height(bodyH).
-		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(rightBorderColor).
-		Render(rightContent)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, sep, rightPane)
+	// Three-pane layout.
+	centerPane := lipgloss.NewStyle().Width(centerW).Height(bodyH).Render(centerContent)
+
+	// Second separator: accent when spotlight sidebar is focused.
+	sep2Color := colorBorder
+	if m.sidebarFocused {
+		sep2Color = colorAccent
+	}
+	sep2 := lipgloss.NewStyle().Foreground(sep2Color).Render("│")
+
+	spotlightContent := renderSpotlightSidebar(&m, rightW, bodyH)
+	rightPane := lipgloss.NewStyle().Width(rightW).Height(bodyH).Render(spotlightContent)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, sep1, centerPane, sep2, rightPane)
 }
 
 // renderTabBar renders the session tab bar line.

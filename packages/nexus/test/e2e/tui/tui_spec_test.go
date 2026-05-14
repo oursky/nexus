@@ -878,6 +878,38 @@ func TestSpec_SplitPane_HiddenOnNarrowTerminal(t *testing.T) {
 	}
 }
 
+// Spec SP.3: On a very wide terminal (>= 110 cols), the three-pane layout
+// renders the spotlight sidebar with a "SPOTLIGHT" header.
+func TestSpec_SpotlightSidebar_ShowsOnWideTerminal(t *testing.T) {
+	cmd := exec.Command(shared.BinPath, "tui")
+	cmd.Env = shared.CLIEnv()
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("pty start: %v", err)
+	}
+	defer func() { _ = ptmx.Close() }()
+	// 160x40 — well above the 110-col three-pane threshold.
+	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: 40, Cols: 160})
+
+	stopDrain := make(chan struct{})
+	var captured []byte
+	go drainBackground(ptmx, &captured, stopDrain)
+
+	time.Sleep(800 * time.Millisecond)
+	if _, err := ptmx.Write([]byte{'q'}); err != nil {
+		t.Fatalf("quit: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("tui exit: %v", err)
+	}
+	close(stopDrain)
+
+	out := stripANSI(string(captured))
+	if !strings.Contains(out, "SPOTLIGHT") {
+		t.Fatalf("expected SPOTLIGHT sidebar header in three-pane output; got:\n%s", truncateOut(out, 4000))
+	}
+}
+
 // Spec D.3.1: Fork prompt from detail.
 func TestSpec_D3_ForkPrompt(t *testing.T) {
 	repo := harness.MakeLocalGitRepo(t, "tui-spec-fork")
