@@ -1,6 +1,12 @@
 package sshtunnel
 
 import (
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -68,5 +74,83 @@ func TestLocalPortInitiallyZero(t *testing.T) {
 	m := New("newman@linuxbox", 7777, 22)
 	if m.LocalPort() != 0 {
 		t.Errorf("LocalPort() = %d, want 0", m.LocalPort())
+	}
+}
+
+// TestLocalProxy verifies that StartLocalProxy correctly forwards TCP
+// connections from LocalPort to RemotePort on localhost.
+// This is the core fix for the "port 3000 not found" bug:
+// libkrun VM workspaces expose services via an ephemeral daemon proxy port
+// (Forward.RemotePort), not the original service port (Forward.LocalPort).
+// StartLocalProxy binds LocalPort and proxies to RemotePort so users can
+// connect to "localhost:3000" instead of the ephemeral port.
+func TestLocalProxy(t *testing.T) {
+	// Spin up a simple echo server to act as the "daemon proxy".
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "hello from backend")
+	}))
+	defer backend.Close()
+
+	// Extract the backend port.
+	backendAddr := strings.TrimPrefix(backend.URL, "http://")
+	_, portStr, _ := net.SplitHostPort(backendAddr)
+	backendPort := 0
+	fmt.Sscan(portStr, &backendPort)
+	if backendPort == 0 {
+		t.Fatalf("could not parse backend port from %s", backendAddr)
+	}
+
+	// Pick a free port to use as the "local" (user-facing) port.
+	localPort, err := findAvailablePort()
+	if err != nil {
+		t.Fatalf("findAvailablePort: %v", err)
+	}
+
+	// Start the local proxy: localPort → backendPort.
+	fwds := []Forward{
+		{LocalPort: localPort, RemoteHost: "127.0.0.1", RemotePort: backendPort},
+	}
+	lp, warnings, err := StartLocalProxy(fwds)
+	if err != nil {
+		t.Fatalf("StartLocalProxy: %v", err)
+	}
+	defer lp.Close()
+
+	if len(warnings) > 0 {
+		t.Logf("StartLocalProxy warnings: %v", warnings)
+	}
+
+	// Connect through the proxy.
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/", localPort))
+	if err != nil {
+		t.Fatalf("GET through local proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "hello from backend") {
+		t.Errorf("body = %q, want 'hello from backend'", string(body))
+	}
+
+	// Verify Close does not error.
+	if err := lp.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+// TestCheckAndEvictPorts verifies that CheckAndEvictPorts returns no warnings
+// when no ports are occupied.
+func TestCheckAndEvictPorts(t *testing.T) {
+	// Use a fresh port that nothing is listening on.
+	port, err := findAvailablePort()
+	if err != nil {
+		t.Fatalf("findAvailablePort: %v", err)
+	}
+	warnings := CheckAndEvictPorts([]int{port})
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings for free port, got %v", warnings)
 	}
 }

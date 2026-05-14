@@ -31,10 +31,16 @@ func renderSpotlightSidebar(m *Model, width, height int) string {
 	b.WriteString(headerStyle.Render("SPOTLIGHT"))
 	b.WriteString("\n")
 
-	// Toggle-all hint with active count badge.
+	// Toggle-all hint with active count badge and tunnel status.
 	toggleLine := mutedStyle.Render("[ a ] Toggle all")
 	if activeCount > 0 {
-		toggleLine += "  " + statusOkStyle.Render(fmt.Sprintf("● %d active", activeCount))
+		badge := statusOkStyle.Render(fmt.Sprintf("● %d active", activeCount))
+		if m.sidebarTunnelLive {
+			badge += "  " + statusOkStyle.Render("✓ tunneled")
+		} else {
+			badge += "  " + statusErrStyle.Render("✗ starting")
+		}
+		toggleLine += "  " + badge
 	}
 	b.WriteString(toggleLine)
 	b.WriteString("\n")
@@ -57,21 +63,16 @@ func renderSpotlightSidebar(m *Model, width, height int) string {
 			} else {
 				indicator = mutedStyle.Render("○")
 			}
-			// Show from the user's perspective: what local port they connect to.
-			// Format: "<localPort>" when local==remote, "<localPort>→<remotePort>"
-			// when they differ (daemon-assigned ephemeral proxy for VM workspaces).
-			var portStr string
-			if f.LocalPort == f.RemotePort {
-				portStr = fmt.Sprintf("%d", f.LocalPort)
-			} else {
-				portStr = fmt.Sprintf("%d→%d", f.LocalPort, f.RemotePort)
-			}
+
+			// Always show the user-facing local port (what to connect to).
+			portStr := fmt.Sprintf("%d", f.LocalPort)
 
 			// Tunnel status suffix for active forwards.
+			// Show "✓ localhost:PORT" confirming the actual reachable address.
 			var tunnelSuffix string
 			if f.State == spotlight.ForwardStateActive {
 				if m.sidebarTunnelLive {
-					tunnelSuffix = " " + statusOkStyle.Render("✓")
+					tunnelSuffix = " " + statusOkStyle.Render(fmt.Sprintf("✓ :%d", f.LocalPort))
 				} else {
 					tunnelSuffix = " " + statusErrStyle.Render("✗")
 				}
