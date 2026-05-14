@@ -551,13 +551,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.daemonOK = false
 		errStr := msg.err.Error()
 		if strings.Contains(errStr, "no daemon profile configured") {
-			// New first-run flow: check if a local daemon is already running
-			// before showing the no-profile menu.
+			// First-run: no profile at all — check if a local daemon is already
+			// running before showing the no-profile menu.
 			m.showNoProfile = true
 			m.noProfileChecking = true
 			m.noProfileSel = 0
 			m.noProfileErr = ""
 			return m, tea.Batch(checkLocalDaemonCmd(m.localPort), noProfileSpinTick())
+		}
+		if strings.Contains(errStr, "connect to local daemon") && strings.Contains(errStr, "connection refused") {
+			// A localhost profile exists but the daemon isn't running.
+			// Treat exactly like no-profile: show the start/connect menu.
+			m.showNoProfile = true
+			m.noProfileChecking = false
+			m.noProfileBusy = false
+			m.noProfileSel = 0
+			m.noProfileErr = ""
+			return m, nil
 		}
 		m.statusLine = errStr
 		return m, nil
