@@ -99,7 +99,7 @@ jobs:
   e2e-macos-vm:
     name: E2E Tests (macOS / vm)
     runs-on: macos-14
-    timeout-minutes: 60
+    timeout-minutes: 40
     env:
       GOTOOLCHAIN: local
       CI: "true"
@@ -108,6 +108,10 @@ jobs:
       NEXUS_LIBKRUN_MEM_MIB: "256"
       NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
       NEXUS_RUNNER_ROOTFS_MIN_MIB: "512"
+      # Fail fast if a VM doesn't become ready within 90 s instead of the default 3 min.
+      # With the subprocess-per-VM fix, boot takes <1 s locally and a few seconds on CI.
+      # 90 s gives plenty of headroom while preventing 3-min-per-test hangs on regression.
+      NEXUS_READINESS_TIMEOUT_SECONDS: "90"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -179,11 +183,12 @@ jobs:
 
       - name: Run Go e2e (vm driver)
         working-directory: packages/nexus
+        timeout-minutes: 30
         run: |
           set -euo pipefail
           export NEXUS_VM_ROOTFS="${NEXUS_VM_ROOTFS:-$HOME/.cache/nexus/vm/rootfs.ext4}"
           export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
-          go test -tags e2e -count=1 -timeout=45m -v -p=2 -parallel=2 \
+          go test -tags e2e -count=1 -timeout=25m -v -p=2 -parallel=2 \
             ./test/e2e/harness/... \
             ./test/e2e/daemon/... \
             ./test/e2e/auth/... \
