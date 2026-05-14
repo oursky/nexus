@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run macOS VM e2e tests locally.
+# Run macOS VM e2e tests locally with the same env as CI (e2e-macos-vm) and
+# always clean up VM processes + workspace caches on EXIT.
 #
 # Prerequisites (run once):
 #   brew install e2fsprogs
@@ -7,20 +8,58 @@
 #   bash scripts/ci/ensure-macos-e2e-rootfs.sh
 #
 # Usage:
-#   bash scripts/local/run-mac-e2e.sh                        # run all vm e2e suites
-#   bash scripts/local/run-mac-e2e.sh -run TestLifecycle_StartAndStop
-#   bash scripts/local/run-mac-e2e.sh -run TestSpotlight     # specific test
-#   NEXUS_LIBKRUN_LOG=1 bash scripts/local/run-mac-e2e.sh    # verbose libkrun logs
+#   bash scripts/local/run-mac-e2e.sh
+#   bash scripts/local/run-mac-e2e.sh -run TestSpotlight
 #
-# Environment overrides:
-#   NEXUS_E2E_SUITES  space-separated list of test package dirs (relative to packages/nexus)
-#                     default: all vm e2e suites
-#   NEXUS_LIBKRUN_LOG set to any value to enable verbose libkrun debug output
+# Environment overrides (optional):
+#   NEXUS_E2E_GO_TIMEOUT   — default 45m (longer than CI for slow laptops)
+#   NEXUS_E2E_GO_P         — default 2 (same as CI)
+#   NEXUS_E2E_GO_PARALLEL  — default 2
+#   NEXUS_E2E_MACOS_PACKAGES — space-separated packages (default: full CI list)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NEXUS_PKG="$REPO_ROOT/packages/nexus"
+
+disk_report() {
+  local phase="$1"
+  echo ""
+  echo "=== disk ($phase) ==="
+  df -h / 2>/dev/null || true
+  df -h "${HOME}" 2>/dev/null || true
+  echo ""
+}
+
+cleanup() {
+  echo ""
+  echo "==> run-mac-e2e cleanup (EXIT trap)"
+  pkill -TERM -f '[m]acvm-runner' 2>/dev/null || true
+  pkill -TERM -f '[g]vproxy' 2>/dev/null || true
+  sleep 1
+  pkill -KILL -f '[m]acvm-runner' 2>/dev/null || true
+  pkill -KILL -f '[g]vproxy' 2>/dev/null || true
+
+  shopt -s nullglob
+  rm -rf /tmp/nexus-* 2>/dev/null || true
+  shopt -u nullglob
+
+  local ws="${XDG_CACHE_HOME:-$HOME/.cache}/nexus/macvm-workspaces"
+  if [[ -d "$ws" ]]; then
+    rm -rf "${ws:?}"/* 2>/dev/null || true
+  fi
+
+  # Best-effort: temp dirs under macOS/var (short run; cap results).
+  find /var/folders -type d -name 'nexus-*' 2>/dev/null | head -200 | while read -r d; do
+    rm -rf "$d" 2>/dev/null || true
+  done
+
+  disk_report "after cleanup"
+}
+
+trap cleanup EXIT
+
+disk_report "before"
 
 # ── Prerequisites check ────────────────────────────────────────────────────────
 MKE2FS=""
@@ -48,6 +87,7 @@ fi
 NEXUS_BIN="${NEXUS_E2E_BINARY:-/tmp/nexus-bin}"
 echo "==> Building nexus binary → $NEXUS_BIN"
 cd "$NEXUS_PKG"
+go generate ./cmd/nexus/
 CGO_ENABLED=0 go build -o "$NEXUS_BIN" ./cmd/nexus/
 
 echo "==> Building pty-host → /tmp/pty-host"
@@ -70,45 +110,48 @@ PLIST
 codesign --entitlements "$_ENT" --force --sign - "$NEXUS_BIN"
 rm -f "$_ENT"
 
-# ── Default suites ────────────────────────────────────────────────────────────
-DEFAULT_SUITES=(
-  ./test/e2e/harness/...
-  ./test/e2e/daemon/...
-  ./test/e2e/auth/...
-  ./test/e2e/fs/...
-  ./test/e2e/project/...
-  ./test/e2e/workspace/...
-  ./test/e2e/pty/...
-  ./test/e2e/spotlight/...
-)
-
-if [ -n "${NEXUS_E2E_SUITES:-}" ]; then
-  IFS=' ' read -ra SUITES <<< "$NEXUS_E2E_SUITES"
+# ── Packages (match CI e2e-macos-vm when unset) ───────────────────────────────
+if [[ -n "${NEXUS_E2E_MACOS_PACKAGES:-}" ]]; then
+  read -ra SUITES <<< "$NEXUS_E2E_MACOS_PACKAGES"
 else
-  SUITES=("${DEFAULT_SUITES[@]}")
+  SUITES=(
+    ./test/e2e/harness/...
+    ./test/e2e/daemon/...
+    ./test/e2e/auth/...
+    ./test/e2e/fs/...
+    ./test/e2e/project/...
+    ./test/e2e/vmproof/...
+    ./test/e2e/workspace/...
+    ./test/e2e/cli/...
+    ./test/e2e/pty/...
+    ./test/e2e/spotlight/...
+  )
 fi
 
-# ── Run tests ─────────────────────────────────────────────────────────────────
+# ── Env (mirror .github/workflows/ci.yml e2e-macos-vm) ───────────────────────
+export GOTOOLCHAIN="${GOTOOLCHAIN:-local}"
+export CI="${CI:-true}"
+export NEXUS_E2E_DRIVER=vm
+export NEXUS_E2E_BINARY="$NEXUS_BIN"
+export NEXUS_VM_ROOTFS="$ROOTFS"
+export NEXUS_LIBKRUN_SKIP_BAKE="${NEXUS_LIBKRUN_SKIP_BAKE:-1}"
+export NEXUS_LIBKRUN_MEM_MIB="${NEXUS_LIBKRUN_MEM_MIB:-512}"
+export NEXUS_WORKSPACE_IMAGE_MIN_MIB="${NEXUS_WORKSPACE_IMAGE_MIN_MIB:-512}"
+export NEXUS_RUNNER_ROOTFS_MIN_MIB="${NEXUS_RUNNER_ROOTFS_MIN_MIB:-512}"
+export NEXUS_READINESS_TIMEOUT_SECONDS="${NEXUS_READINESS_TIMEOUT_SECONDS:-90}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+export PATH="/tmp:$PATH"
+
 echo ""
-echo "==> Running macOS VM e2e tests"
+echo "==> Running macOS VM e2e"
 echo "    rootfs:  $ROOTFS"
 echo "    binary:  $NEXUS_BIN"
 echo "    suites:  ${SUITES[*]}"
 echo ""
 
-export NEXUS_E2E_DRIVER=vm
-export NEXUS_E2E_BINARY="$NEXUS_BIN"
-export NEXUS_VM_ROOTFS="$ROOTFS"
-export NEXUS_LIBKRUN_SKIP_BAKE=1
-export NEXUS_LIBKRUN_MEM_MIB="${NEXUS_LIBKRUN_MEM_MIB:-512}"
-export NEXUS_WORKSPACE_IMAGE_MIN_MIB="${NEXUS_WORKSPACE_IMAGE_MIN_MIB:-512}"
-export NEXUS_RUNNER_ROOTFS_MIN_MIB="${NEXUS_RUNNER_ROOTFS_MIN_MIB:-512}"
-export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
-# Add /tmp to PATH so daemon can find pty-host
-export PATH="/tmp:$PATH"
-
 cd "$NEXUS_PKG"
-# shellcheck disable=SC2068
-exec go test -tags e2e -count=1 -timeout=45m -v -p=1 -parallel=1 \
+go test -tags e2e -count=1 \
+  -timeout="${NEXUS_E2E_GO_TIMEOUT:-45m}" -v \
+  -p "${NEXUS_E2E_GO_P:-2}" -parallel "${NEXUS_E2E_GO_PARALLEL:-2}" \
   "$@" \
   "${SUITES[@]}"

@@ -81,7 +81,9 @@ jobs:
           retention-days: 1
 
   # GitHub-hosted Apple Silicon: Go e2e with macOS VM driver (same suite as Linux; vmproof skipped on darwin).
+  # Disabled on GitHub CI — run locally: bash scripts/local/run-mac-e2e.sh
   e2e-macos-vm:
+    if: false
     name: E2E Tests (macOS / ${{ matrix.shard.name }})
     runs-on: macos-15
     timeout-minutes: 40
@@ -159,7 +161,9 @@ jobs:
         if: failure()
         run: bash scripts/ci/dump-macos-vm-logs.sh
 
+  # Disabled on GitHub CI — run on a Linux host: bash scripts/local/run-linux-e2e.sh
   e2e:
+    if: false
     name: E2E Tests (linux / ${{ matrix.shard.name }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
