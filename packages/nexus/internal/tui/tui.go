@@ -382,16 +382,17 @@ func (m Model) maybeSwitchPTY() (Model, tea.Cmd) {
 		sid := m.ptyPane.sessionID
 		go func() { _ = mux.Send("pty.close", map[string]any{"sessionId": sid}) }()
 	}
+	prevFocused := m.ptyFocused
 	m.ptyPane = nil
 	m.ptyDataCh = nil
 	m.ptyFocused = false
 	m.ptyWsID = desiredWsID // set now to prevent duplicate opens on the next tick
 
 	if desiredWsID == "" || m.mux == nil {
-		return m, nil
+		return m, ptyMouseModeCmd(prevFocused, false)
 	}
 	cols, rows := m.ptyPaneDimensions()
-	return m, openPTYCmd(m.mux, desiredWsID, cols, rows)
+	return m, tea.Batch(ptyMouseModeCmd(prevFocused, false), openPTYCmd(m.mux, desiredWsID, cols, rows))
 }
 
 // updateListSize recalculates listHeight from terminal dimensions and calls
@@ -1182,11 +1183,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ptyClosedMsg:
 		if m.ptyPane != nil && msg.sessionID == m.ptyPane.sessionID {
+			prevFocused := m.ptyFocused
 			m.ptyPane = nil
 			m.ptyWsID = ""
 			m.cancelPTY = nil
 			m.ptyDataCh = nil
 			m.ptyFocused = false
+			return m, ptyMouseModeCmd(prevFocused, false)
 		}
 		return m, nil
 
@@ -1539,6 +1542,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	prevPtyFocused := m.ptyFocused
 	pane := m.paneAtX(msg.X)
 
 	switch msg.Button {
@@ -1606,7 +1610,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					m.list.Select(targetIdx)
 					m, ptyCmd := m.maybeSwitchPTY()
 					sideCmd := tea.Batch(m.loadSidebarSpotCmd(), m.loadSidebarDiscoveredCmd())
-					return m, tea.Batch(ptyCmd, sideCmd)
+					return m, tea.Batch(ptyMouseModeCmd(prevPtyFocused, m.ptyFocused), ptyCmd, sideCmd)
 				}
 			}
 		case layoutPaneCenter:
@@ -1615,7 +1619,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.sidebarFocused = false
 			}
 			if m.ptyPane != nil {
-				return m, m.sendMouseToPTY(msg)
+				return m, tea.Batch(ptyMouseModeCmd(prevPtyFocused, m.ptyFocused), m.sendMouseToPTY(msg))
 			}
 		case layoutPaneRight:
 			m.sidebarFocused = true
@@ -1640,7 +1644,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	return m, nil
+	return m, ptyMouseModeCmd(prevPtyFocused, m.ptyFocused)
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1658,7 +1662,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.isThreePaneMode() {
 				m.sidebarFocused = true
 			}
-			return m, nil
+			return m, tea.EnableMouseAllMotion
 		}
 		// Forward all other keys (including ctrl+c, q) to the PTY.
 		return m, m.ptyPane.sendInputCmd(m.mux, msg)
@@ -2187,12 +2191,13 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// In split mode, Tab transfers focus: left → PTY → (three-pane: sidebar).
 	if m.isSplitMode() && msg.String() == "tab" {
+		prevPtyFocused := m.ptyFocused
 		if m.ptyPane != nil {
 			m.ptyFocused = true
 		} else if m.isThreePaneMode() {
 			m.sidebarFocused = true
 		}
-		return m, nil
+		return m, ptyMouseModeCmd(prevPtyFocused, m.ptyFocused)
 	}
 
 	if msg.String() == "n" || msg.String() == "+" {
@@ -2767,6 +2772,25 @@ func renderSyncPanel(m *Model, width int) string {
 		}
 	}
 	return lipgloss.NewStyle().MaxWidth(width).Render(b.String())
+}
+
+// ptyMouseModeCmd returns the tea.Cmd to adjust mouse capture when ptyFocused
+// transitions from oldFocused to newFocused.
+//
+// When the PTY pane gains focus Bubble Tea's all-motion mouse capture is
+// disabled so the host terminal emulator can perform native text selection via
+// click-drag. When focus leaves the PTY pane, all-motion capture is restored so
+// TUI click navigation (pane switching, list scrolling) keeps working.
+//
+// Returns nil when the focus state has not changed (safe to batch unconditionally).
+func ptyMouseModeCmd(oldFocused, newFocused bool) tea.Cmd {
+	if oldFocused == newFocused {
+		return nil
+	}
+	if newFocused {
+		return tea.DisableMouse
+	}
+	return tea.EnableMouseAllMotion
 }
 
 func renderWorkspaceDetail(ws *workspace.Workspace, width int) string {
