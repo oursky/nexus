@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,10 +17,15 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
-// Spec E.1.1: Connect wizard shows when no daemon profile is configured.
-// Uses a temp XDG_STATE_HOME with an empty client DB (no profiles) and no
-// NEXUS_E2E_DAEMON_WEBSOCKET override so the TUI falls through to profile loading.
+// Spec E.1.1: No-profile view shows when no daemon profile is configured.
+// Uses a temp XDG_STATE_HOME with an empty client DB (no profiles) and
+// --port pointing to a port where nothing is listening so the check quickly
+// resolves to "not running" and the menu is displayed.
 func TestSpec_ConnectWizard_ShowsWhenNoProfile(t *testing.T) {
+	port, err := freeTCPPort()
+	if err != nil {
+		t.Fatalf("free port: %v", err)
+	}
 	stateDir := t.TempDir()
 
 	// Build an env without the e2e daemon WebSocket override so that
@@ -36,7 +42,7 @@ func TestSpec_ConnectWizard_ShowsWhenNoProfile(t *testing.T) {
 	}
 	filtered = append(filtered, "XDG_STATE_HOME="+stateDir)
 
-	cmd := exec.Command(shared.BinPath, "tui")
+	cmd := exec.Command(shared.BinPath, "tui", "--port", strconv.Itoa(port))
 	cmd.Env = filtered
 
 	ptmx, err := pty.Start(cmd)
@@ -50,10 +56,10 @@ func TestSpec_ConnectWizard_ShowsWhenNoProfile(t *testing.T) {
 	var captured []byte
 	go drainBackground(ptmx, &captured, stopDrain)
 
-	// Give the TUI time to render the wizard.
-	time.Sleep(800 * time.Millisecond)
+	// Give the TUI time to check the (unused) port and render the no-profile menu.
+	time.Sleep(1200 * time.Millisecond)
 
-	// Press 'q' to quit — the wizard should handle it.
+	// Press 'q' to quit — the no-profile view should handle it.
 	if _, err := ptmx.Write([]byte{'q'}); err != nil {
 		t.Fatalf("quit: %v", err)
 	}
@@ -62,8 +68,63 @@ func TestSpec_ConnectWizard_ShowsWhenNoProfile(t *testing.T) {
 
 	out := stripANSI(string(captured))
 	lower := strings.ToLower(out)
-	if !strings.Contains(lower, "connect") && !strings.Contains(lower, "host") {
-		t.Fatalf("expected connect wizard (Connect to daemon / Host); got:\n%s", truncateOut(out, 4000))
+	// Should see "connect" (from "Connect to remote host…") or "no daemon" or "start local"
+	if !strings.Contains(lower, "connect") && !strings.Contains(lower, "daemon") {
+		t.Fatalf("expected no-profile menu (connect / daemon text); got:\n%s", truncateOut(out, 4000))
+	}
+}
+
+// Spec E.1.2: No-profile view shows "No daemon running" prompt when nothing
+// listens on the given port.
+func TestSpec_NoProfile_LocalDaemonPrompt(t *testing.T) {
+	port, err := freeTCPPort()
+	if err != nil {
+		t.Fatalf("free port: %v", err)
+	}
+
+	stateDir := t.TempDir()
+
+	baseEnv := os.Environ()
+	filtered := make([]string, 0, len(baseEnv))
+	for _, kv := range baseEnv {
+		if strings.HasPrefix(kv, "NEXUS_E2E_DAEMON_WEBSOCKET=") ||
+			strings.HasPrefix(kv, "NEXUS_DAEMON_TOKEN=") ||
+			strings.HasPrefix(kv, "XDG_STATE_HOME=") {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	filtered = append(filtered, "XDG_STATE_HOME="+stateDir)
+
+	// Run TUI without auto-attach and with --port pointing to nothing.
+	cmd := exec.Command(shared.BinPath, "tui", "--port", strconv.Itoa(port))
+	cmd.Env = filtered
+
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("pty start: %v", err)
+	}
+	defer func() { _ = ptmx.Close() }()
+	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: 35, Cols: 120})
+
+	stopDrain := make(chan struct{})
+	var captured []byte
+	go drainBackground(ptmx, &captured, stopDrain)
+
+	// Wait for the health check to complete and the menu to render.
+	time.Sleep(1500 * time.Millisecond)
+
+	// Quit.
+	if _, err := ptmx.Write([]byte{'q'}); err != nil {
+		t.Fatalf("quit: %v", err)
+	}
+	_ = cmd.Wait()
+	close(stopDrain)
+
+	out := stripANSI(string(captured))
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "no daemon") && !strings.Contains(lower, "start local daemon") {
+		t.Fatalf("expected no-daemon prompt; got:\n%s", truncateOut(out, 4000))
 	}
 }
 
