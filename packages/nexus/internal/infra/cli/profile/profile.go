@@ -1,8 +1,10 @@
 package profile
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -94,6 +96,10 @@ func LoadDefault() (*Profile, error) {
 		return nil, fmt.Errorf("load profile: %w", err)
 	}
 	if cp == nil {
+		// One-time migration: read old JSON profile written by pre-SQLite versions.
+		if p := migrateFromLegacyJSON(db); p != nil {
+			return p, nil
+		}
 		return nil, fmt.Errorf("no daemon profile configured — run: nexus daemon connect <host>")
 	}
 
@@ -130,6 +136,67 @@ func localDaemonProfileFromEnv() *Profile {
 		return nil
 	}
 	return &Profile{Name: "env-local", Host: "127.0.0.1", Port: port, Token: tok}
+}
+
+// legacyJSONProfile mirrors the fields stored by pre-SQLite versions of nexus
+// in ~/.config/nexus/profiles/default.json.
+type legacyJSONProfile struct {
+	Name            string `json:"name"`
+	Host            string `json:"host"`
+	Port            int    `json:"port"`
+	SSHPort         int    `json:"sshPort,omitempty"`
+	SSHIdentityFile string `json:"sshIdentityFile,omitempty"`
+	LocalPort       int    `json:"localPort,omitempty"`
+}
+
+// legacyJSONPath returns the path to the old JSON profile file.
+func legacyJSONPath() string {
+	if dir, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(dir, "nexus", "profiles", "default.json")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "nexus", "profiles", "default.json")
+}
+
+// migrateFromLegacyJSON reads the old JSON profile (if present), stores it in
+// SQLite, and returns a Profile ready for use. Non-fatal — returns nil on any
+// error so the caller can fall through to "no profile configured".
+func migrateFromLegacyJSON(db *clientstate.DB) *Profile {
+	data, err := os.ReadFile(legacyJSONPath())
+	if err != nil {
+		return nil
+	}
+	var lp legacyJSONProfile
+	if err := json.Unmarshal(data, &lp); err != nil || lp.Host == "" {
+		return nil
+	}
+	if lp.Name == "" {
+		lp.Name = "default"
+	}
+	if lp.Port == 0 {
+		lp.Port = 7777
+	}
+	_ = db.UpsertProfile(clientstate.Profile{
+		Name:            lp.Name,
+		Host:            lp.Host,
+		Port:            lp.Port,
+		SSHPort:         lp.SSHPort,
+		SSHIdentityFile: lp.SSHIdentityFile,
+		LocalPort:       lp.LocalPort,
+		IsDefault:       true,
+	})
+	p := &Profile{
+		Name:            lp.Name,
+		Host:            lp.Host,
+		Port:            lp.Port,
+		SSHPort:         lp.SSHPort,
+		SSHIdentityFile: lp.SSHIdentityFile,
+		LocalPort:       lp.LocalPort,
+	}
+	if tok, found, _ := tokenstore.LoadProfileToken(); found {
+		p.Token = tok
+	}
+	return p
 }
 
 // DeleteDefault removes the default profile from the database and its keychain

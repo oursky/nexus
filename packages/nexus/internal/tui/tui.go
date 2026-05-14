@@ -115,12 +115,12 @@ type Model struct {
 	listWidth       int
 	listHeight      int
 
-	panel      panelKind
-	showHelp   bool
+	panel        panelKind
+	showHelp     bool
 	spotForwards []*spotlight.Forward
-	spotSel    int
-	syncRows   []syncRow
-	syncSel    int
+	spotSel      int
+	syncRows     []syncRow
+	syncSel      int
 
 	prompt      string
 	promptInput textinput.Model
@@ -133,11 +133,20 @@ type Model struct {
 
 	pendingSyncPath string
 
+	// connect wizard — shown when no daemon profile is configured
+	showWizard  bool
+	wizardStep  int // 0=host, 1=port, 2=sshkey
+	wizardHostTI textinput.Model
+	wizardPortTI textinput.Model
+	wizardKeyTI  textinput.Model
+	wizardErr    string
+	wizardBusy   bool
+
 	// session tabs — workspaces attached at least once this TUI session
-	tabs        []string // workspace IDs in order
-	activeTabWS string   // last attached workspace ID
-	autoAttach  bool     // --auto-attach flag
-	autoAttachDone bool  // prevent multiple auto-attaches
+	tabs           []string // workspace IDs in order
+	activeTabWS    string   // last attached workspace ID
+	autoAttach     bool     // --auto-attach flag
+	autoAttachDone bool     // prevent multiple auto-attaches
 }
 
 // tabBarOffset returns the number of extra lines consumed by the tab bar
@@ -162,6 +171,9 @@ func (m *Model) updateListSize() {
 }
 
 func (m Model) blocksOverlayInput() bool {
+	if m.showWizard {
+		return true
+	}
 	if m.showHelp {
 		return true
 	}
@@ -516,7 +528,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case connErrMsg:
 		m.daemonOK = false
-		m.statusLine = msg.err.Error()
+		errStr := msg.err.Error()
+		if strings.Contains(errStr, "no daemon profile configured") {
+			m.showWizard = true
+			m.wizardStep = 0
+			m.wizardHostTI, m.wizardPortTI, m.wizardKeyTI = newWizardInputs()
+			return m, m.wizardHostTI.Focus()
+		}
+		m.statusLine = errStr
+		return m, nil
+
+	case wizardSavedMsg:
+		m.showWizard = false
+		m.wizardBusy = false
+		m.statusLine = "connecting…"
+		return m, openDaemonConn()
+
+	case wizardErrMsg:
+		m.wizardBusy = false
+		m.wizardErr = msg.err.Error()
 		return m, nil
 
 	case workspacesMsg:
@@ -652,6 +682,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 	}
 
+	if m.showWizard {
+		var cmd tea.Cmd
+		switch m.wizardStep {
+		case 0:
+			m.wizardHostTI, cmd = m.wizardHostTI.Update(msg)
+		case 1:
+			m.wizardPortTI, cmd = m.wizardPortTI.Update(msg)
+		case 2:
+			m.wizardKeyTI, cmd = m.wizardKeyTI.Update(msg)
+		}
+		return m, cmd
+	}
+
 	if m.createMode {
 		var cmd tea.Cmd
 		switch m.createStep {
@@ -676,6 +719,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		if !m.showWizard {
+			m.quitting = true
+			if m.conn != nil {
+				_ = m.conn.Close()
+				m.conn = nil
+			}
+			return m, tea.Quit
+		}
+	}
+
+	if m.showWizard {
+		return m.handleWizardKeys(msg)
+	}
+
 	switch msg.String() {
 	case "ctrl+c", "q":
 		m.quitting = true
@@ -1163,18 +1222,22 @@ func reselectByID(l *list.Model, id string) {
 
 // View implements tea.Model.
 func (m Model) View() string {
-	statusDaemon := statusErrStyle.Render("disconnected")
+	var statusDaemon string
 	if m.quitting {
-		statusDaemon = mutedStyle.Render("exiting")
+		statusDaemon = mutedStyle.Render("● exiting")
+	} else if m.showWizard {
+		statusDaemon = mutedStyle.Render("● setup")
 	} else if m.conn != nil && m.daemonOK {
-		statusDaemon = statusOkStyle.Render("connected")
+		statusDaemon = statusOkStyle.Render("● connected")
 	} else if m.conn != nil && !m.daemonOK {
-		statusDaemon = warningStyle.Render("degraded")
+		statusDaemon = warningStyle.Render("● degraded")
+	} else {
+		statusDaemon = statusErrStyle.Render("● disconnected")
 	}
 
 	headerTop := lipgloss.JoinHorizontal(lipgloss.Left,
-		titleStyle.Render("Nexus"),
-		mutedStyle.Render(" · daemon "),
+		accentStyle.Render("nexus"),
+		mutedStyle.Render("  "),
 		statusDaemon,
 	)
 	headerBottom := ""
@@ -1184,6 +1247,8 @@ func (m Model) View() string {
 
 	body := ""
 	switch {
+	case m.showWizard:
+		body = renderWizard(&m)
 	case m.createMode:
 		body = renderCreateWizard(&m, m.listWidth)
 	case m.showHelp:
@@ -1210,26 +1275,24 @@ func (m Model) View() string {
 	}
 
 	help := mutedStyle.Render(
-		"q quit · ? help · enter detail · t terminal · esc back · r refresh · n new · / filter · s start · x stop · d delete · 1-9 tab jump",
+		"  q quit   ? help   ↵ detail   t terminal   esc back   r refresh   n new   / filter   s start   x stop   d delete   1-9 tab",
 	)
 	dhelp := mutedStyle.Render(
-		"q quit · ? · esc · r · c connect · l spotlight · y sync · t terminal · f fork · s/x/d",
+		"  q quit   ? help   esc back   r refresh   c connect   l spotlight   y sync   t terminal   f fork   s/x/d",
 	)
 	footerHelp := help
-	if m.detail != nil && m.panel == panelNone && !m.createMode && !m.showHelp {
+	if m.showWizard {
+		footerHelp = mutedStyle.Render("  tab next field   ↵ connect   esc skip (localhost)")
+	} else if m.detail != nil && m.panel == panelNone && !m.createMode && !m.showHelp {
 		footerHelp = dhelp
-	}
-	if m.panel == panelSpotlight {
-		footerHelp = mutedStyle.Render("esc/l close · n new port · x remove selected · j/k move")
-	}
-	if m.panel == panelSync {
-		footerHelp = mutedStyle.Render("esc/y close · n new · x stop · p pause · r resume · j/k move")
-	}
-	if m.panel == panelConnect {
-		footerHelp = mutedStyle.Render("esc/c close connect panel")
-	}
-	if m.createMode {
-		footerHelp = mutedStyle.Render("tab switch field · enter next/submit · esc cancel")
+	} else if m.panel == panelSpotlight {
+		footerHelp = mutedStyle.Render("  esc/l close   n new port   x remove   j/k navigate")
+	} else if m.panel == panelSync {
+		footerHelp = mutedStyle.Render("  esc/y close   n new   x stop   p pause   r resume   j/k navigate")
+	} else if m.panel == panelConnect {
+		footerHelp = mutedStyle.Render("  esc/c close")
+	} else if m.createMode {
+		footerHelp = mutedStyle.Render("  tab next field   ↵ next/submit   esc cancel")
 	}
 
 	confirm := ""
@@ -1237,7 +1300,9 @@ func (m Model) View() string {
 		confirm = warningStyle.Render(fmt.Sprintf("Delete workspace %s? [y/N]", truncate(m.pendingDeleteID, 36)))
 	}
 
-	footer := lipgloss.JoinVertical(lipgloss.Left, confirm, footerHelp)
+	sep := separatorStyle.Render(strings.Repeat("─", max(m.width-4, 20)))
+	footer := lipgloss.JoinVertical(lipgloss.Left, sep, confirm, footerHelp)
+
 	// Build the vertical stack. Insert the tab bar when present.
 	rows := []string{headerTop, headerBottom}
 	if tabBar := m.renderTabBar(); tabBar != "" {
@@ -1310,6 +1375,7 @@ func tabStateBadge(state workspace.State) string {
 		return mutedStyle.Render("?")
 	}
 }
+
 
 func renderCreateWizard(m *Model, width int) string {
 	var b strings.Builder
