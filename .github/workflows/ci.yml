@@ -212,7 +212,7 @@ jobs:
           set -euo pipefail
           export NEXUS_VM_ROOTFS="${NEXUS_VM_ROOTFS:-$HOME/.cache/nexus/vm/rootfs.ext4}"
           export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
-          go test -tags e2e -count=1 -timeout=8m -v -p=1 -parallel=1 \
+          go test -tags e2e -count=1 -timeout=8m -v -p=2 -parallel=2 \
             ./test/e2e/harness/... \
             ./test/e2e/daemon/... \
             ./test/e2e/auth/... \
@@ -224,10 +224,28 @@ jobs:
             ./test/e2e/pty/... \
             ./test/e2e/spotlight/...
 
+      - name: Dump VM serial and gvproxy logs on failure
+        if: failure()
+        run: |
+          MACVM_DIR="$HOME/.cache/nexus/macvm-workspaces"
+          echo "=== macvm workspace dirs ==="
+          ls -la "$MACVM_DIR" 2>/dev/null || echo "(none)"
+          echo ""
+          find "$MACVM_DIR" -name "hvc0.log" 2>/dev/null | sort | while read -r f; do
+            echo "=== $f ($(wc -l < "$f" 2>/dev/null || echo 0) lines) ==="
+            cat "$f" 2>/dev/null || echo "(unreadable)"
+            echo ""
+          done
+          find "$MACVM_DIR" -name "gvproxy.log" 2>/dev/null | sort | while read -r f; do
+            echo "=== $f (last 50 lines) ==="
+            tail -50 "$f" 2>/dev/null || echo "(unreadable)"
+            echo ""
+          done
+
   e2e:
     name: E2E Tests (linux / ${{ matrix.shard.name }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       max-parallel: 4
