@@ -31,26 +31,22 @@ func renderSpotlightSidebar(m *Model, width, height int) string {
 	b.WriteString(headerStyle.Render("SPOTLIGHT"))
 	b.WriteString("\n")
 
-	// Toggle-all hint with active count badge and tunnel status.
-	toggleLine := mutedStyle.Render("[ a ] Toggle all")
+	// Active count badge and tunnel status.
 	if activeCount > 0 {
 		badge := statusOkStyle.Render(fmt.Sprintf("● %d active", activeCount))
 		if m.sidebarTunnelLive {
 			badge += "  " + statusOkStyle.Render("✓ tunneled")
-		} else {
+		} else if m.sidebarTunnelErr == "" {
 			badge += "  " + statusErrStyle.Render("✗ starting")
 		}
-		toggleLine += "  " + badge
+		b.WriteString(badge)
+		b.WriteString("\n")
 	}
-	b.WriteString(toggleLine)
-	b.WriteString("\n")
 	b.WriteString(separatorStyle.Render(strings.Repeat("─", max(width-1, 1))))
 	b.WriteString("\n")
 
 	if len(m.sidebarFwds) == 0 {
 		b.WriteString(mutedStyle.Render("No forwards"))
-		b.WriteString("\n")
-		b.WriteString(mutedStyle.Render("  [n] forward port"))
 		b.WriteString("\n")
 	} else {
 		for i, f := range m.sidebarFwds {
@@ -64,11 +60,20 @@ func renderSpotlightSidebar(m *Model, width, height int) string {
 				indicator = mutedStyle.Render("○")
 			}
 
-			// Always show the user-facing local port (what to connect to).
 			portStr := fmt.Sprintf("%d", f.LocalPort)
 
+			// Row confirm state: selected row shows "remove? [y/n]".
+			if i == m.sidebarSel && focused && m.sidebarConfirmRemove {
+				row := lipgloss.NewStyle().
+					Foreground(lipgloss.Color("#FFFDF5")).
+					Render("›"+indicator+" "+portStr) +
+					"  " + warningStyle.Render("remove? [y/n]")
+				b.WriteString(row)
+				b.WriteString("\n")
+				continue
+			}
+
 			// Tunnel status suffix for active forwards.
-			// Show "✓ localhost:PORT" confirming the actual reachable address.
 			var tunnelSuffix string
 			if f.State == spotlight.ForwardStateActive {
 				if m.sidebarTunnelLive {
@@ -92,8 +97,17 @@ func renderSpotlightSidebar(m *Model, width, height int) string {
 		}
 	}
 
-	// Discovered ports section: ports detected inside the workspace that are
-	// not yet forwarded (from workspace.discover-ports).
+	// Raw tunnel error — displayed verbatim, wrapped to sidebar width.
+	if m.sidebarTunnelErr != "" {
+		b.WriteString("\n")
+		errLine := statusErrStyle.Render("✗ " + m.sidebarTunnelErr)
+		b.WriteString(errLine)
+		b.WriteString("\n")
+		b.WriteString(mutedStyle.Render("toggle (a) to retry"))
+		b.WriteString("\n")
+	}
+
+	// Discovered ports section.
 	if len(m.sidebarDiscovered) > 0 {
 		b.WriteString("\n")
 		b.WriteString(mutedStyle.Render("Detected in workspace:"))
@@ -112,13 +126,12 @@ func renderSpotlightSidebar(m *Model, width, height int) string {
 			b.WriteString(mutedStyle.Render(truncate(line, max(width-2, 8))))
 			b.WriteString("\n")
 		}
-		b.WriteString(mutedStyle.Render("  [n] forward  [a] forward all"))
-		b.WriteString("\n")
 	}
 
-	if focused && len(m.sidebarDiscovered) == 0 {
+	// Key hints — always visible when focused.
+	if focused {
 		b.WriteString("\n")
-		b.WriteString(mutedStyle.Render("[n] add  [x] del  [a] toggle"))
+		b.WriteString(mutedStyle.Render("n add · x remove · a toggle all"))
 		b.WriteString("\n")
 	}
 

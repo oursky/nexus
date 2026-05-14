@@ -26,7 +26,9 @@ func (w workspaceItem) Title() string {
 	if name == "" {
 		name = "(unnamed)"
 	}
-	return fmt.Sprintf("%s%s  %s", w.tree, truncate(name, 22), statePill(w.w.State))
+	// Truncate at 40 runes so long names get "…" rather than a hard clip from
+	// the delegate's MaxWidth. The delegate still constrains the rendered width.
+	return fmt.Sprintf("%s%s  %s", w.tree, truncate(name, 40), statePill(w.w.State))
 }
 
 func (w workspaceItem) Description() string { return "" }
