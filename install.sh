@@ -71,7 +71,7 @@ detect_platform() {
   esac
 }
 
-# On Linux ensures /data/nexus exists with ownership for this user (XFS/other layout is optional).
+# On Linux: unconditionally provision /data/nexus and /data/nexus/default (required VM store paths).
 ensure_linux_daemon_data_dir() {
   [ "${GOOS:-}" = "linux" ] || return 0
 
@@ -79,18 +79,34 @@ ensure_linux_daemon_data_dir() {
   uid="$(id -u)"
   gid="$(id -g)"
 
-  if [ -d /data/nexus ]; then
-    if [ -O /data/nexus ] && [ -w /data/nexus ]; then
-      return 0
-    fi
-    echo "nexus-install: adjusting ownership on /data/nexus for uid ${uid} gid ${gid} ..."
-    sudo chown "${uid}:${gid}" /data/nexus
-    return 0
+  echo "nexus-install: ensuring /data/nexus and /data/nexus/default (required for VM driver; mount XFS with reflink on /data in production)"
+
+  if ! mkdir -p /data/nexus /data/nexus/default 2>/dev/null; then
+    sudo mkdir -p /data/nexus /data/nexus/default
   fi
 
-  echo "nexus-install: creating /data/nexus (daemon backing store)"
-  sudo mkdir -p /data/nexus
-  sudo chown "${uid}:${gid}" /data/nexus
+  if [ -O /data/nexus ] && [ -w /data/nexus ] && [ -w /data/nexus/default ] 2>/dev/null; then
+    return 0
+  fi
+  sudo chown "${uid}:${gid}" /data/nexus /data/nexus/default
+}
+
+unix_socket_accepts_connections() {
+  local sock_path="$1"
+  [ -S "${sock_path}" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 -c "
+import socket, sys
+path = sys.argv[1]
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(0.4)
+    s.connect(path)
+    s.close()
+except OSError:
+    sys.exit(1)
+sys.exit(0)
+" "${sock_path}" 2>/dev/null
 }
 
 summarize_host_setup() {
@@ -108,8 +124,8 @@ summarize_host_setup() {
   state_base="${XDG_STATE_HOME:-$HOME/.local/state}"
   sock="${state_base}/nexus/nexusd.sock"
   sock_dev="${HOME}/.local/state-dev/nexus/nexusd.sock"
-  if [ -S "${sock}" ] || [ -S "${sock_dev}" ]; then
-    echo "nexus-install: a local nexus daemon socket was found; a daemon may already be running here."
+  if unix_socket_accepts_connections "${sock}" || unix_socket_accepts_connections "${sock_dev}"; then
+    echo "nexus-install: warning: a Nexus daemon socket is accepting connections; stop it first to avoid conflicts (nexus daemon stop / nexus-dev daemon stop)."
   fi
 }
 

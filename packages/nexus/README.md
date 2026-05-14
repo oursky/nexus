@@ -1,6 +1,6 @@
 # Nexus Daemon (`packages/nexus`)
 
-Go daemon and CLI for remote libkrun workspace orchestration.
+Go daemon and CLI for orchestrating remote workspaces as **lightweight libkrun microVMs** (Linux KVM + guest agent).
 
 ## Install (released binaries)
 
@@ -10,9 +10,31 @@ Go daemon and CLI for remote libkrun workspace orchestration.
 curl -fsSL https://raw.githubusercontent.com/oursky/nexus/main/install.sh | bash
 ```
 
-This installs `nexus` and `pty-host` into `~/.local/bin` (override with `INSTALL_DIR`). The script picks a suitable SHA-256 tool, uses `sudo` only if the install directory is not user-writable, and on Linux ensures `/data/nexus` exists for the daemon. To pin a version: `curl ... | env NEXUS_VERSION=v0.31.0 bash`, or run from a checkout with `NEXUS_VERSION` set.
+This installs `nexus` and `pty-host` into `~/.local/bin` (override with `INSTALL_DIR`). The script picks a suitable SHA-256 tool, uses `sudo` only if the install directory is not user-writable.
+
+**Linux (VM driver):** `/data/nexus` and **`/data/nexus/default`** are **required**. The installer always creates both on Linux (with `sudo` when necessary) and assigns ownership to your user. You must still provide **XFS with reflink** or **reflink-capable btrfs** underneath `/data` on production hosts—that volume layout is mandatory for correct libkrun VM image behavior; the installer only guarantees the directories exist.
+
+To pin a version: `curl ... | env NEXUS_VERSION=v0.31.0 bash`, or run from a checkout with `NEXUS_VERSION` set.
 
 Releases older than `pty-host` bundles fall back to `go install` for `pty-host` only (still one command). **`go install` of the main `nexus` binary is not supported** from the module proxy: Linux builds require embedded guest-agent artifacts; use the install script or [GitHub Releases](https://github.com/oursky/nexus/releases) assets.
+
+## Flow (conceptual)
+
+```mermaid
+flowchart TD
+  subgraph user["User machine"]
+    CLI["nexus CLI / TUI"]
+  end
+  subgraph engine["Linux engine host"]
+    D["nexus daemon"]
+    VM["libkrun microVMs"]
+    WS["Workspaces"]
+  end
+  CLI -->|"SSH, profile, bearer token"| D
+  D --> VM
+  VM --> WS
+  WS --> Stack["Repos, Docker, tooling"]
+```
 
 ## What this package provides
 

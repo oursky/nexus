@@ -17,7 +17,9 @@ Installs `nexus` and `pty-host` into `~/.local/bin` by default. Override the des
 curl -fsSL https://raw.githubusercontent.com/oursky/nexus/main/install.sh | env INSTALL_DIR=/usr/local/bin bash
 ```
 
-On Linux, the installer creates `/data/nexus` owned by your user when missing (daemon VM backing store). The script uses `sudo` only when the install directory is not user-writable.
+**Linux daemon hosts:** the VM driver expects persistent storage under `/data/nexus` (default workspace VM path includes `/data/nexus/default`). The installer **always** creates `/data/nexus` and `/data/nexus/default` on Linux, using `sudo` when needed, and assigns ownership to your user. Production machines should mount **XFS with reflink=1** (or reflink-capable btrfs) on `/data` so copy-on-write microVM images perform correctly—the install script cannot create that filesystem layout for you, but Nexus requires that store to exist before workspaces run.
+
+The script uses `sudo` only when the install destination or `/data` paths are not user-writable.
 
 ---
 
@@ -36,9 +38,9 @@ See [CLI reference](docs/reference/cli.md) for the full command tree.
 
 ---
 
-## Linux host: fast VM storage (optional)
+## Linux host: XFS-backed `/data/nexus` (required)
 
-For fastest copy-on-write workspace images with libkrun, mount **XFS** (with reflink enabled) or **btrfs** at `/data` so `/data/nexus` sits on that filesystem. The install script always ensures `/data/nexus` exists; reflink-capable storage underneath is a host-level tuning step.
+Configure the daemon host so `/data/nexus` (and `/data/nexus/default`) lie on **XFS with reflink** or **btrfs** with reflinks. Nexus depends on `/data/nexus` for libkrun microVM layering; omitting reflink-capable storage will break or severely degrade workspace startup. **`install.sh` always provisions the directory tree on Linux**, but provisioning the backing volume (partition, LV, loop+XFS mount, cloud disk, etc.) is a **mandatory prerequisite** before `nexus daemon start` on VM-backed deployments.
 
 ---
 
@@ -46,24 +48,28 @@ For fastest copy-on-write workspace images with libkrun, mount **XFS** (with ref
 
 | Feature | How |
 | ------- | --- |
-| **Isolated Linux workspaces** | libkrun microVMs — Linux kernel, Docker, isolated network (when using the VM driver) |
+| **Isolated Linux workspaces** | Lightweight libkrun microVMs — Linux kernel, Docker, isolated network |
 | **CLI / TUI** | Full lifecycle: daemon, workspaces, port forwards (`spotlight`), exec |
-| **Git + Docker inside the VM** | Develop and run containers in isolation |
+| **Git + Docker inside the VM** | Develop and run containers in each microVM |
 
 ---
 
 ## Architecture (conceptual)
 
-```
-nexus CLI (your machine)
-   │  SSH / JSON-RPC (profile + token)
-   ▼
-Linux daemon (`nexus`)
-   │  vsock / driver
-   ▼
-Workspace runtime (e.g. libkrun microVM)
-   ▼
-Your stack (containers, tools, …)
+```mermaid
+flowchart TD
+  subgraph user["Your machine"]
+    CLI["nexus CLI / TUI"]
+  end
+  subgraph engine["Linux engine host"]
+    D["nexus daemon"]
+    VM["libkrun microVMs"]
+    WS["Workspace runtimes"]
+  end
+  CLI -->|"SSH, profile, bearer token"| D
+  D --> VM
+  VM --> WS
+  WS --> Stack["Repos, Docker, tooling"]
 ```
 
 ---
