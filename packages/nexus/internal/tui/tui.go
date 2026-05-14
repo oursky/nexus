@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,7 +13,6 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/gorilla/websocket"
 
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
@@ -46,7 +46,7 @@ type syncRow struct {
 }
 
 type connReadyMsg struct {
-	conn *websocket.Conn
+	mux *rpc.MuxConn
 }
 
 type connErrMsg struct {
@@ -100,9 +100,16 @@ type shellReturnedMsg struct {
 
 // Model is the root Bubble Tea model for the Nexus TUI.
 type Model struct {
-	list            list.Model
-	conn            *websocket.Conn
-	detail          *workspace.Workspace
+	list   list.Model
+	mux    *rpc.MuxConn
+	detail *workspace.Workspace
+
+	// Split-pane PTY state (right pane; active when width >= 100).
+	ptyPane    *PtyPane
+	ptyWsID    string              // workspace ID of the active PTY (or "")
+	ptyFocused bool               // true when right pane has keyboard focus
+	ptyDataCh  <-chan json.RawMessage // open pty.data subscription
+	cancelPTY  func()             // unsubscribes and closes ptyDataCh
 	daemonOK        bool
 	quitting        bool
 	statusLine      string
@@ -163,6 +170,88 @@ func (m Model) tabBarOffset() int {
 		return 0
 	}
 	return 1
+}
+
+// isSplitMode reports whether the terminal is wide enough for the split-pane
+// layout (left workspace list + right interactive PTY).
+func (m Model) isSplitMode() bool {
+	return m.width >= 100
+}
+
+// leftPaneWidth returns the width the workspace list should occupy. In split
+// mode this is 38% of the inner width; otherwise it is the full inner width.
+func (m Model) leftPaneWidth() int {
+	inner := max(m.width-4, 24)
+	if m.isSplitMode() {
+		return int(float64(inner) * 0.38)
+	}
+	return inner
+}
+
+// ptyPaneDimensions returns the (cols, rows) the PTY right pane should use.
+func (m Model) ptyPaneDimensions() (cols, rows int) {
+	inner := max(m.width-4, 24)
+	left := int(float64(inner) * 0.38)
+	cols = max(inner-left-1, 20) // 1 column for the separator
+	rows = max(m.height-7-2*m.tabBarOffset(), 4)
+	return cols, rows
+}
+
+// selectedWorkspace returns the workspace currently highlighted in the list,
+// or nil if there is none.
+func (m Model) selectedWorkspace() *workspace.Workspace {
+	it := m.list.SelectedItem()
+	if it == nil {
+		return nil
+	}
+	wi, ok := it.(workspaceItem)
+	if !ok {
+		return nil
+	}
+	return &wi.w
+}
+
+// maybeSwitchPTY opens or closes the right-pane PTY session based on the
+// currently selected workspace. It is a no-op when the selection or the
+// running state hasn't changed. Must be called from Update (not View).
+func (m Model) maybeSwitchPTY() (Model, tea.Cmd) {
+	if !m.isSplitMode() {
+		return m, nil
+	}
+
+	// Determine which workspace we want a PTY for.
+	selWS := m.selectedWorkspace()
+	var desiredWsID string
+	if selWS != nil && selWS.State == workspace.StateRunning {
+		desiredWsID = selWS.ID
+	}
+
+	// No change needed.
+	if m.ptyWsID == desiredWsID {
+		return m, nil
+	}
+
+	// Close the old PTY subscription (channel closes → listener goroutine exits).
+	if m.cancelPTY != nil {
+		m.cancelPTY()
+		m.cancelPTY = nil
+	}
+	// Ask the daemon to close the old session (best-effort, non-blocking).
+	if m.mux != nil && m.ptyPane != nil && m.ptyPane.sessionID != "" {
+		mux := m.mux
+		sid := m.ptyPane.sessionID
+		go func() { _ = mux.Send("pty.close", map[string]any{"sessionId": sid}) }()
+	}
+	m.ptyPane = nil
+	m.ptyDataCh = nil
+	m.ptyFocused = false
+	m.ptyWsID = desiredWsID // set now to prevent duplicate opens on the next tick
+
+	if desiredWsID == "" || m.mux == nil {
+		return m, nil
+	}
+	cols, rows := m.ptyPaneDimensions()
+	return m, openPTYCmd(m.mux, desiredWsID, cols, rows)
 }
 
 // updateListSize recalculates listHeight from terminal dimensions and calls
@@ -291,21 +380,21 @@ func (m Model) Init() tea.Cmd {
 
 func openDaemonConn() tea.Cmd {
 	return func() tea.Msg {
-		c, err := rpc.EnsureDaemon()
+		mux, err := rpc.EnsureMux()
 		if err != nil {
 			return connErrMsg{err: err}
 		}
-		return connReadyMsg{conn: c}
+		return connReadyMsg{mux: mux}
 	}
 }
 
 func (m Model) refreshCmd() tea.Cmd {
-	c := m.conn
-	if c == nil {
+	mux := m.mux
+	if mux == nil {
 		return nil
 	}
 	return func() tea.Msg {
-		ws, err := fetchWorkspaces(c)
+		ws, err := fetchWorkspaces(mux)
 		if err != nil {
 			return workspacesErrMsg{err: err}
 		}
@@ -313,11 +402,11 @@ func (m Model) refreshCmd() tea.Cmd {
 	}
 }
 
-func fetchWorkspaces(c *websocket.Conn) ([]workspace.Workspace, error) {
+func fetchWorkspaces(mux *rpc.MuxConn) ([]workspace.Workspace, error) {
 	var result struct {
 		Workspaces []*workspace.Workspace `json:"workspaces"`
 	}
-	if err := rpc.Do(c, "workspace.list", map[string]any{}, &result); err != nil {
+	if err := mux.Call("workspace.list", map[string]any{}, &result); err != nil {
 		return nil, err
 	}
 	out := make([]workspace.Workspace, 0, len(result.Workspaces))
@@ -331,15 +420,15 @@ func fetchWorkspaces(c *websocket.Conn) ([]workspace.Workspace, error) {
 }
 
 func (m Model) loadDetailCmd(id string) tea.Cmd {
-	c := m.conn
-	if c == nil {
+	mux := m.mux
+	if mux == nil {
 		return nil
 	}
 	return func() tea.Msg {
 		var result struct {
 			Workspace *workspace.Workspace `json:"workspace"`
 		}
-		if err := rpc.Do(c, "workspace.info", map[string]any{"id": id}, &result); err != nil {
+		if err := mux.Call("workspace.info", map[string]any{"id": id}, &result); err != nil {
 			return detailErrMsg{err: err}
 		}
 		if result.Workspace == nil {
@@ -350,12 +439,12 @@ func (m Model) loadDetailCmd(id string) tea.Cmd {
 }
 
 func (m Model) rpcVoidCmd(method string, id string) tea.Cmd {
-	c := m.conn
+	mux := m.mux
 	return func() tea.Msg {
-		if c == nil {
+		if mux == nil {
 			return mutationDoneMsg{err: fmt.Errorf("not connected")}
 		}
-		if err := rpc.Do(c, method, map[string]any{"id": id}, nil); err != nil {
+		if err := mux.Call(method, map[string]any{"id": id}, nil); err != nil {
 			return mutationDoneMsg{err: err}
 		}
 		return mutationDoneMsg{err: nil}
@@ -363,15 +452,15 @@ func (m Model) rpcVoidCmd(method string, id string) tea.Cmd {
 }
 
 func (m Model) loadSpotlightsCmd(wsID string) tea.Cmd {
-	c := m.conn
+	mux := m.mux
 	return func() tea.Msg {
-		if c == nil {
+		if mux == nil {
 			return spotlightsDataMsg{err: fmt.Errorf("not connected")}
 		}
 		var result struct {
 			Forwards []*spotlight.Forward `json:"forwards"`
 		}
-		if err := rpc.Do(c, "spotlight.list", map[string]any{"workspaceId": wsID}, &result); err != nil {
+		if err := mux.Call("spotlight.list", map[string]any{"workspaceId": wsID}, &result); err != nil {
 			return spotlightsDataMsg{err: err}
 		}
 		return spotlightsDataMsg{forwards: result.Forwards}
@@ -379,9 +468,9 @@ func (m Model) loadSpotlightsCmd(wsID string) tea.Cmd {
 }
 
 func (m Model) loadSyncListCmd(wsID string) tea.Cmd {
-	c := m.conn
+	mux := m.mux
 	return func() tea.Msg {
-		if c == nil {
+		if mux == nil {
 			return syncListDataMsg{err: fmt.Errorf("not connected")}
 		}
 		var result struct {
@@ -393,7 +482,7 @@ func (m Model) loadSyncListCmd(wsID string) tea.Cmd {
 				Direction   string `json:"direction"`
 			} `json:"sessions"`
 		}
-		if err := rpc.Do(c, "workspace.sync-list", map[string]any{"workspaceId": wsID}, &result); err != nil {
+		if err := mux.Call("workspace.sync-list", map[string]any{"workspaceId": wsID}, &result); err != nil {
 			return syncListDataMsg{err: err}
 		}
 		rows := make([]syncRow, 0, len(result.Sessions))
@@ -411,9 +500,9 @@ func (m Model) loadSyncListCmd(wsID string) tea.Cmd {
 }
 
 func (m Model) startSpotlightCmd(wsID string, remotePort int) tea.Cmd {
-	c := m.conn
+	mux := m.mux
 	return func() tea.Msg {
-		if c == nil {
+		if mux == nil {
 			return mutationDoneMsg{err: fmt.Errorf("not connected")}
 		}
 		spec := spotlight.ExposeSpec{
@@ -425,7 +514,7 @@ func (m Model) startSpotlightCmd(wsID string, remotePort int) tea.Cmd {
 		var result struct {
 			Forward *spotlight.Forward `json:"forward"`
 		}
-		if err := rpc.Do(c, "spotlight.start", map[string]any{"workspaceId": wsID, "spec": spec}, &result); err != nil {
+		if err := mux.Call("spotlight.start", map[string]any{"workspaceId": wsID, "spec": spec}, &result); err != nil {
 			return mutationDoneMsg{err: err}
 		}
 		return mutationDoneMsg{err: nil}
@@ -433,12 +522,12 @@ func (m Model) startSpotlightCmd(wsID string, remotePort int) tea.Cmd {
 }
 
 func (m Model) removeForwardCmd(wsID, forwardID string) tea.Cmd {
-	c := m.conn
+	mux := m.mux
 	return func() tea.Msg {
-		if c == nil {
+		if mux == nil {
 			return mutationDoneMsg{err: fmt.Errorf("not connected")}
 		}
-		if err := rpc.Do(c, "workspace.ports.remove", map[string]any{"workspaceId": wsID, "forwardId": forwardID}, nil); err != nil {
+		if err := mux.Call("workspace.ports.remove", map[string]any{"workspaceId": wsID, "forwardId": forwardID}, nil); err != nil {
 			return mutationDoneMsg{err: err}
 		}
 		return mutationDoneMsg{err: nil}
@@ -446,12 +535,12 @@ func (m Model) removeForwardCmd(wsID, forwardID string) tea.Cmd {
 }
 
 func (m Model) syncStartCmd(wsID, localPath, direction string) tea.Cmd {
-	c := m.conn
+	mux := m.mux
 	return func() tea.Msg {
-		if c == nil {
+		if mux == nil {
 			return mutationDoneMsg{err: fmt.Errorf("not connected")}
 		}
-		if err := rpc.Do(c, "workspace.sync-start", map[string]any{
+		if err := mux.Call("workspace.sync-start", map[string]any{
 			"workspaceId": wsID,
 			"localPath":   localPath,
 			"direction":   direction,
@@ -463,12 +552,12 @@ func (m Model) syncStartCmd(wsID, localPath, direction string) tea.Cmd {
 }
 
 func (m Model) syncStopSessionCmd(sessionID string) tea.Cmd {
-	c := m.conn
+	mux := m.mux
 	return func() tea.Msg {
-		if c == nil {
+		if mux == nil {
 			return mutationDoneMsg{err: fmt.Errorf("not connected")}
 		}
-		if err := rpc.Do(c, "workspace.sync-stop", map[string]any{"sessionId": sessionID}, nil); err != nil {
+		if err := mux.Call("workspace.sync-stop", map[string]any{"sessionId": sessionID}, nil); err != nil {
 			return mutationDoneMsg{err: err}
 		}
 		return mutationDoneMsg{err: nil}
@@ -476,12 +565,12 @@ func (m Model) syncStopSessionCmd(sessionID string) tea.Cmd {
 }
 
 func (m Model) syncPauseCmd(sessionID string) tea.Cmd {
-	c := m.conn
+	mux := m.mux
 	return func() tea.Msg {
-		if c == nil {
+		if mux == nil {
 			return mutationDoneMsg{err: fmt.Errorf("not connected")}
 		}
-		if err := rpc.Do(c, "workspace.sync-pause", map[string]any{"sessionId": sessionID}, nil); err != nil {
+		if err := mux.Call("workspace.sync-pause", map[string]any{"sessionId": sessionID}, nil); err != nil {
 			return mutationDoneMsg{err: err}
 		}
 		return mutationDoneMsg{err: nil}
@@ -489,12 +578,12 @@ func (m Model) syncPauseCmd(sessionID string) tea.Cmd {
 }
 
 func (m Model) syncResumeCmd(sessionID string) tea.Cmd {
-	c := m.conn
+	mux := m.mux
 	return func() tea.Msg {
-		if c == nil {
+		if mux == nil {
 			return mutationDoneMsg{err: fmt.Errorf("not connected")}
 		}
-		if err := rpc.Do(c, "workspace.sync-resume", map[string]any{"sessionId": sessionID}, nil); err != nil {
+		if err := mux.Call("workspace.sync-resume", map[string]any{"sessionId": sessionID}, nil); err != nil {
 			return mutationDoneMsg{err: err}
 		}
 		return mutationDoneMsg{err: nil}
@@ -502,12 +591,12 @@ func (m Model) syncResumeCmd(sessionID string) tea.Cmd {
 }
 
 func (m Model) forkCmd(parentID, childName string) tea.Cmd {
-	c := m.conn
+	mux := m.mux
 	return func() tea.Msg {
-		if c == nil {
+		if mux == nil {
 			return forkDoneMsg{err: fmt.Errorf("not connected")}
 		}
-		if err := rpc.Do(c, "workspace.fork", map[string]any{
+		if err := mux.Call("workspace.fork", map[string]any{
 			"id":                 parentID,
 			"childWorkspaceName": childName,
 		}, nil); err != nil {
@@ -518,12 +607,12 @@ func (m Model) forkCmd(parentID, childName string) tea.Cmd {
 }
 
 func (m Model) createWorkspaceCmd(spec workspace.CreateSpec) tea.Cmd {
-	c := m.conn
+	mux := m.mux
 	return func() tea.Msg {
-		if c == nil {
+		if mux == nil {
 			return createDoneMsg{err: fmt.Errorf("not connected")}
 		}
-		if err := rpc.Do(c, "workspace.create", map[string]any{"spec": spec}, nil); err != nil {
+		if err := mux.Call("workspace.create", map[string]any{"spec": spec}, nil); err != nil {
 			return createDoneMsg{err: err}
 		}
 		return createDoneMsg{err: nil}
@@ -536,12 +625,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.listWidth = max(msg.Width-4, 24)
+		m.listWidth = m.leftPaneWidth()
 		m.updateListSize()
-		return m, nil
+		// Resize the PTY pane if visible and send pty.resize to daemon.
+		var resizeCmd tea.Cmd
+		if m.ptyPane != nil && m.mux != nil {
+			cols, rows := m.ptyPaneDimensions()
+			m.ptyPane.Resize(cols, rows)
+			resizeCmd = m.ptyPane.resizeCmd(m.mux)
+		}
+		// Re-evaluate PTY visibility after size change.
+		m, ptyCmd := m.maybeSwitchPTY()
+		return m, tea.Batch(resizeCmd, ptyCmd)
 
 	case connReadyMsg:
-		m.conn = msg.conn
+		m.mux = msg.mux
 		m.daemonOK = true
 		m.statusLine = ""
 		return m, tea.Batch(
@@ -645,6 +743,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		m, ptyCmd := m.maybeSwitchPTY()
+		return m, ptyCmd
+
+	// PTY split-pane messages.
+	case ptyOpenedMsg:
+		if msg.wsID != m.ptyWsID {
+			// Selection changed while pty.create was in-flight; discard.
+			msg.cancelFn()
+			if m.mux != nil {
+				mux := m.mux
+				sid := msg.sessionID
+				go func() { _ = mux.Send("pty.close", map[string]any{"sessionId": sid}) }()
+			}
+			return m, nil
+		}
+		cols, rows := m.ptyPaneDimensions()
+		m.ptyPane = NewPtyPane(msg.wsID, msg.sessionID, cols, rows)
+		m.ptyDataCh = msg.dataCh
+		m.cancelPTY = msg.cancelFn
+		return m, listenPTYCmd(msg.dataCh, msg.sessionID)
+
+	case ptyDataMsg:
+		if m.ptyPane != nil && msg.sessionID == m.ptyPane.sessionID {
+			m.ptyPane.Write(msg.data)
+		}
+		if m.ptyDataCh != nil {
+			return m, listenPTYCmd(m.ptyDataCh, msg.sessionID)
+		}
+		return m, nil
+
+	case ptyClosedMsg:
+		if m.ptyPane != nil && msg.sessionID == m.ptyPane.sessionID {
+			m.ptyPane = nil
+			m.ptyWsID = ""
+			m.cancelPTY = nil
+			m.ptyDataCh = nil
+			m.ptyFocused = false
+		}
+		return m, nil
+
+	case ptyErrMsg:
+		if msg.err != nil {
+			m.statusLine = "PTY: " + msg.err.Error()
+		}
+		m.ptyWsID = "" // allow retry on next refresh
 		return m, nil
 
 	case workspacesErrMsg:
@@ -656,7 +799,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.quitting {
 			return m, nil
 		}
-		if m.conn != nil && !m.blocksOverlayInput() {
+		if m.mux != nil && !m.blocksOverlayInput() {
 			return m, m.refreshCmd()
 		}
 		return m, nil
@@ -789,13 +932,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// When the PTY right pane has focus, forward all keys to it.
+	// ctrl+a detaches from the PTY pane (returns focus to the left pane).
+	if m.ptyFocused && m.ptyPane != nil && !m.blocksOverlayInput() {
+		if msg.String() == "ctrl+a" {
+			m.ptyFocused = false
+			return m, nil
+		}
+		// Forward all other keys (including ctrl+c, q) to the PTY.
+		return m, m.ptyPane.sendInputCmd(m.mux, msg)
+	}
+
 	switch msg.String() {
 	case "ctrl+c", "q":
 		if !m.showWizard && !m.showNoProfile {
 			m.quitting = true
-			if m.conn != nil {
-				_ = m.conn.Close()
-				m.conn = nil
+			if m.cancelPTY != nil {
+				m.cancelPTY()
+				m.cancelPTY = nil
+			}
+			if m.mux != nil {
+				m.mux.Close()
+				m.mux = nil
 			}
 			return m, tea.Quit
 		}
@@ -812,9 +970,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
 		m.quitting = true
-		if m.conn != nil {
-			_ = m.conn.Close()
-			m.conn = nil
+		if m.cancelPTY != nil {
+			m.cancelPTY()
+			m.cancelPTY = nil
+		}
+		if m.mux != nil {
+			m.mux.Close()
+			m.mux = nil
 		}
 		return m, tea.Quit
 	}
@@ -1207,6 +1369,14 @@ func (m Model) runShellExec(wsID string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// In split mode, Tab transfers focus to the right PTY pane.
+	if m.isSplitMode() && msg.String() == "tab" {
+		if m.ptyPane != nil {
+			m.ptyFocused = true
+		}
+		return m, nil
+	}
+
 	if msg.String() == "n" || msg.String() == "+" {
 		m.createMode = true
 		m.createStep = 0
@@ -1261,9 +1431,11 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	var cmd tea.Cmd
-	m.list, cmd = m.list.Update(msg)
-	return m, cmd
+	var listCmd tea.Cmd
+	m.list, listCmd = m.list.Update(msg)
+	// After any navigation, re-evaluate which PTY session to show.
+	m, ptyCmd := m.maybeSwitchPTY()
+	return m, tea.Batch(listCmd, ptyCmd)
 }
 
 func tickRefresh() tea.Cmd {
@@ -1317,14 +1489,25 @@ func (m Model) renderFooterHelp(innerWidth int) string {
 		raw = "tab next field   ↵ next/submit   esc cancel"
 	case m.detail != nil && m.panel == panelNone && !m.showHelp:
 		raw = "q quit   ? help   esc back   r refresh   c connect   l spotlight   y sync   t terminal   f fork   s/x/d"
+	case m.ptyFocused && m.ptyPane != nil:
+		raw = "ctrl+a unfocus terminal   t full-screen shell"
 	default:
-		switch {
-		case m.width < 60:
-			raw = "q  ?"
-		case m.width < 80:
-			raw = "q quit   ? help   ↵ open   esc back"
-		default:
-			raw = "q quit   ? help   ↵ detail   t terminal   esc back   r refresh   n new   / filter   s start   x stop   d delete   1-9 tab"
+		if m.isSplitMode() {
+			switch {
+			case m.width < 120:
+				raw = "q quit   ? help   tab focus terminal   t full-screen"
+			default:
+				raw = "q quit   ? help   tab focus terminal   t full-screen   ↵ detail   n new   / filter   s start   x stop   d delete"
+			}
+		} else {
+			switch {
+			case m.width < 60:
+				raw = "q  ?"
+			case m.width < 80:
+				raw = "q quit   ? help   ↵ open   esc back"
+			default:
+				raw = "q quit   ? help   ↵ detail   t terminal   esc back   r refresh   n new   / filter   s start   x stop   d delete   1-9 tab"
+			}
 		}
 	}
 	// Reserve 2 chars for the leading "  " prefix; clip to fit inner width.
@@ -1341,9 +1524,9 @@ func (m Model) View() string {
 		statusDaemon = mutedStyle.Render("● setup")
 	} else if m.showWizard {
 		statusDaemon = mutedStyle.Render("● setup")
-	} else if m.conn != nil && m.daemonOK {
+	} else if m.mux != nil && m.daemonOK {
 		statusDaemon = statusOkStyle.Render("● connected")
-	} else if m.conn != nil && !m.daemonOK {
+	} else if m.mux != nil && !m.daemonOK {
 		statusDaemon = warningStyle.Render("● degraded")
 	} else {
 		statusDaemon = statusErrStyle.Render("● disconnected")
@@ -1360,6 +1543,10 @@ func (m Model) View() string {
 	}
 
 	body := ""
+	// Use split-pane layout on wide terminals when no full-width overlay is
+	// active (detail view, help, panels, create wizard, etc.).
+	useSplit := m.isSplitMode() && !m.blocksOverlayInput() && m.detail == nil &&
+		!m.showHelp && !m.createMode
 	switch {
 	case m.showNoProfile:
 		body = renderNoProfile(&m)
@@ -1377,6 +1564,8 @@ func (m Model) View() string {
 		body = renderSyncPanel(&m, m.listWidth)
 	case m.detail != nil:
 		body = renderWorkspaceDetail(m.detail, m.listWidth)
+	case useSplit:
+		body = m.renderSplitLayout()
 	default:
 		body = m.list.View()
 	}
@@ -1430,6 +1619,56 @@ func (m Model) View() string {
 		Render(lipgloss.JoinVertical(lipgloss.Left, rows...))
 
 	return box
+}
+
+// renderSplitLayout renders the split-pane view: workspace list on the left
+// (38%) and an interactive PTY terminal (or workspace details) on the right
+// (62%), separated by a vertical bar.
+func (m Model) renderSplitLayout() string {
+	inner := max(m.width-4, 24)
+	leftWidth := int(float64(inner) * 0.38)
+	rightWidth := inner - leftWidth - 1 // 1 column for the separator
+	bodyH := max(m.height-7-2*m.tabBarOffset(), 4)
+
+	// Left pane: workspace list.
+	leftContent := m.list.View()
+	leftPane := lipgloss.NewStyle().Width(leftWidth).Height(bodyH).Render(leftContent)
+
+	// Separator colour: accent when right pane is focused, muted otherwise.
+	sepColor := colorBorder
+	if m.ptyFocused {
+		sepColor = colorAccent
+	}
+	sep := lipgloss.NewStyle().Foreground(sepColor).Render("│")
+
+	// Right pane: PTY terminal or workspace info.
+	var rightContent string
+	if m.ptyPane != nil {
+		rightContent = m.ptyPane.Render()
+	} else {
+		selWS := m.selectedWorkspace()
+		switch {
+		case selWS != nil && selWS.State == workspace.StateRunning:
+			rightContent = mutedStyle.Render("Opening terminal…")
+		case selWS != nil:
+			rightContent = renderWorkspaceDetail(selWS, rightWidth)
+		default:
+			rightContent = mutedStyle.Render("Select a workspace")
+		}
+	}
+
+	rightBorderColor := colorBorder
+	if m.ptyFocused {
+		rightBorderColor = colorAccent
+	}
+	rightPane := lipgloss.NewStyle().
+		Width(rightWidth).
+		Height(bodyH).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(rightBorderColor).
+		Render(rightContent)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, sep, rightPane)
 }
 
 // renderTabBar renders the session tab bar line.

@@ -807,6 +807,77 @@ func TestSpec_K2_TerminalKeyFromList(t *testing.T) {
 	}
 }
 
+// Spec SP.1: On a wide terminal (>= 100 cols), the split-pane layout renders
+// with a vertical separator between the workspace list and the right pane.
+func TestSpec_SplitPane_ShowsOnWideTerminal(t *testing.T) {
+	cmd := exec.Command(shared.BinPath, "tui")
+	cmd.Env = shared.CLIEnv()
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("pty start: %v", err)
+	}
+	defer func() { _ = ptmx.Close() }()
+	// 140 columns — well above the 100-col split threshold.
+	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: 35, Cols: 140})
+
+	stopDrain := make(chan struct{})
+	var captured []byte
+	go drainBackground(ptmx, &captured, stopDrain)
+
+	// Let the TUI connect and render.
+	time.Sleep(800 * time.Millisecond)
+	if _, err := ptmx.Write([]byte{'q'}); err != nil {
+		t.Fatalf("quit: %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("tui exit: %v", err)
+	}
+	close(stopDrain)
+
+	out := stripANSI(string(captured))
+	// In split mode the workspace list title ("Workspaces") appears in the left
+	// pane and the footer contains "tab focus terminal" (the split-mode hint).
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "workspaces") {
+		t.Fatalf("expected workspace list in split-pane output; got:\n%s", truncateOut(out, 4000))
+	}
+	if !strings.Contains(lower, "tab") {
+		t.Fatalf("expected split-mode hint (tab) in footer; got:\n%s", truncateOut(out, 4000))
+	}
+}
+
+// Spec SP.2: On a narrow terminal (< 100 cols), the single-pane layout is used
+// and the split-mode footer hint is absent.
+func TestSpec_SplitPane_HiddenOnNarrowTerminal(t *testing.T) {
+	cmd := exec.Command(shared.BinPath, "tui")
+	cmd.Env = shared.CLIEnv()
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("pty start: %v", err)
+	}
+	defer func() { _ = ptmx.Close() }()
+	// 80 columns — below the split threshold.
+	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: 35, Cols: 80})
+
+	stopDrain := make(chan struct{})
+	var captured []byte
+	go drainBackground(ptmx, &captured, stopDrain)
+
+	time.Sleep(700 * time.Millisecond)
+	if _, err := ptmx.Write([]byte{'q'}); err != nil {
+		t.Fatalf("quit: %v", err)
+	}
+	_ = cmd.Wait()
+	close(stopDrain)
+
+	out := strings.ToLower(stripANSI(string(captured)))
+	// "tab focus terminal" is the split-mode hint; it should not appear when narrow.
+	if strings.Contains(out, "tab focus terminal") {
+		t.Fatalf("expected single-pane layout for 80-col terminal; got split hint in:\n%s",
+			truncateOut(strings.ToUpper(out), 4000))
+	}
+}
+
 // Spec D.3.1: Fork prompt from detail.
 func TestSpec_D3_ForkPrompt(t *testing.T) {
 	repo := harness.MakeLocalGitRepo(t, "tui-spec-fork")
