@@ -21,8 +21,7 @@ func TestVMProof_DockerCompose(t *testing.T) {
 	repoPath := harness.MakeLocalGitRepo(t, "vmproof-compose")
 	wsID := createWorkspaceAndStart(t, h, repoPath, "vmproof-compose")
 
-	// Wait for dockerd to finish starting inside the guest.
-	time.Sleep(3 * time.Second)
+	waitGuestDockerReachable(t, h, repoPath, wsID)
 
 	// Write docker-compose.yml into the workspace.
 	writeCompose := strings.Join([]string{

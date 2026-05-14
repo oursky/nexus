@@ -5,7 +5,6 @@ package vmproof_test
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
@@ -44,6 +43,8 @@ func TestVMProof_ForkToolchain(t *testing.T) {
 	h.MustCall("workspace.start", map[string]any{"id": parentID}, nil)
 	harness.WaitForWorkspaceReady(t, h.Harness, parentID)
 
+	waitGuestDockerReachable(t, h, repoPath, parentID)
+
 	// Fork the parent workspace.
 	var forkRes struct {
 		Forked    bool `json:"forked"`
@@ -68,8 +69,7 @@ func TestVMProof_ForkToolchain(t *testing.T) {
 	h.MustCall("workspace.start", map[string]any{"id": childID}, nil)
 	harness.WaitForWorkspaceReady(t, h.Harness, childID)
 
-	// Wait for dockerd to finish starting inside the fork guest.
-	time.Sleep(3 * time.Second)
+	waitGuestDockerReachable(t, h, repoPath, childID)
 
 	cases := []struct {
 		name    string

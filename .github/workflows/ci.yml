@@ -182,6 +182,7 @@ jobs:
 
           go build -o /tmp/nexus-bin ./cmd/nexus/
           go build -o /tmp/pty-host ./cmd/pty-host/
+          go build -o /tmp/pty-host ./cmd/pty-host/
 
           # Codesign nexus binary (Hypervisor.framework + Virtualization.framework).
           ENTITLEMENTS="$(mktemp /tmp/nexus-entitlements.XXXXXX.plist)"
@@ -488,6 +489,10 @@ jobs:
           eval $(ssh-agent -s)
           echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
           echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+          KEY="${NEXUS_E2E_SSH_IDENTITY:-/tmp/nexus-e2e-ci-ed25519}"
+          if [[ -f "$KEY" ]]; then
+            ssh-add "$KEY"
+          fi
 
       - name: Run e2e tests (${{ matrix.shard.name }})
         timeout-minutes: ${{ matrix.shard.step_timeout_minutes }}
