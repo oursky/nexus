@@ -131,15 +131,22 @@ func runOpenEditor(cmd *cobra.Command, wsNameOrID, app string, checkOnly, skipCh
 	return nil
 }
 
-// guestSSHIsDirect is true when the guest SSH address is on loopback on this
-// machine (local libkrun / gvproxy port-forward). In that case the client must
-// connect directly and must not use a ProxyCommand to a remote engine.
-func guestSSHIsDirect(guestIP string) bool {
+// guestSSHHostIsLoopback is true when the guest SSH host is loopback (e.g.
+// 127.0.0.1 from gvproxy port-forward). That alone does not imply the client
+// should SSH directly: if the daemon is remote, loopback is on the engine host.
+func guestSSHHostIsLoopback(guestIP string) bool {
 	host := strings.TrimSpace(guestIP)
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
 	return isLoopbackSSHHost(host)
+}
+
+// openEditorUseDirectSSH is true when this machine can SSH straight to the
+// guest: guest is on loopback here and the daemon RPC endpoint is local (no
+// engine SSH hop), matching EnsureDaemon's direct WebSocket paths.
+func openEditorUseDirectSSH(guestIP string) bool {
+	return guestSSHHostIsLoopback(guestIP) && rpc.DaemonEndpointIsLocal()
 }
 
 func isLoopbackSSHHost(host string) bool {
@@ -165,7 +172,7 @@ func resolveOpenEditorSSH(guestIP string) (direct bool, proxyJump string, jumpPo
 	}
 	jumpIdentity = strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_IDENTITY"))
 
-	if guestSSHIsDirect(guestIP) {
+	if openEditorUseDirectSSH(guestIP) {
 		if jumpIdentity == "" {
 			if p, perr := profile.LoadDefault(); perr == nil && p != nil && p.SSHIdentityFile != "" {
 				jumpIdentity = p.SSHIdentityFile

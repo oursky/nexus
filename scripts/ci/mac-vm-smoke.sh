@@ -215,7 +215,38 @@ fi
 echo "  PTY exec OK"
 
 # ---------------------------------------------------------------------------
-# Step 8: Cleanup
+# Step 8: Guest SSH data plane + open-editor (SSH config / check path)
+# ---------------------------------------------------------------------------
+echo "==> Guest SSH + open-editor --check"
+GUEST_IP="$("$NEXUS_BIN" workspace info "$WS_ID" 2>/dev/null | awk '/^guestIp:/{print $2}')"
+if [[ -z "${GUEST_IP:-}" ]]; then
+  echo "ERROR: could not read guestIp from workspace info" >&2
+  exit 1
+fi
+echo "  guestIp: $GUEST_IP"
+
+SSH_HOST="${GUEST_IP%%:*}"
+SSH_PORT="${GUEST_IP##*:}"
+if [[ "$SSH_HOST" == "$GUEST_IP" ]]; then
+  SSH_PORT=22
+fi
+
+ssh -o BatchMode=yes \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  -o GlobalKnownHostsFile=/dev/null \
+  -o ConnectTimeout=15 \
+  -p "$SSH_PORT" \
+  "root@${SSH_HOST}" \
+  echo "hello-ssh-mac-vm"
+
+# Isolate SSH config writes from the runner's real HOME (open-editor updates ~/.ssh/config).
+export NEXUS_REAL_HOME="$STATEDIR/home"
+mkdir -p "$NEXUS_REAL_HOME/.ssh" "$NEXUS_REAL_HOME/.nexus/ssh"
+"$NEXUS_BIN" workspace open-editor "$WS_ID" --check --app cursor
+
+# ---------------------------------------------------------------------------
+# Step 9: Cleanup
 # ---------------------------------------------------------------------------
 echo "==> stop + destroy"
 "$NEXUS_BIN" workspace stop "$WS_ID" 2>/dev/null || true

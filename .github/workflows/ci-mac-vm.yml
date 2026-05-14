@@ -11,10 +11,6 @@ on:
       - "scripts/ci/mac-vm-smoke.sh"
   pull_request:
     branches: [main, develop]
-    paths:
-      - ".github/workflows/ci-mac-vm.yml"
-      - "packages/nexus/**"
-      - "scripts/ci/mac-vm-smoke.sh"
 
 permissions:
   contents: read
