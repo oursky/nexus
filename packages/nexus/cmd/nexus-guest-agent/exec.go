@@ -211,7 +211,7 @@ func ensureRootIdentityEnv(env []string) []string {
 	env = ensureEnvVar(env, "HOME", "/root")
 	env = ensureEnvVar(env, "USER", "root")
 	env = ensureEnvVar(env, "LOGNAME", "root")
-	env = ensureEnvVar(env, "SHELL", "/bin/bash")
+	env = ensureEnvVar(env, "SHELL", "/bin/sh")
 	// Default TERM to xterm-256color so TUI apps (opencode, etc.) render
 	// correctly.  The value is overridden by whatever the connecting client
 	// sends in the PTY env, so interactive sessions from the Mac app get the

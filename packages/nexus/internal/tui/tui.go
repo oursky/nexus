@@ -54,7 +54,8 @@ type connErrMsg struct {
 }
 
 type workspacesMsg struct {
-	workspaces []workspace.Workspace
+	workspaces   []workspace.Workspace
+	projectsByID map[string]string // project ID → name; may be nil
 }
 
 type workspacesErrMsg struct {
@@ -120,6 +121,8 @@ type Model struct {
 	listWidth       int
 	listHeight      int
 
+	projectsByID map[string]string // project ID → name (refreshed with workspace list)
+
 	panel        panelKind
 	showHelp     bool
 	spotForwards []*spotlight.Forward
@@ -175,15 +178,15 @@ func (m Model) tabBarOffset() int {
 // isSplitMode reports whether the terminal is wide enough for the split-pane
 // layout (left workspace list + right interactive PTY).
 func (m Model) isSplitMode() bool {
-	return m.width >= 100
+	return m.width >= 90
 }
 
 // leftPaneWidth returns the width the workspace list should occupy. In split
-// mode this is 38% of the inner width; otherwise it is the full inner width.
+// mode this is 28% of the inner width; otherwise it is the full inner width.
 func (m Model) leftPaneWidth() int {
 	inner := max(m.width-4, 24)
 	if m.isSplitMode() {
-		return int(float64(inner) * 0.38)
+		return int(float64(inner) * 0.28)
 	}
 	return inner
 }
@@ -191,7 +194,7 @@ func (m Model) leftPaneWidth() int {
 // ptyPaneDimensions returns the (cols, rows) the PTY right pane should use.
 func (m Model) ptyPaneDimensions() (cols, rows int) {
 	inner := max(m.width-4, 24)
-	left := int(float64(inner) * 0.38)
+	left := int(float64(inner) * 0.28)
 	cols = max(inner-left-1, 20) // 1 column for the separator
 	rows = max(m.height-7-2*m.tabBarOffset(), 4)
 	return cols, rows
@@ -323,8 +326,7 @@ func NewModel(opts ...Options) Model {
 		o = opts[0]
 	}
 
-	delegate := styledDelegate()
-	l := newWorkspaceList(delegate, 80, 20)
+	l := newWorkspaceList(80, 20)
 	l.SetFilteringEnabled(true)
 
 	pi := textinput.New()
@@ -394,11 +396,29 @@ func (m Model) refreshCmd() tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		ws, err := fetchWorkspaces(mux)
-		if err != nil {
-			return workspacesErrMsg{err: err}
+		// Fetch workspace list and project list in parallel.
+		type wsResult struct {
+			ws  []workspace.Workspace
+			err error
 		}
-		return workspacesMsg{workspaces: ws}
+		type projResult struct {
+			byID map[string]string
+		}
+		wsCh := make(chan wsResult, 1)
+		projCh := make(chan projResult, 1)
+		go func() {
+			ws, err := fetchWorkspaces(mux)
+			wsCh <- wsResult{ws, err}
+		}()
+		go func() {
+			projCh <- projResult{fetchProjectsByID(mux)}
+		}()
+		wr := <-wsCh
+		if wr.err != nil {
+			return workspacesErrMsg{err: wr.err}
+		}
+		pr := <-projCh
+		return workspacesMsg{workspaces: wr.ws, projectsByID: pr.byID}
 	}
 }
 
@@ -417,6 +437,25 @@ func fetchWorkspaces(mux *rpc.MuxConn) ([]workspace.Workspace, error) {
 		out = append(out, *p)
 	}
 	return out, nil
+}
+
+// fetchProjectsByID calls project.list and returns a map of project ID → name.
+// Returns nil on error so callers can treat it as best-effort.
+func fetchProjectsByID(mux *rpc.MuxConn) map[string]string {
+	var result struct {
+		Projects []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"projects"`
+	}
+	if err := mux.Call("project.list", map[string]any{}, &result); err != nil {
+		return nil
+	}
+	m := make(map[string]string, len(result.Projects))
+	for _, p := range result.Projects {
+		m[p.ID] = p.Name
+	}
+	return m
 }
 
 func (m Model) loadDetailCmd(id string) tea.Cmd {
@@ -719,8 +758,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case workspacesMsg:
 		m.daemonOK = true
+		if msg.projectsByID != nil {
+			m.projectsByID = msg.projectsByID
+		}
 		sel := selectedWorkspaceID(m.list.SelectedItem())
-		m.list.SetItems(workspacesToItems(msg.workspaces))
+		m.list.SetItems(workspacesToItems(msg.workspaces, m.projectsByID))
 		if sel != "" {
 			reselectByID(&m.list, sel)
 		}
@@ -1622,11 +1664,11 @@ func (m Model) View() string {
 }
 
 // renderSplitLayout renders the split-pane view: workspace list on the left
-// (38%) and an interactive PTY terminal (or workspace details) on the right
-// (62%), separated by a vertical bar.
+// (28%) and an interactive PTY terminal (or workspace details) on the right
+// (72%), separated by a vertical bar.
 func (m Model) renderSplitLayout() string {
 	inner := max(m.width-4, 24)
-	leftWidth := int(float64(inner) * 0.38)
+	leftWidth := int(float64(inner) * 0.28)
 	rightWidth := inner - leftWidth - 1 // 1 column for the separator
 	bodyH := max(m.height-7-2*m.tabBarOffset(), 4)
 
