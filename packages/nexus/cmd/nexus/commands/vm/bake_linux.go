@@ -84,7 +84,7 @@ func runBake(stdout, stderr io.Writer, timeoutStr string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	stampDir := defaultDataDir()
+	stampDir := startcmd.DefaultDataDir()
 	if err := lkruntime.BakeRootfsIfNeeded(ctx, cfg, stampDir); err != nil {
 		return fmt.Errorf("bake failed: %w", err)
 	}
@@ -100,12 +100,4 @@ func parseDuration(s string) (time.Duration, error) {
 		return 10 * time.Minute, nil
 	}
 	return time.ParseDuration(s)
-}
-
-func defaultDataDir() string {
-	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
-		return filepath.Join(xdg, "nexus")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "nexus")
 }

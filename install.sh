@@ -10,8 +10,8 @@
 #   INSTALL_DIR         default ~/.local/bin
 #   SMOLVM_VERSION      libkrun vendor tarball tag for Linux x86_64 (default v0.5.19; must match CI build-nexus-libkrun.sh)
 #
-# Requires: curl, sha256sum or shasum -a 256 for release checksums, and python3 or jq to read the releases API
-# when NEXUS_VERSION is unset.
+# Requires: curl, sha256sum or shasum -a 256 for release checksums, gzip when installing prebaked Linux/amd64 host rootfs,
+# and python3 or jq to read the releases API when NEXUS_VERSION is unset.
 set -euo pipefail
 
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-oursky/nexus}"
@@ -125,6 +125,36 @@ install_libkrun_libs_from_host_arm64() {
   ln -sf libkrunfw.so.5 "${libdir}/libkrunfw.so"
   echo "nexus-install: staged libkrun from host (${krun}) → ${libdir}"
   return 0
+}
+
+install_prebaked_host_rootfs_linux_amd64() {
+  local tmp="$1" sums="$2" base="$3"
+  [ "${GOOS:-}" = linux ] || return 0
+  [ "${GOARCH}" = amd64 ] || return 0
+  local asset="rootfs-linux-amd64.ext4.gz"
+  if ! grep -qF " ${asset}" "${sums}" 2>/dev/null; then
+    echo "nexus-install: no ${asset} in release checksums; daemon may bake rootfs on first start"
+    return 0
+  fi
+  need_cmd gzip
+  local share vm_dir dest
+  share="$(nexus_data_share_dir)"
+  vm_dir="${share}/vm"
+  dest="${vm_dir}/rootfs.ext4"
+  mkdir -p "${vm_dir}"
+  if [ -f "${dest}" ]; then
+    echo "nexus-install: ${dest} already exists; skipping prebaked host rootfs"
+    return 0
+  fi
+  curl -fsSL -L "${base}/${asset}" -o "${tmp}/${asset}"
+  (
+    cd "${tmp}"
+    verify_checksum_file "${sums}" "${asset}"
+  )
+  echo "nexus-install: extracting prebaked libkrun host rootfs → ${dest} (large file; may take a minute)"
+  gzip -dc "${tmp}/${asset}" > "${dest}.tmp"
+  mv "${dest}.tmp" "${dest}"
+  echo "nexus-install: installed prebaked host rootfs at ${dest}"
 }
 
 install_nexus_libkrun_vm() {
@@ -366,6 +396,7 @@ main() {
 
   prepare_install
   install_linux_vm_runtime "${tmp}" "${sums}" "${base}"
+  install_prebaked_host_rootfs_linux_amd64 "${tmp}" "${sums}" "${base}"
 
   run_install "${tmp}/${nexus_asset}" "${INSTALL_DIR}/nexus"
 

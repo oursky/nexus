@@ -357,6 +357,11 @@ tasks:
     cmds:
       - ./scripts/ci/check-commits.sh
 
+  cd:host-rootfs-bake:
+    desc: "Bake libkrun host rootfs into dist/ (run full CI prep on Linux first)"
+    cmds:
+      - bash scripts/ci/build-release-host-rootfs-bake-and-package.sh
+
   ci:local:
     desc: "Run all local CI checks (commits + lint + test + build)"
     cmds:
