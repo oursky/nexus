@@ -19,8 +19,6 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 )
 
-const headerLines = 2
-const footerLines = 4
 
 type panelKind int
 
@@ -170,11 +168,15 @@ func (m Model) tabBarOffset() int {
 // updateListSize recalculates listHeight from terminal dimensions and calls
 // SetSize on the bubbles list. Must be called whenever m.height or m.tabs
 // changes.
+//
+// Layout: 2 header lines + 2*tabBarOffset tab rows + 2 spacers + 3 footer
+// lines = 7 + 2*tabBarOffset lines of fixed overhead. The list occupies the
+// remaining body height.
 func (m *Model) updateListSize() {
 	if m.height == 0 {
 		return
 	}
-	h := max(m.height-headerLines-footerLines-4-m.tabBarOffset(), 6)
+	h := max(m.height-7-2*m.tabBarOffset(), 6)
 	m.listHeight = h
 	m.list.SetSize(m.listWidth, h)
 }
@@ -1292,6 +1294,44 @@ func reselectByID(l *list.Model, id string) {
 	}
 }
 
+// renderFooterHelp returns the single-line footer hint text, responsive to
+// terminal width and clipped so it never exceeds innerWidth characters.
+func (m Model) renderFooterHelp(innerWidth int) string {
+	var raw string
+	switch {
+	case m.showNoProfile:
+		if m.noProfileChecking || m.noProfileBusy {
+			raw = "esc quit"
+		} else {
+			raw = "↑↓ j/k navigate   ↵ select   esc quit"
+		}
+	case m.showWizard:
+		raw = "tab next field   ↵ connect   esc skip (localhost)"
+	case m.panel == panelSpotlight:
+		raw = "esc/l close   n new port   x remove   j/k navigate"
+	case m.panel == panelSync:
+		raw = "esc/y close   n new   x stop   p pause   r resume   j/k navigate"
+	case m.panel == panelConnect:
+		raw = "esc/c close"
+	case m.createMode:
+		raw = "tab next field   ↵ next/submit   esc cancel"
+	case m.detail != nil && m.panel == panelNone && !m.showHelp:
+		raw = "q quit   ? help   esc back   r refresh   c connect   l spotlight   y sync   t terminal   f fork   s/x/d"
+	default:
+		switch {
+		case m.width < 60:
+			raw = "q  ?"
+		case m.width < 80:
+			raw = "q quit   ? help   ↵ open   esc back"
+		default:
+			raw = "q quit   ? help   ↵ detail   t terminal   esc back   r refresh   n new   / filter   s start   x stop   d delete   1-9 tab"
+		}
+	}
+	// Reserve 2 chars for the leading "  " prefix; clip to fit inner width.
+	clipped := truncate(raw, max(innerWidth-2, 1))
+	return mutedStyle.Render("  " + clipped)
+}
+
 // View implements tea.Model.
 func (m Model) View() string {
 	var statusDaemon string
@@ -1350,47 +1390,38 @@ func (m Model) View() string {
 		)
 	}
 
-	help := mutedStyle.Render(
-		"  q quit   ? help   ↵ detail   t terminal   esc back   r refresh   n new   / filter   s start   x stop   d delete   1-9 tab",
-	)
-	dhelp := mutedStyle.Render(
-		"  q quit   ? help   esc back   r refresh   c connect   l spotlight   y sync   t terminal   f fork   s/x/d",
-	)
-	footerHelp := help
-	if m.showNoProfile {
-		if m.noProfileChecking || m.noProfileBusy {
-			footerHelp = mutedStyle.Render("  esc quit")
-		} else {
-			footerHelp = mutedStyle.Render("  ↑↓ j/k navigate   ↵ select   esc quit")
-		}
-	} else if m.showWizard {
-		footerHelp = mutedStyle.Render("  tab next field   ↵ connect   esc skip (localhost)")
-	} else if m.detail != nil && m.panel == panelNone && !m.createMode && !m.showHelp {
-		footerHelp = dhelp
-	} else if m.panel == panelSpotlight {
-		footerHelp = mutedStyle.Render("  esc/l close   n new port   x remove   j/k navigate")
-	} else if m.panel == panelSync {
-		footerHelp = mutedStyle.Render("  esc/y close   n new   x stop   p pause   r resume   j/k navigate")
-	} else if m.panel == panelConnect {
-		footerHelp = mutedStyle.Render("  esc/c close")
-	} else if m.createMode {
-		footerHelp = mutedStyle.Render("  tab next field   ↵ next/submit   esc cancel")
-	}
+	innerWidth := max(m.width-4, 20)
 
 	confirm := ""
 	if m.confirmDelete {
 		confirm = warningStyle.Render(fmt.Sprintf("Delete workspace %s? [y/N]", truncate(m.pendingDeleteID, 36)))
 	}
 
-	sep := separatorStyle.Render(strings.Repeat("─", max(m.width-4, 20)))
+	sep := separatorStyle.Render(strings.Repeat("─", innerWidth))
+	footerHelp := m.renderFooterHelp(innerWidth)
 	footer := lipgloss.JoinVertical(lipgloss.Left, sep, confirm, footerHelp)
 
 	// Build the vertical stack. Insert the tab bar when present.
+	tabBar := m.renderTabBar()
+	tabBarH := 0
 	rows := []string{headerTop, headerBottom}
-	if tabBar := m.renderTabBar(); tabBar != "" {
-		rows = append(rows, tabSepStyle.Render(strings.Repeat("─", max(m.width-4, 20))))
+	if tabBar != "" {
+		tabBarH = 2
+		rows = append(rows, tabSepStyle.Render(strings.Repeat("─", innerWidth)))
 		rows = append(rows, tabBar)
 	}
+
+	// Sticky footer: pad body to exactly fill the remaining height so that
+	// the footer always appears at the very bottom of the screen.
+	// Overhead: 2 header + tabBarH + 2 spacers (blank lines around body) + 3 footer = 7 + tabBarH.
+	if m.height > 0 {
+		contentH := m.height - 7 - tabBarH
+		if contentH < 1 {
+			contentH = 1
+		}
+		body = lipgloss.NewStyle().Height(contentH).Render(body)
+	}
+
 	rows = append(rows, "", body, "", footer)
 
 	box := lipgloss.NewStyle().
