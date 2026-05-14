@@ -10,8 +10,8 @@
 #   INSTALL_DIR         default ~/.local/bin
 #   SMOLVM_VERSION      libkrun vendor tarball tag for Linux x86_64 (default v0.5.19; must match CI build-nexus-libkrun.sh)
 #
-# Requires: curl, sha256sum or shasum -a 256 for release checksums, gzip when installing prebaked Linux/amd64 host rootfs,
-# and python3 or jq to read the releases API when NEXUS_VERSION is unset.
+# Requires: curl, sha256sum or shasum -a 256 for release checksums, gzip when installing a prebaked rootfs
+# (linux/amd64 host or darwin/arm64 guest), and python3 or jq to read the releases API when NEXUS_VERSION is unset.
 set -euo pipefail
 
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-oursky/nexus}"
@@ -127,36 +127,6 @@ install_libkrun_libs_from_host_arm64() {
   return 0
 }
 
-install_prebaked_host_rootfs_linux_amd64() {
-  local tmp="$1" sums="$2" base="$3"
-  [ "${GOOS:-}" = linux ] || return 0
-  [ "${GOARCH}" = amd64 ] || return 0
-  local asset="rootfs-linux-amd64.ext4.gz"
-  if ! grep -qF " ${asset}" "${sums}" 2>/dev/null; then
-    echo "nexus-install: no ${asset} in release checksums; daemon may bake rootfs on first start"
-    return 0
-  fi
-  need_cmd gzip
-  local share vm_dir dest
-  share="$(nexus_data_share_dir)"
-  vm_dir="${share}/vm"
-  dest="${vm_dir}/rootfs.ext4"
-  mkdir -p "${vm_dir}"
-  if [ -f "${dest}" ]; then
-    echo "nexus-install: ${dest} already exists; skipping prebaked host rootfs"
-    return 0
-  fi
-  curl -fsSL -L "${base}/${asset}" -o "${tmp}/${asset}"
-  (
-    cd "${tmp}"
-    verify_checksum_file "${sums}" "${asset}"
-  )
-  echo "nexus-install: extracting prebaked libkrun host rootfs → ${dest} (large file; may take a minute)"
-  gzip -dc "${tmp}/${asset}" > "${dest}.tmp"
-  mv "${dest}.tmp" "${dest}"
-  echo "nexus-install: installed prebaked host rootfs at ${dest}"
-}
-
 # Default matches internal/infra/runtime/macvm/defaults.go (RootFSCachePath).
 nexus_macvm_guest_rootfs_path() {
   local cache_base
@@ -168,33 +138,48 @@ nexus_macvm_guest_rootfs_path() {
   echo "${cache_base}/vm/rootfs.ext4"
 }
 
-install_prebaked_guest_rootfs_darwin_arm64() {
+# Install at most one release rootfs artifact: linux/amd64 → host VM disk; darwin/arm64 → macOS guest cache.
+install_prebaked_rootfs_for_platform() {
   local tmp="$1" sums="$2" base="$3"
-  [ "${GOOS:-}" = darwin ] || return 0
-  [ "${GOARCH}" = arm64 ] || return 0
-  local asset="rootfs-darwin-arm64.ext4.gz"
-  if ! grep -qF " ${asset}" "${sums}" 2>/dev/null; then
-    echo "nexus-install: no ${asset} in release checksums; macOS VM may build/download guest disk on first use"
+  local asset="" dest="" vm_dir="" share label_miss=""
+
+  if [ "${GOOS:-}" = "linux" ] && [ "${GOARCH}" = "amd64" ]; then
+    asset="rootfs-linux-amd64.ext4.gz"
+    share="$(nexus_data_share_dir)"
+    vm_dir="${share}/vm"
+    dest="${vm_dir}/rootfs.ext4"
+    label_miss="daemon may bake rootfs on first start"
+  elif [ "${GOOS:-}" = "darwin" ] && [ "${GOARCH}" = "arm64" ]; then
+    asset="rootfs-darwin-arm64.ext4.gz"
+    dest="$(nexus_macvm_guest_rootfs_path)"
+    vm_dir="$(dirname "${dest}")"
+    label_miss="macOS VM may build/download guest disk on first use"
+  else
+    echo "nexus-install: no prebaked rootfs for ${GOOS:-unknown}/${GOARCH:-unknown} (skipped)"
     return 0
   fi
+
+  if ! grep -qF " ${asset}" "${sums}" 2>/dev/null; then
+    echo "nexus-install: no ${asset} in release checksums; ${label_miss}"
+    return 0
+  fi
+
   need_cmd gzip
-  local dest vm_dir
-  dest="$(nexus_macvm_guest_rootfs_path)"
-  vm_dir="$(dirname "${dest}")"
   mkdir -p "${vm_dir}"
   if [ -f "${dest}" ]; then
-    echo "nexus-install: ${dest} already exists; skipping prebaked macOS guest rootfs"
+    echo "nexus-install: ${dest} already exists; skipping ${asset}"
     return 0
   fi
+
   curl -fsSL -L "${base}/${asset}" -o "${tmp}/${asset}"
   (
     cd "${tmp}"
     verify_checksum_file "${sums}" "${asset}"
   )
-  echo "nexus-install: extracting prebaked macOS guest rootfs → ${dest} (large file; may take a minute)"
+  echo "nexus-install: extracting ${asset} → ${dest} (large file; may take a minute)"
   gzip -dc "${tmp}/${asset}" > "${dest}.tmp"
   mv "${dest}.tmp" "${dest}"
-  echo "nexus-install: installed prebaked guest rootfs at ${dest}"
+  echo "nexus-install: installed prebaked rootfs at ${dest}"
 }
 
 install_nexus_libkrun_vm() {
@@ -436,8 +421,7 @@ main() {
 
   prepare_install
   install_linux_vm_runtime "${tmp}" "${sums}" "${base}"
-  install_prebaked_host_rootfs_linux_amd64 "${tmp}" "${sums}" "${base}"
-  install_prebaked_guest_rootfs_darwin_arm64 "${tmp}" "${sums}" "${base}"
+  install_prebaked_rootfs_for_platform "${tmp}" "${sums}" "${base}"
 
   run_install "${tmp}/${nexus_asset}" "${INSTALL_DIR}/nexus"
 
