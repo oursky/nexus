@@ -119,7 +119,35 @@ func (h *Handler) proxyCreate(ctx context.Context, raw json.RawMessage) (any, er
 	if ws != nil && h.shouldUseVMSession(ws) {
 		return h.create(ctx, raw)
 	}
-	return h.host.Create(ctx, raw)
+	proxied, err := h.rewritePTYHostWorkDir(ctx, raw, p.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return h.host.Create(ctx, proxied)
+}
+
+// rewritePTYHostWorkDir maps logical /workspace paths to an on-disk checkout
+// directory before forwarding pty.create to pty-host. pty-host runs shells on
+// the engine host and cannot chdir to the guest-only /workspace path.
+func (h *Handler) rewritePTYHostWorkDir(ctx context.Context, raw json.RawMessage, workspaceID string) (json.RawMessage, error) {
+	if h.ws == nil {
+		return raw, nil
+	}
+	var mp map[string]any
+	if err := json.Unmarshal(raw, &mp); err != nil {
+		return raw, nil
+	}
+	reqWd, _ := mp["workDir"].(string)
+	hostDir, _, err := h.resolveHostWorkDir(ctx, workspaceID, reqWd)
+	if err != nil {
+		return nil, err
+	}
+	mp["workDir"] = hostDir
+	out, err := json.Marshal(mp)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (h *Handler) proxyList(ctx context.Context, raw json.RawMessage) (any, error) {
