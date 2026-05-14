@@ -355,6 +355,12 @@ func defaultShell() string {
 			}
 		}
 	}
+	// Try common shell locations in order: bash first, then sh.
+	for _, candidate := range []string{"/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh"} {
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			return candidate
+		}
+	}
 	if sh, err := exec.LookPath("sh"); err == nil {
 		return sh
 	}

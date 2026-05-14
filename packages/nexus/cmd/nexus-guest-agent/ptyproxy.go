@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -25,6 +26,38 @@ var (
 	shellSessions   = map[string]*shellSession{}
 	shellSessionsMu sync.Mutex
 )
+
+// guestDefaultShell resolves the best available shell inside the guest,
+// using the environment that has already been prepared for the session.
+// It tries $SHELL first, then common absolute paths, then PATH lookup.
+func guestDefaultShell(env []string) string {
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "SHELL=") {
+			sh := strings.TrimPrefix(entry, "SHELL=")
+			if sh == "" {
+				break
+			}
+			if resolved, err := lookPathInEnv(sh, env); err == nil {
+				return resolved
+			}
+			if filepath.IsAbs(sh) {
+				if fi, err := os.Stat(sh); err == nil && !fi.IsDir() {
+					return sh
+				}
+			}
+			break
+		}
+	}
+	for _, candidate := range []string{"/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh"} {
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			return candidate
+		}
+	}
+	if resolved, err := lookPathInEnv("sh", env); err == nil {
+		return resolved
+	}
+	return "/bin/sh"
+}
 
 func handleShellOpen(req execRequest, encoder *json.Encoder) {
 	env := append([]string{}, os.Environ()...)
@@ -44,9 +77,14 @@ func handleShellOpen(req execRequest, encoder *json.Encoder) {
 		}
 	}
 
-	shell := req.Command
-	if strings.TrimSpace(shell) == "" {
-		shell = "bash"
+	shell := strings.TrimSpace(req.Command)
+	if shell == "" {
+		shell = guestDefaultShell(env)
+	} else if resolved, err := lookPathInEnv(shell, env); err == nil {
+		shell = resolved
+	} else if !filepath.IsAbs(shell) {
+		// Requested shell name not found in PATH; fall back to default.
+		shell = guestDefaultShell(env)
 	}
 
 	// If args are provided, honour them (e.g. ["-c", "ip route show"] from
