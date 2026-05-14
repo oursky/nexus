@@ -10,7 +10,7 @@ import (
 
 func TestIsLikelyWorkspaceVMCmdline(t *testing.T) {
 	wsID := "ws-123"
-	ok := isLikelyWorkspaceVMCmdline("/home/u/.local/share/nexus/bin/nexus-libkrun-vm --config=/data/nexus/libkrun-vms/ws-123/libkrun-config.json", wsID)
+	ok := isLikelyWorkspaceVMCmdline("/home/u/.local/share/nexus/bin/nexus-libkrun-vm --config=/data/nexus/default/ws-123/libkrun-config.json", wsID)
 	if !ok {
 		t.Fatal("expected libkrun cmdline to match workspace vm")
 	}

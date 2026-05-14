@@ -63,6 +63,11 @@ func agentHashFile() string {
 	return filepath.Join(DefaultDataDir(), "rootfs-agent.sha256")
 }
 
+// DefaultLibkrunWorkDirSegment is the subdirectory name under the resolved
+// libkrun storage root for per-workspace VM state when --workdir-root is unset
+// (typically /data/nexus/default on hosts with /data/nexus).
+const DefaultLibkrunWorkDirSegment = "default"
+
 func preferredLibkrunStorageRoot() (string, bool) {
 	const root = "/data/nexus"
 	info, err := os.Stat(root)

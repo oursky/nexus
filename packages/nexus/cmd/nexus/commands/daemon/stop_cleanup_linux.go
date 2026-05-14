@@ -19,7 +19,9 @@ func cleanupDaemonResidue() {
 	}
 
 	workRoots := []string{
-		"/data/nexus/libkrun-vms",
+		"/data/nexus/default",
+		"/data/nexus/libkrun-vms", // legacy workdir-root default
+		filepath.Join(defaultStateDataDir(), "default"),
 		filepath.Join(defaultStateDataDir(), "libkrun-vms"),
 	}
 	for _, root := range workRoots {

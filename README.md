@@ -1,113 +1,69 @@
 # Nexus
 
-**Run your dev stack on a remote Linux host — managed from your Mac.**  
-Workspaces are isolated Linux microVMs (libkrun). Connect, create, and control them from the native macOS app.
+**Remote Linux workspaces — CLI and TUI.**  
+Orchestrate isolated dev environments (including libkrun microVMs) from the terminal.
 
 ---
 
-## Getting Started
-
-### 1. Install NexusApp on your Mac
-
-Download from TestFlight or build from source:
+## Install (one-liner)
 
 ```bash
-cd packages/nexus-swift && xcodebuild
+curl -fsSL https://raw.githubusercontent.com/oursky/nexus/main/install.sh | bash
 ```
 
-### 2. Prepare your Linux host
-
-**Storage volume (strongly recommended)**  
-Workspace images are multi-GB sparse files. For fast, space-efficient Copy-on-Write (CoW) clones, mount an **XFS** or **btrfs** volume with reflink support at `/data/nexus`:
+Installs `nexus` and `pty-host` into `~/.local/bin` by default. Override the destination with `INSTALL_DIR`, pin a release with `NEXUS_VERSION`, or fork the install via `GITHUB_REPOSITORY`.
 
 ```bash
-# Example: create a 200 GB XFS loop file
-sudo mkdir -p /data/nexus
-sudo truncate -s 200G /data/nexus.img
-sudo mkfs.xfs -f -m reflink=1 /data/nexus.img
-sudo mount -o loop /data/nexus.img /data/nexus
-sudo chown "$(whoami)" /data/nexus
-
-# Make it permanent in /etc/fstab
-# /data/nexus.img /data/nexus xfs loop,defaults 0 0
+curl -fsSL https://raw.githubusercontent.com/oursky/nexus/main/install.sh | env INSTALL_DIR=/usr/local/bin bash
 ```
 
-Then start the daemon pointing VM storage at that mount:
+On Linux, the installer creates `/data/nexus` owned by your user when missing (daemon VM backing store). The script uses `sudo` only when the install directory is not user-writable.
+
+---
+
+## Getting started (CLI)
 
 ```bash
-nexus daemon start --workdir-root=/data/nexus/libkrun-vms
+# Point the CLI at a daemon (SSH target depends on your deployment)
+nexus daemon connect user@your-linux-host
+
+nexus workspace create --repo ~/my-project
+nexus workspace start <workspace-id>
+nexus workspace shell <workspace-id>
 ```
 
-Without an XFS/btrfs volume, workspace start falls back to sparse `cp` on ext4, which is **much slower** for multi-GB images.
+See [CLI reference](docs/reference/cli.md) for the full command tree.
 
-### 3. Connect from the Mac app
+---
 
-Open NexusApp → **Add Host** → enter your SSH connection string (e.g. `user@192.168.1.100`).
+## Linux host: fast VM storage (optional)
 
-The app deploys the daemon automatically on first connection.
-
-### 4. Create and start a workspace
-
-From the app: **New Workspace** → point it at a Git repository or local path → **Start**.
-
-The workspace boots as an isolated Linux microVM. Your code lives inside it; Docker, your toolchain, and ports are all contained.
-
-### 5. Access your workspace
-
-- **Ports** — detected automatically and tunnelled to `localhost` on your Mac.
-- **Shell** — open a terminal directly into the VM from the app.
-- **Editor** — use the VS Code / Cursor remote extension with the forwarded SSH port.
+For fastest copy-on-write workspace images with libkrun, mount **XFS** (with reflink enabled) or **btrfs** at `/data` so `/data/nexus` sits on that filesystem. The install script always ensures `/data/nexus` exists; reflink-capable storage underneath is a host-level tuning step.
 
 ---
 
 ## What it does
 
-
-| Feature                        | How                                                                               |
-| ------------------------------ | --------------------------------------------------------------------------------- |
-| **Isolated Linux workspaces**  | Each workspace is a libkrun microVM — full Linux kernel, Docker, separate network |
-| **Zero-config daemon deploy**  | NexusApp uploads and starts the daemon on your Linux host over SSH                |
-| **Port forwarding**            | Workspace ports are tunnelled to `localhost` on your Mac automatically            |
-| **Interactive VM shell**       | Drop into the running VM directly from the app                                    |
-| **Git + Docker inside the VM** | Develop, commit, and run containers in full isolation                             |
-| **Native macOS app**           | SwiftUI app for workspace management, tunnel status, and spotlight                |
-
+| Feature | How |
+| ------- | --- |
+| **Isolated Linux workspaces** | libkrun microVMs — Linux kernel, Docker, isolated network (when using the VM driver) |
+| **CLI / TUI** | Full lifecycle: daemon, workspaces, port forwards (`spotlight`), exec |
+| **Git + Docker inside the VM** | Develop and run containers in isolation |
 
 ---
 
-## Architecture
+## Architecture (conceptual)
 
 ```
-NexusApp (macOS)
-   │  SSH (daemon deploy + control channel)
-   │  WebSocket / JSON-RPC 2.0
+nexus CLI (your machine)
+   │  SSH / JSON-RPC (profile + token)
    ▼
-Linux daemon (nexus)   ←  runs on your remote host
-   │  vsock
+Linux daemon (`nexus`)
+   │  vsock / driver
    ▼
-libkrun microVM  ←  workspace filesystem (ext4)
-   │  Docker bridge
+Workspace runtime (e.g. libkrun microVM)
    ▼
-Your containers  (web · api · db · …)
-```
-
----
-
-## CLI (power users / CI)
-
-The `nexus` CLI exposes the same operations as the app for scripting:
-
-```bash
-# Connect CLI to a running daemon
-nexus daemon connect user@your-linux-host
-
-# Workspace lifecycle
-nexus workspace create --repo ~/my-project
-nexus workspace start <workspace-id>
-nexus workspace shell <workspace-id>
-
-# Port forwarding
-nexus spotlight start <workspace-id>
+Your stack (containers, tools, …)
 ```
 
 ---
@@ -115,21 +71,14 @@ nexus spotlight start <workspace-id>
 ## Contributing
 
 ```bash
-# Deploy CLI + daemon to remote host, restart daemon
-task dev:remote
-
-# Also rebuild CLI locally
-task dev:cli
-
-# Also rebuild Swift app
-task dev:swift
+task dev:local    # local daemon + CLI (typical Linux dev)
+task dev:cli      # CLI only
+task build && task test
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for full setup, including how to set `REMOTE_HOST` in `.env.local`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full setup.
 
 ## Docs
 
 - [CLI reference](docs/reference/cli.md)
 - [Contributing](CONTRIBUTING.md)
-
-

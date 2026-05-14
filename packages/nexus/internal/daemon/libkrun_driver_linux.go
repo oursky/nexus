@@ -86,14 +86,14 @@ func buildLibkrunDriver(cfg Config, wsStore *store.WorkspaceStore, hub *transpor
 	nexusBin, _ := os.Executable()
 
 	// VM state (overlays, docker-data images, snapshots) lives under the data dir.
-	// Default to /data/nexus/libkrun-vms for O(1) CoW clones via reflink on XFS/btrfs.
-	// Falls back to $dataDir/libkrun-vms if /data/nexus is not available.
+	// Default to /data/nexus/default for O(1) CoW clones via reflink on XFS/btrfs.
+	// Falls back to $dataDir/default if /data/nexus is not available.
 	workDirRoot := cfg.WorkDirRoot
 	if workDirRoot == "" {
 		if _, err := os.Stat("/data/nexus"); err == nil {
-			workDirRoot = "/data/nexus/libkrun-vms"
+			workDirRoot = "/data/nexus/default"
 		} else {
-			workDirRoot = filepath.Join(defaultDataDir(), "libkrun-vms")
+			workDirRoot = filepath.Join(defaultDataDir(), "default")
 		}
 	}
 	if err := validateReflinkSupport(workDirRoot); err != nil {

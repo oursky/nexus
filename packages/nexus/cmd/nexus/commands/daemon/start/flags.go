@@ -36,7 +36,7 @@ func registerStartFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&socketPath, "socket", filepath.Join(defaultData, "nexusd.sock"), "Unix socket path")
 	cmd.Flags().StringVar(&kernelPath, "kernel", os.Getenv("NEXUS_VM_KERNEL"), "VM kernel image path")
 	cmd.Flags().StringVar(&rootfsPath, "rootfs", os.Getenv("NEXUS_VM_ROOTFS"), "VM rootfs image path")
-	cmd.Flags().StringVar(&workDirRoot, "workdir-root", "", "VM work dir root (default: $state/libkrun-vms)")
+	cmd.Flags().StringVar(&workDirRoot, "workdir-root", "", "VM work dir root (default: /data/nexus/default when /data/nexus exists, else ~/.local/state/nexus/default)")
 	cmd.Flags().StringVar(&nodeName, "node-name", hostName(), "Node name for identity")
 	cmd.Flags().BoolVar(&network, "network", true, "Enable TCP/WebSocket network listener")
 	cmd.Flags().StringVar(&bind, "bind", "127.0.0.1", "Network listener bind address")

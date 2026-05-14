@@ -268,7 +268,7 @@ func resolveVMPaths(isLibkrun bool, rootfsPath, kernelPath, workDirRoot string) 
 		}
 	}
 	if strings.TrimSpace(workDirRoot) == "" {
-		workDirRoot = filepath.Join(storageRoot, "libkrun-vms")
+		workDirRoot = filepath.Join(storageRoot, DefaultLibkrunWorkDirSegment)
 	}
 	log.Printf(
 		"daemon: libkrun storage root=%s rootfs=%s bases=%s workdir=%s",
