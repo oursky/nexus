@@ -110,6 +110,16 @@ PLIST
 codesign --entitlements "$_ENT" --force --sign - "$NEXUS_BIN"
 rm -f "$_ENT"
 
+# gvproxy: same release as internal/vm/net/gvproxy.go (FindGVProxy checks PATH first).
+GVPROXY_VERSION="${GVPROXY_VERSION:-0.8.8}"
+GVPROXY_URL="https://github.com/containers/gvisor-tap-vsock/releases/download/v${GVPROXY_VERSION}/gvproxy-darwin"
+echo "==> Installing gvproxy → /tmp/gvproxy"
+if [[ ! -x /tmp/gvproxy ]]; then
+  curl -fsSL --retry 3 -L "$GVPROXY_URL" -o /tmp/gvproxy
+  chmod +x /tmp/gvproxy
+fi
+/tmp/gvproxy --help >/dev/null
+
 # ── Packages (match CI e2e-macos-vm when unset) ───────────────────────────────
 if [[ -n "${NEXUS_E2E_MACOS_PACKAGES:-}" ]]; then
   read -ra SUITES <<< "$NEXUS_E2E_MACOS_PACKAGES"
@@ -129,7 +139,7 @@ else
 fi
 
 # ── Env (mirror .github/workflows/ci.yml e2e-macos-vm) ───────────────────────
-export GOTOOLCHAIN="${GOTOOLCHAIN:-local}"
+export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
 export CI="${CI:-true}"
 export NEXUS_E2E_DRIVER=vm
 export NEXUS_E2E_BINARY="$NEXUS_BIN"

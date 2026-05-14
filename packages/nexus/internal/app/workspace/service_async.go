@@ -36,7 +36,7 @@ func readinessDeadlineDuration() time.Duration {
 // starting state during package installation to block premature PTY access).
 func (s *Service) runStartAsync(ws *workspace.Workspace) {
 	// Recover from panics so the workspace doesn't get stuck in StateStarting.
-	defer func() {
+		defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[workspace] runStartAsync: panic for workspace=%s: %v", ws.ID, r)
 			// Try to reset workspace to Created state so it can be retried.
@@ -47,6 +47,7 @@ func (s *Service) runStartAsync(ws *workspace.Workspace) {
 				current.UpdatedAt = time.Now().UTC()
 				_ = s.repo.Update(ctx, current)
 			}
+			s.notifyReady(ws.ID)
 		}
 	}()
 
@@ -64,11 +65,20 @@ func (s *Service) runStartAsync(ws *workspace.Workspace) {
 
 	current, ok := s.performStart(ctx, ws)
 	if !ok {
+		s.notifyReady(id)
 		return
 	}
 
 	current = s.waitForReadiness(ctx, current)
 	if current == nil {
+		resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if w, err := s.repo.Get(resetCtx, id); err == nil && w.State == workspace.StateStarting {
+			w.State = workspace.StateCreated
+			w.UpdatedAt = time.Now().UTC()
+			_ = s.repo.Update(resetCtx, w)
+		}
+		s.notifyReady(id)
 		return
 	}
 
