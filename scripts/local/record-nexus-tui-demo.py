@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 # Drive the Nexus TUI for an asciinema recording (bubbletea / lipgloss).
 #
-# Run from the repo root inside asciinema, with truecolor TERM and geometry.
-# Uses uv so pexpect does not need system/site install:
+# Run from the repo root as the inner command of `asciinema rec` (real PTY).
+# Requires: python3 + pexpect (system/site package — do not use `uv run` here
+# or resolver spinners pollute the cast).
 #
-#   export COLORTERM=truecolor TERM=xterm-256color COLUMNS=220 LINES=50
-#   cd /path/to/nexus && asciinema rec --cols 220 --rows 50 /tmp/nexus-demo-v2.cast -c \
-#     'uv run --with pexpect python3 scripts/local/record-nexus-tui-demo.py'
+#   ./scripts/local/record-nexus-tui-demo.sh
+#   # or:
+#   export COLORTERM=truecolor TERM=xterm-256color COLUMNS=180 LINES=45
+#   asciinema rec -e SHELL,TERM,COLORTERM,COLUMNS,LINES --cols 180 --rows 45 \
+#     docs/assets/nexus-tui-demo.cast -c 'python3 scripts/local/record-nexus-tui-demo.py'
 #
 # Optional: NEXUS_RECORD_DRIVER=libkrun with NEXUS_VM_KERNEL + NEXUS_VM_ROOTFS.
 
@@ -94,7 +97,7 @@ def make_git_repo(path: Path) -> None:
         check=True,
         capture_output=True,
     )
-    (path / "README.md").write_text("# myproject demo\n", encoding="utf-8")
+    (path / "README.md").write_text("# demo\n", encoding="utf-8")
     subprocess.run(["git", "add", "-A"], cwd=path, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=path, check=True, capture_output=True)
     subprocess.run(["git", "branch", "-M", "main"], cwd=path, check=True, capture_output=True)
@@ -147,7 +150,7 @@ def main() -> None:
     bindir = tmp / "bin"
     nexus = build_binaries(bindir)
 
-    repo = tmp / "myproject-repo"
+    repo = tmp / "demo-repo"
     repo.mkdir()
     make_git_repo(repo)
     repo_abs = str(repo.resolve())
@@ -189,7 +192,7 @@ def main() -> None:
     tui_env.setdefault("COLORTERM", "truecolor")
     tui_env.setdefault("TERM", "xterm-256color")
 
-    rows, cols = 50, 220
+    rows, cols = 45, 180
     if "LINES" in os.environ:
         rows = int(os.environ["LINES"])
     if "COLUMNS" in os.environ:
@@ -203,54 +206,38 @@ def main() -> None:
         timeout=240,
         maxread=65536,
     )
-    child.delaybeforesend = 0.1
+    child.delaybeforesend = 0.2
     child.setwinsize(rows, cols)
-    child.logfile = sys.stdout
+    # Child runs on a separate PTY; forward PTY output to this process so
+    # asciinema records it. Use logfile_read only (not logfile) to avoid echo
+    # duplication / ghost frames.
+    child.logfile_read = sys.stdout
 
     child.expect([r"[Cc]onnected", r"[Nn]exus", r"[Ww]orkspace"], timeout=60)
-    time.sleep(0.7)
+    time.sleep(2)
 
     # Create workspace (bubbletea expects \\r for Enter, not sendline's \\n).
     child.send("n")
     child.expect(r"tab next field", timeout=30)
-    child.send("myproject\r")
-    time.sleep(0.35)
-    # Enter advanced to repo; do not Tab here — Tab cycles fields and would skip repo.
+    time.sleep(1)
+    child.send("demo\r")
+    time.sleep(1)
+    # Enter repo path; do not Tab here — Tab cycles fields and would skip repo.
     child.send(repo_abs + "\r")
-    time.sleep(0.35)
+    time.sleep(1)
     child.send("main\r")
     child.expect(r"workspace created", timeout=90)
-    time.sleep(0.7)
+    time.sleep(2)
 
-    # Detail
+    # Workspace detail
     child.send("\r")
-    time.sleep(0.9)
+    time.sleep(2)
 
-    # Start — center pane attaches a PTY; three-pane layout already shows SPOTLIGHT sidebar.
     child.send("s")
-    time.sleep(2.0)
+    # Sandbox process workspaces reach running quickly; stay readable on slower hosts.
+    time.sleep(8)
+    time.sleep(3)
 
-    # Full-screen shell via workspace shell (avoid opening the spotlight overlay here —
-    # while that panel is open, keys like "t" are not routed to workspace actions).
-    child.send("t")
-    time.sleep(2.8)
-    child.send("pwd\r")
-    time.sleep(0.35)
-    child.send("uname -a\r")
-    time.sleep(0.35)
-    child.send("echo 'Nexus: host-side PTY (sandbox) — libkrun guests get Docker inside the VM.'\r")
-    time.sleep(0.35)
-    child.send("exit\r")
-    time.sleep(2.5)
-
-    child.expect([r"[Cc]onnected", r"[Nn]exus", r"myproject", r"[Qq]uit"], timeout=90)
-    time.sleep(0.5)
-    # Clear any overlay / focus quirks before stop.
-    child.send("\x1b")
-    time.sleep(0.25)
-
-    child.send("x")
-    time.sleep(1.0)
     child.send("q")
     child.expect(pexpect.EOF, timeout=45)
     child.close()

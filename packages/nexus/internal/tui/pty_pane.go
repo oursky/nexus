@@ -296,9 +296,11 @@ func openPTYCmd(mux *rpc.MuxConn, wsID string, cols, rows int) tea.Cmd {
 		}
 		if err := mux.Call("pty.create", map[string]any{
 			"workspaceId": wsID,
-			"workDir":     "/workspace",
-			"cols":        cols,
-			"rows":        rows,
+			// Empty workDir: daemon resolves to the workspace checkout on the host
+			// for process/sandbox sessions and to the guest default for VM sessions.
+			"workDir": "",
+			"cols":    cols,
+			"rows":    rows,
 		}, &session); err != nil {
 			cancelFn()
 			return ptyErrMsg{err: err}

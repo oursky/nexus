@@ -3,7 +3,7 @@
 **Remote Linux workspaces.**  
 The primary way to use Nexus is the **terminal UI**: run `nexus` or `nexus tui` to launch the interactive experience. **CLI commands** are an alternative for scripting, automation, and CI. Nexus orchestrates isolated dev environments (including libkrun microVMs) from the terminal.
 
-[![asciicast](https://asciinema.org/a/itft2emjD2vMyN6E.svg)](https://asciinema.org/a/itft2emjD2vMyN6E)
+[![asciicast](https://asciinema.org/a/DiVttc47hmtKf262.svg)](https://asciinema.org/a/DiVttc47hmtKf262)
 
 ---
 
