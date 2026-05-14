@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +27,8 @@ func openEditorCommand() *cobra.Command {
 		Use:   "open-editor <workspace>",
 		Short: "Open a workspace VM in Cursor or VS Code via Remote SSH",
 		Long: `Writes the SSH host-alias config to ~/.nexus/ssh/, verifies SSH connectivity
-from this machine (Mac → ProxyJump → VM), then opens the editor deep-link.
+from this machine (direct to the VM when the daemon is local, otherwise
+Mac → engine (ProxyJump) → VM), then opens the editor deep-link.
 
 The workspace must be running with a libkrun backend.
 
@@ -78,14 +80,14 @@ func runOpenEditor(cmd *cobra.Command, wsNameOrID, app string, checkOnly, skipCh
 		return fmt.Errorf("open-editor: workspace %q (state: %s) has no guest IP — is it running?\n  hint: nexus workspace start %s", wsNameOrID, ws.State, wsNameOrID)
 	}
 
-	proxyJump, jumpPort, jumpIdentity, err := resolveProxyJump()
+	direct, proxyJump, jumpPort, jumpIdentity, err := resolveOpenEditorSSH(ws.GuestIP)
 	if err != nil {
 		return err
 	}
 
 	hostAlias := "nexus-vm-" + ws.ID
 
-	if err := writeNexusSSHConfig(hostAlias, ws.GuestIP, proxyJump, jumpPort, jumpIdentity); err != nil {
+	if err := writeNexusSSHConfig(hostAlias, ws.GuestIP, direct, proxyJump, jumpPort, jumpIdentity); err != nil {
 		return fmt.Errorf("open-editor: writing SSH config: %w", err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "wrote ~/.nexus/ssh/%s.ssh.config\n", hostAlias)
@@ -95,8 +97,12 @@ func runOpenEditor(cmd *cobra.Command, wsNameOrID, app string, checkOnly, skipCh
 		if h, p := parseGuestIPPort(ws.GuestIP); p != "22" {
 			sshTarget = fmt.Sprintf("%s (port %s)", h, p)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "checking SSH: Mac → %s → %s ...\n", proxyJump, sshTarget)
-		ok, detail := runLocalSSHCheck(ws.GuestIP, proxyJump, jumpPort, jumpIdentity)
+		if direct {
+			fmt.Fprintf(cmd.OutOrStdout(), "checking SSH: %s ...\n", sshTarget)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "checking SSH: Mac → %s → %s ...\n", proxyJump, sshTarget)
+		}
+		ok, detail := runLocalSSHCheck(ws.GuestIP, direct, proxyJump, jumpPort, jumpIdentity)
 		if !ok {
 			fmt.Fprintf(cmd.ErrOrStderr(), "FAIL: %s\n", detail)
 			fmt.Fprintf(cmd.ErrOrStderr(), "\nTroubleshoot:\n")
@@ -110,8 +116,8 @@ func runOpenEditor(cmd *cobra.Command, wsNameOrID, app string, checkOnly, skipCh
 		return nil
 	}
 
-	ensureRemoteDir(ws.GuestIP, proxyJump, jumpPort, jumpIdentity, "/workspace/.cursor-server")
-	ensureRemoteDir(ws.GuestIP, proxyJump, jumpPort, jumpIdentity, "/workspace/.vscode-server")
+	ensureRemoteDir(ws.GuestIP, direct, proxyJump, jumpPort, jumpIdentity, "/workspace/.cursor-server")
+	ensureRemoteDir(ws.GuestIP, direct, proxyJump, jumpPort, jumpIdentity, "/workspace/.vscode-server")
 
 	editorApp := strings.ToLower(strings.TrimSpace(app))
 	if editorApp == "" {
@@ -125,21 +131,53 @@ func runOpenEditor(cmd *cobra.Command, wsNameOrID, app string, checkOnly, skipCh
 	return nil
 }
 
-func resolveProxyJump() (string, int, string, error) {
-	proxyJump := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_HOST"))
-	jumpPort := 0
+// guestSSHIsDirect is true when the guest SSH address is on loopback on this
+// machine (local libkrun / gvproxy port-forward). In that case the client must
+// connect directly and must not use a ProxyCommand to a remote engine.
+func guestSSHIsDirect(guestIP string) bool {
+	host := strings.TrimSpace(guestIP)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return isLoopbackSSHHost(host)
+}
+
+func isLoopbackSSHHost(host string) bool {
+	localhostNames := []string{"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+	lower := strings.ToLower(strings.TrimSpace(host))
+	for _, name := range localhostNames {
+		if lower == name {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveOpenEditorSSH(guestIP string) (direct bool, proxyJump string, jumpPort int, jumpIdentity string, err error) {
+	proxyJump = strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_HOST"))
+	jumpPort = 0
 	if rawPort := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_PORT")); rawPort != "" {
-		parsedPort, err := strconv.Atoi(rawPort)
-		if err != nil || parsedPort <= 0 {
-			return "", 0, "", fmt.Errorf("open-editor: invalid NEXUS_DAEMON_SSH_PORT=%q", rawPort)
+		parsedPort, perr := strconv.Atoi(rawPort)
+		if perr != nil || parsedPort <= 0 {
+			return false, "", 0, "", fmt.Errorf("open-editor: invalid NEXUS_DAEMON_SSH_PORT=%q", rawPort)
 		}
 		jumpPort = parsedPort
 	}
-	jumpIdentity := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_IDENTITY"))
+	jumpIdentity = strings.TrimSpace(os.Getenv("NEXUS_DAEMON_SSH_IDENTITY"))
+
+	if guestSSHIsDirect(guestIP) {
+		if jumpIdentity == "" {
+			if p, perr := profile.LoadDefault(); perr == nil && p != nil && p.SSHIdentityFile != "" {
+				jumpIdentity = p.SSHIdentityFile
+			}
+		}
+		return true, "", 0, jumpIdentity, nil
+	}
+
 	if proxyJump == "" {
-		p, err := profile.LoadDefault()
-		if err != nil {
-			return "", 0, "", fmt.Errorf("open-editor: %w", err)
+		p, perr := profile.LoadDefault()
+		if perr != nil {
+			return false, "", 0, "", fmt.Errorf("open-editor: %w", perr)
 		}
 		proxyJump = buildProxyJump(p)
 		if jumpPort == 0 && p != nil && p.SSHPort > 0 {
@@ -147,9 +185,9 @@ func resolveProxyJump() (string, int, string, error) {
 		}
 	}
 	if proxyJump == "" {
-		return "", 0, "", fmt.Errorf("open-editor: no engine SSH host configured (set NEXUS_DAEMON_SSH_HOST or run 'nexus daemon connect' first)")
+		return false, "", 0, "", fmt.Errorf("open-editor: no engine SSH host configured (set NEXUS_DAEMON_SSH_HOST or run 'nexus daemon connect' first)")
 	}
-	return proxyJump, jumpPort, jumpIdentity, nil
+	return false, proxyJump, jumpPort, jumpIdentity, nil
 }
 
 // writeNexusSSHConfig writes ~/.nexus/ssh/<hostAlias>.ssh.config and ensures
@@ -163,7 +201,7 @@ func parseGuestIPPort(guestIP string) (host, port string) {
 	return guestIP, "22"
 }
 
-func writeNexusSSHConfig(hostAlias, guestIP, proxyJump string, jumpPort int, jumpIdentity string) error {
+func writeNexusSSHConfig(hostAlias, guestIP string, direct bool, proxyJump string, jumpPort int, jumpIdentity string) error {
 	homeDir, err := sshConfigHomeDir()
 	if err != nil {
 		return err
@@ -174,17 +212,29 @@ func writeNexusSSHConfig(hostAlias, guestIP, proxyJump string, jumpPort int, jum
 	}
 	// guestIP may be "host:port" (slirp4netns port-forward) or a plain IP.
 	host, port := parseGuestIPPort(guestIP)
-	jumpArgs := buildJumpSSHBaseArgs(jumpPort, jumpIdentity)
-	proxyCommand := "ssh " + strings.Join(append(jumpArgs, "-W", "%h:%p", proxyJump), " ")
 	lines := []string{
 		"# Generated by nexus workspace open-editor (overwritten on each open).",
 		"Host " + hostAlias,
 		"  HostName " + host,
 		"  User root",
-		"  ProxyCommand " + proxyCommand,
-		"  StrictHostKeyChecking accept-new",
 		"  UserKnownHostsFile /dev/null",
 		"  SetEnv VSCODE_AGENT_FOLDER=/workspace/.vscode-server CURSOR_AGENT_FOLDER=/workspace/.cursor-server",
+	}
+	if direct {
+		lines = append(lines,
+			"  StrictHostKeyChecking no",
+			"  GlobalKnownHostsFile /dev/null",
+		)
+		if jumpIdentity != "" {
+			lines = append(lines, "  IdentityFile "+jumpIdentity)
+		}
+	} else {
+		jumpArgs := buildJumpSSHBaseArgs(jumpPort, jumpIdentity)
+		proxyCommand := "ssh " + strings.Join(append(jumpArgs, "-W", "%h:%p", proxyJump), " ")
+		lines = append(lines,
+			"  ProxyCommand "+proxyCommand,
+			"  StrictHostKeyChecking accept-new",
+		)
 	}
 	if port != "22" {
 		lines = append(lines, "  Port "+port)
@@ -264,16 +314,12 @@ func sshConfigHomeDir() (string, error) {
 	return homeDir, nil
 }
 
-// runLocalSSHCheck runs `ssh ... root@guestIP whoami` from the local machine
-// through the ProxyJump engine host, using an explicit ProxyCommand so $SHELL
-// and ~/.ssh/known_hosts cannot interfere with the test.
-func runLocalSSHCheck(guestIP, proxyJump string, jumpPort int, jumpIdentity string) (ok bool, detail string) {
+// runLocalSSHCheck runs `ssh ... root@host whoami` from the local machine,
+// optionally via a ProxyCommand to the engine host, using explicit -o flags so
+// $SHELL and ~/.ssh/known_hosts cannot interfere with the test.
+func runLocalSSHCheck(guestIP string, direct bool, proxyJump string, jumpPort int, jumpIdentity string) (ok bool, detail string) {
 	// guestIP may be "host:port" (slirp4netns port-forward) or a plain IP.
 	host, port := parseGuestIPPort(guestIP)
-
-	// Build ProxyCommand that forwards to host:port on the jump host.
-	// %h/%p macros expand to the outer ssh destination's host/port.
-	proxyCmd := buildProxyCommand(proxyJump, jumpPort, jumpIdentity)
 
 	args := []string{
 		"-o", "BatchMode=yes",
@@ -282,11 +328,15 @@ func runLocalSSHCheck(guestIP, proxyJump string, jumpPort int, jumpIdentity stri
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "GlobalKnownHostsFile=/dev/null",
 		"-o", "LogLevel=ERROR",
-		"-o", "ProxyCommand=" + proxyCmd,
 		"-p", port,
-		"root@" + host,
-		"whoami",
 	}
+	if !direct {
+		proxyCmd := buildProxyCommand(proxyJump, jumpPort, jumpIdentity)
+		args = append(args, "-o", "ProxyCommand="+proxyCmd)
+	} else if jumpIdentity != "" {
+		args = append(args, "-i", jumpIdentity)
+	}
+	args = append(args, "root@"+host, "whoami")
 
 	sshBin, err := exec.LookPath("ssh")
 	if err != nil {
@@ -322,9 +372,8 @@ envSet:
 // ensureRemoteDir runs `mkdir -p <dir>` on the remote VM via SSH.
 // Uses the same no-hostkey-check options as the connectivity check.
 // Best-effort: logs a warning on failure but does not abort the open.
-func ensureRemoteDir(guestIP, proxyJump string, jumpPort int, jumpIdentity string, dir string) {
+func ensureRemoteDir(guestIP string, direct bool, proxyJump string, jumpPort int, jumpIdentity string, dir string) {
 	host, port := parseGuestIPPort(guestIP)
-	proxyCmd := buildProxyCommand(proxyJump, jumpPort, jumpIdentity)
 	sshBin, err := exec.LookPath("ssh")
 	if err != nil {
 		return
@@ -336,11 +385,15 @@ func ensureRemoteDir(guestIP, proxyJump string, jumpPort int, jumpIdentity strin
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "GlobalKnownHostsFile=/dev/null",
 		"-o", "LogLevel=ERROR",
-		"-o", "ProxyCommand=" + proxyCmd,
 		"-p", port,
-		"root@" + host,
-		"mkdir", "-p", dir,
 	}
+	if !direct {
+		proxyCmd := buildProxyCommand(proxyJump, jumpPort, jumpIdentity)
+		args = append(args, "-o", "ProxyCommand="+proxyCmd)
+	} else if jumpIdentity != "" {
+		args = append(args, "-i", jumpIdentity)
+	}
+	args = append(args, "root@"+host, "mkdir", "-p", dir)
 	c := exec.Command(sshBin, args...)
 	env := os.Environ()
 	for i, e := range env {
