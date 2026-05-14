@@ -344,6 +344,11 @@ jobs:
         timeout-minutes: 5
         run: scripts/ci/build-nexus-libkrun.sh
 
+      # Stage darwin dylibs required by //go:embed in embed_libkrun_darwin.go
+      # when cross-compiling the darwin/arm64 nexus binary on Linux.
+      - name: Stage libkrun dylibs for darwin cross-build
+        run: bash scripts/local/build-libkrun-darwin.sh
+
       # Build cross-platform nexus binary for fat bundle tests.
       # The bundle exporter embeds both linux-amd64 and darwin-arm64 binaries.
       - name: Build cross-platform nexus binary (darwin/arm64)
