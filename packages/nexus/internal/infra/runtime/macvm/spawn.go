@@ -80,7 +80,8 @@ func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 		return nil, fmt.Errorf("macvm: gvproxy: %w", err)
 	}
 	sockGV := filepath.Join(cfg.sockDir, "gvproxy.sock")
-	gvp, err := vmnet.StartGVProxy(gvproxyBin, sockGV)
+	gvLogPath := filepath.Join(cfg.workDir, "gvproxy.log")
+	gvp, err := vmnet.StartGVProxy(gvproxyBin, sockGV, gvLogPath)
 	if err != nil {
 		return nil, fmt.Errorf("macvm: start gvproxy: %w", err)
 	}

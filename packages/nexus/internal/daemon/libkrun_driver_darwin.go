@@ -28,9 +28,14 @@ func buildLibkrunDriver(cfg Config, _ *store.WorkspaceStore, _ *transport.Hub) (
 		}
 	}
 
+	// VM state (per-workspace dirs, hvc0.log, gvproxy.log) lives under the cache
+	// dir (same defaults as macvm.DefaultManagerConfig), not under the lib
+	// share dir — otherwise CI and docs that assume ~/.cache/nexus/macvm-workspaces
+	// miss logs after failures.
+	macDefaults := macvm.DefaultManagerConfig()
 	driver := macvm.NewDriver(macvm.ManagerConfig{
 		LibDir:          libDir,
-		VMWorkDir:       filepath.Join(shareDir, "macvm-workspaces"),
+		VMWorkDir:       macDefaults.VMWorkDir,
 		RootFSCachePath: cfg.RootFSPath,
 		EmbeddedAgentFn: cfg.EmbeddedAgentFn,
 	})

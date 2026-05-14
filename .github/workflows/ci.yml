@@ -116,7 +116,8 @@ jobs:
       CI: "true"
       NEXUS_E2E_DRIVER: vm
       NEXUS_LIBKRUN_SKIP_BAKE: "1"
-      NEXUS_LIBKRUN_MEM_MIB: "256"
+      # 256 MiB is too tight for reliable guest boot + agent on GitHub macOS runners.
+      NEXUS_LIBKRUN_MEM_MIB: "512"
       NEXUS_WORKSPACE_IMAGE_MIN_MIB: "512"
       NEXUS_RUNNER_ROOTFS_MIN_MIB: "512"
       # Fail fast if a VM doesn't become ready within 90 s instead of the default 3 min.
@@ -227,19 +228,30 @@ jobs:
       - name: Dump VM serial and gvproxy logs on failure
         if: failure()
         run: |
-          MACVM_DIR="$HOME/.cache/nexus/macvm-workspaces"
-          echo "=== macvm workspace dirs ==="
-          ls -la "$MACVM_DIR" 2>/dev/null || echo "(none)"
-          echo ""
-          find "$MACVM_DIR" -name "hvc0.log" 2>/dev/null | sort | while read -r f; do
-            echo "=== $f ($(wc -l < "$f" 2>/dev/null || echo 0) lines) ==="
-            cat "$f" 2>/dev/null || echo "(unreadable)"
+          set +e
+          # Daemon historically used ~/.local/share/nexus/macvm-workspaces; defaults + CI use cache.
+          MACVM_CANDIDATES=(
+            "${XDG_CACHE_HOME:-$HOME/.cache}/nexus/macvm-workspaces"
+            "${XDG_DATA_HOME:-$HOME/.local/share}/nexus/macvm-workspaces"
+          )
+          for MACVM_DIR in "${MACVM_CANDIDATES[@]}"; do
+            echo "=== macvm workspaces: $MACVM_DIR ==="
+            ls -la "$MACVM_DIR" 2>/dev/null || echo "(missing or empty)"
             echo ""
           done
-          find "$MACVM_DIR" -name "gvproxy.log" 2>/dev/null | sort | while read -r f; do
-            echo "=== $f (last 50 lines) ==="
-            tail -50 "$f" 2>/dev/null || echo "(unreadable)"
-            echo ""
+          for MACVM_DIR in "${MACVM_CANDIDATES[@]}"; do
+            find "$MACVM_DIR" -name "hvc0.log" 2>/dev/null | sort | while read -r f; do
+              echo "=== $f ($(wc -l < "$f" 2>/dev/null || echo 0) lines) ==="
+              cat "$f" 2>/dev/null || echo "(unreadable)"
+              echo ""
+            done
+          done
+          for MACVM_DIR in "${MACVM_CANDIDATES[@]}"; do
+            find "$MACVM_DIR" \( -name "gvproxy.log" -o -name "*.sock.log" \) 2>/dev/null | sort -u | while read -r f; do
+              echo "=== $f (last 80 lines) ==="
+              tail -80 "$f" 2>/dev/null || echo "(unreadable)"
+              echo ""
+            done
           done
 
   e2e:

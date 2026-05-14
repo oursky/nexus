@@ -61,13 +61,18 @@ func FindGVProxy(autoDownload bool) (string, error) {
 // StartGVProxy starts a gvproxy process listening on a Unix datagram socket.
 // The socket is created at socketPath. The caller is responsible for stopping
 // the process with Stop().
-func StartGVProxy(gvproxyPath, socketPath string) (*GVProxy, error) {
+//
+// If logPath is empty, logs are written alongside the socket (socketPath+".log").
+// Pass a workspace directory file (e.g. workDir/gvproxy.log) so logs survive sockDir cleanup.
+func StartGVProxy(gvproxyPath, socketPath string, logPath string) (*GVProxy, error) {
 	// Remove any stale sockets.
 	_ = os.Remove(socketPath)
 	ctlSocket := socketPath + ".ctl"
 	_ = os.Remove(ctlSocket)
 
-	logPath := socketPath + ".log"
+	if logPath == "" {
+		logPath = socketPath + ".log"
+	}
 
 	// Use a random high port for SSH to avoid conflicts with other gvproxy
 	// instances. Port 0 is not accepted, so pick from 40000-60000.
