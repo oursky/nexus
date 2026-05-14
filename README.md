@@ -1,7 +1,10 @@
 # Nexus
 
-**Remote Linux workspaces — CLI and TUI.**  
-Orchestrate isolated dev environments (including libkrun microVMs) from the terminal.
+**Remote Linux workspaces.**  
+The primary way to use Nexus is the **terminal UI**: run `nexus` or `nexus tui` to launch the interactive experience. **CLI commands** are an alternative for scripting, automation, and CI. Nexus orchestrates isolated dev environments (including libkrun microVMs) from the terminal.
+
+<!-- TODO: record TUI demo -->
+[![asciicast](https://asciinema.org/a/PLACEHOLDER.svg)](https://asciinema.org/a/PLACEHOLDER)
 
 ---
 
@@ -17,13 +20,25 @@ Installs `nexus` and `pty-host` into `~/.local/bin` by default. Override the des
 curl -fsSL https://raw.githubusercontent.com/oursky/nexus/main/install.sh | env INSTALL_DIR=/usr/local/bin bash
 ```
 
-**Linux daemon hosts:** the VM driver expects persistent storage under `/data/nexus` (default workspace VM path includes `/data/nexus/default`). The installer **always** creates `/data/nexus` and `/data/nexus/default` on Linux, using `sudo` when needed, and assigns ownership to your user. Production machines should mount **XFS with reflink=1** (or reflink-capable btrfs) on `/data` so copy-on-write microVM images perform correctly—the install script cannot create that filesystem layout for you, but Nexus requires that store to exist before workspaces run.
-
-The script uses `sudo` only when the install destination or `/data` paths are not user-writable.
+The script uses `sudo` only when the install destination is not user-writable.
 
 ---
 
-## Getting started (CLI)
+## Getting started (TUI)
+
+```bash
+nexus
+# or explicitly:
+nexus tui
+```
+
+Use the TUI to connect to a daemon, manage workspaces, port forwards (spotlight), and shells. The SSH target and auth depend on your deployment.
+
+---
+
+## CLI (scripting, automation, CI)
+
+For non-interactive and automated workflows:
 
 ```bash
 # Point the CLI at a daemon (SSH target depends on your deployment)
@@ -43,7 +58,7 @@ See [CLI reference](docs/reference/cli.md) for the full command tree.
 | Feature | How |
 | ------- | --- |
 | **Isolated Linux workspaces** | Lightweight libkrun microVMs — Linux kernel, Docker, isolated network |
-| **CLI / TUI** | Full lifecycle: daemon, workspaces, port forwards (`spotlight`), exec |
+| **TUI / CLI** | Full lifecycle: daemon, workspaces, port forwards (`spotlight`), exec |
 | **Git + Docker inside the VM** | Develop and run containers in each microVM |
 
 ---
@@ -53,7 +68,7 @@ See [CLI reference](docs/reference/cli.md) for the full command tree.
 ```mermaid
 flowchart TD
   subgraph user["Your machine"]
-    CLI["nexus CLI / TUI"]
+    CLI["nexus TUI / CLI"]
   end
   subgraph engine["Linux engine host"]
     D["nexus daemon"]

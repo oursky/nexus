@@ -1,6 +1,6 @@
 # Nexus Daemon (`packages/nexus`)
 
-Go daemon and CLI for orchestrating remote workspaces as **lightweight libkrun microVMs** (Linux KVM + guest agent).
+Go daemon and interactive **TUI**, plus a **CLI** for scripting and automation, for orchestrating remote workspaces as **lightweight libkrun microVMs** (Linux KVM + guest agent). Day-to-day use is typically `nexus` or `nexus tui`; commands under `nexus <subcommand>` target automation and CI.
 
 ## Install (released binaries)
 
@@ -12,8 +12,6 @@ curl -fsSL https://raw.githubusercontent.com/oursky/nexus/main/install.sh | bash
 
 This installs `nexus` and `pty-host` into `~/.local/bin` (override with `INSTALL_DIR`). The script picks a suitable SHA-256 tool, uses `sudo` only if the install directory is not user-writable.
 
-**Linux (VM driver):** `/data/nexus` and **`/data/nexus/default`** are **required**. The installer always creates both on Linux (with `sudo` when necessary) and assigns ownership to your user.
-
 To pin a version: `curl ... | env NEXUS_VERSION=v0.31.0 bash`, or run from a checkout with `NEXUS_VERSION` set.
 
 Releases older than `pty-host` bundles fall back to `go install` for `pty-host` only (still one command). **`go install` of the main `nexus` binary is not supported** from the module proxy: Linux builds require embedded guest-agent artifacts; use the install script or [GitHub Releases](https://github.com/oursky/nexus/releases) assets.
@@ -23,7 +21,7 @@ Releases older than `pty-host` bundles fall back to `go install` for `pty-host` 
 ```mermaid
 flowchart TD
   subgraph user["User machine"]
-    CLI["nexus CLI / TUI"]
+    CLI["nexus TUI / CLI"]
   end
   subgraph engine["Linux engine host"]
     D["nexus daemon"]
@@ -38,7 +36,8 @@ flowchart TD
 
 ## What this package provides
 
-- **`nexus` CLI** — full command-line interface for connecting to and managing remote workspaces
+- **Interactive TUI** — primary interface; run `nexus` or `nexus tui`
+- **`nexus` CLI** — alternative for scripts, automation, and CI (`nexus daemon`, `nexus workspace`, …)
 - **Daemon** — Go server that runs on the remote Linux host, managing workspace lifecycle, port forwards, and PTY sessions
 - **4-layer internal architecture** — domain → infra → app → rpc
 
@@ -74,4 +73,3 @@ go test ./...
 
 - Full CLI reference: `[docs/reference/cli.md](../../docs/reference/cli.md)`
 - Architecture: `[ARCHITECTURE.md](../../ARCHITECTURE.md)`
-
