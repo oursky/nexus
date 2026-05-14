@@ -308,6 +308,11 @@ jobs:
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: bash scripts/ci/stage-nexus-linux-embeds.sh
 
+      # go:embed libkrun-darwin-arm64.dylib (committed .gitignore); same blobs used for amd64/arm64 slices.
+      - name: Stage libkrun dylibs for macOS embed
+        if: matrix.goos == 'darwin'
+        run: bash scripts/local/build-libkrun-darwin.sh
+
       - name: Build nexus binary
         working-directory: packages/nexus
         env:
@@ -410,10 +415,38 @@ jobs:
           path: dist/rootfs-linux-amd64.ext4.gz
           if-no-files-found: error
 
+  release-darwin-guest-rootfs:
+    name: macOS guest rootfs (linux/arm64 image for libkrun)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      - name: Install e2fsprogs
+        run: brew install e2fsprogs
+
+      - name: Build and compress darwin-arm64 guest rootfs
+        run: bash scripts/ci/build-release-darwin-arm64-guest-rootfs.sh
+
+      - name: Upload darwin guest rootfs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs-darwin-arm64-guest
+          path: dist/rootfs-darwin-arm64.ext4.gz
+          if-no-files-found: error
+
   release-publish:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [release-build, release-host-rootfs]
+    needs: [release-build, release-host-rootfs, release-darwin-guest-rootfs]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -432,6 +465,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: rootfs-linux-amd64-host
+          path: dist
+
+      - name: Download darwin guest rootfs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rootfs-darwin-arm64-guest
           path: dist
 
       - name: Prepare checksums and latest.json
@@ -457,6 +496,7 @@ jobs:
           fi
           extra=()
           [ -f rootfs-linux-amd64.ext4.gz ] && extra+=(rootfs-linux-amd64.ext4.gz)
+          [ -f rootfs-darwin-arm64.ext4.gz ] && extra+=(rootfs-darwin-arm64.ext4.gz)
           sha256sum nexus-* nexus-libkrun-vm-linux-amd64 "${extra[@]}" > checksums.txt
 
           VERSION="${GITHUB_REF_NAME}"
@@ -473,6 +513,11 @@ jobs:
             ROOTFS_SHA="$(hash_for rootfs-linux-amd64.ext4.gz)"
           fi
 
+          ROOTFS_DARWIN_SHA=""
+          if [ -f rootfs-darwin-arm64.ext4.gz ]; then
+            ROOTFS_DARWIN_SHA="$(hash_for rootfs-darwin-arm64.ext4.gz)"
+          fi
+
           jq -n \
             --arg ver "${VERSION}" \
             --arg pub "${PUB_DATE}" \
@@ -482,6 +527,7 @@ jobs:
             --arg h_da "$(hash_for nexus-darwin-amd64)" \
             --arg h_darm "$(hash_for nexus-darwin-arm64)" \
             --arg h_rf "${ROOTFS_SHA}" \
+            --arg h_rfd "${ROOTFS_DARWIN_SHA}" \
             '
             {
               version: $ver,
@@ -499,6 +545,12 @@ jobs:
                   sha256: $h_rf
                 }
               } else . end
+            | if ($h_rfd | length) > 0 then . + {
+                rootfs_darwin_arm64: {
+                  url: ($b + "/rootfs-darwin-arm64.ext4.gz"),
+                  sha256: $h_rfd
+                }
+              } else . end
             ' > latest.json
 
       - name: Create versioned release
@@ -513,12 +565,13 @@ jobs:
           {
             echo "Automated release build for \`${TAG_NAME}\`."
             echo ""
-            echo "Assets include cross-platform CLI binaries, optional prebuilt libkrun **host** rootfs (\`rootfs-linux-amd64.ext4.gz\`) for faster Linux/amd64 startup, \`checksums.txt\`, and \`latest.json\`."
+            echo "Assets include cross-platform CLI binaries, optional prebuilt **Linux/amd64 libkrun host** rootfs (\`rootfs-linux-amd64.ext4.gz\`), optional **macOS/ARM64 guest** VM disk (\`rootfs-darwin-arm64.ext4.gz\`, matches \`macvm\` cache layout), \`checksums.txt\`, and \`latest.json\`."
             echo ""
             echo "**Note:** Linux binaries embed the Linux guest-agent (\`CGO_ENABLED=0\`). macOS binaries do not embed the Linux agent bundle."
           } >"$NOTES"
           EXTRA=()
           [ -f dist/rootfs-linux-amd64.ext4.gz ] && EXTRA+=(dist/rootfs-linux-amd64.ext4.gz)
+          [ -f dist/rootfs-darwin-arm64.ext4.gz ] && EXTRA+=(dist/rootfs-darwin-arm64.ext4.gz)
           gh release create "${TAG_NAME}" \
             --repo "${GITHUB_REPO}" \
             --verify-tag \
@@ -560,6 +613,7 @@ jobs:
           } >"$NOTES_FILE"
           EXTRA=()
           [ -f dist/rootfs-linux-amd64.ext4.gz ] && EXTRA+=(dist/rootfs-linux-amd64.ext4.gz)
+          [ -f dist/rootfs-darwin-arm64.ext4.gz ] && EXTRA+=(dist/rootfs-darwin-arm64.ext4.gz)
           ASSETS=(
             dist/nexus-linux-amd64
             dist/nexus-linux-arm64
