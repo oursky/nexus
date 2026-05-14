@@ -41,6 +41,9 @@ func main() {
 		Short:         "Nexus remote workspace CLI",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return tuicmd.RunDefault()
+		},
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			// --daemon-ws allows callers (e.g. sandboxed macOS app) to pass the
 			// WebSocket URL via CLI arg instead of NEXUS_E2E_DAEMON_WEBSOCKET env var,

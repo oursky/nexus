@@ -5,6 +5,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// RunDefault launches the TUI with the same defaults as `nexus tui` (no flags).
+func RunDefault() error {
+	return nexustui.Run(nexustui.Options{
+		AutoAttach: false,
+		Port:       defaultLocalPort,
+	})
+}
+
 func Command() *cobra.Command {
 	var autoAttach bool
 	var port int
@@ -23,10 +31,7 @@ Flags:
                   NOT the default; session state is always restored from disk.
   --port          Local daemon port to probe / start on first run (default: 7777).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return nexustui.Run(nexustui.Options{
-				AutoAttach: autoAttach,
-				Port:       port,
-			})
+			return nexustui.Run(nexustui.Options{AutoAttach: autoAttach, Port: port})
 		},
 	}
 
