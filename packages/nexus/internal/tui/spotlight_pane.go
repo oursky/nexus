@@ -66,14 +66,25 @@ func renderSpotlightSidebar(m *Model, width, height int) string {
 			} else {
 				portStr = fmt.Sprintf("%d→%d", f.LocalPort, f.RemotePort)
 			}
-			row := truncate(portStr, max(width-3, 8))
+
+			// Tunnel status suffix for active forwards.
+			var tunnelSuffix string
+			if f.State == spotlight.ForwardStateActive {
+				if m.sidebarTunnelLive {
+					tunnelSuffix = " " + statusOkStyle.Render("✓")
+				} else {
+					tunnelSuffix = " " + statusErrStyle.Render("✗")
+				}
+			}
+
+			row := truncate(portStr, max(width-5, 6))
 			var rendered string
 			if i == m.sidebarSel && focused {
 				rendered = lipgloss.NewStyle().
 					Foreground(lipgloss.Color("#FFFDF5")).
-					Render("›" + indicator + " " + row)
+					Render("›"+indicator+" "+row) + tunnelSuffix
 			} else {
-				rendered = "  " + indicator + " " + row
+				rendered = "  " + indicator + " " + row + tunnelSuffix
 			}
 			b.WriteString(rendered)
 			b.WriteString("\n")
