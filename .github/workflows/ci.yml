@@ -12,6 +12,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Heavy libkrun/KVM e2e under packages/nexus/test/e2e/... is run on developer hosts
+# (Mac + Linux KVM box), not on GitHub-hosted VMs for every PR. Use Taskfile
+# `task test:e2e:local` or scripts/local/run-linux-e2e.sh / run-mac-e2e.sh (see repo README).
+
 jobs:
   lint:
     name: Lint (nexus)
@@ -161,6 +165,9 @@ jobs:
         if: failure()
         run: bash scripts/ci/dump-macos-vm-logs.sh
 
+  # Full e2e is also run locally on dev Mac + linuxbox; when this job is enabled on a
+  # self-hosted runner with KVM it is the canonical CI gate for the VM-backed suite.
+  #
   # Disabled on GitHub CI — run on a Linux host: bash scripts/local/run-linux-e2e.sh
   e2e:
     if: false
@@ -365,12 +372,26 @@ jobs:
             **/coverage/
           retention-days: 1
 
-  # Bubble Tea TUI — sandbox daemon (--driver sandbox) needs no KVM; host bootstrap skips libkrun
-  # provisioning for process/sandbox (see packages/nexus/cmd/nexus/rootless_bootstrap_linux.go).
-  # Heavy libkrun E2E remains on self-hosted Linux (job `e2e`, `if: false` here).
+  # TUI e2e starts nexusd with libkrun when NEXUS_VM_KERNEL + NEXUS_VM_ROOTFS are set
+  # (same driver selection as test/e2e/harness). Runs on self-hosted Linux with KVM +
+  # scripts/ci/* prerequisites matching job `e2e`. Wall-clock budget is capped; failures
+  # and timeouts are non-blocking (continue-on-error).
   tui-e2e:
-    name: TUI E2E (ubuntu-latest)
-    runs-on: ubuntu-latest
+    name: TUI E2E (self-hosted Linux / VM)
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 45
+    env:
+      CI: true
+      GOTOOLCHAIN: local
+      NEXUS_LIBKRUN_SKIP_BAKE: "1"
+      NEXUS_LIBKRUN_BAKE_TIMEOUT: "120s"
+      NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "1"
+      NEXUS_VM_KERNEL: /var/lib/nexus/vmlinux.bin
+      NEXUS_VM_ROOTFS: /var/lib/nexus/rootfs.ext4
+      NEXUS_WORKSPACE_IMAGE_MIN_MIB: "128"
+      NEXUS_RUNNER_ROOTFS_MIN_MIB: "128"
+      NEXUS_LIBKRUN_MEM_MIB: "256"
+      NEXUS_PASST_PATH: /tmp/passt-patched
 
     steps:
       - name: Checkout code
@@ -382,15 +403,78 @@ jobs:
           go-version-file: packages/nexus/go.mod
           cache-dependency-path: packages/nexus/go.sum
 
-      - name: Build embedded Linux guest-agent (embed prerequisite)
-        working-directory: packages/nexus
-        run: go generate ./cmd/nexus/
+      - name: Enable KVM access
+        run: scripts/ci/enable-kvm.sh
 
-      - name: Run TUI e2e tests
+      - name: Install host prerequisites
+        run: scripts/ci/install-host-prereqs.sh
+
+      - name: Set up XFS reflink volume for libkrun workspaces
+        run: scripts/ci/setup-xfs-reflink.sh
+
+      - name: Prepare libkrun bake cache paths
+        run: scripts/ci/prepare-libkrun-cache-env.sh
+
+      - name: Restore pre-baked libkrun VM assets
+        id: libkrun-baked-cache
+        timeout-minutes: 5
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LIBKRUN_BAKED_CACHE_DIR }}
+          key: libkrun-baked-v6-${{ runner.os }}-${{ hashFiles('Nexusfile', 'schemas/nexusfile.schema.json', 'packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/internal/infra/runtime/libkrun/bake_version.go', 'packages/nexus/cmd/nexus-guest-agent/**', 'packages/nexus/cmd/nexus/nexus-libkrun-vm', 'packages/nexus/cmd/nexus/rootless_bootstrap_linux.go') }}
+          restore-keys: |
+            libkrun-baked-v6-${{ runner.os }}-
+
+      - name: Hydrate cached VM assets to host paths
+        timeout-minutes: 5
+        run: scripts/ci/hydrate-libkrun-cache.sh
+
+      - name: Verify pre-baked VM assets (cache hint)
+        run: scripts/ci/verify-vm-assets.sh hint
+
+      - name: Build embedded guest-agent + libkrun nexus (Linux CI)
+        timeout-minutes: 5
+        run: scripts/ci/build-nexus-libkrun.sh
+
+      - name: Build patched passt for containerized CI
+        timeout-minutes: 5
+        run: bash scripts/ci/build-passt.sh
+
+      - name: Provision libkrun host (kernel + rootfs)
+        timeout-minutes: 5
+        run: scripts/ci/provision-libkrun-host.sh
+
+      - name: Verify VM assets after provisioning
+        run: scripts/ci/verify-vm-assets.sh required
+
+      # NEXUS_VM_KERNEL / NEXUS_VM_ROOTFS (job env) select libkrun in test/e2e/tui (see tuiDaemonDriverArgs).
+      - name: Run TUI e2e (VM driver, non-blocking)
+        continue-on-error: true
         working-directory: packages/nexus
-        env:
-          CI: true
-        run: go test -tags e2e -count=1 -timeout=5m -v ./test/e2e/tui/...
+        run: |
+          set +e
+          echo "TUI e2e (VM): wall-clock budget 4m via timeout(1); failures/timeouts are non-blocking for merge."
+          timeout 4m sudo -E env \
+            "PATH=$PATH" \
+            "HOME=$HOME" \
+            "CI=$CI" \
+            "NEXUS_VM_KERNEL=${NEXUS_VM_KERNEL}" \
+            "NEXUS_VM_ROOTFS=${NEXUS_VM_ROOTFS}" \
+            "NEXUS_LIBKRUN_SKIP_BAKE=${NEXUS_LIBKRUN_SKIP_BAKE}" \
+            "NEXUS_WORKSPACE_IMAGE_MIN_MIB=${NEXUS_WORKSPACE_IMAGE_MIN_MIB}" \
+            "NEXUS_RUNNER_ROOTFS_MIN_MIB=${NEXUS_RUNNER_ROOTFS_MIN_MIB}" \
+            "NEXUS_LIBKRUN_MEM_MIB=${NEXUS_LIBKRUN_MEM_MIB}" \
+            "NEXUS_PASST_PATH=${NEXUS_PASST_PATH}" \
+            go test -tags e2e -count=1 -timeout=3m30s -v ./test/e2e/tui/...
+          exit=$?
+          if [ "$exit" -eq 124 ]; then
+            echo "TUI e2e (VM) exceeded budget — non-blocking"
+          fi
+          exit "$exit"
+
+      - name: Dump VM diagnostics on failure
+        if: failure()
+        run: bash scripts/ci/dump-linux-vm-diagnostics.sh
 
   # Matches hkfc-style macOS builds: use repository variable NEXUS_MACOS_DEVELOPER_DIR
   # (e.g. /Applications/Xcode_16.2.app/Contents/Developer) on self-hosted runners

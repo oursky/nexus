@@ -93,12 +93,51 @@ func randomToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func startSandboxDaemon(bin string) (*daemonEnv, error) {
+// tuiDaemonDriverArgs selects sandbox vs VM-backed daemon flags.
+//
+// Linux VM (libkrun): set NEXUS_VM_KERNEL and NEXUS_VM_ROOTFS (or NEXUS_E2E_ROOTFS),
+// matching packages/nexus/test/e2e/harness e2eVMArgs / CI linux e2e jobs.
+//
+// macOS VM: set NEXUS_E2E_DRIVER=vm and NEXUS_VM_ROOTFS (same as harness).
+//
+// Otherwise defaults to --driver sandbox (fast local runs without KVM).
+func tuiDaemonDriverArgs() ([]string, error) {
+	if runtime.GOOS == "darwin" && strings.EqualFold(strings.TrimSpace(os.Getenv("NEXUS_E2E_DRIVER")), "vm") {
+		root := harness.VMRootfsFromEnv()
+		if root == "" {
+			return nil, fmt.Errorf("NEXUS_E2E_DRIVER=vm requires NEXUS_VM_ROOTFS or NEXUS_E2E_ROOTFS")
+		}
+		return []string{"--driver", "vm", "--rootfs", root}, nil
+	}
+	kernel := strings.TrimSpace(os.Getenv("NEXUS_VM_KERNEL"))
+	if kernel != "" {
+		if runtime.GOOS != "linux" {
+			return nil, fmt.Errorf("NEXUS_VM_KERNEL is only supported on linux (GOOS=%s)", runtime.GOOS)
+		}
+		root := harness.VMRootfsFromEnv()
+		if root == "" {
+			return nil, fmt.Errorf("NEXUS_VM_KERNEL requires NEXUS_VM_ROOTFS or NEXUS_E2E_ROOTFS")
+		}
+		return []string{
+			"--kernel", kernel,
+			"--rootfs", root,
+			"--driver", "libkrun",
+		}, nil
+	}
+	return []string{"--driver", "sandbox"}, nil
+}
+
+func startDaemon(bin string) (*daemonEnv, error) {
 	port, err := freeTCPPort()
 	if err != nil {
 		return nil, err
 	}
 	token, err := randomToken()
+	if err != nil {
+		return nil, err
+	}
+
+	driverArgs, err := tuiDaemonDriverArgs()
 	if err != nil {
 		return nil, err
 	}
@@ -127,13 +166,15 @@ func startSandboxDaemon(bin string) (*daemonEnv, error) {
 		"--db", dbPath,
 		"--socket", socketPath,
 		"--workdir-root", workDir,
-		"--driver", "sandbox",
+	}
+	args = append(args, driverArgs...)
+	args = append(args,
 		"--network=true",
 		"--bind", "127.0.0.1",
 		"--port", strconv.Itoa(port),
 		"--token", token,
 		"--foreground",
-	}
+	)
 
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = os.Stderr
@@ -145,7 +186,11 @@ func startSandboxDaemon(bin string) (*daemonEnv, error) {
 		return nil, err
 	}
 
-	deadline := time.Now().Add(60 * time.Second)
+	waitDaemon := 60 * time.Second
+	if harness.IsVMBackend() {
+		waitDaemon = 120 * time.Second
+	}
+	deadline := time.Now().Add(waitDaemon)
 	var client *harness.Client
 	for time.Now().Before(deadline) {
 		c, err := harness.Dial(socketPath)

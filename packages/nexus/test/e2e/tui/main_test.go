@@ -20,7 +20,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "tui e2e build: %v\n", err)
 		os.Exit(1)
 	}
-	env, err := startSandboxDaemon(bin)
+	env, err := startDaemon(bin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tui e2e daemon: %v\n", err)
 		os.Exit(1)
