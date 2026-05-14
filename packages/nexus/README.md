@@ -12,7 +12,7 @@ curl -fsSL https://raw.githubusercontent.com/oursky/nexus/main/install.sh | bash
 
 This installs `nexus` and `pty-host` into `~/.local/bin` (override with `INSTALL_DIR`). The script picks a suitable SHA-256 tool, uses `sudo` only if the install directory is not user-writable.
 
-**Linux (VM driver):** `/data/nexus` and **`/data/nexus/default`** are **required**. The installer always creates both on Linux (with `sudo` when necessary) and assigns ownership to your user. You must still provide **XFS with reflink** or **reflink-capable btrfs** underneath `/data` on production hosts—that volume layout is mandatory for correct libkrun VM image behavior; the installer only guarantees the directories exist.
+**Linux (VM driver):** `/data/nexus` and **`/data/nexus/default`** are **required**. The installer always creates both on Linux (with `sudo` when necessary) and assigns ownership to your user.
 
 To pin a version: `curl ... | env NEXUS_VERSION=v0.31.0 bash`, or run from a checkout with `NEXUS_VERSION` set.
 

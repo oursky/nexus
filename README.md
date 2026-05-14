@@ -38,12 +38,6 @@ See [CLI reference](docs/reference/cli.md) for the full command tree.
 
 ---
 
-## Linux host: XFS-backed `/data/nexus` (required)
-
-Configure the daemon host so `/data/nexus` (and `/data/nexus/default`) lie on **XFS with reflink** or **btrfs** with reflinks. Nexus depends on `/data/nexus` for libkrun microVM layering; omitting reflink-capable storage will break or severely degrade workspace startup. **`install.sh` always provisions the directory tree on Linux**, but provisioning the backing volume (partition, LV, loop+XFS mount, cloud disk, etc.) is a **mandatory prerequisite** before `nexus daemon start` on VM-backed deployments.
-
----
-
 ## What it does
 
 | Feature | How |
