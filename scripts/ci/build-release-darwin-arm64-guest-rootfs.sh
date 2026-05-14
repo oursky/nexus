@@ -31,6 +31,8 @@ rm -rf "$STAGING"
 mkdir -p "$STAGING"
 sudo tar --no-same-owner -xJf /tmp/ubuntu-arm64-root.tar.xz -C "$STAGING"
 sudo chown -R "$(id -u):$(id -g)" "$STAGING"
+# snapd's void/ is not traversable for non-root; mke2fs -d must scan the whole tree.
+rm -rf "$STAGING/var/lib/snapd/void"
 mkdir -p "$STAGING/usr/local/bin"
 cp /tmp/nexus-guest-agent "$STAGING/usr/local/bin/nexus-guest-agent"
 chmod 0755 "$STAGING/usr/local/bin/nexus-guest-agent"
