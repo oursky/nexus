@@ -375,12 +375,12 @@ jobs:
 
   # TUI e2e starts nexusd with libkrun when NEXUS_VM_KERNEL + NEXUS_VM_ROOTFS are set
   # (same driver selection as test/e2e/harness). Runs on GitHub-hosted ubuntu-latest
-  # with KVM + the same slim libkrun prep as disabled job `e2e` (no shard matrix).
-  # Failures and timeouts are non-blocking (continue-on-error).
+  # with KVM + the same libkrun prep chain as disabled job `e2e` (no shard matrix;
+  # no SSH profile / vmproof-only steps).
   tui-e2e:
     name: TUI E2E (ubuntu-latest / libkrun VM)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       CI: true
       GOTOOLCHAIN: local
@@ -448,15 +448,32 @@ jobs:
       - name: Verify VM assets after provisioning
         run: scripts/ci/verify-vm-assets.sh required
 
-      # NEXUS_VM_KERNEL / NEXUS_VM_ROOTFS (job env) select libkrun in test/e2e/tui (see tuiDaemonDriverArgs).
-      - name: Run TUI e2e (VM driver, non-blocking)
-        timeout-minutes: 8
+      - name: Probe runner VM network forwarding
+        id: runner-network-probe
         continue-on-error: true
+        run: scripts/ci/probe-runner-network.sh
+
+      - name: Prewarm default-profile baked rootfs (best effort, bounded)
+        if: steps.runner-network-probe.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: scripts/ci/prewarm-default-profile.sh
+        env:
+          NEXUS_PASST_PATH: /tmp/passt-patched
+
+      - name: Refresh baked VM cache contents
+        if: always()
+        timeout-minutes: 5
+        run: scripts/ci/refresh-libkrun-cache.sh
+
+      # NEXUS_VM_KERNEL / NEXUS_VM_ROOTFS (job env) select libkrun in test/e2e/tui (see tuiDaemonDriverArgs).
+      # Outer timeout(1) is slightly above go test -timeout so the runner reports hard kills cleanly on GH.
+      - name: Run TUI e2e (VM driver)
+        timeout-minutes: 22
         working-directory: packages/nexus
         run: |
-          set +e
-          echo "TUI e2e (VM): wall-clock budget 7m via timeout(1); failures/timeouts are non-blocking for merge."
-          timeout 7m sudo -E env \
+          set -euo pipefail
+          timeout 19m sudo -E env \
             "PATH=$PATH" \
             "HOME=$HOME" \
             "CI=$CI" \
@@ -470,12 +487,7 @@ jobs:
             "NEXUS_RUNNER_ROOTFS_MIN_MIB=${NEXUS_RUNNER_ROOTFS_MIN_MIB}" \
             "NEXUS_LIBKRUN_MEM_MIB=${NEXUS_LIBKRUN_MEM_MIB}" \
             "NEXUS_PASST_PATH=${NEXUS_PASST_PATH}" \
-            go test -tags e2e -count=1 -timeout=6m -v ./test/e2e/tui/...
-          exit=$?
-          if [ "$exit" -eq 124 ]; then
-            echo "TUI e2e (VM) exceeded budget — non-blocking"
-          fi
-          exit "$exit"
+            go test -tags e2e -count=1 -timeout=17m -v ./test/e2e/tui/...
 
       - name: Dump VM diagnostics on failure
         if: failure()
