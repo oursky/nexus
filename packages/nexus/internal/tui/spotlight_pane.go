@@ -9,7 +9,8 @@ import (
 )
 
 // renderSpotlightSidebar renders the right-side spotlight sidebar for the
-// three-pane split layout.
+// three-pane split layout. width/height are the inner content dimensions
+// (already accounting for any surrounding border).
 func renderSpotlightSidebar(m *Model, width, height int) string {
 	focused := m.sidebarFocused
 
@@ -18,8 +19,24 @@ func renderSpotlightSidebar(m *Model, width, height int) string {
 		headerStyle = accentStyle
 	}
 
+	// Count active forwards.
+	activeCount := 0
+	for _, f := range m.sidebarFwds {
+		if f != nil && f.State == spotlight.ForwardStateActive {
+			activeCount++
+		}
+	}
+
 	var b strings.Builder
 	b.WriteString(headerStyle.Render("SPOTLIGHT"))
+	b.WriteString("\n")
+
+	// Toggle-all hint with active count badge.
+	toggleLine := mutedStyle.Render("[ a ] Toggle all")
+	if activeCount > 0 {
+		toggleLine += "  " + statusOkStyle.Render(fmt.Sprintf("● %d active", activeCount))
+	}
+	b.WriteString(toggleLine)
 	b.WriteString("\n")
 	b.WriteString(separatorStyle.Render(strings.Repeat("─", max(width-1, 1))))
 	b.WriteString("\n")
@@ -42,7 +59,7 @@ func renderSpotlightSidebar(m *Model, width, height int) string {
 			}
 			// Show from the user's perspective: what local port they connect to.
 			// Format: "<localPort>" when local==remote, "<localPort>→<remotePort>"
-			// when they differ (e.g. custom local port assignment).
+			// when they differ (daemon-assigned ephemeral proxy for VM workspaces).
 			var portStr string
 			if f.LocalPort == f.RemotePort {
 				portStr = fmt.Sprintf("%d", f.LocalPort)
@@ -51,7 +68,7 @@ func renderSpotlightSidebar(m *Model, width, height int) string {
 			}
 			row := truncate(portStr, max(width-3, 8))
 			var rendered string
-			if i == m.sidebarSel {
+			if i == m.sidebarSel && focused {
 				rendered = lipgloss.NewStyle().
 					Foreground(lipgloss.Color("#FFFDF5")).
 					Render("›" + indicator + " " + row)
@@ -63,9 +80,33 @@ func renderSpotlightSidebar(m *Model, width, height int) string {
 		}
 	}
 
-	if focused {
+	// Discovered ports section: ports detected inside the workspace that are
+	// not yet forwarded (from workspace.discover-ports).
+	if len(m.sidebarDiscovered) > 0 {
 		b.WriteString("\n")
-		b.WriteString(mutedStyle.Render("[n] add  [x] del"))
+		b.WriteString(mutedStyle.Render("Detected in workspace:"))
+		b.WriteString("\n")
+		for _, dp := range m.sidebarDiscovered {
+			label := dp.Service
+			if label == "" {
+				label = dp.Protocol
+			}
+			var line string
+			if label != "" {
+				line = fmt.Sprintf("  · %d  %s", dp.RemotePort, label)
+			} else {
+				line = fmt.Sprintf("  · %d", dp.RemotePort)
+			}
+			b.WriteString(mutedStyle.Render(truncate(line, max(width-2, 8))))
+			b.WriteString("\n")
+		}
+		b.WriteString(mutedStyle.Render("  [n] forward  [a] forward all"))
+		b.WriteString("\n")
+	}
+
+	if focused && len(m.sidebarDiscovered) == 0 {
+		b.WriteString("\n")
+		b.WriteString(mutedStyle.Render("[n] add  [x] del  [a] toggle"))
 		b.WriteString("\n")
 	}
 

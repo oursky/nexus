@@ -74,6 +74,19 @@ func TestSpec_ConnectWizard_ShowsWhenNoProfile(t *testing.T) {
 	}
 }
 
+// pollOutputContains polls captured output until it contains want (case-insensitive)
+// or the timeout expires. Returns true if found.
+func pollOutputContains(buf *[]byte, want string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if strings.Contains(strings.ToLower(stripANSI(string(*buf))), want) {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
+
 // Spec E.1.2: No-profile view shows "No daemon running" prompt when nothing
 // listens on the given port.
 func TestSpec_NoProfile_LocalDaemonPrompt(t *testing.T) {
@@ -111,19 +124,21 @@ func TestSpec_NoProfile_LocalDaemonPrompt(t *testing.T) {
 	var captured []byte
 	go drainBackground(ptmx, &captured, stopDrain)
 
-	// Wait for the health check to complete and the menu to render.
-	time.Sleep(1500 * time.Millisecond)
+	// Poll for up to 3s for the no-daemon menu to appear. Using a polling loop
+	// rather than a fixed sleep prevents the flake on slow CI runners where the
+	// HTTP /healthz check can take close to its 1s timeout.
+	found := pollOutputContains(&captured, "no daemon", 3*time.Second) ||
+		pollOutputContains(&captured, "start local daemon", 3*time.Second)
 
-	// Quit.
+	// Quit regardless of outcome so the process doesn't linger.
 	if _, err := ptmx.Write([]byte{'q'}); err != nil {
 		t.Fatalf("quit: %v", err)
 	}
 	_ = cmd.Wait()
 	close(stopDrain)
 
-	out := stripANSI(string(captured))
-	lower := strings.ToLower(out)
-	if !strings.Contains(lower, "no daemon") && !strings.Contains(lower, "start local daemon") {
+	if !found {
+		out := stripANSI(string(captured))
 		t.Fatalf("expected no-daemon prompt; got:\n%s", truncateOut(out, 4000))
 	}
 }
@@ -249,7 +264,15 @@ func TestSpec_B2_ListShowsCreatedWorkspace(t *testing.T) {
 	stopDrain := make(chan struct{})
 	var captured []byte
 	go drainBackground(ptmx, &captured, stopDrain)
+
+	// Wait for TUI to render, then navigate to the created workspace.
+	// On count=2+ runs there are many workspaces already and the new one
+	// may be scrolled off screen; navigate down to make it visible.
 	time.Sleep(800 * time.Millisecond)
+	idx := workspaceListIndex(t, client, created.Workspace.ID)
+	selectListIndex(ptmx, idx)
+	time.Sleep(200 * time.Millisecond)
+
 	if _, err := ptmx.Write([]byte{'q'}); err != nil {
 		t.Fatalf("quit: %v", err)
 	}
