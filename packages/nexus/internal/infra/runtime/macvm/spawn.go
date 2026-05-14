@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/oursky/nexus/packages/nexus/internal/vm/libkrun"
@@ -265,18 +264,15 @@ func pickTCPPort127() (int, error) {
 func customKernelCandidates(libDir, wsWorkDir string) []string {
 	shareParent := filepath.Dir(libDir)
 	home, _ := os.UserHomeDir()
-	out := []string{
+	return []string{
 		filepath.Join(wsWorkDir, "nexus-vm-kernel"),
 		filepath.Join(shareParent, "nexus-vm-kernel"),
+		// ~/.cache/nexus/kernels/Image-custom is populated by extractEmbeddedKernel
+		// during daemon bootstrap (or placed manually by a developer).  On CI the
+		// kernel file is always written fresh from the binary's embedded bytes (the
+		// kernel is not separately cached in CI), so it is always valid to use.
+		filepath.Join(home, ".cache", "nexus", "kernels", "Image-custom"),
 	}
-	// ~/.cache/nexus/kernels/Image-custom is a developer override. On GitHub
-	// Actions the path is often populated from unrelated caches or a mismatched
-	// image, which makes libkrun fail fast (e.g. EINVAL / exit -22) before the
-	// guest boots. CI must opt in explicitly.
-	if os.Getenv("CI") != "true" || strings.TrimSpace(os.Getenv("NEXUS_MACVM_USE_HOME_KERNEL")) != "" {
-		out = append(out, filepath.Join(home, ".cache", "nexus", "kernels", "Image-custom"))
-	}
-	return out
 }
 
 // memMiBForEnv returns the VM memory in MiB, honouring the test override env var.
