@@ -115,7 +115,6 @@ CGO_ENABLED=1 \
   CGO_CFLAGS="-I${LIBKRUN_INC}" \
   CGO_LDFLAGS="-L${LIBKRUN_LIB} -lkrun -Wl,-rpath,\$ORIGIN/../lib" \
   go build \
-    -tags libkrun \
     -o tmp/nexus-libkrun-vm \
     ./cmd/nexus-libkrun-vm
 echo "  → tmp/nexus-libkrun-vm built ($(du -sh tmp/nexus-libkrun-vm | cut -f1))"

@@ -64,17 +64,7 @@ if [[ -d "$NEXUS_DIR/cmd/nexus-libkrun-vm" ]]; then
   # Linux libkrun.so, so we rely on the committed binary.
   if [[ "$(go env GOOS)" == "linux" && -n "${CI:-}" ]]; then
     echo "Rebuilding nexus-libkrun-vm from source (Linux CI runner)..."
-    # Download header from libkrun source repo (not shipped in smolvm tarball).
-    LIBKRUN_INC="/tmp/libkrun-include-${SMOLVM_VERSION}"
-    mkdir -p "$LIBKRUN_INC"
-    if [[ ! -f "$LIBKRUN_INC/libkrun.h" ]]; then
-      run_with_timeout curl -fsSL --retry 3 -o "$LIBKRUN_INC/libkrun.h" \
-        "https://raw.githubusercontent.com/containers/libkrun/main/include/libkrun.h"
-    fi
-    run_with_timeout env CGO_ENABLED=1 \
-      CGO_CFLAGS="-I$LIBKRUN_INC" \
-      CGO_LDFLAGS="-L$LIBS_TMP -lkrun -Wl,-rpath,\$ORIGIN/../lib" \
-      go build -tags libkrunvm \
+    run_with_timeout env CGO_ENABLED=1 go build \
         -o "$EMBED_DIR/nexus-libkrun-vm" \
         ./cmd/nexus-libkrun-vm
     echo "  → rebuilt nexus-libkrun-vm from source ($(du -sh "$EMBED_DIR/nexus-libkrun-vm" | cut -f1))"

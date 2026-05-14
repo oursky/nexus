@@ -49,21 +49,13 @@ tasks:
     desc: "Compile all Go packages"
     dir: packages/nexus
     cmds:
-      - |
-        if [ "$(go env GOOS)" = linux ] && [ "$(go env GOARCH)" = amd64 ]; then
-          bash ../../scripts/ci/stage-nexus-linux-embeds.sh
-        fi
-      - go build ./...
+      - bash ../../scripts/ci/with-linux-nexus-cgo.sh go build ./...
 
   test:
     desc: "Run Go tests"
     dir: packages/nexus
     cmds:
-      - |
-        if [ "$(go env GOOS)" = linux ] && [ "$(go env GOARCH)" = amd64 ]; then
-          bash ../../scripts/ci/stage-nexus-linux-embeds.sh
-        fi
-      - go test ./...
+      - bash ../../scripts/ci/with-linux-nexus-cgo.sh go test ./...
 
   lint:
     desc: "Run golangci-lint"

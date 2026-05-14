@@ -73,18 +73,11 @@ ssh "$REMOTE_HOST" bash -s <<'REMOTE'
       "smolvm-${SMOLVM_VERSION#v}-linux-x86_64/lib"
   fi
 
-  # Download header from libkrun source repo (not shipped in smolvm tarball).
-  LIBKRUN_INC="/tmp/libkrun-include-${SMOLVM_VERSION}"
-  mkdir -p "$LIBKRUN_INC"
-  if [[ ! -f "$LIBKRUN_INC/libkrun.h" ]]; then
-    curl -fsSL --retry 3 -o "$LIBKRUN_INC/libkrun.h" \
-      "https://raw.githubusercontent.com/containers/libkrun/main/include/libkrun.h"
-  fi
+  # Rebuild helper on Linux (source uses vendored libkrun.h + cmd/nexus/libkrun-embed.so).
+  cp -f "$LIBS_TMP/libkrun.so.1" cmd/nexus/libkrun-embed.so
 
   CGO_ENABLED=1 \
-    CGO_CFLAGS="-I$LIBKRUN_INC" \
-    CGO_LDFLAGS="-L$LIBS_TMP -lkrun -Wl,-rpath,\$ORIGIN/../lib" \
-    go build -tags libkrunvm \
+    go build \
       -o cmd/nexus/nexus-libkrun-vm \
       ./cmd/nexus-libkrun-vm
   echo "  → rebuilt on remote"

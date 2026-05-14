@@ -11,5 +11,6 @@ fi
 
 cd "$ROOT/packages/nexus"
 
-go test -covermode=atomic -coverprofile=coverage.out ./...
+bash "$ROOT/scripts/ci/with-linux-nexus-cgo.sh" \
+  go test -covermode=atomic -coverprofile=coverage.out ./...
 go tool cover -func=coverage.out | tail -n 1

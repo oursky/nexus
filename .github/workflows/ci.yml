@@ -44,7 +44,7 @@ jobs:
 
       - name: Run golangci-lint
         working-directory: packages/nexus
-        run: golangci-lint run ./...
+        run: bash ../../scripts/ci/with-linux-nexus-cgo.sh golangci-lint run ./...
 
   unit-tests:
     name: Unit Tests (nexus)

@@ -26,7 +26,6 @@ SMOLVM_VERSION="${SMOLVM_VERSION:-v0.5.19}"
 SMOLVM_TARBALL="smolvm-${SMOLVM_VERSION#v}-linux-x86_64.tar.gz"
 SMOLVM_URL="https://github.com/smol-machines/smolvm/releases/download/${SMOLVM_VERSION}/${SMOLVM_TARBALL}"
 LIBS_TMP="/tmp/smolvm-libs-${SMOLVM_VERSION}"
-LIBKRUN_INC="/tmp/libkrun-include-${SMOLVM_VERSION}"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
   echo "ERROR: nexus-libkrun-vm must be built on Linux (CGO targeting Linux libkrun.so)" >&2
@@ -50,22 +49,11 @@ else
   echo "  → cached at $LIBS_TMP"
 fi
 
-echo "==> Ensuring libkrun.h header..."
-mkdir -p "$LIBKRUN_INC"
-if [[ ! -f "$LIBKRUN_INC/libkrun.h" ]]; then
-  curl -fsSL --retry 3 -o "$LIBKRUN_INC/libkrun.h" \
-    "https://raw.githubusercontent.com/containers/libkrun/main/include/libkrun.h"
-  echo "  → downloaded to $LIBKRUN_INC/libkrun.h"
-else
-  echo "  → cached at $LIBKRUN_INC/libkrun.h"
-fi
-
 echo "==> Building nexus-libkrun-vm..."
 cd "$NEXUS_DIR"
+cp -f "$LIBS_TMP/libkrun.so.1" "$EMBED_DIR/libkrun-embed.so"
 CGO_ENABLED=1 \
-  CGO_CFLAGS="-I$LIBKRUN_INC" \
-  CGO_LDFLAGS="-L$LIBS_TMP -lkrun -Wl,-rpath,\$ORIGIN/../lib" \
-  go build -tags libkrunvm \
+  go build \
     -o "$BINARY" \
     ./cmd/nexus-libkrun-vm
 echo "  → built: $BINARY ($(du -sh "$BINARY" | cut -f1))"

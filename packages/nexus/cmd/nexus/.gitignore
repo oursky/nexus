@@ -6,6 +6,7 @@ agent-linux-arm64
 # Use: scripts/remote/deploy.sh  — fetches and caches these automatically.
 libkrun-embed.so
 libkrunfw-embed.so
+passt-embed
 
 # macOS ARM64 dylibs staged for go:embed (scripts/local/build-libkrun-darwin.sh)
 libkrun-darwin-arm64.dylib

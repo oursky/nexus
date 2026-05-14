@@ -1,14 +1,13 @@
-//go:build linux && cgo && libkrunvm
+//go:build linux && cgo
 
 package main
 
 /*
-// Default include/lib paths for local dev builds (smolvm installed).
-// The deploy-libkrun.sh script overrides these via CGO_CFLAGS / CGO_LDFLAGS
-// pointing to the auto-downloaded smolvm release tarball — no pre-installed
-// tooling required on the build machine.
-#cgo CFLAGS: -I/usr/local/include
-#cgo LDFLAGS: -lkrun -Wl,-rpath,$$ORIGIN/../lib
+// Vendored libkrun.h under include/; link against cmd/nexus/libkrun-embed.so
+// (run scripts/ci/stage-nexus-linux-embeds.sh or task build first on linux/amd64).
+// Scripts may still set CGO_CFLAGS / CGO_LDFLAGS to override (e.g. smolvm tarball paths).
+#cgo CFLAGS: -I${SRCDIR}/include
+#cgo LDFLAGS: -L${SRCDIR}/../nexus -Wl,-rpath,$$ORIGIN/../lib -l:libkrun-embed.so
 #define _GNU_SOURCE
 #include <libkrun.h>
 #include <stdlib.h>
