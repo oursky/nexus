@@ -630,11 +630,20 @@ func maybeStartSSHDInGuest() {
 }
 
 func realSetupNetwork() error {
+	// Use a 90s total budget for all network-setup subprocesses. Individual
+	// DHCP clients have their own shorter timeouts, but a hung process (e.g.
+	// dhcpcd stuck waiting on a missing virtio-net device) would block forever
+	// without this outer deadline.
+	netCtx, netCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer netCancel()
+
 	// Enable IPv4 forwarding so Docker containers can reach external networks
 	// even when Docker's iptables integration is disabled.
-	_ = exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run()
+	emitDiagnostic("network: starting setup")
+	_ = exec.CommandContext(netCtx, "sysctl", "-w", "net.ipv4.ip_forward=1").Run()
 
-	if out, err := exec.Command("ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
+	emitDiagnostic("network: bringing up loopback")
+	if out, err := exec.CommandContext(netCtx, "ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
 		return fmt.Errorf("ip link set lo up: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
@@ -646,48 +655,62 @@ func realSetupNetwork() error {
 		return fmt.Errorf("network interface eth0 not found")
 	}
 
+	emitDiagnostic("network: eth0 found, bringing up interface")
 	// Bring the interface up first so DHCP can configure it.
-	if out, err := exec.Command("ip", "link", "set", "eth0", "up").CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(netCtx, "ip", "link", "set", "eth0", "up").CombinedOutput(); err != nil {
 		return fmt.Errorf("ip link set eth0 up: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
 	if _, err := exec.LookPath("udhcpc"); err == nil {
 		// Run udhcpc in one-shot mode: -n (exit on failure), -q (quit after obtaining
 		// lease), -t 10 (retry 10 times), -T 3 (3s between retries) -> max ~30s wait.
-		out, err := exec.Command(
+		emitDiagnostic("network: running udhcpc DHCP (max 30s)")
+		out, err := exec.CommandContext(netCtx,
 			"udhcpc", "-i", "eth0", "-n", "-q", "-t", "10", "-T", "3",
 		).CombinedOutput()
 		if err == nil {
 			if hasUsableIPv4OnEth0() {
+				emitDiagnostic("network: udhcpc configured eth0 successfully")
 				return nil
 			}
 			emitDiagnostic("udhcpc exited successfully but eth0 has no usable IPv4; falling through to other DHCP/static methods")
+		} else {
+			emitDiagnostic("udhcpc failed: %v: %s", err, strings.TrimSpace(string(out)))
 		}
-		emitDiagnostic("udhcpc failed: %v: %s", err, strings.TrimSpace(string(out)))
 	} else if _, err := exec.LookPath("dhcpcd"); err == nil {
 		// dhcpcd is available (installed on Ubuntu when busybox is not).
 		// -1 (--oneshot): exit after the first interface is configured.
 		// This makes dhcpcd behave like a one-shot DHCP client.
-		out, err := exec.Command("dhcpcd", "-1", "eth0").CombinedOutput()
+		emitDiagnostic("network: running dhcpcd DHCP (max 45s)")
+		dhcpctx, dhcpcancel := context.WithTimeout(netCtx, 45*time.Second)
+		out, err := exec.CommandContext(dhcpctx, "dhcpcd", "-1", "eth0").CombinedOutput()
+		dhcpcancel()
 		if err == nil {
 			if hasUsableIPv4OnEth0() {
+				emitDiagnostic("network: dhcpcd configured eth0 successfully")
 				return nil
 			}
 			emitDiagnostic("dhcpcd exited successfully but eth0 has no usable IPv4; falling through to static fallback")
+		} else {
+			emitDiagnostic("dhcpcd failed: %v: %s", err, strings.TrimSpace(string(out)))
 		}
-		emitDiagnostic("dhcpcd failed: %v: %s", err, strings.TrimSpace(string(out)))
 	} else if _, err := exec.LookPath("dhclient"); err == nil {
-		out, err := exec.Command("dhclient", "-1", "-v", "eth0").CombinedOutput()
+		emitDiagnostic("network: running dhclient DHCP (max 45s)")
+		dhcpctx, dhcpcancel := context.WithTimeout(netCtx, 45*time.Second)
+		out, err := exec.CommandContext(dhcpctx, "dhclient", "-1", "-v", "eth0").CombinedOutput()
+		dhcpcancel()
 		if err == nil {
 			if hasUsableIPv4OnEth0() {
+				emitDiagnostic("network: dhclient configured eth0 successfully")
 				return nil
 			}
 			emitDiagnostic("dhclient exited successfully but eth0 has no usable IPv4; falling through to static fallback")
+		} else {
+			emitDiagnostic("dhclient failed: %v: %s", err, strings.TrimSpace(string(out)))
 		}
-		emitDiagnostic("dhclient failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	emitDiagnostic("all DHCP clients failed or unavailable, falling back to static guest IP")
+	emitDiagnostic("network: all DHCP clients failed or unavailable, falling back to static guest IP")
 	if err := configureStaticGuestNetwork(); err != nil {
 		return fmt.Errorf("static network fallback failed: %w", err)
 	}

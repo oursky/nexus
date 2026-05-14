@@ -34,6 +34,34 @@ func main() {
 	pid := os.Getpid()
 	emitDiagnostic("agent boot pid=%d", pid)
 
+	// Bind the listener BEFORE bootstrapping so the host can detect VM liveness
+	// immediately and readiness probes can succeed during the (potentially slow)
+	// bootstrap sequence. Without this, the guest sends vsock RST for every probe
+	// because nothing is listening on port 10789 during bootstrap.
+	listener, transport, err := resolveListener()
+	if err != nil {
+		emitDiagnostic("agent listener setup failed: %v", err)
+		log.Fatalf("Failed to listen: %v", err)
+	}
+	emitDiagnostic("agent listener bound transport=%s (bootstrap in progress)", transport)
+
+	// Start the accept loop in a background goroutine so connections are served
+	// concurrently with the bootstrap sequence below. This allows workspace
+	// readiness probes (/bin/true) to succeed while bootstrap is still running.
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				emitDiagnostic("agent accept loop exited: %v", err)
+				return
+			}
+			emitDiagnostic("agent accepted connection")
+			go serveConn(conn)
+		}
+	}()
+
 	// Debug: log the kernel cmdline so we can verify nexus.baked=1 is present.
 	if cmdline, err := os.ReadFile("/proc/cmdline"); err == nil {
 		emitDiagnostic("agent kernel cmdline: %s", strings.TrimSpace(string(cmdline)))
@@ -67,6 +95,7 @@ func main() {
 			// Give the serial console a moment to flush.
 			time.Sleep(500 * time.Millisecond)
 		}
+		_ = listener.Close()
 		_ = unix.Reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
 		os.Exit(0) // unreachable, but satisfies the compiler
 	}
@@ -116,26 +145,11 @@ func main() {
 	}
 	go startSpotlightListener()
 
-	listener, transport, err := resolveListener()
-	if err != nil {
-		emitDiagnostic("agent listener setup failed: %v", err)
-		log.Fatalf("Failed to listen: %v", err)
-	}
-	defer listener.Close()
-
 	emitDiagnostic("agent listener ready transport=%s", transport)
 	log.Printf("nexus guest agent listening (%s)", transport)
 
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			emitDiagnostic("agent accept failed: %v", err)
-			log.Printf("Failed to accept connection: %v", err)
-			continue
-		}
-		emitDiagnostic("agent accepted connection")
-		go serveConn(conn)
-	}
+	// Block until the accept loop exits (listener closed or fatal error).
+	<-acceptDone
 }
 
 // isBakeMode reports whether the agent is running in rootfs-bake mode. In bake
