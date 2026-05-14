@@ -164,6 +164,8 @@ func RunVMSubprocess(configPath string) {
 		fatalf("set_exec: %v", err)
 	}
 
+	log.Printf("[macvm-runner] config: vcpus=%d mem_mib=%d rootfs=%s docker_data=%q workspace=%s config_dir=%q gvproxy_sock=%s",
+		vcpus, memMiB, cfg.RootFSPath, cfg.DockerDataPath, cfg.WorkspacePath, cfg.ConfigDir, cfg.GVProxySockPath)
 	fmt.Fprintf(os.Stderr, "[macvm-runner] booting VM workspace=%s\n", cfg.WorkspaceID)
 
 	// krun_start_enter blocks until the VM exits. If the guest triggers ACPI

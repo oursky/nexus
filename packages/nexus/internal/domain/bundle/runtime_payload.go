@@ -157,11 +157,13 @@ func ensureRuntimeTarball(ctx context.Context, tarballPath string, spec runtimeP
 		return fmt.Errorf("bundle: download runtime payload %s: unexpected status %s", spec.URL, resp.Status)
 	}
 
-	tmp := tarballPath + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644) //nolint:gosec
+	// Use a process-unique temp file so concurrent invocations (e.g. parallel
+	// e2e tests both calling workspace export) do not race on the same .tmp path.
+	f, err := os.CreateTemp(filepath.Dir(tarballPath), "dist.tar.gz.*.tmp")
 	if err != nil {
 		return fmt.Errorf("bundle: create runtime payload temp file: %w", err)
 	}
+	tmp := f.Name()
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
@@ -173,6 +175,10 @@ func ensureRuntimeTarball(ctx context.Context, tarballPath string, spec runtimeP
 	}
 	if err := os.Rename(tmp, tarballPath); err != nil {
 		_ = os.Remove(tmp)
+		// Another concurrent invocation may have completed the download first.
+		if ok, checkErr := fileMatchesSHA256(tarballPath, spec.SHA256); checkErr == nil && ok {
+			return nil
+		}
 		return fmt.Errorf("bundle: finalize runtime payload file: %w", err)
 	}
 

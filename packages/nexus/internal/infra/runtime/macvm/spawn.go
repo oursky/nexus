@@ -243,11 +243,26 @@ func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 		done: done,
 	}
 
-	if err := waitAgentListening(ctx, cfg.sockDir, agentFwdPort); err != nil {
+	// Derive a context that is cancelled as soon as the VM subprocess exits.
+	// This makes waitAgentListening fail fast instead of polling for the full
+	// 60-second deadline when krun_start_enter returns immediately with an error.
+	subCtx, subCancel := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-done:
+			subCancel()
+		case <-ctx.Done():
+			subCancel()
+		}
+	}()
+
+	if err := waitAgentListening(subCtx, cfg.sockDir, agentFwdPort); err != nil {
+		subCancel()
 		inst.stop()
 		<-done
 		return nil, fmt.Errorf("macvm: agent not reachable: %w", err)
 	}
+	subCancel()
 	return inst, nil
 }
 
