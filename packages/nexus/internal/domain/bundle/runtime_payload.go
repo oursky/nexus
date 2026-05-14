@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	smolvmRuntimeVersion = "v0.5.17"
+	smolvmRuntimeVersion = "v0.5.20"
 
 	envRuntimeCacheDir = "NEXUS_RUNTIME_CACHE_DIR"
 	envRuntimeOffline  = "NEXUS_RUNTIME_OFFLINE"
@@ -32,13 +32,13 @@ type runtimePayloadSpec struct {
 var runtimePayloadSpecs = map[string]runtimePayloadSpec{
 	"darwin-arm64": {
 		Platform: "darwin-arm64",
-		URL:      "https://github.com/smol-machines/smolvm/releases/download/" + smolvmRuntimeVersion + "/smolvm-0.5.17-darwin-arm64.tar.gz",
-		SHA256:   "aeb8e77b4c07c2d1996910b7bff44514c463982901aba2e50f62d7bacaee0e9c",
+		URL:      "https://github.com/smol-machines/smolvm/releases/download/" + smolvmRuntimeVersion + "/smolvm-0.5.20-darwin-arm64.tar.gz",
+		SHA256:   "92d687486852f78ea5ddf12be88c879ae9b8d8fc2bd7159de6586df0cb71d3e1",
 	},
 	"linux-amd64": {
 		Platform: "linux-amd64",
-		URL:      "https://github.com/smol-machines/smolvm/releases/download/" + smolvmRuntimeVersion + "/smolvm-0.5.17-linux-x86_64.tar.gz",
-		SHA256:   "803811fb93138a7a30816de0e6b0284e0f982fda1eb1839c0d239f31e90098fe",
+		URL:      "https://github.com/smol-machines/smolvm/releases/download/" + smolvmRuntimeVersion + "/smolvm-0.5.20-linux-x86_64.tar.gz",
+		SHA256:   "68431f36711c27dbb989e9ca55f42188a5788faab95a965a3f126481248efc1a",
 	},
 }
 

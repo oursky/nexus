@@ -6,9 +6,9 @@ set -euo pipefail
 #
 # Version must match internal/domain/bundle/runtime_payload.go smolvmRuntimeVersion.
 
-SMOLVM_VERSION="v0.5.17"
-SMOLVM_TARBALL_URL="https://github.com/smol-machines/smolvm/releases/download/${SMOLVM_VERSION}/smolvm-0.5.17-darwin-arm64.tar.gz"
-SMOLVM_SHA256="aeb8e77b4c07c2d1996910b7bff44514c463982901aba2e50f62d7bacaee0e9c"
+SMOLVM_VERSION="v0.5.20"
+SMOLVM_TARBALL_URL="https://github.com/smol-machines/smolvm/releases/download/${SMOLVM_VERSION}/smolvm-0.5.20-darwin-arm64.tar.gz"
+SMOLVM_SHA256="92d687486852f78ea5ddf12be88c879ae9b8d8fc2bd7159de6586df0cb71d3e1"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
