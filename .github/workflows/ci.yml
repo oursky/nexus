@@ -226,7 +226,7 @@ jobs:
 
   e2e:
     name: E2E Tests (linux / ${{ matrix.shard.name }})
-    runs-on: [self-hosted, linux, x64, v1]
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -516,6 +516,7 @@ jobs:
   # that install Xcode outside the default path.
   nexus-swift-macos:
     name: NexusApp (macOS)
+    if: false  # disabled: requires self-hosted runner with Xcode; run manually
     runs-on: [self-hosted, macOS, ARM64, v2, tw]
     steps:
       - name: Checkout code
