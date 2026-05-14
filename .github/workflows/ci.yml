@@ -140,13 +140,42 @@ jobs:
         working-directory: packages/nexus
         run: go generate ./cmd/nexus/
 
-      - name: Build nexus binary for E2E
+      - name: Build nexus binary and pty-host for E2E
         working-directory: packages/nexus
         env:
           CGO_ENABLED: "0"
         run: |
           go build -o /tmp/nexus-bin ./cmd/nexus/
+          go build -o /tmp/pty-host ./cmd/pty-host/
           echo "NEXUS_E2E_BINARY=/tmp/nexus-bin" >> "$GITHUB_ENV"
+          # Add pty-host dir to PATH so the daemon can launch it.
+          echo "/tmp" >> "$GITHUB_PATH"
+
+      - name: Codesign nexus binary (Hypervisor.framework entitlement)
+        run: |
+          ENTITLEMENTS="$(mktemp /tmp/nexus-entitlements.XXXXXX.plist)"
+          cat > "$ENTITLEMENTS" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>com.apple.security.hypervisor</key>
+              <true/>
+              <key>com.apple.security.virtualization</key>
+              <true/>
+          </dict>
+          </plist>
+          PLIST
+          codesign --entitlements "$ENTITLEMENTS" --force --sign - /tmp/nexus-bin
+          rm -f "$ENTITLEMENTS"
+
+      - name: Pre-install gvproxy (avoids concurrent download race in tests)
+        run: |
+          mkdir -p "$HOME/.cache/nexus/bin"
+          curl -fsSL --retry 3 -L \
+            "https://github.com/containers/gvisor-tap-vsock/releases/download/v0.8.8/gvproxy-darwin" \
+            -o "$HOME/.cache/nexus/bin/gvproxy"
+          chmod +x "$HOME/.cache/nexus/bin/gvproxy"
 
       - name: Run Go e2e (vm driver)
         working-directory: packages/nexus
