@@ -72,7 +72,6 @@ func (m *Manager) Start(ctx context.Context, ws *domainws.Workspace) error {
 	}
 
 	m.vms.Store(ws.ID, inst)
-	log.Printf("macvm: started workspaceID=%s pid=%d sshPort=%d agentPort=%d", ws.ID, inst.pid, inst.guestSSHPort, inst.agentPort)
 	return nil
 }
 
@@ -85,10 +84,8 @@ func (m *Manager) Stop(_ context.Context, ws *domainws.Workspace) error {
 	m.readyAgents.Delete(ws.ID)
 	inst := val.(*vmInstance)
 	if inst.stop != nil {
+		// stop() kills the VM subprocess, stops gvproxy, and waits for done.
 		inst.stop()
-	}
-	if inst.done != nil {
-		<-inst.done
 	}
 	if inst.configDir != "" {
 		_ = os.RemoveAll(inst.configDir)

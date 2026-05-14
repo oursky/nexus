@@ -82,8 +82,13 @@ func StartGVProxy(gvproxyPath, socketPath string) (*GVProxy, error) {
 	}
 
 	cmd := exec.Command(gvproxyPath, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Redirect to the log file rather than inheriting the daemon's pipe fds.
+	// gvproxy already writes structured logs to -log-file; stdout/stderr just
+	// carry startup noise that doesn't need to reach the daemon's output.
+	if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+		cmd.Stdout = lf
+		cmd.Stderr = lf
+	}
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start gvproxy: %w", err)
