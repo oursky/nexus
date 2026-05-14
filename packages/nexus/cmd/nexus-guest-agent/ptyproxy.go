@@ -29,7 +29,9 @@ var (
 
 // guestDefaultShell resolves the best available shell inside the guest,
 // using the environment that has already been prepared for the session.
-// It tries $SHELL first, then common absolute paths, then PATH lookup.
+// It checks $SHELL first (using os.Stat for absolute paths so we never return
+// a path that does not exist), then probes a priority list favouring sh over
+// bash (minimal rootfs images always have /bin/sh but may lack bash).
 func guestDefaultShell(env []string) string {
 	for _, entry := range env {
 		if strings.HasPrefix(entry, "SHELL=") {
@@ -37,18 +39,21 @@ func guestDefaultShell(env []string) string {
 			if sh == "" {
 				break
 			}
-			if resolved, err := lookPathInEnv(sh, env); err == nil {
-				return resolved
-			}
 			if filepath.IsAbs(sh) {
+				// Use os.Stat directly: lookPathInEnv short-circuits for absolute
+				// paths without checking file existence.
 				if fi, err := os.Stat(sh); err == nil && !fi.IsDir() {
 					return sh
 				}
+			} else if resolved, err := lookPathInEnv(sh, env); err == nil {
+				return resolved
 			}
 			break
 		}
 	}
-	for _, candidate := range []string{"/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh"} {
+	// Prefer sh: it exists on every POSIX rootfs (busybox, dash, …).
+	// bash may not be present on minimal images.
+	for _, candidate := range []string{"/bin/sh", "/usr/bin/sh", "/bin/bash", "/usr/bin/bash"} {
 		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
 			return candidate
 		}

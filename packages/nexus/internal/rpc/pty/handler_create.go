@@ -99,7 +99,9 @@ func (h *Handler) createVMSession(ctx context.Context, p createParams, ws *domai
 
 	shell := p.Shell
 	if shell == "" {
-		shell = "bash"
+		// Default to "sh": the guest rootfs always has /bin/sh (dash/busybox)
+		// but may not have bash. The guest agent resolves "sh" via PATH.
+		shell = "sh"
 	}
 
 	sessionID := fmt.Sprintf("pty-%d", time.Now().UnixNano())
