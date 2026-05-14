@@ -13,8 +13,9 @@ concurrency:
   cancel-in-progress: true
 
 # Heavy libkrun/KVM e2e under packages/nexus/test/e2e/... is run on developer hosts
-# (Mac + Linux KVM box), not on GitHub-hosted VMs for every PR. Use Taskfile
-# `task test:e2e:local` or scripts/local/run-linux-e2e.sh / run-mac-e2e.sh (see repo README).
+# (Mac + Linux KVM box), not on GitHub-hosted VMs for every PR — except the slim
+# `tui-e2e` job on ubuntu-latest (KVM) below. Use Taskfile `task test:e2e:local` or
+# scripts/local/run-linux-e2e.sh / run-mac-e2e.sh for the full suite (see repo README).
 
 jobs:
   lint:
@@ -165,8 +166,9 @@ jobs:
         if: failure()
         run: bash scripts/ci/dump-macos-vm-logs.sh
 
-  # Full e2e is also run locally on dev Mac + linuxbox; when this job is enabled on a
-  # self-hosted runner with KVM it is the canonical CI gate for the VM-backed suite.
+  # Full e2e is also run locally on dev Mac + linuxbox; when this job is enabled on
+  # Linux with KVM (including GitHub-hosted ubuntu-* when /dev/kvm is available), it is
+  # the canonical CI gate for the VM-backed suite.
   #
   # Disabled on GitHub CI — run on a Linux host: bash scripts/local/run-linux-e2e.sh
   e2e:
@@ -252,8 +254,7 @@ jobs:
         run: go install github.com/go-task/task/v3/cmd/task@latest
 
       # Make /dev/kvm accessible to the runner user without needing group
-      # membership. On self-hosted runners KVM is typically pre-configured;
-      # only attempt the udev rule if /dev/kvm isn't already world-accessible.
+      # membership when it is not already world-accessible (typical on GitHub-hosted Linux).
       - name: Enable KVM access
         run: scripts/ci/enable-kvm.sh
 
@@ -373,12 +374,12 @@ jobs:
           retention-days: 1
 
   # TUI e2e starts nexusd with libkrun when NEXUS_VM_KERNEL + NEXUS_VM_ROOTFS are set
-  # (same driver selection as test/e2e/harness). Runs on self-hosted Linux with KVM +
-  # scripts/ci/* prerequisites matching job `e2e`. Wall-clock budget is capped; failures
-  # and timeouts are non-blocking (continue-on-error).
+  # (same driver selection as test/e2e/harness). Runs on GitHub-hosted ubuntu-latest
+  # with KVM + the same slim libkrun prep as disabled job `e2e` (no shard matrix).
+  # Failures and timeouts are non-blocking (continue-on-error).
   tui-e2e:
-    name: TUI E2E (self-hosted Linux / VM)
-    runs-on: [self-hosted, linux]
+    name: TUI E2E (ubuntu-latest / libkrun VM)
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       CI: true
@@ -449,23 +450,27 @@ jobs:
 
       # NEXUS_VM_KERNEL / NEXUS_VM_ROOTFS (job env) select libkrun in test/e2e/tui (see tuiDaemonDriverArgs).
       - name: Run TUI e2e (VM driver, non-blocking)
+        timeout-minutes: 8
         continue-on-error: true
         working-directory: packages/nexus
         run: |
           set +e
-          echo "TUI e2e (VM): wall-clock budget 4m via timeout(1); failures/timeouts are non-blocking for merge."
-          timeout 4m sudo -E env \
+          echo "TUI e2e (VM): wall-clock budget 7m via timeout(1); failures/timeouts are non-blocking for merge."
+          timeout 7m sudo -E env \
             "PATH=$PATH" \
             "HOME=$HOME" \
             "CI=$CI" \
+            "GOTOOLCHAIN=${GOTOOLCHAIN:-}" \
             "NEXUS_VM_KERNEL=${NEXUS_VM_KERNEL}" \
             "NEXUS_VM_ROOTFS=${NEXUS_VM_ROOTFS}" \
             "NEXUS_LIBKRUN_SKIP_BAKE=${NEXUS_LIBKRUN_SKIP_BAKE}" \
+            "NEXUS_LIBKRUN_BAKE_TIMEOUT=${NEXUS_LIBKRUN_BAKE_TIMEOUT}" \
+            "NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS=${NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS}" \
             "NEXUS_WORKSPACE_IMAGE_MIN_MIB=${NEXUS_WORKSPACE_IMAGE_MIN_MIB}" \
             "NEXUS_RUNNER_ROOTFS_MIN_MIB=${NEXUS_RUNNER_ROOTFS_MIN_MIB}" \
             "NEXUS_LIBKRUN_MEM_MIB=${NEXUS_LIBKRUN_MEM_MIB}" \
             "NEXUS_PASST_PATH=${NEXUS_PASST_PATH}" \
-            go test -tags e2e -count=1 -timeout=3m30s -v ./test/e2e/tui/...
+            go test -tags e2e -count=1 -timeout=6m -v ./test/e2e/tui/...
           exit=$?
           if [ "$exit" -eq 124 ]; then
             echo "TUI e2e (VM) exceeded budget — non-blocking"
