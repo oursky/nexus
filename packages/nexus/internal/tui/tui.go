@@ -136,8 +136,10 @@ type sidebarDiscoveredMsg struct {
 type tunnelStartedMsg struct {
 	wsID       string
 	tunnel     *sshtunnel.MultiTunnel
+	localProxy *sshtunnel.LocalProxy // non-nil when local daemon needs port remapping (libkrun VMs)
 	boundPorts []int
-	local      bool // true when daemon is local — no SSH tunnel needed
+	local      bool     // true when daemon is local — no SSH tunnel needed
+	warnings   []string // PIDs evicted to free ports (shown in status line)
 	err        error
 }
 
@@ -216,10 +218,11 @@ type Model struct {
 	// SSH tunnel for spotlight port forwarding (client-side, one per workspace).
 	// nil when no tunnel is running. Closed on quit, workspace switch, or when
 	// all active forwards are removed.
-	sidebarTunnel     *sshtunnel.MultiTunnel
-	sidebarTunnelLive bool   // true once tunnel has successfully started
-	sidebarTunnelWsID string // workspace ID the running tunnel belongs to
-	sidebarTunnelLocal bool  // true when daemon is local (no SSH needed)
+	sidebarTunnel      *sshtunnel.MultiTunnel
+	sidebarLocalProxy  *sshtunnel.LocalProxy // local TCP proxy for libkrun VM workspaces on local daemon
+	sidebarTunnelLive  bool                  // true once tunnel/proxy has successfully started
+	sidebarTunnelWsID  string                // workspace ID the running tunnel belongs to
+	sidebarTunnelLocal bool                  // true when daemon is local (no SSH needed)
 
 	// Pane x-boundaries for mouse hit-testing (0-indexed, inner coordinates,
 	// i.e. after removing the 2-column outer padding).
@@ -640,12 +643,16 @@ func (m Model) loadSpotlightsCmd(wsID string) tea.Cmd {
 	}
 }
 
-// closeSidebarTunnel shuts down any active spotlight SSH tunnel and resets
-// tunnel state on the model. Safe to call when no tunnel is running.
+// closeSidebarTunnel shuts down any active spotlight SSH tunnel or local proxy
+// and resets tunnel state on the model. Safe to call when nothing is running.
 func (m *Model) closeSidebarTunnel() {
 	if m.sidebarTunnel != nil {
 		_ = m.sidebarTunnel.Close()
 		m.sidebarTunnel = nil
+	}
+	if m.sidebarLocalProxy != nil {
+		_ = m.sidebarLocalProxy.Close()
+		m.sidebarLocalProxy = nil
 	}
 	m.sidebarTunnelLive = false
 	m.sidebarTunnelWsID = ""
@@ -670,8 +677,16 @@ func isSidebarTunnelLocal(p *profile.Profile) bool {
 	return false
 }
 
-// startSidebarTunnelCmd starts an SSH multi-tunnel for all active spotlight
+// startSidebarTunnelCmd starts port forwarding for all active spotlight
 // forwards for the given workspace. The result is delivered as tunnelStartedMsg.
+//
+// For remote daemons: spawns a single SSH process with multiple -L specs.
+// For local daemons:
+//   - If LocalPort == RemotePort for all forwards (process-isolation workspaces),
+//     ports are directly accessible — no proxy needed.
+//   - If LocalPort != RemotePort (libkrun VM workspaces where the daemon binds
+//     an ephemeral vsock proxy port), creates a LocalProxy that binds each
+//     LocalPort and forwards to the daemon's RemotePort on localhost.
 func startSidebarTunnelCmd(wsID string, fwds []*spotlight.Forward) tea.Cmd {
 	return func() tea.Msg {
 		p, err := profile.LoadDefault()
@@ -679,10 +694,42 @@ func startSidebarTunnelCmd(wsID string, fwds []*spotlight.Forward) tea.Cmd {
 			return tunnelStartedMsg{wsID: wsID, err: fmt.Errorf("load profile: %w", err)}
 		}
 		if isSidebarTunnelLocal(p) {
-			// Local daemon — ports are directly accessible; no SSH tunnel needed.
-			return tunnelStartedMsg{wsID: wsID, local: true}
+			// Local daemon — check whether port remapping is needed (libkrun VM case).
+			// For libkrun workspaces the daemon binds an ephemeral host-side TCP port
+			// (Forward.RemotePort) that proxies via vsock to the VM's service port
+			// (Forward.LocalPort). We need a local TCP proxy to map LocalPort → RemotePort.
+			var proxyFwds []sshtunnel.Forward
+			for _, f := range fwds {
+				if f == nil || f.State != spotlight.ForwardStateActive {
+					continue
+				}
+				if f.LocalPort == f.RemotePort {
+					// Service is directly on the daemon host at the expected port.
+					continue
+				}
+				rh := "127.0.0.1"
+				if f.TargetHost != "" {
+					rh = f.TargetHost
+				}
+				proxyFwds = append(proxyFwds, sshtunnel.Forward{
+					LocalPort:  f.LocalPort,
+					RemoteHost: rh,
+					RemotePort: f.RemotePort,
+				})
+			}
+			if len(proxyFwds) == 0 {
+				// All ports directly accessible (process-isolation workspace on daemon host).
+				return tunnelStartedMsg{wsID: wsID, local: true}
+			}
+			// VM workspace: create local TCP proxy for port remapping.
+			lp, warnings, err := sshtunnel.StartLocalProxy(proxyFwds)
+			if err != nil {
+				return tunnelStartedMsg{wsID: wsID, err: fmt.Errorf("local proxy: %w", err)}
+			}
+			return tunnelStartedMsg{wsID: wsID, local: true, localProxy: lp, warnings: warnings}
 		}
 
+		// Remote daemon — build SSH multi-tunnel specs.
 		var specs []sshtunnel.Forward
 		for _, f := range fwds {
 			if f == nil || f.State != spotlight.ForwardStateActive {
@@ -1278,13 +1325,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		var tunnelCmd tea.Cmd
 		if activeCount > 0 && selWsID != "" {
+			// Tunnel needs (re)start if: never started, SSH process died, or
+			// a local proxy was expected but is no longer present.
 			tunnelNeedsStart := !m.sidebarTunnelLive ||
 				(m.sidebarTunnel != nil && m.sidebarTunnel.PID() <= 0)
 			if tunnelNeedsStart {
-				// Close any dead tunnel handle before starting a fresh one.
+				// Close any dead tunnel or proxy handle before starting a fresh one.
 				if m.sidebarTunnel != nil {
 					_ = m.sidebarTunnel.Close()
 					m.sidebarTunnel = nil
+				}
+				if m.sidebarLocalProxy != nil {
+					_ = m.sidebarLocalProxy.Close()
+					m.sidebarLocalProxy = nil
 				}
 				m.sidebarTunnelLive = false
 				m.sidebarTunnelWsID = selWsID
@@ -1308,6 +1361,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.tunnel != nil {
 				_ = msg.tunnel.Close()
 			}
+			if msg.localProxy != nil {
+				_ = msg.localProxy.Close()
+			}
 			return m, nil
 		}
 		if msg.err != nil {
@@ -1315,8 +1371,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sidebarTunnelLive = false
 			return m, nil
 		}
+		// Show eviction warnings (e.g. "evicted PID 12345 from port 8080").
+		if len(msg.warnings) > 0 {
+			m.statusLine = "spotlight: " + strings.Join(msg.warnings, "; ")
+		}
 		if msg.local {
-			// Local daemon — mark as "live" (ports are directly accessible).
+			// Local daemon path. Close any previous local proxy before storing new one.
+			if m.sidebarLocalProxy != nil {
+				_ = m.sidebarLocalProxy.Close()
+				m.sidebarLocalProxy = nil
+			}
+			if msg.localProxy != nil {
+				// libkrun VM workspace: local proxy bound on user-facing ports.
+				m.sidebarLocalProxy = msg.localProxy
+			}
 			m.sidebarTunnelLive = true
 			m.sidebarTunnelLocal = true
 			return m, nil
@@ -1325,7 +1393,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// No active forwards to tunnel; leave live=false.
 			return m, nil
 		}
-		// New tunnel is up; replace any existing one.
+		// New SSH tunnel is up; replace any existing one.
 		if m.sidebarTunnel != nil {
 			_ = m.sidebarTunnel.Close()
 		}
