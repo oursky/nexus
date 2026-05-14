@@ -9,10 +9,10 @@ import (
 )
 
 func init() {
-	startcmd.StartSetupFn = func(w io.Writer, driver string) error {
-		return RunDarwinBootstrap(w, false, driver)
+	startcmd.StartSetupFn = func(w io.Writer) error {
+		return RunDarwinBootstrap(w, false)
 	}
-	startcmd.StartSetupFnJSON = func(w io.Writer, driver string) error {
-		return RunDarwinBootstrap(w, true, driver)
+	startcmd.StartSetupFnJSON = func(w io.Writer) error {
+		return RunDarwinBootstrap(w, true)
 	}
 }

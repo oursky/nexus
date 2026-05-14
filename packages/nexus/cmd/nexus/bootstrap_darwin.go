@@ -67,11 +67,7 @@ func installLibkrunDylibsDarwin(w io.Writer) (libDir string, err error) {
 	return libDir, nil
 }
 
-func RunDarwinBootstrap(w io.Writer, emitJSON bool, driver string) error {
-	if driver != "libkrun" && driver != "vm" && driver != "" {
-		return nil
-	}
-
+func RunDarwinBootstrap(w io.Writer, emitJSON bool) error {
 	emitPhase(w, emitJSON, "preflight", "start", "checking macOS VM prerequisites")
 	emitPhase(w, emitJSON, "preflight", "ok", "macOS Hypervisor.framework available")
 

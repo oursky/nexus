@@ -55,6 +55,10 @@ jobs:
             -o "agent-linux-${{ matrix.goarch }}" \
             ../nexus-guest-agent/
 
+      - name: Stage Linux amd64 libkrun embeds
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: bash scripts/ci/stage-nexus-linux-embeds.sh
+
       - name: Build nexus binary
         working-directory: packages/nexus
         env:
@@ -106,7 +110,15 @@ jobs:
             ls -la
             exit 1
           fi
-          sha256sum nexus-* > checksums.txt
+          # Linux libkrun helper (amd64); same path the install script stages to ~/.local/share/nexus/bin/
+          VM_HELPER_SRC="${GITHUB_WORKSPACE:-..}/packages/nexus/cmd/nexus/nexus-libkrun-vm"
+          if [ -f "${VM_HELPER_SRC}" ]; then
+            cp -f "${VM_HELPER_SRC}" nexus-libkrun-vm-linux-amd64
+          else
+            echo "missing nexus-libkrun-vm at ${VM_HELPER_SRC}" >&2
+            exit 1
+          fi
+          sha256sum nexus-* nexus-libkrun-vm-linux-amd64 > checksums.txt
 
           VERSION="${GITHUB_REF_NAME}"
           PUB_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -155,6 +167,7 @@ jobs:
             dist/nexus-linux-arm64
             dist/nexus-darwin-amd64
             dist/nexus-darwin-arm64
+            dist/nexus-libkrun-vm-linux-amd64
             dist/checksums.txt
             dist/latest.json
 
@@ -183,5 +196,6 @@ jobs:
             dist/nexus-linux-arm64
             dist/nexus-darwin-amd64
             dist/nexus-darwin-arm64
+            dist/nexus-libkrun-vm-linux-amd64
             dist/checksums.txt
             dist/latest.json

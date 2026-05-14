@@ -84,8 +84,7 @@ ssh "$REMOTE_HOST" bash -s <<'REMOTE'
   CGO_ENABLED=1 \
     CGO_CFLAGS="-I$LIBKRUN_INC" \
     CGO_LDFLAGS="-L$LIBS_TMP -lkrun -Wl,-rpath,\$ORIGIN/../lib" \
-    go build \
-      -tags libkrun \
+    go build -tags libkrunvm \
       -o cmd/nexus/nexus-libkrun-vm \
       ./cmd/nexus-libkrun-vm
   echo "  → rebuilt on remote"

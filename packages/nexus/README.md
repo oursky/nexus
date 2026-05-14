@@ -10,11 +10,11 @@ Go daemon and interactive **TUI**, plus a **CLI** for scripting and automation, 
 curl -fsSL https://raw.githubusercontent.com/oursky/nexus/main/install.sh | bash
 ```
 
-This installs `nexus` and `pty-host` into `~/.local/bin` (override with `INSTALL_DIR`). The script picks a suitable SHA-256 tool, uses `sudo` only if the install directory is not user-writable.
+This installs the `nexus` binary into `~/.local/bin` (override with `INSTALL_DIR`). The script picks a suitable SHA-256 tool, uses `sudo` only if the install directory is not user-writable. On Linux, the daemon **re-execs the same binary** as an embedded PTY host (`nexus __pty-host`); no separate `pty-host` binary is required.
 
 To pin a version: `curl ... | env NEXUS_VERSION=v0.31.0 bash`, or run from a checkout with `NEXUS_VERSION` set.
 
-Releases older than `pty-host` bundles fall back to `go install` for `pty-host` only (still one command). **`go install` of the main `nexus` binary is not supported** from the module proxy: Linux builds require embedded guest-agent artifacts; use the install script or [GitHub Releases](https://github.com/oursky/nexus/releases) assets.
+**`go install` of the main `nexus` binary is not supported** from the module proxy: Linux builds require embedded guest-agent (and, on amd64, libkrun/passt) blobs staged before `go build`; use the install script or [GitHub Releases](https://github.com/oursky/nexus/releases) assets.
 
 ## Flow (conceptual)
 

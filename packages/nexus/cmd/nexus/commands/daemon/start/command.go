@@ -24,12 +24,11 @@ const daemonForegroundEnv = "NEXUS_DAEMON_FOREGROUND"
 // StartSetupFn, if non-nil, is called once before the daemon starts to
 // provision host prerequisites (libkrun libraries, kernel, rootfs).
 // On Linux this is wired to RunRootlessBootstrap by the main package.
-// driver is the runtime driver override ("libkrun", or "").
-var StartSetupFn func(w io.Writer, driver string) error
+var StartSetupFn func(w io.Writer) error
 
 // StartSetupFnJSON, if non-nil, is the JSON-output variant of StartSetupFn.
 // Used when --json is passed to emit structured phase events.
-var StartSetupFnJSON func(w io.Writer, driver string) error
+var StartSetupFnJSON func(w io.Writer) error
 
 // EmbeddedAgentFn, if non-nil, returns the embedded guest-agent binary bytes.
 // On Linux builds this is always set by daemon_hooks_linux.go.
@@ -61,7 +60,7 @@ func Command() *cobra.Command {
 			emitPhase := makePhaseEmitter(cmd, jsonOutput)
 			isForegroundChild := os.Getenv(daemonForegroundEnv) == "1"
 
-			if err := runHostPrerequisites(cmd, isForegroundChild, driver); err != nil {
+			if err := runHostPrerequisites(cmd, isForegroundChild); err != nil {
 				return err
 			}
 			applyCanonicalPaths()
@@ -76,20 +75,16 @@ func Command() *cobra.Command {
 				return err
 			}
 
-			driverInfo, err := resolveDriver(driver, sandboxMode)
-			if err != nil {
-				return err
-			}
-			isLibkrun := driverInfo.Implementation == "libkrun"
+			vmProvisioning := runtime.GOOS == "linux" && StartSetupFn != nil
 
-			paths, err := resolveVMPaths(isLibkrun, rootfsPath, kernelPath, workDirRoot)
+			paths, err := resolveVMPaths(vmProvisioning, rootfsPath, kernelPath, workDirRoot)
 			if err != nil {
 				return err
 			}
-			if err := validateVMAssets(isLibkrun, paths.rootfsPath, paths.kernelPath); err != nil {
+			if err := validateVMAssets(vmProvisioning, paths.rootfsPath, paths.kernelPath); err != nil {
 				return err
 			}
-			setupLDLibraryPath(isLibkrun)
+			setupLDLibraryPath(vmProvisioning)
 
 			cfg := daemon.Config{
 				DBPath:          dbPath,
@@ -100,12 +95,10 @@ func Command() *cobra.Command {
 				BasesDir:        paths.basesDir,
 				NodeName:        nodeName,
 				Network:         netCfg,
-				Driver:          driverInfo.Implementation,
-				DriverCategory:  string(driverInfo.Category),
 				EmbeddedAgentFn: EmbeddedAgentFn,
 			}
 
-			if err := injectAgentAndBake(cfg, isLibkrun, isForegroundChild, emitPhase); err != nil {
+			if err := injectAgentAndBake(cfg, vmProvisioning, isForegroundChild, emitPhase); err != nil {
 				return err
 			}
 
@@ -137,7 +130,7 @@ func makePhaseEmitter(cmd *cobra.Command, jsonOut bool) func(phase, status, mess
 
 // runHostPrerequisites invokes StartSetupFn once before the daemon starts.
 // It is skipped in the background child process since the parent already ran it.
-func runHostPrerequisites(cmd *cobra.Command, isForegroundChild bool, driver string) error {
+func runHostPrerequisites(cmd *cobra.Command, isForegroundChild bool) error {
 	if isForegroundChild || StartSetupFn == nil {
 		return nil
 	}
@@ -147,7 +140,7 @@ func runHostPrerequisites(cmd *cobra.Command, isForegroundChild bool, driver str
 		setupOut = cmd.OutOrStdout()
 		setupFn = StartSetupFnJSON
 	}
-	if err := setupFn(setupOut, driver); err != nil {
+	if err := setupFn(setupOut); err != nil {
 		return fmt.Errorf("daemon start: host setup: %w", err)
 	}
 	return nil
@@ -209,22 +202,6 @@ func buildNetworkConfig(token string) (daemon.NetworkConfig, error) {
 	return cfg, nil
 }
 
-// resolveDriver parses the driver flag and applies compile-time defaults.
-func resolveDriver(driver string, sandboxMode bool) (DriverInfo, error) {
-	if driver == "" && DefaultDriver != "" {
-		driver = DefaultDriver
-		log.Printf("daemon: using compile-time default driver=%s", driver)
-	}
-	info, err := ParseDriver(driver)
-	if err != nil {
-		return DriverInfo{}, fmt.Errorf("daemon start: %w", err)
-	}
-	if info.Implementation == "" && sandboxMode {
-		info = DriverInfo{Category: CategoryProcess, Implementation: "sandbox"}
-	}
-	return info, nil
-}
-
 // resolveVMPaths promotes VM assets to the preferred storage root when using
 // libkrun and derives the bases and work directories.
 func resolveVMPaths(isLibkrun bool, rootfsPath, kernelPath, workDirRoot string) (resolvedPaths, error) {
@@ -283,27 +260,23 @@ func resolveVMPaths(isLibkrun bool, rootfsPath, kernelPath, workDirRoot string) 
 	}, nil
 }
 
-// validateVMAssets ensures rootfs and kernel exist when not in sandbox mode.
+// validateVMAssets optionally checks VM disk assets. Daemon start does not fail
+// when assets are missing; workspace start reports installation errors instead.
 func validateVMAssets(needsVMAssets bool, rootfsPath, kernelPath string) error {
 	if !needsVMAssets {
 		return nil
 	}
 	if runtime.GOOS == "darwin" {
-		// macvm downloads the base rootfs on first workspace start and discovers the
-		// kernel from the embedded payload cache; skip Linux-style path validation here.
 		return nil
 	}
 	if rootfsPath == "" || kernelPath == "" {
-		return fmt.Errorf(
-			"daemon start: vm driver requires --rootfs and --kernel; " +
-				"run `nexus daemon start` (auto-provisions assets) or supply the flags",
-		)
+		return nil
 	}
 	if _, err := os.Stat(rootfsPath); err != nil {
-		return fmt.Errorf("daemon start: rootfs %q not found: %w\n  Run `nexus daemon start` first or supply --rootfs", rootfsPath, err)
+		log.Printf("daemon: rootfs %q not present yet (VM workspaces will error until provisioned): %v", rootfsPath, err)
 	}
 	if _, err := os.Stat(kernelPath); err != nil {
-		return fmt.Errorf("daemon start: kernel %q not found: %w\n  Run `nexus daemon start` first or supply --kernel", kernelPath, err)
+		log.Printf("daemon: kernel %q not present yet (VM workspaces will error until provisioned): %v", kernelPath, err)
 	}
 	return nil
 }
@@ -334,6 +307,10 @@ func injectAgentAndBake(cfg daemon.Config, isLibkrun, isForegroundChild bool, em
 		// macOS uses a pre-baked downloadable rootfs with the agent already installed.
 		// Linux-style debugfs/e2fsprogs injection is unavailable on macOS builds.
 		emitPhase("guest-agent", "ok", "skipped (macOS pre-baked rootfs)")
+		return nil
+	}
+	if _, err := os.Stat(cfg.RootFSPath); err != nil {
+		emitPhase("guest-agent", "ok", "skipped (rootfs not provisioned yet)")
 		return nil
 	}
 	if err := ensureGuestAgent(cfg.RootFSPath); err != nil {

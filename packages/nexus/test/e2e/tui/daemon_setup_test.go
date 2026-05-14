@@ -119,21 +119,20 @@ func mkdirTUIWorkDir() (string, error) {
 	return os.MkdirTemp("", "nexus-tui-e2e-work-*")
 }
 
-// tuiDaemonDriverArgs selects sandbox vs VM-backed daemon flags.
+// tuiDaemonDriverArgs adds optional VM asset paths for daemon start.
 //
-// Linux VM (libkrun): set NEXUS_VM_KERNEL and NEXUS_VM_ROOTFS (or NEXUS_E2E_ROOTFS),
-// matching packages/nexus/test/e2e/harness e2eVMArgs / CI linux e2e jobs.
+// Linux VM (libkrun): set NEXUS_VM_KERNEL and NEXUS_VM_ROOTFS (or NEXUS_E2E_ROOTFS).
 //
 // macOS VM: set NEXUS_E2E_DRIVER=vm and NEXUS_VM_ROOTFS (same as harness).
 //
-// Otherwise defaults to --driver sandbox (fast local runs without KVM).
+// Otherwise returns no extra flags (daemon still boots; workspace start enforces backends).
 func tuiDaemonDriverArgs() ([]string, error) {
 	if runtime.GOOS == "darwin" && strings.EqualFold(strings.TrimSpace(os.Getenv("NEXUS_E2E_DRIVER")), "vm") {
 		root := harness.VMRootfsFromEnv()
 		if root == "" {
 			return nil, fmt.Errorf("NEXUS_E2E_DRIVER=vm requires NEXUS_VM_ROOTFS or NEXUS_E2E_ROOTFS")
 		}
-		return []string{"--driver", "vm", "--rootfs", root}, nil
+		return []string{"--rootfs", root}, nil
 	}
 	kernel := strings.TrimSpace(os.Getenv("NEXUS_VM_KERNEL"))
 	if kernel != "" {
@@ -147,10 +146,9 @@ func tuiDaemonDriverArgs() ([]string, error) {
 		return []string{
 			"--kernel", kernel,
 			"--rootfs", root,
-			"--driver", "libkrun",
 		}, nil
 	}
-	return []string{"--driver", "sandbox"}, nil
+	return nil, nil
 }
 
 func startDaemon(bin string) (*daemonEnv, error) {

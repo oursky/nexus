@@ -155,7 +155,7 @@ jobs:
         working-directory: packages/nexus
         run: go generate ./cmd/nexus/
 
-      - name: Build nexus + pty-host, codesign, and pre-install gvproxy
+      - name: Build nexus (macOS E2E), codesign, gvproxy
         run: bash scripts/ci/build-macos-e2e.sh
 
       - name: Run Go e2e (vm driver)

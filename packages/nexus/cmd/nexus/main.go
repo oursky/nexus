@@ -8,6 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/oursky/nexus/packages/nexus/internal/ptyhost"
+
 	bundlecmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/bundle"
 	daemoncmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon"
 	projectcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/project"
@@ -28,6 +30,12 @@ func init() {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == ptyhost.HiddenSubcommand {
+		os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+		ptyhost.Main()
+		return
+	}
+
 	root := &cobra.Command{
 		Use:           "nexus",
 		Short:         "Nexus remote workspace CLI",

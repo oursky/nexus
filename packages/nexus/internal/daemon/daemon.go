@@ -75,29 +75,18 @@ func ValidateNetworkConfig(cfg NetworkConfig) error {
 
 // Config holds all configuration for building a Daemon.
 type Config struct {
-	DBPath      string
-	SocketPath  string
-	KernelPath  string
-	RootFSPath  string
-	WorkDirRoot string
-	BasesDir    string
-	NodeName    string
-	NodeTags    []string
-	Network     NetworkConfig
-	// Driver selects the runtime driver implementation: "libkrun" or "sandbox".
-	Driver string
-	// DriverCategory is the user-facing category: "vm" or "process".
-	DriverCategory string
-	// MutagenSocket is the path to the mutagen daemon's gRPC socket.
-	// When non-empty, the sync RPC handler is registered.
-	MutagenSocket string
-	// EmbeddedAgentFn returns the embedded guest-agent binary bytes.
-	// When set, the libkrun driver injects the current agent into each VM's rootfs
-	// on spawn so the agent stays in sync with the nexus binary.
+	DBPath          string
+	SocketPath      string
+	KernelPath      string
+	RootFSPath      string
+	WorkDirRoot     string
+	BasesDir        string
+	NodeName        string
+	NodeTags        []string
+	Network         NetworkConfig
+	MutagenSocket   string
 	EmbeddedAgentFn func() []byte
-	// PTYHostSocket is the path to the PTY host Unix socket.
-	// When empty, defaults to <socket-dir>/pty-host.sock.
-	PTYHostSocket string
+	PTYHostSocket   string
 }
 
 // Daemon is the assembled daemon with all services wired together.
@@ -158,7 +147,6 @@ func New(cfg Config) (*Daemon, error) {
 	// Build runtime registry with all available drivers.
 	registry := domainruntime.NewRegistry()
 
-	// Sandbox (process) driver is always available.
 	sandboxDriver := sandbox.NewAdapter(sandbox.NewDriver())
 	registry.Register(sandboxDriver)
 	log.Printf("daemon: sandbox (process) runtime driver registered")
@@ -168,52 +156,29 @@ func New(cfg Config) (*Daemon, error) {
 	// broadcast to all connected clients.
 	broadcastHub := transport.NewHub()
 
-	// Attempt to register libkrun driver unless process-only mode was requested.
 	var lkBundle libkrunDriverBundle
-	var lkErr error
-	explicitLibkrun := cfg.Driver == "libkrun"
-	skipLibkrun := runtime.GOOS == "darwin" && cfg.Driver == "sandbox"
-	if !skipLibkrun {
-		lkBundle, lkErr = buildLibkrunDriver(cfg, wsStore, broadcastHub)
-		if lkErr == nil {
-			if err := lkBundle.CleanupStaleInstances(context.Background()); err != nil {
-				log.Printf("daemon: libkrun stale cleanup warning: %v", err)
-			}
-			registry.Register(lkBundle.AsDriver())
-			log.Printf("daemon: libkrun runtime driver registered")
-
-			// Pre-warm base workspace images for all known libkrun workspaces in
-			// the background so the first workspace start doesn't block on
-			// mkfs.ext4 -d <project_root> (which can take 30-120s for large repos).
-			go prewarmLibkrunBaseImages(wsStore, cfg.BasesDir)
+	lkBundle, lkErr := buildLibkrunDriver(cfg, wsStore, broadcastHub)
+	if lkErr == nil {
+		if err := lkBundle.CleanupStaleInstances(context.Background()); err != nil {
+			log.Printf("daemon: libkrun stale cleanup warning: %v", err)
+		}
+		registry.Register(lkBundle.AsDriver())
+		log.Printf("daemon: libkrun runtime driver registered")
+		go prewarmLibkrunBaseImages(wsStore, cfg.BasesDir)
+	} else {
+		if runtime.GOOS == "linux" {
+			log.Printf("daemon: libkrun driver not registered (workspace start will fail for VM backends until host is provisioned): %v", lkErr)
+		} else if errors.Is(lkErr, ErrLibkrunNotBootstrapped) {
+			log.Printf("daemon: macvm: %v", lkErr)
 		} else {
-			switch {
-			case explicitLibkrun:
-				db.Close()
-				return nil, fmt.Errorf("daemon: requested driver %q is not available on this node: %w", cfg.Driver, lkErr)
-			case errors.Is(lkErr, ErrLibkrunNotBootstrapped):
-				log.Printf("daemon: macvm: %v", lkErr)
-			default:
-				log.Printf("daemon: libkrun driver not available: %v", lkErr)
-			}
+			log.Printf("daemon: libkrun driver not available: %v", lkErr)
 		}
 	}
 
-	// Determine default backend: explicit driver flag > auto (prefer VM when registered).
-	switch cfg.Driver {
-	case "libkrun":
-		if !registry.SetDefaultBackend("libkrun") {
-			db.Close()
-			return nil, fmt.Errorf("daemon: requested driver %q is not available on this node", cfg.Driver)
-		}
-	case "sandbox", "process":
+	if registry.HasBackend("libkrun") {
+		registry.SetDefaultBackend("libkrun")
+	} else {
 		registry.SetDefaultBackend("process")
-	default:
-		if registry.HasBackend("libkrun") {
-			registry.SetDefaultBackend("libkrun")
-		} else {
-			registry.SetDefaultBackend("process")
-		}
 	}
 	log.Printf("daemon: default backend=%s", registry.DefaultBackend())
 
@@ -260,9 +225,9 @@ func New(cfg Config) (*Daemon, error) {
 	}
 
 	if ptyHostConnErr != nil {
-		// No existing PTY host found; start a new one
+		// No existing PTY host found; start a new one (re-exec same binary).
 		ptyHostBin := resolvePTYHostBinary()
-		ptyHostCmd = exec.Command(ptyHostBin, "--socket", ptyHostSocket)
+		ptyHostCmd = exec.Command(ptyHostBin, ptyhost.HiddenSubcommand, "--socket", ptyHostSocket)
 		if err := ptyHostCmd.Start(); err != nil {
 			log.Printf("daemon: failed to start pty-host: %v", err)
 		} else {
@@ -525,13 +490,13 @@ func defaultDataDir() string {
 }
 
 func resolvePTYHostBinary() string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return exe
+	}
 	if resolved, err := exec.LookPath("pty-host"); err == nil {
 		return resolved
 	}
 	exePath := os.Args[0]
-	if exe, err := os.Executable(); err == nil && exe != "" {
-		exePath = exe
-	}
 	daemonDir := filepath.Dir(exePath)
 	if daemonDir != "" && daemonDir != "." {
 		candidate := filepath.Join(daemonDir, "pty-host")

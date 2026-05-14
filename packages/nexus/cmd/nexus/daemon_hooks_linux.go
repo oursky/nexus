@@ -12,11 +12,11 @@ import (
 func init() {
 	// Wire the rootless bootstrap as the setup function for `nexus daemon start`.
 	// This replaces the old privileged VM setup path.
-	startcmd.StartSetupFn = func(w io.Writer, driver string) error {
-		return RunRootlessBootstrap(w, false, driver)
+	startcmd.StartSetupFn = func(w io.Writer) error {
+		return RunRootlessBootstrap(w, false)
 	}
-	startcmd.StartSetupFnJSON = func(w io.Writer, driver string) error {
-		return RunRootlessBootstrap(w, true, driver)
+	startcmd.StartSetupFnJSON = func(w io.Writer) error {
+		return RunRootlessBootstrap(w, true)
 	}
 
 	// Expose the embedded agent bytes for agent injection.

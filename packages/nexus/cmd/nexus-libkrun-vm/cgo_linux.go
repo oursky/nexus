@@ -1,4 +1,4 @@
-//go:build linux && libkrun
+//go:build linux && cgo && libkrunvm
 
 package main
 

@@ -70,7 +70,6 @@ func NewCLIHarness(t *testing.T) *CLIHarness {
 		if err := adhocSignNexusForHypervisor(binPath); err != nil {
 			t.Fatalf("cliharness: codesign: %v", err)
 		}
-		buildPtyHost(t, tmp)
 	}
 
 	args := []string{

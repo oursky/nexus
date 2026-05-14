@@ -1,4 +1,4 @@
-//go:build linux && libkrun
+//go:build linux && amd64
 
 package main
 

@@ -39,7 +39,7 @@ func runBake(stdout, stderr io.Writer, timeoutStr string) error {
 	// Ensure bootstrap has run so kernel, passt, and libkrun libs are present.
 	if startcmd.StartSetupFn != nil {
 		fmt.Fprintln(stderr, "vm bake: ensuring host prerequisites...")
-		if err := startcmd.StartSetupFn(stderr, "libkrun"); err != nil {
+		if err := startcmd.StartSetupFn(stderr); err != nil {
 			return fmt.Errorf("host setup failed: %w", err)
 		}
 		fmt.Fprintln(stderr, "vm bake: host prerequisites ready")

@@ -1,4 +1,4 @@
-//go:build linux && libkrun
+//go:build linux && cgo && libkrunvm
 
 // nexus-libkrun-vm is a standalone process that configures and runs a single
 // libkrun microVM. It is spawned by the Nexus daemon for each workspace VM.

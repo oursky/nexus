@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the Nexus CLI (`nexus`) and co-located `pty-host` from GitHub Releases.
+# Install the Nexus CLI (`nexus`) from GitHub Releases.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/oursky/nexus/main/install.sh | bash
@@ -8,15 +8,16 @@
 #   GITHUB_REPOSITORY   default oursky/nexus
 #   NEXUS_VERSION       release tag (e.g. v0.31.0); when unset, uses GitHub "latest" stable release
 #   INSTALL_DIR         default ~/.local/bin
+#   SMOLVM_VERSION      libkrun vendor tarball tag for Linux x86_64 (default v0.5.19; must match CI build-nexus-libkrun.sh)
 #
 # Requires: curl, sha256sum or shasum -a 256 for release checksums, and python3 or jq to read the releases API
-# when NEXUS_VERSION is unset. If a release predates pty-host artifacts, falls back to:
-#   go install github.com/oursky/nexus/packages/nexus/cmd/pty-host@<tag>
+# when NEXUS_VERSION is unset.
 set -euo pipefail
 
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-oursky/nexus}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 NEXUS_VERSION="${NEXUS_VERSION:-}"
+SMOLVM_VERSION="${SMOLVM_VERSION:-v0.5.19}"
 
 case "${INSTALL_DIR}" in
   ~|"~/"*) INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}" ;;
@@ -46,6 +47,170 @@ verify_checksum_file() {
     [ "$actual" = "$expected" ] || die "checksum mismatch for ${asset}"
   else
     die "need sha256sum or shasum -a 256 to verify downloads"
+  fi
+}
+
+# ── Linux libkrun runtime (smolvm) + VM helper + passt ───────────────────────
+# Linux/amd64 release binaries embed libkrun + passt and extract on first boot.
+# This path still provisions host dirs and fills gaps for arm64, slim, or older builds.
+
+nexus_data_share_dir() {
+  local xdg="${XDG_DATA_HOME:-}"
+  if [ -z "${xdg}" ]; then
+    xdg="${HOME}/.local/share"
+  fi
+  echo "${xdg}/nexus"
+}
+
+install_smolvm_libs_amd64() {
+  local libdir="$1"
+  need_cmd tar
+  local ver_plain="${SMOLVM_VERSION#v}"
+  local tarball="smolvm-${ver_plain}-linux-x86_64.tar.gz"
+  local td ex base_smol sums_smol tball
+  td="$(mktemp -d "${TMPDIR:-/tmp}/nexus-smolvm.XXXXXX")"
+  cleanup() { rm -rf "${td}"; }
+  base_smol="https://github.com/smol-machines/smolvm/releases/download/${SMOLVM_VERSION}"
+  sums_smol="${td}/checksums.sha256"
+  tball="${td}/${tarball}"
+  curl -fsSL -L "${base_smol}/checksums.sha256" -o "${sums_smol}"
+  curl -fsSL -L "${base_smol}/${tarball}" -o "${tball}"
+  (
+    cd "${td}"
+    verify_checksum_file "checksums.sha256" "${tarball}"
+  )
+  ex="${td}/extract"
+  mkdir -p "${ex}"
+  tar -xzf "${tball}" -C "${ex}" --strip-components=2 "smolvm-${ver_plain}-linux-x86_64/lib"
+  mkdir -p "${libdir}"
+  cp -a "${ex}/." "${libdir}/"
+  cleanup
+  echo "nexus-install: installed libkrun + libkrunfw from smolvm ${SMOLVM_VERSION} → ${libdir}"
+}
+
+install_libkrun_libs_from_host_arm64() {
+  local libdir="$1"
+  local krun="" fw="" kdir="" f
+  if command -v ldconfig >/dev/null 2>&1; then
+    krun="$(PATH="/sbin:/usr/sbin:$PATH" ldconfig -p 2>/dev/null | awk '/libkrun\.so\.1(\s|$)/ {print $NF; exit}')"
+  fi
+  if [ -z "${krun}" ]; then
+    for f in \
+      /usr/lib/aarch64-linux-gnu/libkrun.so.1 \
+      /usr/lib64/libkrun.so.1 \
+      /lib/aarch64-linux-gnu/libkrun.so.1; do
+      if [ -e "$f" ]; then
+        krun="$f"
+        break
+      fi
+    done
+  fi
+  if [ -z "${krun}" ] && [ -d /nix/store ]; then
+    krun="$(find /nix/store -maxdepth 5 -name 'libkrun.so.1' -type f 2>/dev/null | head -1 || true)"
+  fi
+  [ -n "${krun}" ] || return 1
+  kdir="$(dirname "${krun}")"
+  fw="$(ls -1 "${kdir}"/libkrunfw.so.* 2>/dev/null | grep -E '\.[0-9]+\.[0-9]+\.[0-9]+$' || true)" 
+  fw="$(echo "${fw}" | sort -V | tail -1)"
+  [ -n "${fw}" ] || return 1
+  mkdir -p "${libdir}"
+  cp -L "${krun}" "${libdir}/libkrun.so"
+  rm -f "${libdir}/libkrun.so.1"
+  ln -sf libkrun.so "${libdir}/libkrun.so.1"
+  local fwbase
+  fwbase="$(basename "${fw}")"
+  cp -L "${fw}" "${libdir}/${fwbase}"
+  rm -f "${libdir}/libkrunfw.so.5" "${libdir}/libkrunfw.so"
+  ln -sf "${fwbase}" "${libdir}/libkrunfw.so.5"
+  ln -sf libkrunfw.so.5 "${libdir}/libkrunfw.so"
+  echo "nexus-install: staged libkrun from host (${krun}) → ${libdir}"
+  return 0
+}
+
+install_nexus_libkrun_vm() {
+  local tmp="$1" sums="$2" base="$3" bindir="$4"
+  local asset="nexus-libkrun-vm-linux-${GOARCH}"
+  mkdir -p "${bindir}"
+  if grep -qF " ${asset}" "${sums}" 2>/dev/null; then
+    curl -fsSL -L "${base}/${asset}" -o "${tmp}/${asset}"
+    (
+      cd "${tmp}"
+      verify_checksum_file "${sums}" "${asset}"
+    )
+    install -m 0755 "${tmp}/${asset}" "${bindir}/nexus-libkrun-vm"
+    echo "nexus-install: installed ${bindir}/nexus-libkrun-vm (${asset})"
+    return
+  fi
+  if [ "${GOARCH}" != "amd64" ]; then
+    die "this Nexus release has no checksum entry for ${asset}; use Linux amd64 or build nexus-libkrun-vm from source"
+  fi
+  local raw="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${NEXUS_VERSION}/packages/nexus/cmd/nexus/nexus-libkrun-vm"
+  echo "nexus-install: release checksums omit ${asset}; fetching VM helper from ${raw}"
+  curl -fsSL -L "${raw}" -o "${tmp}/nexus-libkrun-vm"
+  [ -s "${tmp}/nexus-libkrun-vm" ] || die "failed to download nexus-libkrun-vm (empty file)"
+  install -m 0755 "${tmp}/nexus-libkrun-vm" "${bindir}/nexus-libkrun-vm"
+}
+
+install_passt_user_local() {
+  local dest="$1"
+  mkdir -p "$(dirname "$dest")"
+  if [ -x "${dest}" ]; then
+    return 0
+  fi
+  if command -v passt >/dev/null 2>&1; then
+    local sys
+    sys="$(command -v passt)"
+    install -m 0755 "${sys}" "${dest}"
+    echo "nexus-install: installed passt at ${dest} (copied from ${sys})"
+    return 0
+  fi
+  if [ "${GOARCH}" = "amd64" ]; then
+    echo "nexus-install: downloading static passt for amd64 ..."
+    curl -fsSL --retry 3 -o "${dest}" "https://passt.top/builds/latest/x86_64/passt"
+    chmod 0755 "${dest}"
+    echo "nexus-install: installed ${dest} (passt.top static build)"
+    return 0
+  fi
+  return 1
+}
+
+install_linux_vm_runtime() {
+  local tmp="$1" sums="$2" base="$3"
+  [ "${GOOS:-}" = linux ] || return 0
+
+  local share libdir bindir
+  share="$(nexus_data_share_dir)"
+  libdir="${share}/lib"
+  bindir="${share}/bin"
+  mkdir -p "${libdir}" "${bindir}"
+
+  if [ ! -e "${libdir}/libkrun.so.1" ]; then
+    case "${GOARCH}" in
+      amd64)
+        install_smolvm_libs_amd64 "${libdir}"
+        ;;
+      arm64)
+        if ! install_libkrun_libs_from_host_arm64 "${libdir}"; then
+          die "could not find libkrun.so.1 for Linux arm64 (try Nix/libkrun packages, or use --driver sandbox)"
+        fi
+        ;;
+      *)
+        die "automatic libkrun provisioning is not implemented for Linux ${GOARCH}"
+        ;;
+    esac
+  else
+    echo "nexus-install: libkrun already present at ${libdir}/libkrun.so.1"
+  fi
+
+  if [ ! -x "${bindir}/nexus-libkrun-vm" ]; then
+    install_nexus_libkrun_vm "${tmp}" "${sums}" "${base}" "${bindir}"
+  else
+    echo "nexus-install: VM helper already at ${bindir}/nexus-libkrun-vm"
+  fi
+
+  local passt_dest="${HOME}/.local/bin/passt"
+  if ! install_passt_user_local "${passt_dest}"; then
+    die "passt is required at ${passt_dest} for libkrun networking — install passt (e.g. apt install passt on Debian/Ubuntu arm64)"
   fi
 }
 
@@ -173,17 +338,6 @@ resolve_release_tag() {
   echo "${NEXUS_VERSION}"
 }
 
-install_pty_host_via_go() {
-  local tag="$1"
-  need_cmd go
-  echo "nexus-install: installing pty-host with go install (${tag}) ..."
-  if [ -z "${USE_SUDO}" ]; then
-    env CGO_ENABLED="0" GOBIN="${INSTALL_DIR}" go install "github.com/oursky/nexus/packages/nexus/cmd/pty-host@${tag}"
-  else
-    sudo env CGO_ENABLED="0" GOBIN="${INSTALL_DIR}" go install "github.com/oursky/nexus/packages/nexus/cmd/pty-host@${tag}"
-  fi
-}
-
 main() {
   need_cmd curl
   detect_platform
@@ -192,9 +346,8 @@ main() {
 
   NEXUS_VERSION="$(resolve_release_tag)"
   local base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${NEXUS_VERSION}"
-  local tmp nexus_asset pty_asset
+  local tmp nexus_asset
   nexus_asset="nexus-${GOOS}-${GOARCH}"
-  pty_asset="pty-host-${GOOS}-${GOARCH}"
 
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/nexus-install.XXXXXX")"
   trap '[[ -n "${tmp:-}" ]] && rm -rf "${tmp}"' EXIT
@@ -212,28 +365,11 @@ main() {
   )
 
   prepare_install
-
-  if grep -qF " ${pty_asset}" "${sums}"; then
-    curl -fsSL -L "${base}/${pty_asset}" -o "${tmp}/${pty_asset}"
-    (
-      cd "${tmp}"
-      verify_checksum_file checksums.txt "${pty_asset}"
-    )
-  else
-    echo "nexus-install: release has no ${pty_asset} bundle; using Go toolchain for pty-host."
-    install_pty_host_via_go "${NEXUS_VERSION}"
-  fi
+  install_linux_vm_runtime "${tmp}" "${sums}" "${base}"
 
   run_install "${tmp}/${nexus_asset}" "${INSTALL_DIR}/nexus"
 
-  if [ -f "${tmp}/${pty_asset}" ]; then
-    run_install "${tmp}/${pty_asset}" "${INSTALL_DIR}/pty-host"
-  fi
-
   echo "nexus-install: installed ${INSTALL_DIR}/nexus"
-  if [ -x "${INSTALL_DIR}/pty-host" ]; then
-    echo "nexus-install: installed ${INSTALL_DIR}/pty-host"
-  fi
   echo "nexus-install: ensure ${INSTALL_DIR} is on your PATH"
 }
 

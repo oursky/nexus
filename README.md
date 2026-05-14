@@ -13,7 +13,7 @@ The primary way to use Nexus is the **terminal UI**: run `nexus` or `nexus tui` 
 curl -fsSL https://raw.githubusercontent.com/oursky/nexus/main/install.sh | bash
 ```
 
-Installs `nexus` and `pty-host` into `~/.local/bin` by default. Override the destination with `INSTALL_DIR`, pin a release with `NEXUS_VERSION`, or fork the install via `GITHUB_REPOSITORY`.
+Installs `nexus` into `~/.local/bin` by default (PTY sessions use the same binary via `nexus __pty-host`). Override the destination with `INSTALL_DIR`, pin a release with `NEXUS_VERSION`, or fork the install via `GITHUB_REPOSITORY`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/oursky/nexus/main/install.sh | env INSTALL_DIR=/usr/local/bin bash

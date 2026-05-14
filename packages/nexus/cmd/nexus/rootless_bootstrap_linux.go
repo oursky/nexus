@@ -125,7 +125,7 @@ type rootlessState struct {
 	LibkrunLibDir     string `json:"libkrun_lib_dir,omitempty"`
 }
 
-// ── Prerequisite checks ───────────────────────────────────────────────────────
+// ── Prerequisite checks (used by standalone diagnostics only) ───────────────
 
 func checkKVMAccess() error {
 	f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
@@ -160,29 +160,9 @@ func checkNetworkBackend() error {
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
-// RunRootlessBootstrap runs preflight + asset-install + runtime-verify in sequence.
-// On success, the daemon-launch phase can proceed.
-// emitJSON controls whether phase events are emitted as JSON lines (for --json flag).
-func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
-	d := strings.ToLower(strings.TrimSpace(driver))
-	// Sandbox / process backend starts without libkrun (no KVM, no VM disk images).
-	// Needed for CI and dev machines running `daemon start --driver sandbox`.
-	if d == "sandbox" || d == "process" {
-		emitPhase(w, emitJSON, "preflight", "start", "checking prerequisites")
-		emitPhase(w, emitJSON, "preflight", "ok", "process driver — skipping libkrun/KVM provisioning")
-		return nil
-	}
-
-	// ── Phase: preflight ───────────────────────────────────────────────────────
-	emitPhase(w, emitJSON, "preflight", "start", "checking prerequisites")
-
-	if err := checkKVMAccess(); err != nil {
-		emitPhase(w, emitJSON, "preflight", "error", err.Error())
-		return err
-	}
-	emitPhase(w, emitJSON, "preflight", "ok", "KVM accessible")
-
-	// ── Phase: asset-install (idempotent) ─────────────────────────────────────
+// RunRootlessBootstrap installs Linux VM assets best-effort. It does not validate
+// drivers; failures surface when a workspace starts with that backend.
+func RunRootlessBootstrap(w io.Writer, emitJSON bool) error {
 	emitPhase(w, emitJSON, "asset-install", "start", "installing runtime assets")
 
 	if err := ensureRootlessDirs(); err != nil {
@@ -190,13 +170,11 @@ func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
 		return fmt.Errorf("asset-install: create dirs: %w", err)
 	}
 
-	// libkrun shared libraries.
 	if err := installLibkrunLibsRootless(w, emitJSON); err != nil {
 		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
 		return fmt.Errorf("asset-install: libkrun: %w", err)
 	}
 
-	// passt is required for both drivers in VM mode networking.
 	if err := installPasstRootless(w, emitJSON); err != nil {
 		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
 		return fmt.Errorf("asset-install: passt: %w", err)
@@ -207,31 +185,19 @@ func RunRootlessBootstrap(w io.Writer, emitJSON bool, driver string) error {
 		return fmt.Errorf("asset-install: kernel: %w", err)
 	}
 
-	// libkrun requires a block-backed rootfs image so guest
-	// root behaves like a real VM filesystem (root can install arbitrary packages).
 	if err := installVMRootfsRootless(w, emitJSON); err != nil {
 		emitPhase(w, emitJSON, "asset-install", "error", err.Error())
 		return fmt.Errorf("asset-install: rootfs: %w", err)
 	}
 
-	emitPhase(w, emitJSON, "asset-install", "ok", "all assets present")
+	emitPhase(w, emitJSON, "asset-install", "ok", "asset install phase complete")
 
-	// ── Phase: runtime-verify ─────────────────────────────────────────────────
-	emitPhase(w, emitJSON, "runtime-verify", "start", "verifying runtime")
-
-	if err := verifyRootlessRuntime(driver); err != nil {
-		emitPhase(w, emitJSON, "runtime-verify", "error", err.Error())
-		return fmt.Errorf("runtime-verify: %w", err)
-	}
-
-	if err := persistRootlessState(driver); err != nil {
-		// Non-fatal: log but don't fail startup
-		emitPhase(w, emitJSON, "runtime-verify", "ok", fmt.Sprintf("verified (state persist skipped: %v)", err))
+	if err := persistRootlessState(); err != nil {
+		emitPhase(w, emitJSON, "bootstrap", "ok", fmt.Sprintf("state persist skipped: %v", err))
 	} else {
-		emitPhase(w, emitJSON, "runtime-verify", "ok", "runtime verified and state persisted")
+		emitPhase(w, emitJSON, "bootstrap", "ok", "state persisted")
 	}
 
-	// daemon-launch phase is emitted by the caller after this returns.
 	return nil
 }
 
@@ -252,52 +218,13 @@ func ensureRootlessDirs() error {
 	return nil
 }
 
-// ── Runtime verification ──────────────────────────────────────────────────────
-
-// verifyRootlessRuntime confirms all runtime assets are present.
-// For libkrun driver this means libkrun libs, passt, kernel and rootfs.
-// For sandbox driver only the rootfs is checked (when applicable).
-func verifyRootlessRuntime(driver string) error {
-	isLibkrun := driver == "libkrun" || driver == ""
-
-	if isLibkrun {
-		// libkrun shared library.
-		libDir := rootlessLibkrunLibDir()
-		if _, err := os.Stat(filepath.Join(libDir, "libkrun.so.1")); err != nil {
-			return fmt.Errorf("libkrun.so.1 not found at %s", libDir)
-		}
-
-		// Verify passt.
-		passt := rootlessPasstPath()
-		if _, err := os.Stat(passt); err != nil {
-			return fmt.Errorf("passt not found at %s", passt)
-		}
-
-		// Verify kernel.
-		if _, err := os.Stat(rootlessKernelPath()); err != nil {
-			return fmt.Errorf("kernel not found at %s", rootlessKernelPath())
-		}
-	}
-
-	// Verify rootfs.
-	if _, err := os.Stat(rootlessRootfsPath()); err != nil {
-		return fmt.Errorf("rootfs not found at %s", rootlessRootfsPath())
-	}
-
-	return nil
-}
-
 // ── State persistence ─────────────────────────────────────────────────────────
 
-func persistRootlessState(driver string) error {
-	effectiveDriver := driver
-	if effectiveDriver == "" {
-		effectiveDriver = "libkrun"
-	}
+func persistRootlessState() error {
 	state := rootlessState{
 		SchemaVersion:     1,
 		InstalledAt:       time.Now().UTC().Format(time.RFC3339),
-		Driver:            effectiveDriver,
+		Driver:            "libkrun",
 		NetworkBackend:    "tsi", // built into libkrun
 		NetworkBackendBin: "",
 		KernelPath:        rootlessKernelPath(),

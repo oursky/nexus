@@ -49,13 +49,20 @@ tasks:
     desc: "Compile all Go packages"
     dir: packages/nexus
     cmds:
+      - |
+        if [ "$(go env GOOS)" = linux ] && [ "$(go env GOARCH)" = amd64 ]; then
+          bash ../../scripts/ci/stage-nexus-linux-embeds.sh
+        fi
       - go build ./...
-      - go build ./cmd/pty-host
 
   test:
     desc: "Run Go tests"
     dir: packages/nexus
     cmds:
+      - |
+        if [ "$(go env GOOS)" = linux ] && [ "$(go env GOARCH)" = amd64 ]; then
+          bash ../../scripts/ci/stage-nexus-linux-embeds.sh
+        fi
       - go test ./...
 
   lint:
@@ -352,7 +359,6 @@ tasks:
       - task: generate:agent
       - task: build
       - task: stage:nexus-macos
-      - cd packages/nexus && go build ./cmd/pty-host
 
   ci:commits:
     desc: "Validate commit messages match conventional commit format"

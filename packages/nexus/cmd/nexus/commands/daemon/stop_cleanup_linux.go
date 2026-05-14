@@ -14,9 +14,13 @@ import (
 
 func cleanupDaemonResidue() {
 	// Ensure child helpers are torn down even if daemon shutdown raced.
-	for _, name := range []string{"nexus-libkrun-vm", "nexus-guest-agent", "passt", "pasta", "pty-host"} {
+	for _, name := range []string{"nexus-libkrun-vm", "nexus-guest-agent", "passt", "pasta"} {
 		_ = exec.Command("pkill", "-x", name).Run()
 	}
+	// PTY host is normally the same binary as the daemon with __pty-host.
+	_ = exec.Command("pkill", "-f", "__pty-host --socket=").Run()
+	// Legacy standalone helper.
+	_ = exec.Command("pkill", "-x", "pty-host").Run()
 
 	workRoots := []string{
 		"/data/nexus/default",

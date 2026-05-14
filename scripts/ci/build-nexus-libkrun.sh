@@ -19,7 +19,6 @@ pushd "$NEXUS_DIR" >/dev/null
 run_with_timeout go generate ./cmd/nexus/
 
 EMBED_DIR="$NEXUS_DIR/cmd/nexus"
-BUILD_TAGS=""
 
 # Check if libkrun support is present (nexus-libkrun-vm source exists).
 if [[ -d "$NEXUS_DIR/cmd/nexus-libkrun-vm" ]]; then
@@ -37,7 +36,6 @@ if [[ -d "$NEXUS_DIR/cmd/nexus-libkrun-vm" ]]; then
   cp "$LIBS_TMP/libkrun.so.1" "$EMBED_DIR/libkrun-embed.so"
   LIBKRUNFW_REAL=$(find "$LIBS_TMP" -maxdepth 1 -name 'libkrunfw.so.*.*' | sort | tail -1)
   cp "$LIBKRUNFW_REAL" "$EMBED_DIR/libkrunfw-embed.so"
-  BUILD_TAGS="-tags libkrun"
 
   # Stage passt binary for embedding so the release binary is fully self-contained.
   PASST_EMBED="$EMBED_DIR/passt-embed"
@@ -76,8 +74,7 @@ if [[ -d "$NEXUS_DIR/cmd/nexus-libkrun-vm" ]]; then
     run_with_timeout env CGO_ENABLED=1 \
       CGO_CFLAGS="-I$LIBKRUN_INC" \
       CGO_LDFLAGS="-L$LIBS_TMP -lkrun -Wl,-rpath,\$ORIGIN/../lib" \
-      go build \
-        -tags libkrun \
+      go build -tags libkrunvm \
         -o "$EMBED_DIR/nexus-libkrun-vm" \
         ./cmd/nexus-libkrun-vm
     echo "  → rebuilt nexus-libkrun-vm from source ($(du -sh "$EMBED_DIR/nexus-libkrun-vm" | cut -f1))"
@@ -90,8 +87,10 @@ else
 fi
 
 # shellcheck disable=SC2086
-run_with_timeout env CGO_ENABLED=0 go build $BUILD_TAGS -o /tmp/nexus-bin ./cmd/nexus/
-rm -f "$EMBED_DIR/libkrun-embed.so" "$EMBED_DIR/libkrunfw-embed.so" "$EMBED_DIR/passt-embed"
+run_with_timeout env CGO_ENABLED=0 go build -o /tmp/nexus-bin ./cmd/nexus/
+if [[ "${NEXUS_RM_EMBEDS_AFTER_BUILD:-}" == "1" ]]; then
+  rm -f "$EMBED_DIR/libkrun-embed.so" "$EMBED_DIR/libkrunfw-embed.so" "$EMBED_DIR/passt-embed"
+fi
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   echo "NEXUS_E2E_BINARY=/tmp/nexus-bin" >> "$GITHUB_ENV"

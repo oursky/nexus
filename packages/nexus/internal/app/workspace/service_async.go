@@ -2,10 +2,12 @@ package workspace
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
@@ -86,10 +88,37 @@ func (s *Service) runStartAsync(ws *workspace.Workspace) {
 	s.autoForwardPorts(ctx, current)
 }
 
+func enrichDriverStartError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "bwrap") || strings.Contains(msg, "bubblewrap"):
+		return fmt.Errorf("installation corrupted: process sandbox requires bubblewrap (bwrap) — install it or re-run install.sh: %w", err)
+	case strings.Contains(msg, "sandbox-exec"):
+		return fmt.Errorf("installation corrupted: macOS seatbelt (sandbox-exec) is required — re-run install.sh: %w", err)
+	case strings.Contains(msg, "libkrun.so") || strings.Contains(msg, "libkrun"):
+		return fmt.Errorf("installation corrupted: libkrun VM libraries missing or broken — re-run install.sh or `nexus daemon start`: %w", err)
+	default:
+		return err
+	}
+}
+
 func (s *Service) performStart(ctx context.Context, ws *workspace.Workspace) (*workspace.Workspace, bool) {
 	var startErr error
-	if driver := s.driverFor(ws); driver != nil {
-		startErr = driver.Start(ctx, ws)
+	if s.registry != nil {
+		driver, ok := s.registry.Driver(ws.Backend)
+		backendLabel := ws.Backend
+		if backendLabel == "" {
+			backendLabel = s.registry.DefaultBackend()
+		}
+		if !ok {
+			startErr = fmt.Errorf("installation corrupted: %q runtime is not available on this host — re-run install.sh or provision the VM/process stack", backendLabel)
+		} else {
+			startErr = driver.Start(ctx, ws)
+			startErr = enrichDriverStartError(startErr)
+		}
 	}
 
 	current, fetchErr := s.repo.Get(ctx, ws.ID)

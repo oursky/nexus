@@ -14,25 +14,6 @@ import (
 	"time"
 )
 
-func buildPtyHost(t *testing.T, binDir string) {
-	t.Helper()
-	if err := buildPtyHostToDir(binDir); err != nil {
-		t.Fatalf("%v", err)
-	}
-}
-
-func buildPtyHostToDir(binDir string) error {
-	dest := filepath.Join(binDir, "pty-host")
-	build := exec.Command("go", "build", "-o", dest, "./cmd/pty-host")
-	build.Dir = moduleRoot
-	build.Stderr = os.Stderr
-	out, err := build.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("harness: build pty-host: %w: %s", err, out)
-	}
-	return nil
-}
-
 // resolveBinary returns the path to the nexusd binary.
 // It uses NEXUS_E2E_BINARY if set, otherwise builds from source.
 // When building from source, the caller must supply a cleanup hook.
@@ -59,7 +40,6 @@ func resolveBinary(t *testing.T) string {
 	if err := adhocSignNexusForHypervisor(binPath); err != nil {
 		t.Fatalf("harness: codesign nexusd: %v", err)
 	}
-	buildPtyHost(t, tmp)
 	return binPath
 }
 
@@ -87,10 +67,6 @@ func resolveBinaryNoTest() (binPath string, cleanup func()) {
 	if err := adhocSignNexusForHypervisor(binPath); err != nil {
 		_ = os.RemoveAll(tmp)
 		panic("harness: codesign nexusd: " + err.Error())
-	}
-	if err := buildPtyHostToDir(tmp); err != nil {
-		_ = os.RemoveAll(tmp)
-		panic("harness: build pty-host: " + err.Error())
 	}
 	return binPath, func() { os.RemoveAll(tmp) }
 }
@@ -120,7 +96,7 @@ func ensureDarwinLibkrunDylibs() {
 func e2eVMArgs() []string {
 	if runtime.GOOS == "darwin" && strings.EqualFold(strings.TrimSpace(os.Getenv("NEXUS_E2E_DRIVER")), "vm") {
 		root := VMRootfsFromEnv()
-		out := []string{"--driver", "vm"}
+		var out []string
 		if root != "" {
 			out = append(out, "--rootfs", root)
 		}
@@ -131,7 +107,6 @@ func e2eVMArgs() []string {
 		return []string{
 			"--kernel", kernel,
 			"--rootfs", VMRootfsFromEnv(),
-			"--driver", "libkrun",
 		}
 	}
 	return nil
@@ -162,7 +137,6 @@ func buildDaemonArgs(cfg daemonConfig) []string {
 		args = append(args,
 			"--kernel", cfg.vmKernel,
 			"--rootfs", cfg.vmRootfs,
-			"--driver", "libkrun",
 		)
 	}
 	if cfg.nodeName != "" {

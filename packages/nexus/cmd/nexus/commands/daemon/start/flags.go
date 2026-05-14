@@ -9,24 +9,22 @@ import (
 )
 
 var (
-	dbPath       string
-	socketPath   string
-	kernelPath   string
-	rootfsPath   string
-	workDirRoot  string
-	nodeName     string
-	network      bool
-	bind         string
-	port         int
-	tlsMode      string
-	token        string
-	tlsCert      string
-	tlsKey       string
-	foreground   bool   // --foreground: stay blocking instead of self-daemonizing
-	sandboxMode  bool   // internal: use process sandbox backend
-	jsonOutput   bool   // --json: emit structured phase events (rootless bootstrap)
-	driver       string // --driver: runtime driver override (libkrun, sandbox)
-	readyTimeout time.Duration
+	dbPath        string
+	socketPath    string
+	kernelPath    string
+	rootfsPath    string
+	workDirRoot   string
+	nodeName      string
+	network       bool
+	bind          string
+	port          int
+	tlsMode       string
+	token         string
+	tlsCert       string
+	tlsKey        string
+	foreground    bool // --foreground: stay blocking instead of self-daemonizing
+	jsonOutput    bool // --json: emit structured phase events (rootless bootstrap)
+	readyTimeout  time.Duration
 )
 
 func registerStartFlags(cmd *cobra.Command) {
@@ -45,11 +43,8 @@ func registerStartFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&token, "token", "", "Static bearer token (default: auto-generated and stored)")
 	cmd.Flags().StringVar(&tlsCert, "tls-cert", "", "TLS certificate file (PEM) for required mode")
 	cmd.Flags().StringVar(&tlsKey, "tls-key", "", "TLS key file (PEM) for required mode")
-	cmd.Flags().BoolVar(&sandboxMode, "sandbox", false, "Use process sandbox backend (internal/testing)")
-	_ = cmd.Flags().MarkHidden("sandbox")
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Stay in foreground instead of self-daemonizing")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit structured JSON phase events during bootstrap (for RemoteProvisioner / CI)")
-	cmd.Flags().StringVar(&driver, "driver", "", "Runtime driver override: vm | process | libkrun | sandbox (default: auto)")
 	cmd.Flags().DurationVar(&readyTimeout, "ready-timeout", 30*time.Second, "Max time to wait for daemon socket readiness in self-daemonizing mode")
 }
 

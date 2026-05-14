@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -13,9 +14,8 @@ import (
 
 // installLibkrunLibsRootless extracts the embedded libkrun shared libraries and
 // nexus-libkrun-vm binary into ~/.local/share/nexus/{lib,bin}/.
-// Non-libkrun builds skip this step (embedded stubs are empty).
+// Empty embeds (e.g. linux/arm64 without staged blobs) skip extraction.
 func installLibkrunLibsRootless(w io.Writer, emitJSON bool) error {
-	// Non-libkrun builds don't need libkrun.
 	if len(embeddedLibkrunVM) == 0 {
 		return nil
 	}
@@ -79,21 +79,32 @@ func ensureSymlink(dir, name, target string) {
 
 // ── passt installation ────────────────────────────────────────────────────────
 
-// installPasstRootless extracts the embedded passt binary into ~/.local/bin/passt.
-// Non-libkrun builds skip this step (embedded stub is empty).
+// installPasstRootless extracts the embedded passt binary into ~/.local/bin/passt,
+// or copies from PATH when there is no embed (linux/arm64).
 func installPasstRootless(w io.Writer, emitJSON bool) error {
-	// Non-libkrun builds don't need passt.
-	if len(embeddedPasst) == 0 {
+	dest := rootlessPasstPath()
+	if len(embeddedPasst) > 0 {
+		if needsInstall(dest, embeddedPasst) {
+			fmt.Fprintf(w, "  extracting embedded passt (%d bytes)...\n", len(embeddedPasst))
+			if err := atomicWriteExec(dest, embeddedPasst); err != nil {
+				return fmt.Errorf("extract embedded passt: %w", err)
+			}
+			fmt.Fprintf(w, "  passt installed at %s (embedded)\n", dest)
+		}
 		return nil
 	}
-
-	dest := rootlessPasstPath()
-	if needsInstall(dest, embeddedPasst) {
-		fmt.Fprintf(w, "  extracting embedded passt (%d bytes)...\n", len(embeddedPasst))
-		if err := atomicWriteExec(dest, embeddedPasst); err != nil {
-			return fmt.Errorf("extract embedded passt: %w", err)
+	if p, err := exec.LookPath("passt"); err == nil && p != "" {
+		b, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return fmt.Errorf("read passt from %s: %w", p, rerr)
 		}
-		fmt.Fprintf(w, "  passt installed at %s (embedded)\n", dest)
+		if needsInstall(dest, b) {
+			fmt.Fprintf(w, "  copying passt from %s...\n", p)
+			if err := atomicWriteExec(dest, b); err != nil {
+				return fmt.Errorf("install passt from PATH: %w", err)
+			}
+			fmt.Fprintf(w, "  passt installed at %s (from PATH)\n", dest)
+		}
 	}
 	return nil
 }

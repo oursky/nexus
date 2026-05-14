@@ -339,7 +339,7 @@ func (m *Manager) Spawn(ctx context.Context, spec SpawnSpec) (*Instance, error) 
 		childCmd = exec.Command(nexusBin, "libkrun-vm", "--config="+configPath)
 	} else {
 		os.RemoveAll(workDir)
-		return nil, fmt.Errorf("LibkrunVMBin not configured: run 'nexus daemon start --driver=libkrun' to bootstrap")
+		return nil, fmt.Errorf("LibkrunVMBin not configured: run 'nexus daemon start' to bootstrap")
 	}
 	env := append(os.Environ(), "LD_LIBRARY_PATH="+libDir+":"+os.Getenv("LD_LIBRARY_PATH"))
 	childCmd.Env = env

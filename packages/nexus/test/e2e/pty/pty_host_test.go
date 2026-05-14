@@ -14,21 +14,19 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/ptyhost"
 )
 
-// TestPTYHost_Process tests the standalone PTY host process.
+// TestPTYHost_Process tests the PTY host subprocess (same binary as nexus: __pty-host).
 func TestPTYHost_Process(t *testing.T) {
 	tmpDir := t.TempDir()
 	socketPath := filepath.Join(tmpDir, "pty-host.sock")
 
-	// Build pty-host binary
-	binPath := filepath.Join(tmpDir, "pty-host")
-	buildCmd := exec.Command("go", "build", "-o", binPath, "./cmd/pty-host")
+	binPath := filepath.Join(tmpDir, "nexus-pty-test")
+	buildCmd := exec.Command("go", "build", "-o", binPath, "./cmd/nexus")
 	buildCmd.Dir = "../../.." // packages/nexus
 	if out, err := buildCmd.CombinedOutput(); err != nil {
-		t.Fatalf("build pty-host: %v\n%s", err, out)
+		t.Fatalf("build nexus: %v\n%s", err, out)
 	}
 
-	// Start PTY host
-	cmd := exec.Command(binPath, "--socket", socketPath)
+	cmd := exec.Command(binPath, ptyhost.HiddenSubcommand, "--socket", socketPath)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start pty-host: %v", err)
 	}
