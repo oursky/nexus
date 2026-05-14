@@ -10,11 +10,17 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/oursky/nexus/packages/nexus/internal/vm/libkrun"
 	vmnet "github.com/oursky/nexus/packages/nexus/internal/vm/net"
 )
+
+// libkrunLogOnce ensures krun_set_log_level is called at most once per
+// process. libkrun uses Rust's env_logger, which panics if its global
+// Builder::init is invoked a second time.
+var libkrunLogOnce sync.Once
 
 type spawnConfig struct {
 	workspaceID   string
@@ -90,11 +96,13 @@ func spawnVM(ctx context.Context, cfg spawnConfig) (*vmInstance, error) {
 		return nil, e
 	}
 
-	logLevel := uint32(0)
-	if os.Getenv("NEXUS_LIBKRUN_LOG") != "" {
-		logLevel = 4
-	}
-	_ = lib.SetLogLevel(logLevel)
+	libkrunLogOnce.Do(func() {
+		logLevel := uint32(0)
+		if os.Getenv("NEXUS_LIBKRUN_LOG") != "" {
+			logLevel = 4
+		}
+		_ = lib.SetLogLevel(logLevel)
+	})
 
 	const vcpus, memMiB = 2, 4096
 	if err := vmCtx.SetVMConfig(vcpus, memMiB); err != nil {
