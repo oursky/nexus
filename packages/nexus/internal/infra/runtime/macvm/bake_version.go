@@ -2,31 +2,29 @@
 
 package macvm
 
-import "fmt"
+import "github.com/oursky/nexus/packages/nexus/internal/infra/runtime/vmrootfs"
 
-// BakeStampVersion is the version of the macOS VM rootfs pre-baked image.
-// Bump this when tools installed in the rootfs change.
-// Must match the tag used when uploading to GitHub Releases:
-//
-//	github.com/oursky/nexus/releases/download/rootfs-macos-arm64-v{N}/rootfs-macos-arm64.ext4.gz
-const BakeStampVersion = 1
+// BakeStampVersion is the legacy rootfs tag suffix (see vmrootfs.LegacyMacRootFSBakeStamp).
+const BakeStampVersion = vmrootfs.LegacyMacRootFSBakeStamp
 
-// RootFSSHA256 is the expected SHA256 of the compressed rootfs asset
-// (rootfs-macos-arm64.ext4.gz) for BakeStampVersion.
-// Set to empty string to skip the integrity check (safe for development).
-// Fill in after the first real asset is built by the CI workflow.
+// RootFSSHA256 is the expected SHA256 of the **uncompressed** ext4 at
+// cfg.RootFSCachePath after download+decompress. Empty skips verification.
 const RootFSSHA256 = ""
 
-// RootFSVersion returns the GitHub release tag for the current macOS rootfs version.
-func RootFSVersion() string {
-	return fmt.Sprintf("rootfs-macos-arm64-v%d", BakeStampVersion)
+// LinuxARM64RootFSSHA256 is optional verification for Linux arm64 rootfs downloads.
+const LinuxARM64RootFSSHA256 = ""
+
+// RootFSVersionLegacy is the legacy GitHub tag (pre-semver rootfs releases).
+func RootFSVersionLegacy() string {
+	return vmrootfs.LegacyMacOSRootFSTag()
 }
 
-// DefaultRootFSURL is the download URL for the pre-baked macOS VM rootfs.
-// Hosted as a GitHub Release asset on oursky/nexus.
+// DefaultRootFSURL downloads the macOS libkrun guest rootfs from the current release.
 func DefaultRootFSURL() string {
-	return fmt.Sprintf(
-		"https://github.com/oursky/nexus/releases/download/%s/rootfs-macos-arm64.ext4.gz",
-		RootFSVersion(),
-	)
+	return vmrootfs.MacOSGuestRootFSURL()
+}
+
+// DefaultLinuxARM64RootFSURL is the same guest image layout for Linux arm64 libkrun.
+func DefaultLinuxARM64RootFSURL() string {
+	return vmrootfs.LinuxARM64GuestRootFSURL()
 }

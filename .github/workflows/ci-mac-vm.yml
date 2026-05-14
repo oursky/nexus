@@ -1,16 +1,9 @@
-# macOS VM smoke tests on GitHub-hosted runners only (no self-hosted).
-# Canonical remote: git@github.com:oursky/nexus.git — checkout pins repository oursky/nexus.
-name: macOS VM smoke
+# Optional manual run of the macOS VM smoke test on GitHub-hosted macos-14.
+# PR / push CI runs the same job from .github/workflows/ci.yml (mac-vm-smoke).
+name: macOS VM smoke (manual)
 
 on:
-  push:
-    branches: [main, develop]
-    paths:
-      - ".github/workflows/ci-mac-vm.yml"
-      - "packages/nexus/**"
-      - "scripts/ci/mac-vm-smoke.sh"
-  pull_request:
-    branches: [main, develop]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,20 +11,14 @@ permissions:
 jobs:
   mac-vm-smoke:
     name: macOS libkrun workspace smoke
-    # Apple Silicon, GitHub-hosted (public pool).
     runs-on: macos-14
     timeout-minutes: 45
     env:
       GOTOOLCHAIN: local
     steps:
-      - name: Checkout oursky/nexus (public GitHub)
-        uses: actions/checkout@v4
-        with:
-          repository: oursky/nexus
-          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version-file: packages/nexus/go.mod
           cache-dependency-path: packages/nexus/go.sum
@@ -39,8 +26,10 @@ jobs:
       - name: Install e2fsprogs (mke2fs for rootfs creation)
         run: brew install e2fsprogs
 
+      - name: Stage libkrun dylibs (go:embed)
+        run: bash scripts/local/build-libkrun-darwin.sh
+
       - name: Cache macOS VM rootfs
-        id: rootfs-cache
         uses: actions/cache@v4
         with:
           path: ~/.cache/nexus/vm/rootfs.ext4

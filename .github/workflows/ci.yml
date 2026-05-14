@@ -95,6 +95,41 @@ jobs:
           path: packages/nexus/coverage.out
           retention-days: 1
 
+  # GitHub-hosted Apple Silicon: libkrun VM smoke (same script as manual mac CI).
+  mac-vm-smoke:
+    name: macOS libkrun workspace smoke
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      - name: Install e2fsprogs (mke2fs for rootfs creation)
+        run: brew install e2fsprogs
+
+      - name: Stage libkrun dylibs (go:embed)
+        run: bash scripts/local/build-libkrun-darwin.sh
+
+      - name: Cache macOS VM rootfs
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/nexus/vm/rootfs.ext4
+          key: nexus-macos-vm-rootfs-${{ hashFiles('packages/nexus/internal/infra/runtime/macvm/bake_version.go', 'packages/nexus/cmd/nexus-guest-agent/**') }}
+
+      - name: Run mac-vm smoke script
+        run: scripts/ci/mac-vm-smoke.sh
+        env:
+          NEXUS_REPO_ROOT: ${{ github.workspace }}
+          XDG_CACHE_HOME: ~/.cache
+
   e2e:
     name: E2E Tests (linux / ${{ matrix.shard.name }})
     runs-on: [self-hosted, linux, x64, v1]

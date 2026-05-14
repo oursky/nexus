@@ -122,6 +122,130 @@ jobs:
             dist/sha256sums.txt \
             --clobber
 
+  # Pre-baked arm64 Ubuntu guest images (same layout: guest-agent as /usr/local/bin/nexus-guest-agent).
+  # Uploaded to the same semantic-release tag as Nexus binaries.
+  rootfs-linux-arm64:
+    name: Release asset — Linux arm64 guest rootfs
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      - name: Install e2fsprogs
+        run: sudo apt-get update && sudo apt-get install -y e2fsprogs
+
+      - name: Build nexus-guest-agent (linux/arm64)
+        working-directory: packages/nexus
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' \
+            -o /tmp/nexus-guest-agent ./cmd/nexus-guest-agent/
+
+      - name: Download Ubuntu 22.04 arm64 root tarball
+        run: |
+          curl -fsSL --retry 3 -o /tmp/ubuntu-arm64-root.tar.xz \
+            "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-arm64-root.tar.xz"
+
+      - name: Create ext4 + compress + checksum
+        run: |
+          set -euo pipefail
+          STAGING="/tmp/rootfs-staging"
+          mkdir -p "$STAGING"
+          sudo tar --no-same-owner -xJf /tmp/ubuntu-arm64-root.tar.xz -C "$STAGING"
+          sudo chown -R "$(id -u):$(id -g)" "$STAGING"
+          mkdir -p "$STAGING/usr/local/bin"
+          cp /tmp/nexus-guest-agent "$STAGING/usr/local/bin/nexus-guest-agent"
+          chmod 0755 "$STAGING/usr/local/bin/nexus-guest-agent"
+          mkdir -p "$STAGING/workspace"
+          if ! grep -q '/dev/vda' "$STAGING/etc/fstab" 2>/dev/null; then
+            echo "/dev/vda / ext4 rw,relatime 0 1" | tee -a "$STAGING/etc/fstab"
+          fi
+          sudo mke2fs -F -t ext4 -L nexus-root -d "$STAGING" /tmp/rootfs-linux-arm64.ext4 10G
+          gzip -9 -c /tmp/rootfs-linux-arm64.ext4 > /tmp/rootfs-linux-arm64.ext4.gz
+          sha256sum /tmp/rootfs-linux-arm64.ext4.gz | tee /tmp/rootfs-linux-arm64.ext4.gz.sha256
+
+      - name: Upload rootfs to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ needs.release.outputs.tag }}"
+          gh release upload "$tag" \
+            /tmp/rootfs-linux-arm64.ext4.gz \
+            /tmp/rootfs-linux-arm64.ext4.gz.sha256 \
+            --repo "${{ github.repository }}" \
+            --clobber
+
+  rootfs-macos-guest:
+    name: Release asset — macOS libkrun guest rootfs
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      - name: Install e2fsprogs
+        run: brew install e2fsprogs
+
+      - name: Build nexus-guest-agent (linux/arm64)
+        working-directory: packages/nexus
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' \
+            -o /tmp/nexus-guest-agent ./cmd/nexus-guest-agent/
+
+      - name: Download Ubuntu 22.04 arm64 root tarball
+        run: |
+          curl -fsSL --retry 3 -o /tmp/ubuntu-arm64-root.tar.xz \
+            "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-arm64-root.tar.xz"
+
+      - name: Create ext4 + compress + checksum
+        run: |
+          set -euo pipefail
+          MKE2FS="$(command -v mke2fs || true)"
+          if [[ -z "$MKE2FS" ]]; then
+            MKE2FS="$(ls /opt/homebrew/opt/e2fsprogs/sbin/mke2fs 2>/dev/null || ls /usr/local/opt/e2fsprogs/sbin/mke2fs)"
+          fi
+          if [[ -z "$MKE2FS" || ! -x "$MKE2FS" ]]; then
+            echo "ERROR: mke2fs not found (brew install e2fsprogs)" >&2
+            exit 1
+          fi
+          STAGING="/tmp/rootfs-staging"
+          mkdir -p "$STAGING"
+          sudo tar --no-same-owner -xJf /tmp/ubuntu-arm64-root.tar.xz -C "$STAGING"
+          sudo chown -R "$(id -u):$(id -g)" "$STAGING"
+          mkdir -p "$STAGING/usr/local/bin"
+          cp /tmp/nexus-guest-agent "$STAGING/usr/local/bin/nexus-guest-agent"
+          chmod 0755 "$STAGING/usr/local/bin/nexus-guest-agent"
+          mkdir -p "$STAGING/workspace"
+          if ! grep -q '/dev/vda' "$STAGING/etc/fstab" 2>/dev/null; then
+            echo "/dev/vda / ext4 rw,relatime 0 1" | tee -a "$STAGING/etc/fstab"
+          fi
+          "$MKE2FS" -F -t ext4 -L nexus-root -d "$STAGING" /tmp/rootfs-macos-arm64.ext4 10G
+          gzip -9 -c /tmp/rootfs-macos-arm64.ext4 > /tmp/rootfs-macos-arm64.ext4.gz
+          shasum -a 256 /tmp/rootfs-macos-arm64.ext4.gz | tee /tmp/rootfs-macos-arm64.ext4.gz.sha256
+
+      - name: Upload rootfs to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ needs.release.outputs.tag }}"
+          gh release upload "$tag" \
+            /tmp/rootfs-macos-arm64.ext4.gz \
+            /tmp/rootfs-macos-arm64.ext4.gz.sha256 \
+            --repo "${{ github.repository }}" \
+            --clobber
+
   app-macos-deploy:
     name: Upload to TestFlight
     needs: release
@@ -132,6 +256,9 @@ jobs:
       BUNDLE_PATH: ${{ github.workspace }}/.bundle/vendor
     steps:
       - uses: actions/checkout@v4
+
+      - name: Stage libkrun dylibs (go:embed)
+        run: bash scripts/local/build-libkrun-darwin.sh
 
       - name: Set up Go
         uses: actions/setup-go@v5

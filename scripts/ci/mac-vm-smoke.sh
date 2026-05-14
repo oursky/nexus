@@ -19,6 +19,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${NEXUS_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 cd "$REPO_ROOT/packages/nexus"
 
+echo "==> Staging libkrun dylibs for darwin go:embed"
+bash "$REPO_ROOT/scripts/local/build-libkrun-darwin.sh"
+
 TOKEN="${NEXUS_DAEMON_TOKEN:-test-mac-vm-smoke}"
 PORT="${NEXUS_DAEMON_PORT:-7799}"
 NETWORK="${NEXUS_DAEMON_NETWORK:-true}"
