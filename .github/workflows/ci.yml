@@ -128,7 +128,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/nexus/vm/rootfs.ext4
-          key: nexus-macos-vm-rootfs-${{ hashFiles('packages/nexus/internal/infra/runtime/macvm/bake_version.go', 'packages/nexus/cmd/nexus-guest-agent/**') }}
+          key: nexus-macos-vm-rootfs-${{ hashFiles('packages/nexus/internal/infra/runtime/macvm/bake_version.go', 'packages/nexus/cmd/nexus-guest-agent/**', 'scripts/ci/ensure-macos-e2e-rootfs.sh') }}
 
       - name: Ensure guest rootfs ext4 for E2E
         run: bash scripts/ci/ensure-macos-e2e-rootfs.sh

@@ -84,7 +84,7 @@ codesign --entitlements "$ENTITLEMENTS_PLIST" --force --sign - "$NEXUS_BIN"
 rm -f "$ENTITLEMENTS_PLIST"
 
 # ---------------------------------------------------------------------------
-# Step 3: Build macOS VM rootfs (Ubuntu 22.04 ARM64 minimal + guest-agent)
+# Step 3: Build macOS VM rootfs (Ubuntu ARM64 minimal + guest-agent)
 # ---------------------------------------------------------------------------
 if [[ ! -f "$ROOTFS_CACHE" ]]; then
   echo "==> Building macOS VM rootfs"
@@ -98,10 +98,10 @@ if [[ ! -f "$ROOTFS_CACHE" ]]; then
     exit 1
   fi
 
-  # Download Ubuntu 22.04 ARM64 minimal root filesystem
+  # Download Ubuntu ARM64 minimal root filesystem (Noble; Jammy minimal lacks arm64 root tarball on releases).
   UBUNTU_TAR="$ROOTFSDIR/ubuntu-arm64-root.tar.xz"
-  UBUNTU_ROOT_URL="https://cloud-images.ubuntu.com/minimal/releases/jammy/release/ubuntu-22.04-minimal-cloudimg-arm64-root.tar.xz"
-  echo "  Downloading Ubuntu 22.04 ARM64 minimal root..."
+  UBUNTU_ROOT_URL="https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64-root.tar.xz"
+  echo "  Downloading Ubuntu ARM64 minimal root..."
   curl -fsSL --retry 3 "$UBUNTU_ROOT_URL" -o "$UBUNTU_TAR"
 
   # Extract Ubuntu rootfs to a staging directory
