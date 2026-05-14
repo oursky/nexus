@@ -136,4 +136,3 @@ func TestLocalProxy(t *testing.T) {
 		t.Errorf("Close: %v", err)
 	}
 }
-

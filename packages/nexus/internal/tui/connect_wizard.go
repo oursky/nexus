@@ -208,14 +208,19 @@ func renderWizard(m *Model) string {
 	fmt.Fprintf(&b, "%s\n", titleStyle.Render("Connect to daemon"))
 	fmt.Fprintf(&b, "%s\n\n", sep)
 
-	hostLabel := detailKeyStyle.Render("Host")
-	portLabel := detailKeyStyle.Render("Port")
-	keyLabel := detailKeyStyle.Render("SSH key")
-	if m.wizardStep == 0 {
+	var hostLabel, portLabel, keyLabel string
+	switch m.wizardStep {
+	case 0:
 		hostLabel = accentStyle.Render("Host")
-	} else if m.wizardStep == 1 {
+		portLabel = detailKeyStyle.Render("Port")
+		keyLabel = detailKeyStyle.Render("SSH key")
+	case 1:
+		hostLabel = detailKeyStyle.Render("Host")
 		portLabel = accentStyle.Render("Port")
-	} else {
+		keyLabel = detailKeyStyle.Render("SSH key")
+	default:
+		hostLabel = detailKeyStyle.Render("Host")
+		portLabel = detailKeyStyle.Render("Port")
 		keyLabel = accentStyle.Render("SSH key")
 	}
 

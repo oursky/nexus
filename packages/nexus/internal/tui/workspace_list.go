@@ -54,13 +54,6 @@ func statePill(state workspace.State) string {
 	}
 }
 
-// projectHeaderItem is kept only as a sentinel type for the header-skip
-// navigation helper; it is never embedded in the bubbles/list.
-type projectHeaderItem struct{ name string }
-
-func (h projectHeaderItem) FilterValue() string { return "" }
-func (h projectHeaderItem) Title() string       { return h.name }
-
 func truncate(s string, max int) string {
 	runes := []rune(s)
 	if len(runes) <= max {

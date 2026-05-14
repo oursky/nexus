@@ -21,7 +21,6 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/sshtunnel"
 )
 
-
 type panelKind int
 
 const (
@@ -149,11 +148,11 @@ type Model struct {
 	detail *workspace.Workspace
 
 	// Split-pane PTY state (right pane; active when width >= 100).
-	ptyPane    *PtyPane
-	ptyWsID    string              // workspace ID of the active PTY (or "")
-	ptyFocused bool               // true when right pane has keyboard focus
-	ptyDataCh  <-chan json.RawMessage // open pty.data subscription
-	cancelPTY  func()             // unsubscribes and closes ptyDataCh
+	ptyPane         *PtyPane
+	ptyWsID         string                 // workspace ID of the active PTY (or "")
+	ptyFocused      bool                   // true when right pane has keyboard focus
+	ptyDataCh       <-chan json.RawMessage // open pty.data subscription
+	cancelPTY       func()                 // unsubscribes and closes ptyDataCh
 	daemonOK        bool
 	quitting        bool
 	statusLine      string
@@ -185,13 +184,13 @@ type Model struct {
 	pendingSyncPath string
 
 	// no-profile view — shown on first run when no profile exists
-	showNoProfile   bool
-	noProfileSel    int    // 0=start local, 1=connect remote
-	noProfileBusy   bool   // spinning while starting daemon
+	showNoProfile     bool
+	noProfileSel      int  // 0=start local, 1=connect remote
+	noProfileBusy     bool // spinning while starting daemon
 	noProfileChecking bool // waiting for local daemon check result
-	noProfileErr    string
-	noProfileSpinIdx int
-	localPort       int // port to use for local daemon operations
+	noProfileErr      string
+	noProfileSpinIdx  int
+	localPort         int // port to use for local daemon operations
 
 	// connect wizard — shown when no daemon profile is configured
 	showWizard   bool
@@ -729,12 +728,12 @@ func startSidebarTunnelCmd(wsID string, fwds []*spotlight.Forward) tea.Cmd {
 				// All ports directly accessible (process-isolation workspace on daemon host).
 				return tunnelStartedMsg{wsID: wsID, local: true}
 			}
-		// VM workspace: create local TCP proxy for port remapping.
-		lp, err := sshtunnel.StartLocalProxy(proxyFwds)
-		if err != nil {
-			return tunnelStartedMsg{wsID: wsID, err: fmt.Errorf("local proxy: %w", err)}
-		}
-		return tunnelStartedMsg{wsID: wsID, local: true, localProxy: lp}
+			// VM workspace: create local TCP proxy for port remapping.
+			lp, err := sshtunnel.StartLocalProxy(proxyFwds)
+			if err != nil {
+				return tunnelStartedMsg{wsID: wsID, err: fmt.Errorf("local proxy: %w", err)}
+			}
+			return tunnelStartedMsg{wsID: wsID, local: true, localProxy: lp}
 		}
 
 		// Remote daemon — build SSH multi-tunnel specs.
@@ -1011,6 +1010,8 @@ func (m Model) createWorkspaceCmd(spec workspace.CreateSpec) tea.Cmd {
 }
 
 // Update implements tea.Model.
+//
+//nolint:gocyclo,funlen // Bubble Tea Update is a structured message hub; refactoring into subhandlers is tracked separately.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -2642,7 +2643,6 @@ func tabStateBadge(state workspace.State) string {
 	}
 }
 
-
 func renderCreateWizard(m *Model, width int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\n", titleStyle.Render("New workspace"))
@@ -2834,4 +2834,3 @@ func renderWorkspaceDetail(ws *workspace.Workspace, width int) string {
 	fmt.Fprintf(&b, "%s\n", row("Updated", updated))
 	return b.String()
 }
-

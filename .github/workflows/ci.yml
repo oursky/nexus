@@ -365,14 +365,12 @@ jobs:
             **/coverage/
           retention-days: 1
 
-  # Bubble Tea TUI — runs on GitHub-hosted runners with driver=sandbox (no KVM/libkrun).
+  # Bubble Tea TUI — sandbox daemon (--driver sandbox) needs no KVM; host bootstrap skips libkrun
+  # provisioning for process/sandbox (see packages/nexus/cmd/nexus/rootless_bootstrap_linux.go).
+  # Heavy libkrun E2E remains on self-hosted Linux (job `e2e`, `if: false` here).
   tui-e2e:
-    name: TUI E2E (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    name: TUI E2E (ubuntu-latest)
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
@@ -385,7 +383,6 @@ jobs:
           cache-dependency-path: packages/nexus/go.sum
 
       - name: Build embedded Linux guest-agent (embed prerequisite)
-        if: runner.os == 'Linux'
         working-directory: packages/nexus
         run: go generate ./cmd/nexus/
 
