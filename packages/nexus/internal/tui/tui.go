@@ -133,9 +133,18 @@ type Model struct {
 
 	pendingSyncPath string
 
+	// no-profile view — shown on first run when no profile exists
+	showNoProfile   bool
+	noProfileSel    int    // 0=start local, 1=connect remote
+	noProfileBusy   bool   // spinning while starting daemon
+	noProfileChecking bool // waiting for local daemon check result
+	noProfileErr    string
+	noProfileSpinIdx int
+	localPort       int // port to use for local daemon operations
+
 	// connect wizard — shown when no daemon profile is configured
-	showWizard  bool
-	wizardStep  int // 0=host, 1=port, 2=sshkey
+	showWizard   bool
+	wizardStep   int // 0=host, 1=port, 2=sshkey
 	wizardHostTI textinput.Model
 	wizardPortTI textinput.Model
 	wizardKeyTI  textinput.Model
@@ -171,6 +180,9 @@ func (m *Model) updateListSize() {
 }
 
 func (m Model) blocksOverlayInput() bool {
+	if m.showNoProfile {
+		return true
+	}
 	if m.showWizard {
 		return true
 	}
@@ -197,6 +209,9 @@ type Options struct {
 	// AutoAttach re-attaches to the last active workspace on startup
 	// (if it is in running state). Requires --auto-attach flag; NOT default.
 	AutoAttach bool
+	// Port is the local daemon port for the no-profile check/start flow.
+	// 0 means use the compiled-in default (7777 prod, 7778 dev).
+	Port int
 }
 
 // Run starts the interactive TUI until the user quits.
@@ -230,6 +245,11 @@ func NewModel(opts ...Options) Model {
 	// Restore session state from disk.
 	ss := loadSessionState()
 
+	lp := o.Port
+	if lp == 0 {
+		lp = 7777
+	}
+
 	return Model{
 		list:        l,
 		statusLine:  "connecting…",
@@ -240,6 +260,7 @@ func NewModel(opts ...Options) Model {
 		tabs:        ss.Tabs,
 		activeTabWS: ss.Active,
 		autoAttach:  o.AutoAttach,
+		localPort:   lp,
 	}
 }
 
@@ -530,16 +551,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.daemonOK = false
 		errStr := msg.err.Error()
 		if strings.Contains(errStr, "no daemon profile configured") {
-			m.showWizard = true
-			m.wizardStep = 0
-			m.wizardHostTI, m.wizardPortTI, m.wizardKeyTI = newWizardInputs()
-			return m, m.wizardHostTI.Focus()
+			// New first-run flow: check if a local daemon is already running
+			// before showing the no-profile menu.
+			m.showNoProfile = true
+			m.noProfileChecking = true
+			m.noProfileSel = 0
+			m.noProfileErr = ""
+			return m, tea.Batch(checkLocalDaemonCmd(m.localPort), noProfileSpinTick())
 		}
 		m.statusLine = errStr
 		return m, nil
 
+	case localCheckMsg:
+		m.noProfileChecking = false
+		if msg.alive {
+			// Daemon is already running locally — auto-save profile and connect.
+			m.statusLine = "connecting…"
+			return m, saveLocalProfileCmd(m.localPort)
+		}
+		// Nothing running — show the menu.
+		return m, nil
+
+	case daemonStartDoneMsg:
+		m.noProfileBusy = false
+		if msg.err != nil {
+			m.noProfileErr = msg.err.Error()
+			return m, nil
+		}
+		// Daemon started — save profile and connect.
+		m.statusLine = "connecting…"
+		return m, saveLocalProfileCmd(m.localPort)
+
+	case noProfileSpinTickMsg:
+		m.noProfileSpinIdx++
+		if m.noProfileBusy || m.noProfileChecking {
+			return m, noProfileSpinTick()
+		}
+		return m, nil
+
 	case wizardSavedMsg:
 		m.showWizard = false
+		m.showNoProfile = false
+		m.noProfileBusy = false
 		m.wizardBusy = false
 		m.statusLine = "connecting…"
 		return m, openDaemonConn()
@@ -547,6 +600,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case wizardErrMsg:
 		m.wizardBusy = false
 		m.wizardErr = msg.err.Error()
+		if m.showNoProfile {
+			// Error occurred during local profile save triggered from no-profile flow.
+			m.noProfileBusy = false
+			m.noProfileErr = msg.err.Error()
+		}
 		return m, nil
 
 	case workspacesMsg:
@@ -721,7 +779,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
-		if !m.showWizard {
+		if !m.showWizard && !m.showNoProfile {
 			m.quitting = true
 			if m.conn != nil {
 				_ = m.conn.Close()
@@ -729,6 +787,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		}
+	}
+
+	if m.showNoProfile {
+		return m.handleNoProfileKeys(msg)
 	}
 
 	if m.showWizard {
@@ -1225,6 +1287,8 @@ func (m Model) View() string {
 	var statusDaemon string
 	if m.quitting {
 		statusDaemon = mutedStyle.Render("● exiting")
+	} else if m.showNoProfile {
+		statusDaemon = mutedStyle.Render("● setup")
 	} else if m.showWizard {
 		statusDaemon = mutedStyle.Render("● setup")
 	} else if m.conn != nil && m.daemonOK {
@@ -1247,6 +1311,8 @@ func (m Model) View() string {
 
 	body := ""
 	switch {
+	case m.showNoProfile:
+		body = renderNoProfile(&m)
 	case m.showWizard:
 		body = renderWizard(&m)
 	case m.createMode:
@@ -1281,7 +1347,13 @@ func (m Model) View() string {
 		"  q quit   ? help   esc back   r refresh   c connect   l spotlight   y sync   t terminal   f fork   s/x/d",
 	)
 	footerHelp := help
-	if m.showWizard {
+	if m.showNoProfile {
+		if m.noProfileChecking || m.noProfileBusy {
+			footerHelp = mutedStyle.Render("  esc quit")
+		} else {
+			footerHelp = mutedStyle.Render("  ↑↓ j/k navigate   ↵ select   esc quit")
+		}
+	} else if m.showWizard {
 		footerHelp = mutedStyle.Render("  tab next field   ↵ connect   esc skip (localhost)")
 	} else if m.detail != nil && m.panel == panelNone && !m.createMode && !m.showHelp {
 		footerHelp = dhelp
