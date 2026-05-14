@@ -40,7 +40,7 @@ mkdir -p "$UBUNTU_STAGING"
 # macOS tar cannot create Linux device nodes under dev/ (hits "Can't create" and exits 1).
 # Guest kernels use devtmpfs for /dev; an empty dev directory is enough for mke2fs -d staging.
 # -o: do not restore root ownership so CI can rm -rf the temp dir.
-tar -xJf "$UBUNTU_TAR" -C "$UBUNTU_STAGING" -o --exclude='dev/*'
+tar -xJf "$UBUNTU_TAR" -C "$UBUNTU_STAGING" -o --exclude='dev/*' --exclude='var/lib/snapd/*'
 
 # Noble ships var/lib/snapd/void as 0111 (no user read). mke2fs -d must list dirs; loosen perms
 # for the staging tree so populate and tempdir cleanup succeed on macOS CI.

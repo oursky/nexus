@@ -140,6 +140,14 @@ jobs:
         working-directory: packages/nexus
         run: go generate ./cmd/nexus/
 
+      - name: Build nexus binary for E2E
+        working-directory: packages/nexus
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -o /tmp/nexus-bin ./cmd/nexus/
+          echo "NEXUS_E2E_BINARY=/tmp/nexus-bin" >> "$GITHUB_ENV"
+
       - name: Run Go e2e (vm driver)
         working-directory: packages/nexus
         run: |
