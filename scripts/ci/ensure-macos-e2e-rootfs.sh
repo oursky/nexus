@@ -37,7 +37,10 @@ curl -fsSL --retry 3 "$UBUNTU_ROOT_URL" -o "$UBUNTU_TAR"
 
 UBUNTU_STAGING="$ROOTFSDIR/ubuntu-staging"
 mkdir -p "$UBUNTU_STAGING"
-tar -xf "$UBUNTU_TAR" -C "$UBUNTU_STAGING" 2>/dev/null || tar -xJf "$UBUNTU_TAR" -C "$UBUNTU_STAGING"
+# macOS tar cannot create Linux device nodes under dev/ (hits "Can't create" and exits 1).
+# Guest kernels use devtmpfs for /dev; an empty dev directory is enough for mke2fs -d staging.
+# -o: do not restore root ownership so CI can rm -rf the temp dir.
+tar -xJf "$UBUNTU_TAR" -C "$UBUNTU_STAGING" -o --exclude='dev/*'
 
 mkdir -p "$UBUNTU_STAGING/usr/local/bin"
 cp "$ROOTFSDIR/nexus-guest-agent" "$UBUNTU_STAGING/usr/local/bin/nexus-guest-agent"
