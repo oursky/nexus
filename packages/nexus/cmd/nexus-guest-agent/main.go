@@ -34,6 +34,16 @@ func main() {
 	pid := os.Getpid()
 	emitDiagnostic("agent boot pid=%d", pid)
 
+	// Bind the main RPC listener early; the accept loop starts only after
+	// bootstrap and SSH/git/docker sidecar listeners are ready so workspace.ready
+	// cannot race ahead of /tmp/ssh-agent.sock (see startSSHAgentProxy).
+	listener, transport, err := resolveListener()
+	if err != nil {
+		emitDiagnostic("agent listener setup failed: %v", err)
+		log.Fatalf("Failed to listen: %v", err)
+	}
+	emitDiagnostic("agent listener bound transport=%s (bootstrap in progress)", transport)
+
 	// Debug: log the kernel cmdline so we can verify nexus.baked=1 is present.
 	if cmdline, err := os.ReadFile("/proc/cmdline"); err == nil {
 		emitDiagnostic("agent kernel cmdline: %s", strings.TrimSpace(string(cmdline)))
@@ -43,8 +53,29 @@ func main() {
 
 	bootstrapGuestEnvironment(pid)
 
+	startSSHAgentProxy()
+	startGitHookForwarder()
+	startDockerCredHelperListener()
+
+	// Start the accept loop only after SSH-agent/git/docker listeners exist so
+	// workspace.ready cannot win a race before /tmp/ssh-agent.sock is created.
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				emitDiagnostic("agent accept loop exited: %v", err)
+				return
+			}
+			emitDiagnostic("agent accepted connection")
+			go serveConn(conn)
+		}
+	}()
+
 	// Bake mode: install the minimal daemon-readiness base layer synchronously,
 	// then power off so the host can use the resulting rootfs as the pre-baked base.
+	// Runs after the accept loop starts so the host can still reach the agent.
 	if isBakeMode() {
 		emitDiagnostic("agent bake: starting rootfs pre-bake")
 		bakeErr := ensureGuestBasePackages()
@@ -67,13 +98,10 @@ func main() {
 			// Give the serial console a moment to flush.
 			time.Sleep(500 * time.Millisecond)
 		}
+		_ = listener.Close()
 		_ = unix.Reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
 		os.Exit(0) // unreachable, but satisfies the compiler
 	}
-
-	startSSHAgentProxy()
-	startGitHookForwarder()
-	startDockerCredHelperListener()
 
 	// Toolchain setup: in baked mode verify tools, otherwise run full install.
 	if isBakedMode() {
@@ -87,6 +115,8 @@ func main() {
 				log.Fatalf("agent base packages: %v", err)
 			}
 		}
+	} else if os.Getenv("NEXUS_SKIP_BASE_PACKAGES") == "1" {
+		emitDiagnostic("agent base packages: NEXUS_SKIP_BASE_PACKAGES=1 — skipping installation (macOS pre-baked rootfs)")
 	} else {
 		// Legacy path: install the full base toolchain synchronously before accepting connections.
 		if err := ensureGuestBasePackages(); err != nil {
@@ -114,26 +144,11 @@ func main() {
 	}
 	go startSpotlightListener()
 
-	listener, transport, err := resolveListener()
-	if err != nil {
-		emitDiagnostic("agent listener setup failed: %v", err)
-		log.Fatalf("Failed to listen: %v", err)
-	}
-	defer listener.Close()
-
 	emitDiagnostic("agent listener ready transport=%s", transport)
 	log.Printf("nexus guest agent listening (%s)", transport)
 
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			emitDiagnostic("agent accept failed: %v", err)
-			log.Printf("Failed to accept connection: %v", err)
-			continue
-		}
-		emitDiagnostic("agent accepted connection")
-		go serveConn(conn)
-	}
+	// Block until the accept loop exits (listener closed or fatal error).
+	<-acceptDone
 }
 
 // isBakeMode reports whether the agent is running in rootfs-bake mode. In bake

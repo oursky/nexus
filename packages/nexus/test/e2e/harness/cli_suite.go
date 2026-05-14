@@ -93,7 +93,7 @@ func NewCLISuite() *CLISuite {
 		socketPath: socketPath,
 		workdir:    workdir,
 		vmKernel:   os.Getenv("NEXUS_VM_KERNEL"),
-		vmRootfs:   os.Getenv("NEXUS_VM_ROOTFS"),
+		vmRootfs:   VMRootfsFromEnv(),
 	}
 	args := buildDaemonArgs(dc)
 	// Add network listener flags.

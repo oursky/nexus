@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
@@ -13,6 +14,20 @@ import (
 
 // runStartAsyncTimeout is the maximum time for the entire start operation including VM spawn.
 const runStartAsyncTimeout = 6 * time.Minute
+
+// defaultReadinessDeadline is how long to wait for guest provisioning before
+// marking the workspace running anyway. It can be overridden by
+// NEXUS_READINESS_TIMEOUT_SECONDS for faster failure in CI or tests.
+const defaultReadinessDeadline = 3 * time.Minute
+
+func readinessDeadlineDuration() time.Duration {
+	if v := os.Getenv("NEXUS_READINESS_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return defaultReadinessDeadline
+}
 
 // runStartAsync performs the slow driver.Start work in the background and
 // transitions the workspace to running (success) or created (failure).
@@ -32,6 +47,7 @@ func (s *Service) runStartAsync(ws *workspace.Workspace) {
 				current.UpdatedAt = time.Now().UTC()
 				_ = s.repo.Update(ctx, current)
 			}
+			s.notifyReady(ws.ID)
 		}
 	}()
 
@@ -49,11 +65,20 @@ func (s *Service) runStartAsync(ws *workspace.Workspace) {
 
 	current, ok := s.performStart(ctx, ws)
 	if !ok {
+		s.notifyReady(id)
 		return
 	}
 
 	current = s.waitForReadiness(ctx, current)
 	if current == nil {
+		resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if w, err := s.repo.Get(resetCtx, id); err == nil && w.State == workspace.StateStarting {
+			w.State = workspace.StateCreated
+			w.UpdatedAt = time.Now().UTC()
+			_ = s.repo.Update(resetCtx, w)
+		}
+		s.notifyReady(id)
 		return
 	}
 
@@ -94,13 +119,13 @@ func (s *Service) waitForReadiness(ctx context.Context, current *workspace.Works
 	wsCopy := *current
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	readinessDeadline := time.Now().Add(3 * time.Minute)
+	readinessDeadline := time.Now().Add(readinessDeadlineDuration())
 	probeAttempt := 0
 	log.Printf("[workspace] runStartAsync: waiting for workspace %s to be ready (tool provisioning)...", id)
 
 	for {
 		probeAttempt++
-		elapsed := time.Since(readinessDeadline.Add(-3 * time.Minute)).Round(time.Second)
+		elapsed := time.Since(readinessDeadline.Add(-readinessDeadlineDuration())).Round(time.Second)
 		log.Printf("[workspace] runStartAsync: readiness probe start attempt=%d workspace=%s elapsed=%s", probeAttempt, id, elapsed)
 
 		ready, err := s.runReadinessProbe(ctx, rd, &wsCopy)
@@ -109,7 +134,7 @@ func (s *Service) waitForReadiness(ctx context.Context, current *workspace.Works
 			break
 		}
 		if time.Now().After(readinessDeadline) {
-			log.Printf("[workspace] runStartAsync: readiness timeout for %s after %s; proceeding to running", id, 3*time.Minute)
+			log.Printf("[workspace] runStartAsync: readiness timeout for %s after %s; proceeding to running", id, readinessDeadlineDuration())
 			break
 		}
 		if err == context.Canceled {

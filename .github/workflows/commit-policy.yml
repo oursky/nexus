@@ -4,10 +4,14 @@ on:
   pull_request:
     branches: [main, develop]
 
+concurrency:
+  group: commit-policy-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   semantic-commits:
     name: Semantic Commit Messages
-    runs-on: [self-hosted, linux, x64, v1]
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

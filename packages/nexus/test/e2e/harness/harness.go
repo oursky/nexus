@@ -79,6 +79,12 @@ func New(t *testing.T, opts ...Option) *Harness {
 		vmRootfs:   cfg.vmRootfs,
 		nodeName:   cfg.nodeName,
 	}
+	if dc.vmRootfs == "" {
+		dc.vmRootfs = VMRootfsFromEnv()
+	}
+	if dc.vmKernel == "" {
+		dc.vmKernel = os.Getenv("NEXUS_VM_KERNEL")
+	}
 	args := buildDaemonArgs(dc)
 	cmd, client := launchAndWait(binPath, socketPath, args)
 

@@ -48,12 +48,26 @@ func (r *Registry) SetDefaultBackend(backend string) bool {
 	return true
 }
 
+// DriverCapabilities is an optional interface a Driver may implement to
+// advertise fine-grained feature flags beyond "runtime.<backend>".
+// Flags are advertised as "runtime.<backend>.<flag>", e.g.
+// "runtime.libkrun.fork", "runtime.libkrun.snapshot".
+type DriverCapabilities interface {
+	FeatureFlags() []string
+}
+
 // Capabilities returns a list of available runtime capabilities in the form
-// "runtime.<backend>".
+// "runtime.<backend>", plus optional "runtime.<backend>.<flag>" entries.
 func (r *Registry) Capabilities() []string {
-	caps := make([]string, 0, len(r.drivers))
-	for backend := range r.drivers {
+	var caps []string
+	for _, d := range r.drivers {
+		backend := d.Backend()
 		caps = append(caps, "runtime."+backend)
+		if fc, ok := d.(DriverCapabilities); ok {
+			for _, flag := range fc.FeatureFlags() {
+				caps = append(caps, "runtime."+backend+"."+flag)
+			}
+		}
 	}
 	return caps
 }

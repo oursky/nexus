@@ -61,13 +61,18 @@ func FindGVProxy(autoDownload bool) (string, error) {
 // StartGVProxy starts a gvproxy process listening on a Unix datagram socket.
 // The socket is created at socketPath. The caller is responsible for stopping
 // the process with Stop().
-func StartGVProxy(gvproxyPath, socketPath string) (*GVProxy, error) {
+//
+// If logPath is empty, logs are written alongside the socket (socketPath+".log").
+// Pass a workspace directory file (e.g. workDir/gvproxy.log) so logs survive sockDir cleanup.
+func StartGVProxy(gvproxyPath, socketPath string, logPath string) (*GVProxy, error) {
 	// Remove any stale sockets.
 	_ = os.Remove(socketPath)
 	ctlSocket := socketPath + ".ctl"
 	_ = os.Remove(ctlSocket)
 
-	logPath := socketPath + ".log"
+	if logPath == "" {
+		logPath = socketPath + ".log"
+	}
 
 	// Use a random high port for SSH to avoid conflicts with other gvproxy
 	// instances. Port 0 is not accepted, so pick from 40000-60000.
@@ -82,8 +87,13 @@ func StartGVProxy(gvproxyPath, socketPath string) (*GVProxy, error) {
 	}
 
 	cmd := exec.Command(gvproxyPath, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Redirect to the log file rather than inheriting the daemon's pipe fds.
+	// gvproxy already writes structured logs to -log-file; stdout/stderr just
+	// carry startup noise that doesn't need to reach the daemon's output.
+	if lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+		cmd.Stdout = lf
+		cmd.Stderr = lf
+	}
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start gvproxy: %w", err)
@@ -114,6 +124,14 @@ func (g *GVProxy) SocketPath() string {
 // ExposePort asks gvproxy to forward a host port to the same port inside the VM.
 func (g *GVProxy) ExposePort(port int) error {
 	return g.expose("tcp", fmt.Sprintf("127.0.0.1:%d", port), fmt.Sprintf("192.168.127.2:%d", port))
+}
+
+// ExposeTCPForward binds hostPort on 127.0.0.1 and forwards TCP to guestIP:guestPort
+// (typically guest IP 192.168.127.2 inside gvproxy NAT).
+func (g *GVProxy) ExposeTCPForward(hostPort, guestPort int) error {
+	local := fmt.Sprintf("127.0.0.1:%d", hostPort)
+	remote := fmt.Sprintf("192.168.127.2:%d", guestPort)
+	return g.expose("tcp", local, remote)
 }
 
 // UnexposePort removes a previously exposed port forward.

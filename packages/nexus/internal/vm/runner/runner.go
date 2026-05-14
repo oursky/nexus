@@ -329,7 +329,7 @@ func (r *Runner) Run(ctx context.Context, eb ExtractedBundle, cmd []string) erro
 	if runtime.GOOS == "darwin" {
 		if gvpPath, err := vmnet.FindGVProxy(true); err == nil {
 			sockPath := filepath.Join(eb.CacheDir, "gvproxy.sock")
-			gvp, err := vmnet.StartGVProxy(gvpPath, sockPath)
+			gvp, err := vmnet.StartGVProxy(gvpPath, sockPath, "")
 			if err == nil {
 				gvproxyProc = gvp
 				defer func() {

@@ -103,6 +103,11 @@ func setupVirtiofsWorkspace() error {
 		emitDiagnostic("agent virtiofs workspace mounted at %s (rw)", workspaceMountPoint)
 	}
 
+	if os.Getenv("NEXUS_VIRTIOFS_SKIP_DOCKER") == "1" {
+		emitDiagnostic("agent skipping docker-data mount (host omitted docker disk)")
+		return nil
+	}
+
 	// Wait for docker-data ext4 device and mount to /var/lib/docker.
 	deadline := time.Now().Add(30 * time.Second)
 	for {

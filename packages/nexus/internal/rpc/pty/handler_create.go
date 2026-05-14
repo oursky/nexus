@@ -57,7 +57,7 @@ func (h *Handler) lookupAndCheckWorkspace(ctx context.Context, workspaceID strin
 	}
 	ws, err := h.ws.Get(ctx, workspaceID)
 	if err != nil || ws == nil {
-		return nil, nil
+		return nil, rpcerrors.NotFound("workspace.not_found", fmt.Sprintf("workspace %s not found", workspaceID))
 	}
 	if ws.State != domainws.StateRunning {
 		return nil, fmt.Errorf("workspace %s is not ready (state: %s); wait for it to finish starting", workspaceID, ws.State)

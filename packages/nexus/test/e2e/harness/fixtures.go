@@ -37,9 +37,12 @@ func SkipIfVMBoot(t *testing.T) {
 	}
 }
 
-// IsVMBackend returns true when the test environment is configured to use the
-// libkrun VM backend (NEXUS_VM_KERNEL and NEXUS_VM_ROOTFS are set).
+// IsVMBackend reports whether VM-backed tests should run (Linux libkrun or
+// macOS when NEXUS_E2E_DRIVER=vm with a rootfs path).
 func IsVMBackend() bool {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("NEXUS_E2E_DRIVER")), "vm") {
+		return VMRootfsFromEnv() != ""
+	}
 	kernel := os.Getenv("NEXUS_VM_KERNEL")
 	rootfs := os.Getenv("NEXUS_VM_ROOTFS")
 	return kernel != "" && rootfs != ""

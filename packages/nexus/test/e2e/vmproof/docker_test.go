@@ -10,6 +10,24 @@ import (
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
 
+// waitGuestDockerReachable polls the guest until docker info reports a running
+// daemon (libkrun starts dockerd asynchronously; a fixed sleep is flaky on CI).
+func waitGuestDockerReachable(t *testing.T, h *harness.CLIHarness, repoPath, wsID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		out, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-c",
+			"docker info 2>&1; true")
+		s := string(out)
+		if err == nil && strings.Contains(s, "Server Version") &&
+			!strings.Contains(s, "Cannot connect to the Docker daemon") {
+			return
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	t.Fatal("timeout waiting for guest Docker daemon")
+}
+
 // Spec: VM-PROOF-014
 // TestVMProof_DockerDaemon verifies the Docker daemon starts inside the guest VM
 // and can execute container commands.
@@ -20,8 +38,7 @@ func TestVMProof_DockerDaemon(t *testing.T) {
 	repoPath := harness.MakeLocalGitRepo(t, "vmproof-docker")
 	wsID := createWorkspaceAndStart(t, h, repoPath, "vmproof-docker")
 
-	// Wait a bit for dockerd to finish starting inside the guest.
-	time.Sleep(3 * time.Second)
+	waitGuestDockerReachable(t, h, repoPath, wsID)
 
 	cases := []struct {
 		name    string

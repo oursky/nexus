@@ -9,8 +9,10 @@ import (
 
 // RequireE2EFullStack fails on CI if SSH profile mode is not enabled; otherwise skips.
 // Real workspace flows require loopback SSH + default profile (same as production), not NEXUS_E2E_DAEMON_WEBSOCKET.
+// On macOS with NEXUS_E2E_DRIVER=vm the SSH bootstrap is Linux-only, so these tests are skipped.
 func RequireE2EFullStack(t *testing.T) {
 	t.Helper()
+	SkipIfE2EMacVM(t)
 	if os.Getenv("CI") == "true" && !E2EUseRemoteProfile() {
 		t.Fatal("CI e2e requires NEXUS_E2E_REMOTE_PROFILE=1 — run scripts/ci/e2e-ssh-bootstrap.sh before tests")
 	}

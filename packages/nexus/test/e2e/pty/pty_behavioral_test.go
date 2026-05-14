@@ -86,6 +86,7 @@ func TestPTY_ExecEcho(t *testing.T) {
 func TestPTY_ExecGitBranch(t *testing.T) {
 	t.Parallel()
 	harness.SkipIfVMBoot(t)
+	harness.SkipIfE2EMacVM(t) // minimal Ubuntu rootfs does not include git
 	h := harness.NewCLIHarness(t)
 	repoPath := harness.MakeLocalGitRepo(t, "exec-git-branch")
 	wsID := createWorkspaceLocalRepo(t, h, repoPath, "exec-git-branch")

@@ -90,6 +90,17 @@ func TestCheckRuntimeArtifacts_BothSetAndExist(t *testing.T) {
 	}
 }
 
+func TestCheckRuntimeArtifacts_DarwinVMRootOnly(t *testing.T) {
+	env := newFakeEnv("darwin").
+		setEnv("NEXUS_E2E_DRIVER", "vm").
+		setEnv("NEXUS_VM_ROOTFS", "/tmp/rootfs.ext4").
+		setExists("/tmp/rootfs.ext4")
+	r := checkRuntimeArtifacts(env)
+	if r.Status != PreflightReady {
+		t.Errorf("expected READY, got %s: %s", r.Status, r.Observed)
+	}
+}
+
 func TestCheckRuntimeArtifacts_BothUnset(t *testing.T) {
 	env := newFakeEnv("linux")
 	r := checkRuntimeArtifacts(env)
@@ -168,9 +179,18 @@ func TestCheckVMBackend_Darwin(t *testing.T) {
 	env := newFakeEnv("darwin")
 	r := checkVMBackend(env)
 	if r.Status != PreflightUnsupportedHost {
-		t.Errorf("expected UNSUPPORTED_HOST on darwin, got %s", r.Status)
+		t.Errorf("expected UNSUPPORTED_HOST on darwin without NEXUS_E2E_DRIVER=vm, got %s", r.Status)
 	}
 	requireDiagnosticFields(t, r)
+}
+
+func TestCheckVMBackend_DarwinE2EVM(t *testing.T) {
+	env := newFakeEnv("darwin").
+		setEnv("NEXUS_E2E_DRIVER", "vm")
+	r := checkVMBackend(env)
+	if r.Status != PreflightReady {
+		t.Errorf("expected READY on darwin with NEXUS_E2E_DRIVER=vm, got %s", r.Status)
+	}
 }
 
 func TestCheckVMBackend_LinuxWithKVM(t *testing.T) {

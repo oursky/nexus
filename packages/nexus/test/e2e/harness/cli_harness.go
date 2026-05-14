@@ -50,6 +50,8 @@ func NewCLIHarness(t *testing.T) *CLIHarness {
 	}
 	token := randomToken(t)
 
+	ensureDarwinLibkrunDylibs()
+
 	binPath := os.Getenv("NEXUS_E2E_BINARY")
 	if binPath == "" {
 		tmp, err := os.MkdirTemp("", "nexus-e2e-bin-*")
@@ -65,6 +67,10 @@ func NewCLIHarness(t *testing.T) *CLIHarness {
 		if out, err := build.Output(); err != nil {
 			t.Fatalf("cliharness: build nexus: %v\n%s", err, out)
 		}
+		if err := adhocSignNexusForHypervisor(binPath); err != nil {
+			t.Fatalf("cliharness: codesign: %v", err)
+		}
+		buildPtyHost(t, tmp)
 	}
 
 	args := []string{
@@ -78,6 +84,7 @@ func NewCLIHarness(t *testing.T) *CLIHarness {
 		"--token", token,
 		"--foreground", // skip self-daemonize; harness kills the process directly
 	}
+	args = append(args, e2eVMArgs()...)
 
 	cmd := exec.Command(binPath, args...)
 	cmd.Stdout = os.Stderr // capture startup messages

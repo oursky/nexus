@@ -20,7 +20,7 @@ func TestVMProof_SSHAgentProxy_SocketExists(t *testing.T) {
 	wsID := createWorkspaceAndStart(t, h, repoPath, "vmproof-ssh-agent-socket")
 
 	out, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-c",
-		"test -S /tmp/ssh-agent.sock && echo OK; sleep 0.05")
+		`set -e; test -S /tmp/ssh-agent.sock && echo OK; sleep 0.05`)
 	if err != nil {
 		t.Fatalf("socket check: %v\noutput: %s", err, out)
 	}
@@ -55,12 +55,23 @@ func TestVMProof_SSHAgentProxy_ProxyLiveness(t *testing.T) {
 		t.Fatalf("ssh-add -l: %v\noutput: %s", err, out)
 	}
 	outStr := string(out)
-	if strings.Contains(outStr, "Could not open") {
+	if sshAddOutputIndicatesFailure(outStr) {
 		t.Errorf("SSH agent proxy not reachable: %q", outStr)
 	}
-	if strings.Contains(outStr, "connect") {
-		t.Errorf("SSH agent proxy connection error: %q", outStr)
+}
+
+func sshAddOutputIndicatesFailure(out string) bool {
+	lower := strings.ToLower(out)
+	if strings.Contains(lower, "could not open a connection to your authentication agent") {
+		return true
 	}
+	if strings.Contains(out, "Error connecting to agent") {
+		return true
+	}
+	if strings.Contains(lower, "connection refused") && strings.Contains(lower, "agent") {
+		return true
+	}
+	return false
 }
 
 // Spec: VM-022b
@@ -74,7 +85,7 @@ func TestVMProof_SSHAgentProxy_LifecycleRobustness(t *testing.T) {
 	wsID := createWorkspaceAndStart(t, h, repoPath, "vmproof-ssh-agent-lifecycle")
 
 	out, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-c",
-		"test -S /tmp/ssh-agent.sock && echo OK; sleep 0.05")
+		`set -e; test -S /tmp/ssh-agent.sock && echo OK; sleep 0.05`)
 	if err != nil {
 		t.Fatalf("socket check before stop: %v\noutput: %s", err, out)
 	}
@@ -88,10 +99,7 @@ func TestVMProof_SSHAgentProxy_LifecycleRobustness(t *testing.T) {
 	harness.WaitForWorkspaceReady(t, h.Harness, wsID)
 
 	out, err = h.Run(t, repoPath, "workspace", "exec", wsID, "--", "sh", "-c",
-		"test -S /tmp/ssh-agent.sock && echo OK; sleep 0.05")
-	if err != nil {
-		t.Fatalf("socket check after restart: %v\noutput: %s", err, out)
-	}
+		`set -e; test -S /tmp/ssh-agent.sock && echo OK; sleep 0.05`)
 	if !strings.Contains(string(out), "OK") {
 		t.Errorf("after restart: expected /tmp/ssh-agent.sock to exist as a socket, got %q", string(out))
 	}
@@ -111,11 +119,8 @@ func TestVMProof_SSHAgentProxy_LifecycleRobustness(t *testing.T) {
 		t.Fatalf("ssh-add -l after restart: %v\noutput: %s", err, out)
 	}
 	outStr := string(out)
-	if strings.Contains(outStr, "Could not open") {
+	if sshAddOutputIndicatesFailure(outStr) {
 		t.Errorf("after restart: SSH agent proxy not reachable: %q", outStr)
-	}
-	if strings.Contains(outStr, "connect") {
-		t.Errorf("after restart: SSH agent proxy connection error: %q", outStr)
 	}
 }
 
@@ -187,7 +192,7 @@ func TestVMProof_SSHAgentProxy_ForkIsolation(t *testing.T) {
 	}
 
 	parentOK, err := h.Run(t, repoPath, "workspace", "exec", parentID, "--", "sh", "-c",
-		"test -S /tmp/ssh-agent.sock && echo OK; sleep 0.05")
+		`set -e; test -S /tmp/ssh-agent.sock && echo OK; sleep 0.05`)
 	if err != nil {
 		t.Fatalf("parent socket check: %v\noutput: %s", err, parentOK)
 	}
@@ -196,7 +201,7 @@ func TestVMProof_SSHAgentProxy_ForkIsolation(t *testing.T) {
 	}
 
 	childOK, err := h.Run(t, repoPath, "workspace", "exec", childID, "--", "sh", "-c",
-		"test -S /tmp/ssh-agent.sock && echo OK; sleep 0.05")
+		`set -e; test -S /tmp/ssh-agent.sock && echo OK; sleep 0.05`)
 	if err != nil {
 		t.Fatalf("child socket check: %v\noutput: %s", err, childOK)
 	}

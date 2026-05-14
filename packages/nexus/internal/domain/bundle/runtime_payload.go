@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	smolvmRuntimeVersion = "v0.5.17"
+	smolvmRuntimeVersion = "v0.5.20"
 
 	envRuntimeCacheDir = "NEXUS_RUNTIME_CACHE_DIR"
 	envRuntimeOffline  = "NEXUS_RUNTIME_OFFLINE"
@@ -32,13 +32,13 @@ type runtimePayloadSpec struct {
 var runtimePayloadSpecs = map[string]runtimePayloadSpec{
 	"darwin-arm64": {
 		Platform: "darwin-arm64",
-		URL:      "https://github.com/smol-machines/smolvm/releases/download/" + smolvmRuntimeVersion + "/smolvm-0.5.17-darwin-arm64.tar.gz",
-		SHA256:   "aeb8e77b4c07c2d1996910b7bff44514c463982901aba2e50f62d7bacaee0e9c",
+		URL:      "https://github.com/smol-machines/smolvm/releases/download/" + smolvmRuntimeVersion + "/smolvm-0.5.20-darwin-arm64.tar.gz",
+		SHA256:   "92d687486852f78ea5ddf12be88c879ae9b8d8fc2bd7159de6586df0cb71d3e1",
 	},
 	"linux-amd64": {
 		Platform: "linux-amd64",
-		URL:      "https://github.com/smol-machines/smolvm/releases/download/" + smolvmRuntimeVersion + "/smolvm-0.5.17-linux-x86_64.tar.gz",
-		SHA256:   "803811fb93138a7a30816de0e6b0284e0f982fda1eb1839c0d239f31e90098fe",
+		URL:      "https://github.com/smol-machines/smolvm/releases/download/" + smolvmRuntimeVersion + "/smolvm-0.5.20-linux-x86_64.tar.gz",
+		SHA256:   "68431f36711c27dbb989e9ca55f42188a5788faab95a965a3f126481248efc1a",
 	},
 }
 
@@ -157,11 +157,13 @@ func ensureRuntimeTarball(ctx context.Context, tarballPath string, spec runtimeP
 		return fmt.Errorf("bundle: download runtime payload %s: unexpected status %s", spec.URL, resp.Status)
 	}
 
-	tmp := tarballPath + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644) //nolint:gosec
+	// Use a process-unique temp file so concurrent invocations (e.g. parallel
+	// e2e tests both calling workspace export) do not race on the same .tmp path.
+	f, err := os.CreateTemp(filepath.Dir(tarballPath), "dist.tar.gz.*.tmp")
 	if err != nil {
 		return fmt.Errorf("bundle: create runtime payload temp file: %w", err)
 	}
+	tmp := f.Name()
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
@@ -173,6 +175,10 @@ func ensureRuntimeTarball(ctx context.Context, tarballPath string, spec runtimeP
 	}
 	if err := os.Rename(tmp, tarballPath); err != nil {
 		_ = os.Remove(tmp)
+		// Another concurrent invocation may have completed the download first.
+		if ok, checkErr := fileMatchesSHA256(tarballPath, spec.SHA256); checkErr == nil && ok {
+			return nil
+		}
 		return fmt.Errorf("bundle: finalize runtime payload file: %w", err)
 	}
 

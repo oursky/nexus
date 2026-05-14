@@ -113,7 +113,10 @@ func (h *Handler) proxyCreate(ctx context.Context, raw json.RawMessage) (any, er
 		return h.host.Create(ctx, raw)
 	}
 	ws, err := h.lookupAndCheckWorkspace(ctx, p.WorkspaceID)
-	if err == nil && ws != nil && h.shouldUseVMSession(ws) {
+	if err != nil {
+		return nil, err
+	}
+	if ws != nil && h.shouldUseVMSession(ws) {
 		return h.create(ctx, raw)
 	}
 	return h.host.Create(ctx, raw)

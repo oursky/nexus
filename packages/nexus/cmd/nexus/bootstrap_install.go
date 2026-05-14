@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -71,45 +70,11 @@ func extractLibkrunEmbeds(libDir, binDir string) error {
 	return nil
 }
 
-// writeFileAtomic writes data to path atomically (write to .tmp, then rename).
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-	tmpFile, err := os.CreateTemp(dir, base+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmp := tmpFile.Name()
-	if _, err := tmpFile.Write(data); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := tmpFile.Chmod(mode); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
 // ensureSymlink creates (or replaces) a symlink name→target in dir.
 func ensureSymlink(dir, name, target string) {
 	dst := filepath.Join(dir, name)
 	_ = os.Remove(dst)
 	_ = os.Symlink(target, dst)
-}
-
-func needsInstall(dest string, newContent []byte) bool {
-	existing, err := os.ReadFile(dest)
-	if err != nil {
-		return true
-	}
-	return !bytes.Equal(existing, newContent)
 }
 
 // ── passt installation ────────────────────────────────────────────────────────
@@ -160,14 +125,4 @@ func installVMKernelRootless(w io.Writer, emitJSON bool) error {
 	}
 
 	return fmt.Errorf("embedded kernel is not a valid ELF — rebuild with embedded assets (run scripts/ci/build-nexus-libkrun.sh)")
-}
-
-// ── Utility helpers ───────────────────────────────────────────────────────────
-
-func atomicWriteFile(dest string, data []byte, mode os.FileMode) error {
-	return writeFileAtomic(dest, data, mode)
-}
-
-func atomicWriteExec(dest string, data []byte) error {
-	return atomicWriteFile(dest, data, 0o755)
 }

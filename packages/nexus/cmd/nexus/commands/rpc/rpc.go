@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -123,6 +124,26 @@ func isLocalhost(host string) bool {
 		}
 	}
 	return false
+}
+
+// DaemonEndpointIsLocal reports whether the CLI reaches the Nexus daemon on the
+// same machine without an SSH tunnel (same notion as EnsureDaemon's direct
+// WebSocket paths: loopback profile host or NEXUS_E2E_DAEMON_WEBSOCKET host).
+// Used by workspace open-editor to decide if a loopback guest SSH address refers
+// to this machine (direct SSH) vs the engine (remote daemon + ProxyCommand).
+func DaemonEndpointIsLocal() bool {
+	if ws := strings.TrimSpace(os.Getenv(envE2EDaemonWebSocket)); ws != "" {
+		u, err := url.Parse(ws)
+		if err != nil || u.Hostname() == "" {
+			return false
+		}
+		return isLocalhost(u.Hostname())
+	}
+	p, err := profile.LoadDefault()
+	if err != nil {
+		return false
+	}
+	return isLocalhost(p.Host)
 }
 
 func dialDaemonWebSocket(wsURL string) (*websocket.Conn, error) {

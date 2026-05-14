@@ -156,7 +156,12 @@ func runHostPrerequisites(cmd *cobra.Command, isForegroundChild bool, driver str
 // applyCanonicalPaths sets default kernel and rootfs paths in production Linux
 // builds where StartSetupFn has already provisioned the assets.
 func applyCanonicalPaths() {
-	if StartSetupFn == nil || runtime.GOOS == "darwin" {
+	if StartSetupFn == nil {
+		return
+	}
+	if runtime.GOOS == "darwin" {
+		// macOS VM assets are provisioned lazily (downloaded rootfs, embedded kernel in
+		// cache); Linux-style DefaultVM* paths do not apply.
 		return
 	}
 	if kernelPath == "" {
@@ -283,6 +288,11 @@ func validateVMAssets(needsVMAssets bool, rootfsPath, kernelPath string) error {
 	if !needsVMAssets {
 		return nil
 	}
+	if runtime.GOOS == "darwin" {
+		// macvm downloads the base rootfs on first workspace start and discovers the
+		// kernel from the embedded payload cache; skip Linux-style path validation here.
+		return nil
+	}
 	if rootfsPath == "" || kernelPath == "" {
 		return fmt.Errorf(
 			"daemon start: vm driver requires --rootfs and --kernel; " +
@@ -318,6 +328,12 @@ func setupLDLibraryPath(isLibkrun bool) {
 // non-CI environments, pre-bakes developer tools into the base rootfs.
 func injectAgentAndBake(cfg daemon.Config, isLibkrun, isForegroundChild bool, emitPhase func(phase, status, message string)) error {
 	if !isLibkrun || isForegroundChild {
+		return nil
+	}
+	if runtime.GOOS == "darwin" {
+		// macOS uses a pre-baked downloadable rootfs with the agent already installed.
+		// Linux-style debugfs/e2fsprogs injection is unavailable on macOS builds.
+		emitPhase("guest-agent", "ok", "skipped (macOS pre-baked rootfs)")
 		return nil
 	}
 	if err := ensureGuestAgent(cfg.RootFSPath); err != nil {

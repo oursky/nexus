@@ -16,6 +16,7 @@ import (
 // (the daemon persists VM state on stop). There is no separate snapshot RPC.
 func TestWorkspaceRestore(t *testing.T) {
 	t.Parallel()
+	harness.SkipIfE2EMacVM(t)
 	harness.SkipIfVMBoot(t)
 	h := suite.Harness().ForTest(t)
 

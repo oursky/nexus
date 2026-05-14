@@ -4,6 +4,7 @@ package daemon
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -167,26 +168,38 @@ func New(cfg Config) (*Daemon, error) {
 	// broadcast to all connected clients.
 	broadcastHub := transport.NewHub()
 
-	// Attempt to register libkrun driver on all platforms (stub on non-Linux).
+	// Attempt to register libkrun driver unless process-only mode was requested.
 	var lkBundle libkrunDriverBundle
 	var lkErr error
-	lkBundle, lkErr = buildLibkrunDriver(cfg, wsStore, broadcastHub)
-	if lkErr == nil {
-		if err := lkBundle.CleanupStaleInstances(context.Background()); err != nil {
-			log.Printf("daemon: libkrun stale cleanup warning: %v", err)
-		}
-		registry.Register(lkBundle.AsDriver())
-		log.Printf("daemon: libkrun runtime driver registered")
+	explicitLibkrun := cfg.Driver == "libkrun"
+	skipLibkrun := runtime.GOOS == "darwin" && cfg.Driver == "sandbox"
+	if !skipLibkrun {
+		lkBundle, lkErr = buildLibkrunDriver(cfg, wsStore, broadcastHub)
+		if lkErr == nil {
+			if err := lkBundle.CleanupStaleInstances(context.Background()); err != nil {
+				log.Printf("daemon: libkrun stale cleanup warning: %v", err)
+			}
+			registry.Register(lkBundle.AsDriver())
+			log.Printf("daemon: libkrun runtime driver registered")
 
-		// Pre-warm base workspace images for all known libkrun workspaces in
-		// the background so the first workspace start doesn't block on
-		// mkfs.ext4 -d <project_root> (which can take 30-120s for large repos).
-		go prewarmLibkrunBaseImages(wsStore, cfg.BasesDir)
-	} else {
-		log.Printf("daemon: libkrun driver not available: %v", lkErr)
+			// Pre-warm base workspace images for all known libkrun workspaces in
+			// the background so the first workspace start doesn't block on
+			// mkfs.ext4 -d <project_root> (which can take 30-120s for large repos).
+			go prewarmLibkrunBaseImages(wsStore, cfg.BasesDir)
+		} else {
+			switch {
+			case explicitLibkrun:
+				db.Close()
+				return nil, fmt.Errorf("daemon: requested driver %q is not available on this node: %w", cfg.Driver, lkErr)
+			case errors.Is(lkErr, ErrLibkrunNotBootstrapped):
+				log.Printf("daemon: macvm: %v", lkErr)
+			default:
+				log.Printf("daemon: libkrun driver not available: %v", lkErr)
+			}
+		}
 	}
 
-	// Determine default backend: explicit driver flag > platform default.
+	// Determine default backend: explicit driver flag > auto (prefer VM when registered).
 	switch cfg.Driver {
 	case "libkrun":
 		if !registry.SetDefaultBackend("libkrun") {
@@ -196,7 +209,7 @@ func New(cfg Config) (*Daemon, error) {
 	case "sandbox", "process":
 		registry.SetDefaultBackend("process")
 	default:
-		if runtime.GOOS == "linux" && registry.HasBackend("libkrun") {
+		if registry.HasBackend("libkrun") {
 			registry.SetDefaultBackend("libkrun")
 		} else {
 			registry.SetDefaultBackend("process")
@@ -515,8 +528,11 @@ func resolvePTYHostBinary() string {
 	if resolved, err := exec.LookPath("pty-host"); err == nil {
 		return resolved
 	}
-	daemonBin := os.Args[0]
-	daemonDir := filepath.Dir(daemonBin)
+	exePath := os.Args[0]
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		exePath = exe
+	}
+	daemonDir := filepath.Dir(exePath)
 	if daemonDir != "" && daemonDir != "." {
 		candidate := filepath.Join(daemonDir, "pty-host")
 		if _, err := os.Stat(candidate); err == nil {
@@ -545,9 +561,10 @@ func (n *nodeInfo) Capabilities() []rpcdaemon.Capability {
 			{Name: "runtime.libkrun", Available: false},
 		}
 	}
-	caps := make([]rpcdaemon.Capability, 0, len(n.registry.Backends()))
-	for _, backend := range n.registry.Backends() {
-		caps = append(caps, rpcdaemon.Capability{Name: "runtime." + backend, Available: true})
+	names := n.registry.Capabilities()
+	caps := make([]rpcdaemon.Capability, 0, len(names))
+	for _, name := range names {
+		caps = append(caps, rpcdaemon.Capability{Name: name, Available: true})
 	}
 	return caps
 }
