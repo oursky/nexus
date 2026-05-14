@@ -110,15 +110,11 @@ func TestLocalProxy(t *testing.T) {
 	fwds := []Forward{
 		{LocalPort: localPort, RemoteHost: "127.0.0.1", RemotePort: backendPort},
 	}
-	lp, warnings, err := StartLocalProxy(fwds)
+	lp, err := StartLocalProxy(fwds)
 	if err != nil {
 		t.Fatalf("StartLocalProxy: %v", err)
 	}
 	defer lp.Close()
-
-	if len(warnings) > 0 {
-		t.Logf("StartLocalProxy warnings: %v", warnings)
-	}
 
 	// Connect through the proxy.
 	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/", localPort))
@@ -141,16 +137,3 @@ func TestLocalProxy(t *testing.T) {
 	}
 }
 
-// TestCheckAndEvictPorts verifies that CheckAndEvictPorts returns no warnings
-// when no ports are occupied.
-func TestCheckAndEvictPorts(t *testing.T) {
-	// Use a fresh port that nothing is listening on.
-	port, err := findAvailablePort()
-	if err != nil {
-		t.Fatalf("findAvailablePort: %v", err)
-	}
-	warnings := CheckAndEvictPorts([]int{port})
-	if len(warnings) != 0 {
-		t.Errorf("expected no warnings for free port, got %v", warnings)
-	}
-}

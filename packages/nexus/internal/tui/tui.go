@@ -138,8 +138,7 @@ type tunnelStartedMsg struct {
 	tunnel     *sshtunnel.MultiTunnel
 	localProxy *sshtunnel.LocalProxy // non-nil when local daemon needs port remapping (libkrun VMs)
 	boundPorts []int
-	local      bool     // true when daemon is local — no SSH tunnel needed
-	warnings   []string // PIDs evicted to free ports (shown in status line)
+	local      bool // true when daemon is local — no SSH tunnel needed
 	err        error
 }
 
@@ -224,6 +223,14 @@ type Model struct {
 	sidebarTunnelWsID  string                // workspace ID the running tunnel belongs to
 	sidebarTunnelLocal bool                  // true when daemon is local (no SSH needed)
 
+	// sidebarTunnelErr holds the raw error string from the last failed tunnel
+	// start attempt. Displayed verbatim in the spotlight sidebar.
+	sidebarTunnelErr string
+
+	// sidebarConfirmRemove is true while waiting for the user to confirm [y/n]
+	// before removing the currently selected spotlight forward via [x].
+	sidebarConfirmRemove bool
+
 	// Pane x-boundaries for mouse hit-testing (0-indexed, inner coordinates,
 	// i.e. after removing the 2-column outer padding).
 	// leftPaneRight  = last inner column of the left pane (= leftW - 1)
@@ -259,7 +266,7 @@ func (m Model) isThreePaneMode() bool {
 
 // paneDimensions returns (leftW, centerW, rightW) for the current layout.
 //
-//   - Three-pane (>= 110 cols): leftW=22%, rightW=23%, centerW=remainder minus 1 sep.
+//   - Three-pane (>= 110 cols): leftW=28%, rightW=22%, centerW≈50% (remainder minus 1 sep).
 //     The left pane has a RoundedBorder; right pane has a RoundedBorder; a
 //     single separator column sits between center and right pane.
 //   - Two-pane   (>= 90 cols):  leftW=28%, centerW=remainder.
@@ -271,9 +278,9 @@ func (m Model) isThreePaneMode() bool {
 func (m Model) paneDimensions() (leftW, centerW, rightW int) {
 	inner := max(m.width-4, 24)
 	if m.isThreePaneMode() {
-		leftW = int(float64(inner) * 0.22)
-		rightW = int(float64(inner) * 0.23)
-		centerW = max(inner-leftW-rightW-1, 20) // 1 sep column between center and right
+		leftW = int(float64(inner) * 0.28)
+		rightW = int(float64(inner) * 0.22)
+		centerW = max(inner-leftW-rightW-1, 20) // 1 sep column between center and right; ≈50%
 		return
 	}
 	if m.isSplitMode() {
@@ -721,12 +728,12 @@ func startSidebarTunnelCmd(wsID string, fwds []*spotlight.Forward) tea.Cmd {
 				// All ports directly accessible (process-isolation workspace on daemon host).
 				return tunnelStartedMsg{wsID: wsID, local: true}
 			}
-			// VM workspace: create local TCP proxy for port remapping.
-			lp, warnings, err := sshtunnel.StartLocalProxy(proxyFwds)
-			if err != nil {
-				return tunnelStartedMsg{wsID: wsID, err: fmt.Errorf("local proxy: %w", err)}
-			}
-			return tunnelStartedMsg{wsID: wsID, local: true, localProxy: lp, warnings: warnings}
+		// VM workspace: create local TCP proxy for port remapping.
+		lp, err := sshtunnel.StartLocalProxy(proxyFwds)
+		if err != nil {
+			return tunnelStartedMsg{wsID: wsID, err: fmt.Errorf("local proxy: %w", err)}
+		}
+		return tunnelStartedMsg{wsID: wsID, local: true, localProxy: lp}
 		}
 
 		// Remote daemon — build SSH multi-tunnel specs.
@@ -1369,12 +1376,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.statusLine = "spotlight tunnel: " + msg.err.Error()
 			m.sidebarTunnelLive = false
+			m.sidebarTunnelErr = msg.err.Error()
 			return m, nil
 		}
-		// Show eviction warnings (e.g. "evicted PID 12345 from port 8080").
-		if len(msg.warnings) > 0 {
-			m.statusLine = "spotlight: " + strings.Join(msg.warnings, "; ")
-		}
+		m.sidebarTunnelErr = "" // clear on success
 		if msg.local {
 			// Local daemon path. Close any previous local proxy before storing new one.
 			if m.sidebarLocalProxy != nil {
@@ -2034,6 +2039,27 @@ func (m Model) handleSyncKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleSidebarKeys handles keyboard input when the spotlight sidebar pane has
 // focus (three-pane layout only).
 func (m Model) handleSidebarKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Row-confirm state for x (remove): only y/n/esc are handled.
+	if m.sidebarConfirmRemove {
+		switch msg.String() {
+		case "y":
+			m.sidebarConfirmRemove = false
+			ws := m.selectedWorkspace()
+			if ws == nil || m.sidebarSel < 0 || m.sidebarSel >= len(m.sidebarFwds) {
+				return m, nil
+			}
+			f := m.sidebarFwds[m.sidebarSel]
+			if f == nil {
+				return m, nil
+			}
+			return m, m.removeForwardCmd(ws.ID, f.ID)
+		default:
+			// n, esc, x, or any other key cancels.
+			m.sidebarConfirmRemove = false
+			return m, nil
+		}
+	}
+
 	switch msg.String() {
 	case "tab", "esc":
 		m.sidebarFocused = false
@@ -2047,6 +2073,7 @@ func (m Model) handleSidebarKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.sidebarFwds) > 0 {
 			// Stopping all — close the client-side SSH tunnel immediately.
 			m.closeSidebarTunnel()
+			m.sidebarTunnelErr = ""
 			return m, m.stopWorkspaceSpotCmd(ws.ID)
 		}
 		return m, m.startAllDiscoveredCmd(ws.ID)
@@ -2060,18 +2087,14 @@ func (m Model) handleSidebarKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.promptInput.SetValue("")
 		return m, m.promptInput.Focus()
 	case "x", "delete":
-		ws := m.selectedWorkspace()
-		if ws == nil || len(m.sidebarFwds) == 0 {
+		if len(m.sidebarFwds) == 0 {
 			return m, nil
 		}
 		if m.sidebarSel < 0 || m.sidebarSel >= len(m.sidebarFwds) {
 			return m, nil
 		}
-		f := m.sidebarFwds[m.sidebarSel]
-		if f == nil {
-			return m, nil
-		}
-		return m, m.removeForwardCmd(ws.ID, f.ID)
+		m.sidebarConfirmRemove = true
+		return m, nil
 	case "up", "k":
 		if m.sidebarSel > 0 {
 			m.sidebarSel--
@@ -2470,7 +2493,7 @@ func (m Model) renderSidebarPortModal() string {
 // renderSplitLayout renders the split-pane view.
 //
 // Two-pane  (90–109 cols): workspace list (28%) | PTY (72%).
-// Three-pane (≥110 cols):  workspace list (22%) | PTY (55%) | spotlight (23%).
+// Three-pane (≥110 cols):  workspace list (28%) | PTY (≈50%) | spotlight (22%).
 //
 // Both sidebars have a RoundedBorder; the center PTY pane uses separator lines.
 func (m Model) renderSplitLayout() string {
@@ -2787,3 +2810,4 @@ func renderWorkspaceDetail(ws *workspace.Workspace, width int) string {
 	fmt.Fprintf(&b, "%s\n", row("Updated", updated))
 	return b.String()
 }
+

@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"sync"
-	"time"
 )
 
 // LocalProxy manages a set of local TCP port forwards without SSH.
@@ -28,21 +26,10 @@ type LocalProxy struct {
 }
 
 // StartLocalProxy binds local ports for all given Forward specs and starts
-// proxying. Ports already in use are evicted first; warnings list the PIDs
-// that were evicted (for display in the TUI status line).
-// Returns an error if any local port cannot be bound after eviction.
-func StartLocalProxy(fwds []Forward) (*LocalProxy, []string, error) {
-	ports := make([]int, 0, len(fwds))
-	for _, f := range fwds {
-		if f.LocalPort > 0 {
-			ports = append(ports, f.LocalPort)
-		}
-	}
-	warnings := CheckAndEvictPorts(ports)
-	if len(warnings) > 0 {
-		time.Sleep(300 * time.Millisecond)
-	}
-
+// proxying. Returns an error if any local port is already in use or cannot
+// be bound; in that case the caller is responsible for freeing the port and
+// retrying.
+func StartLocalProxy(fwds []Forward) (*LocalProxy, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &LocalProxy{ctx: ctx, cancel: cancel}
 
@@ -57,7 +44,7 @@ func StartLocalProxy(fwds []Forward) (*LocalProxy, []string, error) {
 		ln, err := net.Listen("tcp", lAddr)
 		if err != nil {
 			_ = p.Close()
-			return nil, warnings, fmt.Errorf("bind local proxy port %d: %w", f.LocalPort, err)
+			return nil, fmt.Errorf("bind local proxy port %d: %w", f.LocalPort, err)
 		}
 
 		p.mu.Lock()
@@ -67,7 +54,7 @@ func StartLocalProxy(fwds []Forward) (*LocalProxy, []string, error) {
 		go p.serveProxy(ln, rAddr)
 	}
 
-	return p, warnings, nil
+	return p, nil
 }
 
 // Close stops all local proxy listeners and cancels in-flight connections.
@@ -108,28 +95,4 @@ func (p *LocalProxy) serveProxy(ln net.Listener, rAddr string) {
 			<-done
 		}(client)
 	}
-}
-
-// CheckAndEvictPorts evicts any processes listening on the given local TCP
-// ports. Returns human-readable descriptions of each evicted process so the
-// caller can display warnings (e.g. "evicted PID 12345 from port 8080").
-func CheckAndEvictPorts(ports []int) []string {
-	var warnings []string
-	for _, p := range ports {
-		pids := listenersOnPort(p)
-		for _, pid := range pids {
-			if pid <= 1 {
-				continue
-			}
-			proc, err := os.FindProcess(pid)
-			if err != nil {
-				continue
-			}
-			warnings = append(warnings, fmt.Sprintf("evicted PID %d from port %d", pid, p))
-			_ = proc.Signal(os.Interrupt)
-			time.Sleep(200 * time.Millisecond)
-			_ = proc.Kill()
-		}
-	}
-	return warnings
 }
