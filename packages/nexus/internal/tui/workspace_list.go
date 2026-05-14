@@ -18,12 +18,32 @@ func (w workspaceItem) FilterValue() string {
 }
 
 func (w workspaceItem) Title() string {
-	st := string(w.w.State)
 	name := w.w.WorkspaceName
 	if name == "" {
 		name = "(unnamed)"
 	}
-	return fmt.Sprintf("%s  •  %s", truncate(name, 28), st)
+	return fmt.Sprintf("%s  %s", truncate(name, 28), statePill(w.w.State))
+}
+
+func statePill(state workspace.State) string {
+	switch state {
+	case workspace.StateRunning:
+		return statusOkStyle.Render("● RUNNING")
+	case workspace.StateStarting:
+		return warningStyle.Render("⟳ STARTING")
+	case workspace.StateSnapshotting:
+		return warningStyle.Render("⟳ SNAPSHOTTING")
+	case workspace.StateRestored:
+		return warningStyle.Render("⟳ RESTORED")
+	case workspace.StateStopped:
+		return mutedStyle.Render("○ STOPPED")
+	case workspace.StatePaused:
+		return mutedStyle.Render("⏸ PAUSED")
+	case workspace.StateCreated:
+		return mutedStyle.Render("○ CREATED")
+	default:
+		return mutedStyle.Render(string(state))
+	}
 }
 
 func (w workspaceItem) Description() string {
@@ -58,13 +78,21 @@ func workspacesToItems(workspaces []workspace.Workspace) []list.Item {
 
 func styledDelegate() list.ItemDelegate {
 	d := list.NewDefaultDelegate()
-	d.Styles.NormalTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("#E8E8E8"))
+	d.Styles.NormalTitle = lipgloss.NewStyle().Foreground(colorText)
 	d.Styles.NormalDesc = mutedStyle
 	d.Styles.SelectedTitle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FFFDF5")).
-		Padding(0, 0, 0, 2)
+		Foreground(colorText).
+		Background(colorSelBg).
+		BorderLeft(true).
+		BorderStyle(lipgloss.Border{Left: "▌"}).
+		BorderForeground(colorAccent).
+		PaddingLeft(1)
 	d.Styles.SelectedDesc = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#A8A8A8")).
-		Padding(0, 0, 0, 2)
+		Foreground(colorSubtext).
+		Background(colorSelBg).
+		BorderLeft(true).
+		BorderStyle(lipgloss.Border{Left: " "}).
+		BorderForeground(colorAccent).
+		PaddingLeft(1)
 	return d
 }

@@ -11,9 +11,61 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/oursky/nexus/packages/nexus/internal/clientstate"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 	"github.com/oursky/nexus/packages/nexus/test/e2e/harness"
 )
+
+// Spec E.1.1: Connect wizard shows when no daemon profile is configured.
+// Uses a temp XDG_STATE_HOME with an empty client DB (no profiles) and no
+// NEXUS_E2E_DAEMON_WEBSOCKET override so the TUI falls through to profile loading.
+func TestSpec_ConnectWizard_ShowsWhenNoProfile(t *testing.T) {
+	stateDir := t.TempDir()
+
+	// Build an env without the e2e daemon WebSocket override so that
+	// profile.LoadDefault() is called and returns "no profile configured".
+	baseEnv := os.Environ()
+	filtered := make([]string, 0, len(baseEnv))
+	for _, kv := range baseEnv {
+		if strings.HasPrefix(kv, "NEXUS_E2E_DAEMON_WEBSOCKET=") ||
+			strings.HasPrefix(kv, "NEXUS_DAEMON_TOKEN=") ||
+			strings.HasPrefix(kv, "XDG_STATE_HOME=") {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	filtered = append(filtered, "XDG_STATE_HOME="+stateDir)
+
+	cmd := exec.Command(shared.BinPath, "tui")
+	cmd.Env = filtered
+
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("pty start: %v", err)
+	}
+	defer func() { _ = ptmx.Close() }()
+	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: 35, Cols: 120})
+
+	stopDrain := make(chan struct{})
+	var captured []byte
+	go drainBackground(ptmx, &captured, stopDrain)
+
+	// Give the TUI time to render the wizard.
+	time.Sleep(800 * time.Millisecond)
+
+	// Press 'q' to quit — the wizard should handle it.
+	if _, err := ptmx.Write([]byte{'q'}); err != nil {
+		t.Fatalf("quit: %v", err)
+	}
+	_ = cmd.Wait()
+	close(stopDrain)
+
+	out := stripANSI(string(captured))
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "connect") && !strings.Contains(lower, "host") {
+		t.Fatalf("expected connect wizard (Connect to daemon / Host); got:\n%s", truncateOut(out, 4000))
+	}
+}
 
 func workspaceListIndex(t *testing.T, c *harness.Client, id string) int {
 	t.Helper()
@@ -584,16 +636,29 @@ func TestSpec_K1_TabBarRenderedFromSessionFile(t *testing.T) {
 	}
 	wsID := created.Workspace.ID
 
-	// Write a session file pointing at this workspace.
+	// Seed session state into a fresh SQLite client DB in a temp state dir.
 	stateDir := t.TempDir()
 	nexusDir := filepath.Join(stateDir, "nexus")
 	if err := os.MkdirAll(nexusDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	sessionJSON := `{"tabs":["` + wsID + `"],"active":"` + wsID + `"}`
-	if err := os.WriteFile(filepath.Join(nexusDir, "tui-sessions.json"), []byte(sessionJSON), 0o644); err != nil {
+	db, err := clientstate.OpenAt(filepath.Join(nexusDir, "client.db"))
+	if err != nil {
+		t.Fatalf("open client db: %v", err)
+	}
+	if err := db.ReplaceAllTUISessions([]clientstate.TUISession{{
+		WorkspaceID:  wsID,
+		LastAttached: time.Now().UTC(),
+		TabOrder:     0,
+	}}); err != nil {
+		_ = db.Close()
 		t.Fatalf("write session: %v", err)
 	}
+	if err := db.SetTUIPref("active_workspace", wsID); err != nil {
+		_ = db.Close()
+		t.Fatalf("set active: %v", err)
+	}
+	_ = db.Close()
 
 	// Launch TUI with XDG_STATE_HOME pointing to our temp dir.
 	cmd := exec.Command(shared.BinPath, "tui")
@@ -674,10 +739,10 @@ func TestSpec_K2_TerminalKeyFromList(t *testing.T) {
 	close(stopDrain)
 
 	// After shell returns, TUI must have resumed and shown the list again.
-	// Session file should have been written.
-	sessionPath := filepath.Join(stateDir, "nexus", "tui-sessions.json")
-	if _, err := os.Stat(sessionPath); err != nil {
-		t.Fatalf("session file not written after t: %v", err)
+	// The client DB should have been created with session state.
+	dbPath := filepath.Join(stateDir, "nexus", "client.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("client db not written after t: %v", err)
 	}
 }
 
