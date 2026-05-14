@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,49 +25,12 @@ func stopCommand() *cobra.Command {
 		Use:   "stop",
 		Short: "Stop the running Nexus daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cleanupDaemonResidue()
-
-			pids := make(map[int]struct{})
-			for _, pid := range append(
-				pidsFromLsof("lsof", "-t", "--", socketPath),
-				pidsFromLsof("lsof", "-ti", fmt.Sprintf("tcp:%d", port))...,
-			) {
-				pids[pid] = struct{}{}
-			}
-
-			if len(pids) == 0 {
+			n := StopLocalDaemon(cmd.OutOrStdout(), cmd.ErrOrStderr(), socketPath, port)
+			if n == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No local nexus daemon processes found")
-				return nil
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Stopped %d daemon process(es)\n", n)
 			}
-
-			for pid := range pids {
-				_ = syscall.Kill(pid, syscall.SIGTERM)
-			}
-
-			deadline := time.Now().Add(4 * time.Second)
-			for time.Now().Before(deadline) {
-				allExited := true
-				for pid := range pids {
-					if processAlive(pid) {
-						allExited = false
-						break
-					}
-				}
-				if allExited {
-					fmt.Fprintf(cmd.OutOrStdout(), "Stopped %d daemon process(es)\n", len(pids))
-					return nil
-				}
-				time.Sleep(150 * time.Millisecond)
-			}
-
-			for pid := range pids {
-				if processAlive(pid) {
-					_ = syscall.Kill(pid, syscall.SIGKILL)
-				}
-			}
-
-			fmt.Fprintf(cmd.OutOrStdout(), "Stopped %d daemon process(es)\n", len(pids))
-			cleanupDaemonResidue()
 			return nil
 		},
 	}
@@ -75,6 +39,62 @@ func stopCommand() *cobra.Command {
 	cmd.Flags().StringVar(&socketPath, "socket", filepath.Join(defaultData, "nexusd.sock"), "Unix socket path")
 	cmd.Flags().IntVar(&port, "port", 7777, "Network listener port")
 	return cmd
+}
+
+// StopLocalDaemon terminates processes listening on socketPath or on TCP port.
+// It runs driver-specific residue cleanup before and after. Returns number of PIDs signaled.
+func StopLocalDaemon(stdout, stderr io.Writer, socketPath string, port int) int {
+	cleanupDaemonResidue()
+
+	pids := make(map[int]struct{})
+	for _, pid := range append(
+		pidsFromLsof("lsof", "-t", "--", socketPath),
+		pidsFromLsof("lsof", "-ti", fmt.Sprintf("tcp:%d", port))...,
+	) {
+		pids[pid] = struct{}{}
+	}
+
+	if len(pids) == 0 {
+		cleanupDaemonResidue()
+		return 0
+	}
+
+	my := os.Getpid()
+	delete(pids, my)
+	for pid := range pids {
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+	}
+
+	if len(pids) == 0 {
+		cleanupDaemonResidue()
+		return 0
+	}
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		allExited := true
+		for pid := range pids {
+			if processAlive(pid) {
+				allExited = false
+				break
+			}
+		}
+		if allExited {
+			cleanupDaemonResidue()
+			return len(pids)
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+
+	for pid := range pids {
+		if processAlive(pid) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
+
+	cleanupDaemonResidue()
+
+	return len(pids)
 }
 
 func pidsFromLsof(name string, args ...string) []int {
