@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/macvm"
 )
@@ -40,6 +42,27 @@ func resolveDarwinLibkrunPayload() (lib []byte, libfw []byte, err error) {
 	return lib, libfw, nil
 }
 
+// codesignDarwinAdhoc signs path with identity "-" (adhoc).
+// Unsigned libkrun dylibs extracted on disk contribute to VmCreate EINVAL on hardened hosts.
+func codesignDarwinAdhoc(w io.Writer, path string) {
+	if _, statErr := os.Stat(path); statErr != nil {
+		return
+	}
+	cmd := exec.Command("codesign", "--force", "--sign", "-", path)
+	cmd.Stdout = io.Discard
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(w, "  warning: codesign %s failed: %v %s\n", filepath.Base(path), err, strings.TrimSpace(string(out)))
+		return
+	}
+}
+
+func codesignDarwinLibkrunPair(w io.Writer, libDir string) {
+	for _, name := range []string{"libkrun.dylib", "libkrunfw.dylib"} {
+		codesignDarwinAdhoc(w, filepath.Join(libDir, name))
+	}
+}
+
 func installLibkrunDylibsDarwin(w io.Writer) (libDir string, err error) {
 	libDir = filepath.Join(nexusDataShareDir(), "lib")
 	if err := os.MkdirAll(libDir, 0o755); err != nil {
@@ -53,6 +76,7 @@ func installLibkrunDylibsDarwin(w io.Writer) (libDir string, err error) {
 	destLib := filepath.Join(libDir, "libkrun.dylib")
 	destFW := filepath.Join(libDir, "libkrunfw.dylib")
 	if !needsInstall(destLib, libData) && !needsInstall(destFW, fwData) {
+		codesignDarwinLibkrunPair(w, libDir)
 		return libDir, nil
 	}
 
@@ -64,6 +88,7 @@ func installLibkrunDylibsDarwin(w io.Writer) (libDir string, err error) {
 		return "", fmt.Errorf("write libkrunfw.dylib: %w", err)
 	}
 	fmt.Fprintf(w, "  libkrun dylibs installed\n")
+	codesignDarwinLibkrunPair(w, libDir)
 	return libDir, nil
 }
 
