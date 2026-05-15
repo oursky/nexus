@@ -180,6 +180,7 @@ jobs:
     env:
       NEXUS_LIBKRUN_BAKE_TIMEOUT: 55m
       NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "3"
+      NEXUS_MACVM_BAKE_EMBEDDED_KERNEL_ONLY: "1"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

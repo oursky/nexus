@@ -282,13 +282,15 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 
 	var customKernelPath string
 	var customKernelFormat uint32 = libkrun.KernelFormatRaw
-	for _, kp := range customKernelCandidates(cfg.LibDir, workDir) {
-		if _, statErr := os.Stat(kp); statErr == nil {
-			customKernelPath = kp
-			if runtime.GOARCH == "amd64" {
-				customKernelFormat = libkrun.KernelFormatElf
+	if strings.TrimSpace(os.Getenv("NEXUS_MACVM_BAKE_EMBEDDED_KERNEL_ONLY")) != "1" {
+		for _, kp := range customKernelCandidates(cfg.LibDir, workDir) {
+			if _, statErr := os.Stat(kp); statErr == nil {
+				customKernelPath = kp
+				if runtime.GOARCH == "amd64" {
+					customKernelFormat = libkrun.KernelFormatElf
+				}
+				break
 			}
-			break
 		}
 	}
 
