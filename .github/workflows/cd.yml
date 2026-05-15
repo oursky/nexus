@@ -179,6 +179,7 @@ jobs:
     timeout-minutes: 120
     env:
       NEXUS_LIBKRUN_BAKE_TIMEOUT: 55m
+      NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "3"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

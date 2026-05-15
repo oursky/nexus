@@ -270,7 +270,7 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 		return "", fmt.Errorf("bake workspace disk: %w", err)
 	}
 	dockerDataPath := filepath.Join(workDir, "docker-data.ext4")
-	skipDocker, dockErr := ensureDockerDataExt4(dockerDataPath)
+	skipDocker, dockErr := ensureDockerDataExt4Bake(dockerDataPath)
 	if dockErr != nil {
 		return "", dockErr
 	}
