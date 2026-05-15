@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 jobs:
-  # ── main / test-cd: semantic-release + Linux guest rootfs assets ───────────
+  # ── main / test-cd: semantic-release only (v* tag triggers builds/uploads) ──
   semver:
     name: Semantic release
     if: startsWith(github.ref, 'refs/heads/')
@@ -83,185 +83,6 @@ jobs:
             echo "version=$version" >> "$GITHUB_OUTPUT"
             echo "tag=" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Set up Go
-        if: steps.semantic.outputs.released == 'true'
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: packages/nexus/go.mod
-          cache-dependency-path: packages/nexus/go.sum
-
-      - name: Stage Linux amd64 libkrun embeds
-        if: steps.semantic.outputs.released == 'true'
-        run: bash scripts/ci/stage-nexus-linux-embeds.sh
-
-      - name: Build binaries
-        if: steps.semantic.outputs.released == 'true'
-        working-directory: packages/nexus
-        run: |
-          set -euo pipefail
-          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          GIT_COMMIT="${GITHUB_SHA::8}"
-          VERSION="${{ steps.semantic.outputs.version }}"
-          LDFLAGS="-s -w \
-            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Time=${BUILD_TIME} \
-            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Commit=${GIT_COMMIT} \
-            -X github.com/oursky/nexus/packages/nexus/internal/buildinfo.Version=${VERSION}"
-
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" \
-            -o cmd/nexus/agent-linux-amd64 ./cmd/nexus-guest-agent
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" \
-            -o ../../dist/nexus-linux-amd64 ./cmd/nexus
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" \
-            -o ../../dist/pty-host-linux-amd64 ./cmd/pty-host
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
-            -o cmd/nexus/agent-linux-arm64 ./cmd/nexus-guest-agent
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
-            -o ../../dist/nexus-linux-arm64 ./cmd/nexus
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" \
-            -o ../../dist/pty-host-linux-arm64 ./cmd/pty-host
-
-      - name: Create checksums
-        if: steps.semantic.outputs.released == 'true'
-        run: |
-          cd dist
-          sha256sum nexus-linux-amd64 nexus-linux-arm64 pty-host-linux-amd64 pty-host-linux-arm64 > sha256sums.txt
-
-      - name: Upload binaries to GitHub Release
-        if: steps.semantic.outputs.released == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="${{ steps.semantic.outputs.tag }}"
-          gh release upload "$tag" \
-            dist/nexus-linux-amd64 \
-            dist/nexus-linux-arm64 \
-            dist/pty-host-linux-amd64 \
-            dist/pty-host-linux-arm64 \
-            dist/sha256sums.txt \
-            --clobber
-
-  guest-rootfs-linux-arm64:
-    name: Release asset — Linux arm64 guest rootfs
-    needs: semver
-    if: needs.semver.outputs.released == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: packages/nexus/go.mod
-          cache-dependency-path: packages/nexus/go.sum
-
-      - name: Install e2fsprogs
-        run: sudo apt-get update && sudo apt-get install -y e2fsprogs
-
-      - name: Build nexus-guest-agent (linux/arm64)
-        working-directory: packages/nexus
-        run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' \
-            -o /tmp/nexus-guest-agent ./cmd/nexus-guest-agent/
-
-      - name: Download Ubuntu 22.04 arm64 root tarball
-        run: |
-          curl -fsSL --retry 3 -o /tmp/ubuntu-arm64-root.tar.xz \
-            "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-arm64-root.tar.xz"
-
-      - name: Create ext4 + compress + checksum
-        run: |
-          set -euo pipefail
-          STAGING="/tmp/rootfs-staging"
-          mkdir -p "$STAGING"
-          sudo tar --no-same-owner -xJf /tmp/ubuntu-arm64-root.tar.xz -C "$STAGING"
-          sudo chown -R "$(id -u):$(id -g)" "$STAGING"
-          mkdir -p "$STAGING/usr/local/bin"
-          cp /tmp/nexus-guest-agent "$STAGING/usr/local/bin/nexus-guest-agent"
-          chmod 0755 "$STAGING/usr/local/bin/nexus-guest-agent"
-          mkdir -p "$STAGING/workspace"
-          if ! grep -q '/dev/vda' "$STAGING/etc/fstab" 2>/dev/null; then
-            echo "/dev/vda / ext4 rw,relatime 0 1" | tee -a "$STAGING/etc/fstab"
-          fi
-          sudo mke2fs -F -t ext4 -L nexus-root -d "$STAGING" /tmp/rootfs-linux-arm64.ext4 10G
-          gzip -9 -c /tmp/rootfs-linux-arm64.ext4 > /tmp/rootfs-linux-arm64.ext4.gz
-          sha256sum /tmp/rootfs-linux-arm64.ext4.gz | tee /tmp/rootfs-linux-arm64.ext4.gz.sha256
-
-      - name: Upload rootfs to GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="${{ needs.semver.outputs.tag }}"
-          gh release upload "$tag" \
-            /tmp/rootfs-linux-arm64.ext4.gz \
-            /tmp/rootfs-linux-arm64.ext4.gz.sha256 \
-            --repo "${{ github.repository }}" \
-            --clobber
-
-  guest-rootfs-macos:
-    name: Release asset — macOS libkrun guest rootfs
-    needs: semver
-    if: needs.semver.outputs.released == 'true'
-    runs-on: macos-14
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: packages/nexus/go.mod
-          cache-dependency-path: packages/nexus/go.sum
-
-      - name: Install e2fsprogs
-        run: brew install e2fsprogs
-
-      - name: Build nexus-guest-agent (linux/arm64)
-        working-directory: packages/nexus
-        run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' \
-            -o /tmp/nexus-guest-agent ./cmd/nexus-guest-agent/
-
-      - name: Download Ubuntu 22.04 arm64 root tarball
-        run: |
-          curl -fsSL --retry 3 -o /tmp/ubuntu-arm64-root.tar.xz \
-            "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-arm64-root.tar.xz"
-
-      - name: Create ext4 + compress + checksum
-        run: |
-          set -euo pipefail
-          MKE2FS="$(command -v mke2fs || true)"
-          if [[ -z "$MKE2FS" ]]; then
-            MKE2FS="$(ls /opt/homebrew/opt/e2fsprogs/sbin/mke2fs 2>/dev/null || ls /usr/local/opt/e2fsprogs/sbin/mke2fs)"
-          fi
-          if [[ -z "$MKE2FS" || ! -x "$MKE2FS" ]]; then
-            echo "ERROR: mke2fs not found (brew install e2fsprogs)" >&2
-            exit 1
-          fi
-          STAGING="/tmp/rootfs-staging"
-          mkdir -p "$STAGING"
-          sudo tar --no-same-owner -xJf /tmp/ubuntu-arm64-root.tar.xz -C "$STAGING"
-          sudo chown -R "$(id -u):$(id -g)" "$STAGING"
-          mkdir -p "$STAGING/usr/local/bin"
-          cp /tmp/nexus-guest-agent "$STAGING/usr/local/bin/nexus-guest-agent"
-          chmod 0755 "$STAGING/usr/local/bin/nexus-guest-agent"
-          mkdir -p "$STAGING/workspace"
-          if ! grep -q '/dev/vda' "$STAGING/etc/fstab" 2>/dev/null; then
-            echo "/dev/vda / ext4 rw,relatime 0 1" | tee -a "$STAGING/etc/fstab"
-          fi
-          "$MKE2FS" -F -t ext4 -L nexus-root -d "$STAGING" /tmp/rootfs-darwin-arm64.ext4 10G
-          gzip -9 -c /tmp/rootfs-darwin-arm64.ext4 > /tmp/rootfs-darwin-arm64.ext4.gz
-          shasum -a 256 /tmp/rootfs-darwin-arm64.ext4.gz | tee /tmp/rootfs-darwin-arm64.ext4.gz.sha256
-
-      - name: Upload rootfs to GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="${{ needs.semver.outputs.tag }}"
-          gh release upload "$tag" \
-            /tmp/rootfs-darwin-arm64.ext4.gz \
-            /tmp/rootfs-darwin-arm64.ext4.gz.sha256 \
-            --repo "${{ github.repository }}" \
-            --clobber
 
   # ── Version tags v*: cross-platform CLI release + pre-baked libkrun host rootfs ──
   release-build:
@@ -558,7 +379,7 @@ jobs:
               } else . end
             ' > latest.json
 
-      - name: Create versioned release
+      - name: Publish tagged release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ github.ref_name }}
@@ -577,19 +398,27 @@ jobs:
           EXTRA=()
           [ -f dist/rootfs-linux-amd64.ext4.gz ] && EXTRA+=(dist/rootfs-linux-amd64.ext4.gz)
           [ -f dist/rootfs-darwin-arm64.ext4.gz ] && EXTRA+=(dist/rootfs-darwin-arm64.ext4.gz)
-          gh release create "${TAG_NAME}" \
-            --repo "${GITHUB_REPO}" \
-            --verify-tag \
-            --title "${TAG_NAME}" \
-            --notes-file "$NOTES" \
-            dist/nexus-linux-amd64 \
-            dist/nexus-linux-arm64 \
-            dist/nexus-darwin-amd64 \
-            dist/nexus-darwin-arm64 \
-            dist/nexus-libkrun-vm-linux-amd64 \
-            dist/checksums.txt \
-            dist/latest.json \
+          ASSETS=(
+            dist/nexus-linux-amd64
+            dist/nexus-linux-arm64
+            dist/nexus-darwin-amd64
+            dist/nexus-darwin-arm64
+            dist/nexus-libkrun-vm-linux-amd64
+            dist/checksums.txt
+            dist/latest.json
             "${EXTRA[@]}"
+          )
+          if gh release view "${TAG_NAME}" --repo "${GITHUB_REPO}" >/dev/null 2>&1; then
+            echo "Release ${TAG_NAME} exists (semantic-release); uploading build artifacts only."
+            gh release upload "${TAG_NAME}" "${ASSETS[@]}" --repo "${GITHUB_REPO}" --clobber
+          else
+            gh release create "${TAG_NAME}" \
+              --repo "${GITHUB_REPO}" \
+              --verify-tag \
+              --title "${TAG_NAME}" \
+              --notes-file "$NOTES" \
+              "${ASSETS[@]}"
+          fi
 
       - name: Move rolling "latest" tag
         env:

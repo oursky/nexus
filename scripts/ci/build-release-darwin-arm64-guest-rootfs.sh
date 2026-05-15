@@ -50,6 +50,7 @@ STAGING="/tmp/nexus-rootfs-staging-minimal.$$"
 sudo rm -rf "$STAGING"
 sudo mkdir -p "$STAGING"
 sudo tar --no-same-owner -xJf /tmp/ubuntu-arm64-root.tar.xz -C "$STAGING"
+# cloud images ship var/lib/snapd/void with restrictive perms; mke2fs -d cannot traverse it
 sudo rm -rf "$STAGING/var/lib/snapd/void"
 
 sudo mkdir -p "$STAGING/usr/local/bin"
