@@ -342,13 +342,19 @@ func TestSpec_B2_StartStopFromTUI(t *testing.T) {
 	if _, err := ptmx.Write([]byte{'x'}); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	time.Sleep(800 * time.Millisecond)
-	if err := client.Call("workspace.info", map[string]any{"id": id}, &info); err != nil {
-		t.Fatalf("info after stop: %v", err)
-	}
-	st = string(info.Workspace.State)
-	if st != "stopped" && st != "created" {
-		t.Fatalf("expected stopped/created after x, got %q", st)
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		if err := client.Call("workspace.info", map[string]any{"id": id}, &info); err != nil {
+			t.Fatalf("info after stop: %v", err)
+		}
+		st = string(info.Workspace.State)
+		if st == "stopped" || st == "created" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected stopped/created after x, got %q (libkrun stop can lag while workspace is still starting)", st)
+		}
+		time.Sleep(300 * time.Millisecond)
 	}
 
 	if _, err := ptmx.Write([]byte{'q'}); err != nil {
