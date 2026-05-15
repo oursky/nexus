@@ -174,13 +174,13 @@ jobs:
 
   release-darwin-guest-rootfs:
     name: macOS guest rootfs (linux/arm64 image for libkrun)
-    # TODO: re-enable when macVM VmCreate on GHA is stable
-    if: false
-    runs-on: macos-15
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test-cd'
+    runs-on: macos-14
     timeout-minutes: 120
     env:
       NEXUS_LIBKRUN_BAKE_TIMEOUT: 55m
       NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "3"
+      NEXUS_LIBKRUN_MEM_MIB: "3072"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -204,7 +204,7 @@ jobs:
   release-publish:
     name: Semantic release & publish artifacts
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test-cd'
-    needs: [release-build, release-host-rootfs]
+    needs: [release-build, release-host-rootfs, release-darwin-guest-rootfs]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -225,7 +225,11 @@ jobs:
           name: rootfs-linux-amd64-host
           path: dist
 
-      # Darwin guest rootfs is optional — baked in release-darwin-guest-rootfs (currently disabled).
+      - name: Download darwin guest rootfs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rootfs-darwin-arm64-guest
+          path: dist
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
