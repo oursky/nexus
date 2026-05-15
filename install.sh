@@ -386,6 +386,92 @@ ensure_linux_daemon_data_dir() {
   sudo_run chown "${uid}:${gid}" /data/nexus /data/nexus/default
 }
 
+# Best-effort host fixes for libkrun VMs: KVM access (/dev/kvm) and user namespaces (passt).
+# Does not fail the install; prints warnings when something cannot be auto-fixed.
+persist_nexus_libkrun_sysctl_dropin() {
+  # Snapshot kernel state after any runtime sysctl -w above (only persist values that are already in effect).
+  local lines="" v=""
+  if [ -r /proc/sys/kernel/unprivileged_userns_clone ]; then
+    v="$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo "")"
+    if [ "$v" = "1" ]; then
+      lines+="kernel.unprivileged_userns_clone=1"$'\n'
+    fi
+  fi
+  if [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+    v="$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo "")"
+    if [ "$v" = "0" ]; then
+      lines+="kernel.apparmor_restrict_unprivileged_userns=0"$'\n'
+    fi
+  fi
+  [ -n "${lines}" ] || return 0
+  printf '%s' "${lines}" | sudo_run tee /etc/sysctl.d/99-nexus-libkrun.conf >/dev/null
+  echo "nexus-install: persisted sysctl settings in /etc/sysctl.d/99-nexus-libkrun.conf"
+}
+
+ensure_linux_libkrun_host_prereqs() {
+  [ "${GOOS:-}" = "linux" ] || return 0
+  [ "${GOARCH}" = "amd64" ] || return 0
+
+  local v did_sysctl=""
+
+  # --- /dev/kvm — libkrun: Error creating the Kvm object: Error(13) (EACCES when opening /dev/kvm)
+  if [ ! -e /dev/kvm ]; then
+    echo "nexus-install: warning: /dev/kvm not found — enable CPU virtualization in firmware," >&2
+    echo "nexus-install: warning:   or enable nested KVM if this machine is already a VM." >&2
+  elif [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+    if getent group kvm >/dev/null 2>&1; then
+      if ! id -nG | tr ' ' '\n' | grep -qx kvm; then
+        echo "nexus-install: granting /dev/kvm access via group 'kvm' (requires sudo) …"
+        if sudo_run usermod -aG kvm "$(id -un)"; then
+          echo "nexus-install: added user $(id -un) to group kvm — log out and back in (or reboot) for it to take effect."
+          echo "nexus-install: (quick test in this shell: newgrp kvm)"
+        fi
+      else
+        echo "nexus-install: warning: user is in group kvm but /dev/kvm is still not accessible — try a new login session." >&2
+      fi
+    else
+      echo "nexus-install: warning: no 'kvm' group on this system; ensure this user can open /dev/kvm (ls -l /dev/kvm)" >&2
+    fi
+  fi
+
+  # --- Unprivileged user namespaces — passt can log: unshare: Operation not permitted
+  if [ -r /proc/sys/kernel/unprivileged_userns_clone ]; then
+    v="$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo "")"
+    if [ "$v" = "0" ]; then
+      echo "nexus-install: enabling kernel.unprivileged_userns_clone=1 (passt needs user namespaces) …"
+      if sudo_run sysctl -w kernel.unprivileged_userns_clone=1; then
+        did_sysctl=1
+      else
+        echo "nexus-install: warning: could not set kernel.unprivileged_userns_clone (passt may fail with unshare EPERM)" >&2
+      fi
+    fi
+  fi
+
+  # --- Ubuntu / AppArmor: some releases default to blocking unprivileged userns
+  if [ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+    v="$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo "")"
+    if [ "$v" = "1" ]; then
+      echo "nexus-install: setting kernel.apparmor_restrict_unprivileged_userns=0 (passt / user namespaces) …"
+      if sudo_run sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; then
+        did_sysctl=1
+      else
+        echo "nexus-install: warning: could not relax apparmor userns restriction (passt may fail with unshare EPERM)" >&2
+      fi
+    fi
+  fi
+
+  if [ -n "${did_sysctl}" ] || [ ! -f /etc/sysctl.d/99-nexus-libkrun.conf ]; then
+    persist_nexus_libkrun_sysctl_dropin
+  fi
+
+  if [ -r /proc/sys/user/max_user_namespaces ]; then
+    v="$(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo "")"
+    if [ -n "$v" ] && [ "$v" -eq 0 ] 2>/dev/null; then
+      echo "nexus-install: warning: user.max_user_namespaces is 0 — increase it or passt cannot create namespaces" >&2
+    fi
+  fi
+}
+
 unix_socket_accepts_connections() {
   local sock_path="$1"
   [ -S "${sock_path}" ] || return 1
@@ -470,6 +556,7 @@ main() {
   detect_platform
   ensure_linux_libkrun_reflink_volume
   ensure_linux_daemon_data_dir
+  ensure_linux_libkrun_host_prereqs
   summarize_host_setup
 
   NEXUS_VERSION="$(resolve_release_tag)"
