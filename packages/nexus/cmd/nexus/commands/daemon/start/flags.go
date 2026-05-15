@@ -9,22 +9,22 @@ import (
 )
 
 var (
-	dbPath        string
-	socketPath    string
-	kernelPath    string
-	rootfsPath    string
-	workDirRoot   string
-	nodeName      string
-	network       bool
-	bind          string
-	port          int
-	tlsMode       string
-	token         string
-	tlsCert       string
-	tlsKey        string
-	foreground    bool // --foreground: stay blocking instead of self-daemonizing
-	jsonOutput    bool // --json: emit structured phase events (rootless bootstrap)
-	readyTimeout  time.Duration
+	dbPath       string
+	socketPath   string
+	kernelPath   string
+	rootfsPath   string
+	workDirRoot  string
+	nodeName     string
+	network      bool
+	bind         string
+	port         int
+	tlsMode      string
+	token        string
+	tlsCert      string
+	tlsKey       string
+	foreground   bool // --foreground: stay blocking instead of self-daemonizing
+	jsonOutput   bool // --json: emit structured phase events (rootless bootstrap)
+	readyTimeout time.Duration
 )
 
 func registerStartFlags(cmd *cobra.Command) {

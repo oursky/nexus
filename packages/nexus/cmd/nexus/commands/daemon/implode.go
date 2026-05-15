@@ -150,13 +150,9 @@ func implodeUserTrees(w io.Writer) error {
 	}
 
 	matches, _ := filepath.Glob(filepath.Join(home, ".local", "state-nexus-*", "nexus"))
-	for _, m := range matches {
-		dirs = append(dirs, m)
-	}
+	dirs = append(dirs, matches...)
 	matches2, _ := filepath.Glob(filepath.Join(home, ".local", "share-nexus-*"))
-	for _, m := range matches2 {
-		dirs = append(dirs, m)
-	}
+	dirs = append(dirs, matches2...)
 
 	seen := make(map[string]struct{})
 	for _, dir := range dirs {
