@@ -10,6 +10,7 @@
 #   INSTALL_DIR         default ~/.local/bin
 #   SMOLVM_VERSION      libkrun vendor tarball tag for Linux x86_64 (default v0.5.19; must match CI build-nexus-libkrun.sh)
 #   NEXUS_XFS_SIZE_GB   sparse backing size when creating an XFS loop volume (default 20)
+#   NEXUS_INSTALL_VERBOSE  set to 1 to print full sudo command lines
 #
 # Requires: curl, sha256sum or shasum -a 256 for release checksums, gzip when installing a prebaked rootfs
 # (linux/amd64 host or darwin/arm64 guest), and python3 or jq to read the releases API when NEXUS_VERSION is unset.
@@ -36,12 +37,14 @@ need_cmd() {
 }
 
 sudo_run() {
-  local parts="" a q
-  for a in "$@"; do
-    printf -v q '%q' "$a"
-    parts+=" ${q}"
-  done
-  echo "nexus-install: \$ sudo${parts}" >&2
+  if [[ "${NEXUS_INSTALL_VERBOSE:-}" == "1" ]]; then
+    local parts="" a q
+    for a in "$@"; do
+      printf -v q '%q' "$a"
+      parts+=" ${q}"
+    done
+    echo "nexus-install: \$ sudo${parts}" >&2
+  fi
   sudo "$@"
 }
 
@@ -305,27 +308,23 @@ detect_platform() {
 
 linux_reflink_probe_sudo() {
   local mp="$1"
-  sudo_run bash -ceu '
-mp="$1"
-s="$mp/.nexus-reflink-probe-src-$$"
-d="$mp/.nexus-reflink-probe-dst-$$"
-touch "$s" && cp --reflink=always "$s" "$d" 2>/dev/null
-rc=$?
-rm -f "$s" "$d"
-exit $rc
-' bash "${mp}"
+  sudo_run bash -ceu 'mp="$1"; s="$mp/.nexus-reflink-probe-src-$$"; d="$mp/.nexus-reflink-probe-dst-$$"; touch "$s" && cp --reflink=always "$s" "$d" 2>/dev/null; rc=$?; rm -f "$s" "$d"; exit "$rc"' _ "${mp}"
 }
 
 # libkrun requires reflink (XFS with reflink=1 or btrfs). If /data/nexus is not on such a fs,
 # create or reuse a sparse XFS loopback image (same approach as scripts/ci/setup-xfs-reflink.sh).
-# Does not rm -rf or umount existing mounts (unlike CI); only attaches loop XFS when the path is empty.
+# Prefers mounting the whole tree when /data/nexus is empty; otherwise mounts XFS at
+# /data/nexus/default (the daemon workdir) when that directory is empty so unrelated paths
+# under /data/nexus can remain on the host filesystem.
+# Does not rm -rf or umount existing mounts (unlike CI).
 ensure_linux_libkrun_reflink_volume() {
   [ "${GOOS:-}" = linux ] || return 0
 
   local mount_point="/data/nexus"
+  local workdir="${mount_point}/default"
   local backing_file="/var/lib/nexus-xfs-backing.img"
   local size_gb="${NEXUS_XFS_SIZE_GB:-20}"
-  local uid gid any_entry
+  local uid gid loop_target any_top any_def
 
   uid="$(id -u)"
   gid="$(id -g)"
@@ -336,21 +335,33 @@ ensure_linux_libkrun_reflink_volume() {
 
   if linux_reflink_probe_sudo "${mount_point}"; then
     echo "nexus-install: ${mount_point} supports reflink clones (libkrun workdir)"
-    sudo_run chown "${uid}:${gid}" "${mount_point}"
+    if ! mkdir -p "${workdir}" 2>/dev/null; then
+      sudo_run mkdir -p "${workdir}"
+    fi
+    sudo_run chown "${uid}:${gid}" "${mount_point}" "${workdir}"
     return 0
   fi
 
-  if mountpoint -q "${mount_point}" 2>/dev/null; then
-    echo "nexus-install: warning: ${mount_point} is a separate mount without reflink support; libkrun may fail until you use XFS/btrfs with reflink there" >&2
+  if [ -d "${workdir}" ] && linux_reflink_probe_sudo "${workdir}"; then
+    echo "nexus-install: ${workdir} supports reflink clones (libkrun workdir)"
+    sudo_run chown "${uid}:${gid}" "${mount_point}" "${workdir}"
     return 0
   fi
 
-  any_entry="$(sudo_run find "${mount_point}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)"
-  if [ -n "${any_entry}" ]; then
-    die "${mount_point} does not support reflink and is not empty — move its contents aside or mount XFS/btrfs with reflink at ${mount_point}, then re-run install (see scripts/ci/setup-xfs-reflink.sh on a dev checkout)"
+  loop_target="${mount_point}"
+  any_top="$(sudo_run find "${mount_point}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)"
+  if [ -n "${any_top}" ]; then
+    loop_target="${workdir}"
+    if ! mkdir -p "${loop_target}" 2>/dev/null; then
+      sudo_run mkdir -p "${loop_target}"
+    fi
+    any_def="$(sudo_run find "${loop_target}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)"
+    if [ -n "${any_def}" ]; then
+      die "${mount_point} does not support reflink and ${loop_target} is not empty — move data out of ${loop_target}, use XFS/btrfs with reflink there, or see scripts/ci/setup-xfs-reflink.sh on a dev checkout"
+    fi
   fi
 
-  echo "nexus-install: host fs has no reflink at ${mount_point}; creating XFS loop volume (${size_gb} GB sparse image at ${backing_file})"
+  echo "nexus-install: host fs has no reflink at ${loop_target}; creating XFS loop volume (${size_gb} GB sparse image at ${backing_file})"
 
   need_cmd truncate
   command -v mkfs.xfs >/dev/null 2>&1 || die "mkfs.xfs not found — install xfsprogs (e.g. apt install xfsprogs)"
@@ -363,14 +374,17 @@ ensure_linux_libkrun_reflink_volume() {
     sudo_run mkfs.xfs -f -m reflink=1 "${backing_file}"
   fi
 
-  if sudo_run mount -o loop "${backing_file}" "${mount_point}"; then
-    sudo_run chown "${uid}:${gid}" "${mount_point}"
-    echo "nexus-install: mounted XFS with reflink=1 at ${mount_point}"
-    xfs_info "${mount_point}" 2>/dev/null | grep reflink || true
+  if sudo_run mount -o loop "${backing_file}" "${loop_target}"; then
+    echo "nexus-install: mounted XFS with reflink=1 at ${loop_target}"
+    xfs_info "${loop_target}" 2>/dev/null | grep reflink || true
+    if ! mkdir -p "${workdir}" 2>/dev/null; then
+      sudo_run mkdir -p "${workdir}"
+    fi
+    sudo_run chown "${uid}:${gid}" "${mount_point}" "${workdir}"
     return 0
   fi
 
-  die "could not loop-mount XFS at ${mount_point} — ensure loop devices are available and try scripts/ci/setup-xfs-reflink.sh from a repo checkout"
+  die "could not loop-mount XFS at ${loop_target} — ensure loop devices are available and try scripts/ci/setup-xfs-reflink.sh from a repo checkout"
 }
 
 # On Linux: unconditionally provision /data/nexus and /data/nexus/default (required VM store paths).
