@@ -91,4 +91,3 @@ func runBake(stdout, stderr io.Writer, timeoutStr string) error {
 	fmt.Fprintln(stderr, "vm bake: complete — base rootfs is ready")
 	return nil
 }
-

@@ -14,6 +14,16 @@ mkdir -p "$NEXUS_CROSS_OUT_DIR"
 
 cd "$REPO_ROOT/packages/nexus"
 
+# Darwin/arm64 nexus embeds the Linux/arm64 guest agent (see embed_agent_darwin_arm64.go).
+# `go generate ./cmd/nexus` on linux/amd64 skips darwin-only sources, so ensure the blob exists.
+AGENT_ARM64="$REPO_ROOT/packages/nexus/cmd/nexus/agent-linux-arm64"
+if [[ ! -f "$AGENT_ARM64" ]]; then
+  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+    go build -trimpath -ldflags "-s -w" \
+    -o "$AGENT_ARM64" \
+    ./cmd/nexus-guest-agent/
+fi
+
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
   go build -trimpath -ldflags "-s -w" \
   -o "$NEXUS_CROSS_OUT_DIR/nexus-darwin-arm64" \
