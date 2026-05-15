@@ -27,6 +27,10 @@ func (s *Service) Create(ctx context.Context, spec workspace.CreateSpec) (*works
 		return nil, err
 	}
 
+	if b := strings.ToLower(strings.TrimSpace(spec.Backend)); b == "process" || b == "sandbox" {
+		return nil, fmt.Errorf("runtime backend %q is not supported (only libkrun VM workspaces are allowed)", strings.TrimSpace(spec.Backend))
+	}
+
 	// Validate requested backend is available on this node.
 	if spec.Backend != "" && s.registry != nil && !s.registry.HasBackend(spec.Backend) {
 		return nil, fmt.Errorf("runtime backend %q is not available on this node (available: %v)", spec.Backend, s.registry.Backends())

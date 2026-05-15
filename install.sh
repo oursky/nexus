@@ -246,7 +246,7 @@ install_linux_vm_runtime() {
         ;;
       arm64)
         if ! install_libkrun_libs_from_host_arm64 "${libdir}"; then
-          die "could not find libkrun.so.1 for Linux arm64 (try Nix/libkrun packages, or use --driver sandbox)"
+          die "could not find libkrun.so.1 for Linux arm64 (install libkrun via Nix/your distro, or set NEXUS_LIBKRUN_* paths)"
         fi
         ;;
       *)

@@ -114,7 +114,7 @@ func (s *Service) performStart(ctx context.Context, ws *workspace.Workspace) (*w
 			backendLabel = s.registry.DefaultBackend()
 		}
 		if !ok {
-			startErr = fmt.Errorf("installation corrupted: %q runtime is not available on this host — re-run install.sh or provision the VM/process stack", backendLabel)
+			startErr = fmt.Errorf("installation corrupted: %q runtime is not available on this host — re-run install.sh and ensure the libkrun VM stack is provisioned", backendLabel)
 		} else {
 			startErr = driver.Start(ctx, ws)
 			startErr = enrichDriverStartError(startErr)

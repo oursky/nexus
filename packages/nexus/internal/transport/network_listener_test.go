@@ -22,7 +22,7 @@ func (s *stubDispatcher) Dispatch(_ context.Context, method string, _ json.RawMe
 	case "node.info":
 		return map[string]any{
 			"node":         map[string]any{"name": "test-node"},
-			"capabilities": []map[string]any{{"name": "runtime.process", "available": true}},
+			"capabilities": []map[string]any{{"name": "runtime.libkrun", "available": true}},
 		}, nil
 	default:
 		return nil, fmt.Errorf("method not found: %s", method)

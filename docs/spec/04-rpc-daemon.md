@@ -24,10 +24,10 @@
 }
 ```
 
-**`DAEMON-022`** — `capabilities` always includes at least one entry (e.g. `"runtime.process"`).
+**`DAEMON-022`** — `capabilities` always includes at least one entry (e.g. `"runtime.libkrun"`).
 
-**`DAEMON-023`** — `capabilities` includes `"runtime.libkrun"` when the daemon was started
-with the libkrun driver (i.e., without `--sandbox` on Linux).
+**`DAEMON-023`** — `capabilities` includes `"runtime.libkrun"` with `available: true` when the
+daemon started successfully (libkrun is required; there is no process/sandbox fallback).
 
 **`DAEMON-024`** — `node.info` is used as the readiness probe. It MUST succeed as soon as the
 daemon socket is bound and RPC handlers are registered, even before all background services are

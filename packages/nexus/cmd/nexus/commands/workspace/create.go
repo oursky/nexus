@@ -89,7 +89,7 @@ func createCommand() *cobra.Command {
 	cmd.Flags().StringVar(&ref, "ref", "", "branch / ref (default: repo default branch)")
 	cmd.Flags().StringVar(&name, "name", "", "workspace name (required)")
 	cmd.Flags().StringVar(&profile, "profile", "default", "agent profile")
-	cmd.Flags().StringVar(&backend, "backend", "", "runtime backend override (libkrun, process)")
+	cmd.Flags().StringVar(&backend, "backend", "", "runtime backend override (libkrun only; omit for default)")
 	return cmd
 }
 

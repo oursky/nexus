@@ -4,7 +4,6 @@ package daemon
 import (
 	"context"
 	"crypto/subtle"
-	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -27,7 +26,6 @@ import (
 	domainvol "github.com/oursky/nexus/packages/nexus/internal/domain/volume"
 	domainws "github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/dockercompose"
-	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/sandbox"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/store"
 	"github.com/oursky/nexus/packages/nexus/internal/ptyhost"
 	rpcauth "github.com/oursky/nexus/packages/nexus/internal/rpc/auth"
@@ -144,43 +142,31 @@ func New(cfg Config) (*Daemon, error) {
 	projStore := store.NewProjectStore(db)
 	fwdStore := store.NewForwardStore(db)
 
-	// Build runtime registry with all available drivers.
+	// Runtime: libkrun (VM) only. Process/sandbox is disabled — fail fast if unavailable.
 	registry := domainruntime.NewRegistry()
-
-	sandboxDriver := sandbox.NewAdapter(sandbox.NewDriver())
-	registry.Register(sandboxDriver)
-	log.Printf("daemon: sandbox (process) runtime driver registered")
 
 	// Create broadcast hub for server-initiated WebSocket notifications (e.g. workspace.ref).
 	// The hub is created before the libkrun driver so the driver's git hook callback can
 	// broadcast to all connected clients.
 	broadcastHub := transport.NewHub()
 
-	var lkBundle libkrunDriverBundle
 	lkBundle, lkErr := buildLibkrunDriver(cfg, wsStore, broadcastHub)
-	if lkErr == nil {
-		if err := lkBundle.CleanupStaleInstances(context.Background()); err != nil {
-			log.Printf("daemon: libkrun stale cleanup warning: %v", err)
-		}
-		registry.Register(lkBundle.AsDriver())
-		log.Printf("daemon: libkrun runtime driver registered")
+	if lkErr != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("daemon: libkrun is required (process/sandbox runtime is disabled): %w", lkErr)
+	}
+	if err := lkBundle.CleanupStaleInstances(context.Background()); err != nil {
+		log.Printf("daemon: libkrun stale cleanup warning: %v", err)
+	}
+	registry.Register(lkBundle.AsDriver())
+	if !registry.SetDefaultBackend("libkrun") {
+		_ = db.Close()
+		return nil, fmt.Errorf("daemon: internal error: libkrun driver did not register as backend %q", "libkrun")
+	}
+	log.Printf("daemon: libkrun runtime driver registered (default backend=%s)", registry.DefaultBackend())
+	if runtime.GOOS == "linux" {
 		go prewarmLibkrunBaseImages(wsStore, cfg.BasesDir)
-	} else {
-		if runtime.GOOS == "linux" {
-			log.Printf("daemon: libkrun driver not registered (workspace start will fail for VM backends until host is provisioned): %v", lkErr)
-		} else if errors.Is(lkErr, ErrLibkrunNotBootstrapped) {
-			log.Printf("daemon: macvm: %v", lkErr)
-		} else {
-			log.Printf("daemon: libkrun driver not available: %v", lkErr)
-		}
 	}
-
-	if registry.HasBackend("libkrun") {
-		registry.SetDefaultBackend("libkrun")
-	} else {
-		registry.SetDefaultBackend("process")
-	}
-	log.Printf("daemon: default backend=%s", registry.DefaultBackend())
 
 	// Reconcile workspace states for all backends that need it.
 	reconcileWorkspaceStates(context.Background(), wsStore, fwdStore)
@@ -310,12 +296,8 @@ func New(cfg Config) (*Daemon, error) {
 		syncSvc = appsync.NewService(embeddedMutagen, syncRepo, wsStore)
 		syncSvc.SetSSHManager(sshManager)
 		// Register platform-specific sync drivers.
-		processDriver := appsync.NewProcessDriver(wsStore)
 		libkrunDriver := appsync.NewLibkrunDriver(wsStore)
-		// Use a composite driver that selects the appropriate backend.
-		syncSvc.SetDriver(&compositeSyncDriver{
-			drivers: []appsync.SyncDriver{processDriver, libkrunDriver},
-		})
+		syncSvc.SetDriver(libkrunDriver)
 		rpcsync.NewHandler(syncSvc).Register(reg)
 		log.Printf("daemon: sync handler registered (embedded mutagen)")
 	}
@@ -369,7 +351,7 @@ func New(cfg Config) (*Daemon, error) {
 }
 
 // reconcileWorkspaceStates resets stale workspace states after daemon restart.
-// Both VM and process workspaces lose their runtime when the daemon restarts.
+// Workspace VMs lose their runtime when the daemon restarts.
 // All spotlight forward records are also deleted because their in-memory listeners
 // are gone after a restart; the CLI will recreate them when spotlight is restarted.
 func reconcileWorkspaceStates(ctx context.Context, wsStore *store.WorkspaceStore, fwdStore *store.ForwardStore) {
@@ -535,7 +517,6 @@ func (n *nodeInfo) NodeTags() []string { return n.cfg.NodeTags }
 func (n *nodeInfo) Capabilities() []rpcdaemon.Capability {
 	if n.registry == nil {
 		return []rpcdaemon.Capability{
-			{Name: "runtime.process", Available: true},
 			{Name: "runtime.libkrun", Available: false},
 		}
 	}
@@ -605,27 +586,4 @@ func (a *syncStarterAdapter) StartVolumeSync(ctx context.Context, workspaceID, a
 
 func (a *syncStarterAdapter) StopSync(ctx context.Context, sessionID, workspaceID string) error {
 	return a.svc.StopSync(ctx, sessionID, workspaceID)
-}
-
-// compositeSyncDriver tries multiple drivers in order and uses the first available one.
-type compositeSyncDriver struct {
-	drivers []appsync.SyncDriver
-}
-
-func (c *compositeSyncDriver) IsAvailable(workspaceID string) bool {
-	for _, d := range c.drivers {
-		if d.IsAvailable(workspaceID) {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *compositeSyncDriver) GetSyncPaths(workspaceID string) (alpha, beta string, err error) {
-	for _, d := range c.drivers {
-		if d.IsAvailable(workspaceID) {
-			return d.GetSyncPaths(workspaceID)
-		}
-	}
-	return "", "", fmt.Errorf("no sync driver available for workspace %q", workspaceID)
 }

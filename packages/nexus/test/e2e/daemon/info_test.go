@@ -34,14 +34,15 @@ func TestNodeInfo(t *testing.T) {
 
 	found := false
 	for _, cap := range result.Capabilities {
-		if cap.Name == "runtime.process" {
+		if cap.Name == "runtime.libkrun" {
 			found = true
 			if !cap.Available {
-				t.Error("node.info: runtime.process capability should be available")
+				t.Error("node.info: runtime.libkrun capability should be available")
 			}
+			break
 		}
 	}
 	if !found {
-		t.Error("node.info: missing runtime.process capability")
+		t.Error("node.info: missing runtime.libkrun capability")
 	}
 }
