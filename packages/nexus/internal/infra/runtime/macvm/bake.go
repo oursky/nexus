@@ -269,14 +269,6 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 	if err := createBakeWorkspaceExt4(wsDisk); err != nil {
 		return "", fmt.Errorf("bake workspace disk: %w", err)
 	}
-	dockerDataPath := filepath.Join(workDir, "docker-data.ext4")
-	skipDocker, dockErr := ensureDockerDataExt4Bake(dockerDataPath)
-	if dockErr != nil {
-		return "", dockErr
-	}
-	if skipDocker {
-		return "", fmt.Errorf("macvm bake: docker-data image required (install e2fsprogs)")
-	}
 
 	sockDir, err := socketTempDir("mb-")
 	if err != nil {
@@ -332,7 +324,10 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 		"NEXUS_BAKE=1",
 		"AGENT_REQUIRE_VSOCK=1",
 		fmt.Sprintf("AGENT_PORT=%d", guestAgentTCPPort),
-		"NEXUS_DOCKER_DEV=/dev/vdc",
+		// Omit dedicated docker-data virtio disk on bake VMs — libkrun hits VmCreate EINVAL on
+		// GitHub macOS runners when rootfs + workspace + docker (+ net/vsock/console) exceeds
+		// virtio/IRQ budgets. Bake-mode Docker prepull uses /workspace only (sysconfig.go).
+		"NEXUS_SKIP_DOCKER_DATA_DISK=1",
 	}
 
 	runnerCfg := macVMRunnerConfig{
@@ -340,7 +335,7 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 		LibkrunfwPath:      filepath.Join(cfg.LibDir, "libkrunfw.dylib"),
 		WorkspaceID:        "rootfs-bake",
 		RootFSPath:         rootfsPath,
-		DockerDataPath:     dockerDataPath,
+		DockerDataPath:     "",
 		WorkspacePath:      "",
 		WorkspaceDiskPath:  wsDisk,
 		ConfigDir:          "",

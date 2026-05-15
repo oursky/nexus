@@ -325,6 +325,10 @@ func tryMountHybridOverlay() error {
 // mountDockerData waits for the docker-data block device and mounts it at
 // /var/lib/docker.
 func mountDockerData() error {
+	if os.Getenv("NEXUS_SKIP_DOCKER_DATA_DISK") == "1" {
+		emitDiagnostic("agent skipping docker-data block mount (host omitted docker virtio disk)")
+		return nil
+	}
 	dockerDev := dockerDevPath()
 	if err := workspaceMkdirAll("/var/lib/docker", 0o755); err != nil {
 		return fmt.Errorf("mkdir /var/lib/docker: %w", err)

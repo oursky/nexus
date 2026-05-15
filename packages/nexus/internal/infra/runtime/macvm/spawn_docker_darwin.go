@@ -11,13 +11,7 @@ import (
 	"strings"
 )
 
-const (
-	dockerDiskSizeBytes = 50 * 1024 * 1024 * 1024 // sparse 50 GiB — matches Linux bake layout (workspace VMs)
-	// Bake VMs only run the guest-agent toolchain installer; a smaller sparse disk avoids
-	// Virtualization.framework VmCreate EINVAL (-22) on some GitHub macOS runners when
-	// attaching a 50 GiB virtio block device alongside the rootfs/workspace disks.
-	dockerDiskSizeBytesBake = 8 * 1024 * 1024 * 1024 // sparse 8 GiB
-)
+const dockerDiskSizeBytes = 50 * 1024 * 1024 * 1024 // sparse 50 GiB — matches Linux bake layout
 
 func resolveMkfsExt4() string {
 	if p, err := exec.LookPath("mkfs.ext4"); err == nil {
@@ -39,11 +33,6 @@ func resolveMkfsExt4() string {
 // the VM can boot without a dedicated docker disk (guest agent skips docker mount).
 func ensureDockerDataExt4(path string) (skip bool, err error) {
 	return ensureDockerDataExt4Sized(path, dockerDiskSizeBytes)
-}
-
-// ensureDockerDataExt4Bake uses a smaller sparse docker-data volume for transient bake VMs.
-func ensureDockerDataExt4Bake(path string) (skip bool, err error) {
-	return ensureDockerDataExt4Sized(path, dockerDiskSizeBytesBake)
 }
 
 func ensureDockerDataExt4Sized(path string, sizeBytes int64) (skip bool, err error) {
