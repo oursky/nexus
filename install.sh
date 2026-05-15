@@ -8,16 +8,19 @@
 #   GITHUB_REPOSITORY   default oursky/nexus
 #   NEXUS_VERSION       release tag (e.g. v0.31.0); when unset, uses GitHub "latest" stable release
 #   INSTALL_DIR         default ~/.local/bin
-#   SMOLVM_VERSION      libkrun vendor tarball tag for Linux x86_64 (default v0.5.19; must match CI build-nexus-libkrun.sh)
+#   SMOLVM_VERSION      when NEXUS_INSTALL_PREFETCH_VM_RUNTIME=1 only: smolvm release tag (default v0.5.19; align with CI build-nexus-libkrun.sh)
+#   NEXUS_INSTALL_PREFETCH_VM_RUNTIME  set to 1 to download smolvm libkrun tarball and passt before first daemon (default: skip; linux/amd64 release binary embeds them)
 #   NEXUS_XFS_SIZE_GB   sparse backing size when creating an XFS loop volume (default 20)
 #   NEXUS_INSTALL_VERBOSE  set to 1 to print full sudo command lines
 #
 # Production daemon VM state defaults to /data/nexus/default (install.sh prepares /data/nexus).
 # Other daemon instances should use their own directory, e.g. nexus daemon start --workdir-root /data/nexus/e2e.
 #
-# Requires: curl, sha256sum or shasum -a 256 for release checksums, gzip when installing a prebaked rootfs or extracting smolvm,
-# (linux/amd64 host or darwin/arm64), python3 or jq to read the releases API when NEXUS_VERSION is unset,
-# and optionally pv for ETA/progress bars during gzip/tar steps.
+# Requires: curl, sha256sum or shasum -a 256 for release checksums, gzip when installing a prebaked rootfs,
+# (linux/amd64 host or darwin/arm64).
+# When NEXUS_VERSION is unset, the latest tag is inferred from GitHub’s /releases/latest redirect (curl only).
+# Optional: nc with OpenBSD-style -U (unix) for a best-effort daemon-socket warning.
+# Optional: pv for ETA/progress bars during gzip/tar steps (or NEXUS_INSTALL_PREFETCH_VM_RUNTIME smolvm tarball).
 # Linux libkrun: when auto-creating an XFS loop volume, mkfs.xfs (package xfsprogs) is required.
 set -euo pipefail
 
@@ -101,9 +104,9 @@ verify_checksum_file() {
   fi
 }
 
-# ── Linux libkrun runtime (smolvm) + VM helper + passt ───────────────────────
-# Linux/amd64 release binaries embed libkrun, nexus-libkrun-vm, passt, etc. and extract on first daemon start.
-# install.sh pre-downloads smolvm libs (amd64 tarball) and passt for fresh Linux hosts; extracted embeds cover the rest.
+# ── Linux libkrun extras (optional) ────────────────────────────────────────────
+# Release nexus-linux-amd64 embeds libkrun libs and passt; `nexus daemon start` extracts them.
+# Set NEXUS_INSTALL_PREFETCH_VM_RUNTIME=1 to pre-download smolvm + passt like older installers.
 
 nexus_data_share_dir() {
   local xdg="${XDG_DATA_HOME:-}"
@@ -135,7 +138,7 @@ install_smolvm_libs_amd64() {
   )
   ex="${td}/extract"
   mkdir -p "${ex}"
-  echo "nexus-install: smolvm — extracting libkrun libraries (${tarball}; install pv for an ETA/progress bar)"
+  echo "nexus-install: smolvm — extracting libkrun libraries (${tarball})"
   pv_through_file "${tball}" "${tarball}" | tar -xzf - -C "${ex}" --strip-components=2 "smolvm-${ver_plain}-linux-x86_64/lib"
   mkdir -p "${libdir}"
   cp -a "${ex}/." "${libdir}/"
@@ -196,7 +199,7 @@ install_prebaked_rootfs_for_platform() {
     verify_checksum_file "${sums}" "${asset}"
   )
 
-  echo "nexus-install: VM rootfs — decompressing ${asset} → ${dest} (gzip; install pv for an ETA/progress bar)"
+  echo "nexus-install: VM rootfs — decompressing ${asset} → ${dest}"
   pv_through_file "${tmp}/${asset}" "${asset}" | gzip -dc > "${dest}.tmp"
 
   mv "${dest}.tmp" "${dest}"
@@ -229,29 +232,26 @@ install_passt_user_local() {
 install_linux_vm_runtime() {
   local tmp="$1" sums="$2" base="$3"
   [ "${GOOS:-}" = linux ] || return 0
+  [ "${GOARCH}" = "amd64" ] || return 0
 
   local share libdir
   share="$(nexus_data_share_dir)"
   libdir="${share}/lib"
   mkdir -p "${libdir}"
 
+  if [[ "${NEXUS_INSTALL_PREFETCH_VM_RUNTIME:-}" != "1" ]]; then
+    return 0
+  fi
+
   if [ ! -e "${libdir}/libkrun.so.1" ]; then
-    case "${GOARCH}" in
-      amd64)
-        install_smolvm_libs_amd64 "${libdir}"
-        ;;
-      *)
-        die "automatic libkrun provisioning is only implemented for Linux amd64 (host is ${GOARCH})"
-        ;;
-    esac
+    install_smolvm_libs_amd64 "${libdir}"
   else
     echo "nexus-install: libkrun already present at ${libdir}/libkrun.so.1"
   fi
 
-  # nexus-libkrun-vm is shipped inside the nexus binary on linux/amd64; skip separate download.
   local passt_dest="${HOME}/.local/bin/passt"
   if ! install_passt_user_local "${passt_dest}"; then
-    die "passt is required at ${passt_dest} for libkrun networking — install passt or use a release nexus binary with embedded passt"
+    die "passt is required at ${passt_dest} — install passt from your distro or use a release nexus binary with embedded passt"
   fi
 }
 
@@ -389,19 +389,10 @@ ensure_linux_daemon_data_dir() {
 unix_socket_accepts_connections() {
   local sock_path="$1"
   [ -S "${sock_path}" ] || return 1
-  command -v python3 >/dev/null 2>&1 || return 1
-  python3 -c "
-import socket, sys
-path = sys.argv[1]
-try:
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(0.4)
-    s.connect(path)
-    s.close()
-except OSError:
-    sys.exit(1)
-sys.exit(0)
-" "${sock_path}" 2>/dev/null
+  command -v nc >/dev/null 2>&1 || return 1
+  # OpenBSD-style nc (macOS, Debian netcat-openbsd): unix stream connect check.
+  nc -h 2>&1 | grep -q -- '-U ' || return 1
+  nc -z -w 1 -U "${sock_path}" 2>/dev/null
 }
 
 summarize_host_setup() {
@@ -455,16 +446,22 @@ resolve_release_tag() {
     return
   fi
   need_cmd curl
-  local json api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest"
-  json="$(curl -fsSL -H 'Accept: application/vnd.github+json' "$api")"
-  if command -v python3 >/dev/null 2>&1; then
-    NEXUS_VERSION="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
-  elif command -v jq >/dev/null 2>&1; then
-    NEXUS_VERSION="$(printf '%s' "$json" | jq -r .tag_name)"
-  else
-    die "NEXUS_VERSION is unset and neither python3 nor jq is available to read ${api}"
-  fi
-  [ -n "${NEXUS_VERSION}" ] && [ "${NEXUS_VERSION}" != "null" ] || die "could not resolve latest release tag"
+  # HTML redirect → https://github.com/OWNER/REPO/releases/tag/<TAG> (no JSON / jq / python).
+  local effective api="https://github.com/${GITHUB_REPOSITORY}/releases/latest"
+  effective="$(curl -fsSL --compressed -o /dev/null -w '%{url_effective}' -L "$api")" || \
+    die "could not resolve latest release (curl ${api})"
+  case "$effective" in
+    */releases/tag/*)
+      NEXUS_VERSION="${effective##*/releases/tag/}"
+      NEXUS_VERSION="${NEXUS_VERSION%%\?*}"
+      NEXUS_VERSION="${NEXUS_VERSION%%#*}"
+      NEXUS_VERSION="${NEXUS_VERSION%/}"
+      ;;
+    *)
+      die "could not parse release tag from ${effective} (set NEXUS_VERSION explicitly)"
+      ;;
+  esac
+  [ -n "${NEXUS_VERSION}" ] || die "could not resolve latest release tag"
   echo "${NEXUS_VERSION}"
 }
 
