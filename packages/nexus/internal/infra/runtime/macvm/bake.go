@@ -138,10 +138,21 @@ func BakeRootfsIfNeeded(ctx context.Context, cfg BakeMacConfig, stampDir string)
 }
 
 func cleanupStaleMacBakeArtifacts() {
-	matches, _ := filepath.Glob(filepath.Join(os.TempDir(), "nexus-macvm-bake-*"))
-	for _, dir := range matches {
-		if err := os.RemoveAll(dir); err != nil {
-			log.Printf("[macvm] bake cleanup: remove stale bake dir %s: %v", dir, err)
+	bases := []string{"/tmp", os.TempDir()}
+	patterns := []string{"nxmb-*", "nexus-macvm-bake-*"}
+	seen := make(map[string]struct{})
+	for _, base := range bases {
+		for _, pat := range patterns {
+			matches, _ := filepath.Glob(filepath.Join(base, pat))
+			for _, dir := range matches {
+				if _, dup := seen[dir]; dup {
+					continue
+				}
+				seen[dir] = struct{}{}
+				if err := os.RemoveAll(dir); err != nil {
+					log.Printf("[macvm] bake cleanup: remove stale bake dir %s: %v", dir, err)
+				}
+			}
 		}
 	}
 }
@@ -236,7 +247,7 @@ func bakeRunnerDiag(runnerLogPath string) string {
 func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 	raiseSpawnFDLimits()
 
-	workDir, err := os.MkdirTemp("", "nexus-macvm-bake-*")
+	workDir, err := macvmBakeWorkDir()
 	if err != nil {
 		return "", err
 	}

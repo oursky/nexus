@@ -33,6 +33,14 @@ func socketTempDir(pattern string) (string, error) {
 	return dir, nil
 }
 
+func macvmBakeWorkDir() (string, error) {
+	base := "/tmp"
+	if fi, err := os.Stat(base); err != nil || !fi.IsDir() {
+		base = os.TempDir()
+	}
+	return os.MkdirTemp(base, "nxmb-")
+}
+
 func errSocketPathTooLong(p string) error {
 	return &os.PathError{Op: "socketTempDir", Path: p, Err: unix.EINVAL}
 }
