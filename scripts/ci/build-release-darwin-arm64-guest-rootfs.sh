@@ -89,6 +89,10 @@ popd >/dev/null
 
 echo "==> Run nexus vm bake (may take ~30–60m)"
 export NEXUS_LIBKRUN_BAKE_TIMEOUT="${NEXUS_LIBKRUN_BAKE_TIMEOUT:-55m}"
+# Staged libkrunfw + CLI-embedded aarch64 Image can disagree on CI; VmCreate then
+# fails with EINVAL (-22). Bake does not require krun_set_kernel — use libkrun's
+# bundled kernel (see NEXUS_MACVM_BAKE_EMBEDDED_KERNEL_ONLY in bake.go).
+export NEXUS_MACVM_BAKE_EMBEDDED_KERNEL_ONLY=1
 "$REPO_ROOT/dist/nexus-darwin-arm64-bake" vm bake --timeout 120m
 
 mkdir -p "$DIST"
