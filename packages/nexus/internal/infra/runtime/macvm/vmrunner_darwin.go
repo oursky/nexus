@@ -29,6 +29,9 @@ type macVMRunnerConfig struct {
 	// WorkspaceVirtioFS is the host directory for tag "nexus-workspace" when
 	// WorkspaceDiskPath is empty (normal macvm path).
 	WorkspacePath string `json:"workspace_path"`
+	// OmitWorkspaceVirtioFS skips krun_add_virtiofs for nexus-workspace (rootfs
+	// bake only). Reduces virtio IRQ surface; macOS CI has hit VmCreate EINVAL.
+	OmitWorkspaceVirtioFS bool `json:"omit_workspace_virtiofs,omitempty"`
 	// WorkspaceDiskPath, when non-empty, adds /dev/vdb as an ext4 workspace
 	// upper disk (same layout as Linux libkrun block bake) and skips virtiofs
 	// "nexus-workspace".
@@ -146,6 +149,8 @@ func RunVMSubprocess(configPath string) {
 		if strings.TrimSpace(cfg.WorkspacePath) != "" {
 			fatalf("workspace_path conflicts with workspace_disk_path (set one)")
 		}
+	} else if cfg.OmitWorkspaceVirtioFS {
+		// Guest uses NEXUS_WORKSPACE_MODE=none — /workspace lives on rootfs.
 	} else {
 		wp := strings.TrimSpace(cfg.WorkspacePath)
 		if wp == "" {

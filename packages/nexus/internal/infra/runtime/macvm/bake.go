@@ -241,11 +241,6 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 		}
 	}
 
-	workspaceHostDir := filepath.Join(workDir, "workspace-host")
-	if err := os.MkdirAll(workspaceHostDir, 0o755); err != nil {
-		return "", fmt.Errorf("bake workspace host dir: %w", err)
-	}
-
 	sockDir, err := socketTempDir("mb-")
 	if err != nil {
 		return "", fmt.Errorf("macvm bake sock dir: %w", err)
@@ -302,32 +297,32 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 		"NEXUS_BAKE=1",
 		"AGENT_REQUIRE_VSOCK=1",
 		fmt.Sprintf("AGENT_PORT=%d", guestAgentTCPPort),
-		// GH Actions macOS runners return VmCreate EINVAL when attaching a dedicated workspace ext4
-		// virtio-blk alongside rootfs (even without docker-data). Bake uses virtiofs "nexus-workspace"
-		// instead; Docker prepull writes under /workspace only (sysconfig.go).
-		"NEXUS_WORKSPACE_MODE=virtiofs",
+		// No host workspace virtiofs: /workspace is on the root disk (see
+		// OmitWorkspaceVirtioFS). Drops one virtio device — macOS CI VmCreate EINVAL.
+		"NEXUS_WORKSPACE_MODE=none",
 		"NEXUS_VIRTIOFS_SKIP_DOCKER=1",
 	}
 
 	runnerCfg := macVMRunnerConfig{
-		LibkrunPath:        filepath.Join(cfg.LibDir, "libkrun.dylib"),
-		LibkrunfwPath:      filepath.Join(cfg.LibDir, "libkrunfw.dylib"),
-		WorkspaceID:        "rootfs-bake",
-		RootFSPath:         rootfsPath,
-		DockerDataPath:     "",
-		WorkspacePath:      workspaceHostDir,
-		WorkspaceDiskPath:  "",
-		ConfigDir:          "",
-		SockDir:            sockDir,
-		GVProxySockPath:    sockGV,
-		MemMiB:             memMiBForEnv(),
-		VCPUs:              vcpusForEnv(),
-		CustomKernelPath:   customKernelPath,
-		CustomKernelFormat: customKernelFormat,
-		AgentPath:          "/usr/local/bin/nexus-guest-agent",
-		GuestEnv:           guestEnv,
-		LogLevel:           1,
-		OmitSpotlightVSock: true,
+		LibkrunPath:           filepath.Join(cfg.LibDir, "libkrun.dylib"),
+		LibkrunfwPath:         filepath.Join(cfg.LibDir, "libkrunfw.dylib"),
+		WorkspaceID:           "rootfs-bake",
+		RootFSPath:            rootfsPath,
+		DockerDataPath:        "",
+		WorkspacePath:         "",
+		OmitWorkspaceVirtioFS: true,
+		WorkspaceDiskPath:     "",
+		ConfigDir:             "",
+		SockDir:               sockDir,
+		GVProxySockPath:       sockGV,
+		MemMiB:                memMiBForEnv(),
+		VCPUs:                 vcpusForEnv(),
+		CustomKernelPath:      customKernelPath,
+		CustomKernelFormat:    customKernelFormat,
+		AgentPath:             "/usr/local/bin/nexus-guest-agent",
+		GuestEnv:              guestEnv,
+		LogLevel:              1,
+		OmitSpotlightVSock:    true,
 	}
 
 	runnerCfgPath := filepath.Join(sockDir, "vmrunner-bake.json")

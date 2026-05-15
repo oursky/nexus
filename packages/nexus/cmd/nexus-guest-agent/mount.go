@@ -50,9 +50,16 @@ var (
 	// during agent lifecycle.
 	blockWorkspaceOnce    sync.Once
 	blockWorkspaceOnceErr error
+
+	// rootfsLocalWorkspaceOnce runs setupRootfsLocalWorkspace once
+	// (NEXUS_WORKSPACE_MODE=none, e.g. macOS rootfs bake without host virtiofs).
+	rootfsLocalWorkspaceOnce    sync.Once
+	rootfsLocalWorkspaceOnceErr error
 )
 
 // isVirtiofsWorkspaceMode reports whether the workspace uses virtiofs.
+// Other modes: "none" (dir on rootfs, no host share — macVM rootfs bake), or
+// block hybrid layout (unset / non-virtiofs).
 // The host sets NEXUS_WORKSPACE_MODE=virtiofs via krun_set_exec.
 func isVirtiofsWorkspaceMode() bool {
 	return os.Getenv("NEXUS_WORKSPACE_MODE") == "virtiofs"
@@ -130,18 +137,67 @@ func setupVirtiofsWorkspace() error {
 	return nil
 }
 
-func setupWorkspaceMount() error {
-	if isVirtiofsWorkspaceMode() {
-		return setupVirtiofsWorkspaceOnce()
+// setupRootfsLocalWorkspace prepares /workspace on the guest root disk when
+// the host omits the "nexus-workspace" virtiofs tag (macOS rootfs bake IRQ budget).
+func setupRootfsLocalWorkspace() error {
+	for _, dir := range []string{workspaceMountPoint, "/var/lib/docker"} {
+		if err := workspaceMkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dir, err)
+		}
 	}
-	return setupBlockWorkspaceMountOnce()
+	emitDiagnostic("agent workspace: rootfs-local %s (no host virtiofs)", workspaceMountPoint)
+	if os.Getenv("NEXUS_VIRTIOFS_SKIP_DOCKER") == "1" {
+		emitDiagnostic("agent skipping docker-data mount (NEXUS_VIRTIOFS_SKIP_DOCKER=1)")
+		return nil
+	}
+	dockerDev := dockerDevPath()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := workspaceStat(dockerDev); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("docker-data device %s not available after 30s", dockerDev)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err := workspaceMountFunc(dockerDev, "/var/lib/docker", "ext4", 0, ""); err != nil {
+		if !errors.Is(err, unix.EBUSY) {
+			return fmt.Errorf("mount docker-data %s → /var/lib/docker: %w", dockerDev, err)
+		}
+	} else {
+		emitDiagnostic("agent docker-data mounted at /var/lib/docker")
+	}
+	return nil
+}
+
+func setupRootfsLocalWorkspaceOnce() error {
+	rootfsLocalWorkspaceOnce.Do(func() {
+		rootfsLocalWorkspaceOnceErr = setupRootfsLocalWorkspace()
+	})
+	return rootfsLocalWorkspaceOnceErr
+}
+
+func setupWorkspaceMount() error {
+	switch strings.TrimSpace(os.Getenv("NEXUS_WORKSPACE_MODE")) {
+	case "none":
+		return setupRootfsLocalWorkspaceOnce()
+	case "virtiofs":
+		return setupVirtiofsWorkspaceOnce()
+	default:
+		return setupBlockWorkspaceMountOnce()
+	}
 }
 
 func setupWorkspaceMountRequired() error {
-	if isVirtiofsWorkspaceMode() {
+	switch strings.TrimSpace(os.Getenv("NEXUS_WORKSPACE_MODE")) {
+	case "none":
+		return setupRootfsLocalWorkspaceOnce()
+	case "virtiofs":
 		return setupVirtiofsWorkspaceOnce()
+	default:
+		return setupBlockWorkspaceMountOnce()
 	}
-	return setupBlockWorkspaceMountOnce()
 }
 
 // setupVirtiofsWorkspaceOnce calls setupVirtiofsWorkspace exactly once.
@@ -177,6 +233,11 @@ func resetBlockWorkspaceMountOnce() {
 func resetVirtiofsWorkspaceMountOnce() {
 	virtiofsWorkspaceOnce = sync.Once{}
 	virtiofsWorkspaceOnceErr = nil
+}
+
+func resetRootfsLocalWorkspaceMountOnce() {
+	rootfsLocalWorkspaceOnce = sync.Once{}
+	rootfsLocalWorkspaceOnceErr = nil
 }
 
 // setupBlockWorkspaceMount assembles the hybrid overlayfs workspace.
