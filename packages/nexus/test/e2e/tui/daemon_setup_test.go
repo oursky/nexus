@@ -105,7 +105,7 @@ func randomToken() (string, error) {
 
 // linuxLibkrunWorkdirBase is where CI mounts XFS with reflink=1 (scripts/ci/setup-xfs-reflink.sh).
 // libkrun requires a reflink-capable filesystem for --workdir-root; /tmp on GitHub runners is ext4.
-const linuxLibkrunWorkdirBase = "/data/nexus/libkrun-vms-tui-e2e"
+const linuxLibkrunWorkdirBase = "/data/nexus/e2e-tui"
 
 // mkdirTUIWorkDir creates the daemon workdir root. Under Linux libkrun (NEXUS_VM_KERNEL set)
 // it must live on the reflink-capable volume, same as test/e2e/harness suite.go.

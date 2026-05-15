@@ -49,7 +49,7 @@ Dev and prod daemons are fully separated by binary name, port, state directory, 
 | Port | `7777` | `7778` | `7780+` (auto or explicit) |
 | State dir | `~/.local/state/nexus/` | `~/.local/state-dev/nexus/` | `~/.local/state-nexus-<name>/nexus/` |
 | Data dir (XDG_DATA_HOME) | `~/.local/share/nexus/` | `~/.local/share-dev/nexus/` | `~/.local/share/nexus-<name>/` |
-| VM workdir (libkrun images) | `/data/nexus/libkrun-vms` | `/data/nexus/nexus-dev` | `~/.local/share/nexus-<name>/libkrun-vms` |
+| VM workdir-root (libkrun: WS disks, `bases/`, `.nexus-vm/`) | `/data/nexus/default` | `/data/nexus/nexus-dev` (`scripts/local/daemon-restart.sh`) | `~/.local/share/nexus-<name>/libkrun-vms` |
 | Unix socket | `~/.local/state/nexus/nexusd.sock` | `~/.local/state-dev/nexus/nexusd.sock` | `~/.local/state-nexus-<name>/nexus/nexusd.sock` |
 | Local CLI | `~/.local/bin/nexus` | `~/.local/bin/nexus-dev` | same as dev binary |
 | Mac app profile | connects to prod daemon | connects to dev daemon (separate `nexus-dev daemon connect`) | separate profile per port |
@@ -532,8 +532,8 @@ libkrun uses a **separate** agent binary (`nexus-guest-agent`, not `nexus-firecr
 |---|---|---|
 | Agent binary (extracted) | `~/.local/bin/nexus-firecracker-agent` | `~/.local/bin/nexus-guest-agent` |
 | Hash file | `$XDG_STATE_HOME/nexus/rootfs-agent.sha256` | `$XDG_STATE_HOME/nexus/rootfs-agent.sha256` (same key) |
-| Base rootfs injected into | `~/.local/share/nexus/vm/rootfs.ext4` | `/data/nexus/vm/rootfs.ext4` |
-| Per-workspace copy | `/data/nexus/firecracker-vms/<ws-id>/rootfs.ext4` | `/data/nexus/libkrun-vms/<ws-id>/rootfs.ext4` |
+| Base rootfs injected into | `~/.local/share/nexus/vm/rootfs.ext4` | `<workdir-root>/.nexus-vm/rootfs.ext4` (promoted copy from XDG vm on daemon start) |
+| Per-workspace copy | `/data/nexus/firecracker-vms/<ws-id>/rootfs.ext4` | `<workdir-root>/<ws-id>/rootfs.ext4` |
 | Bake stamp | n/a | `$XDG_STATE_HOME/nexus/rootfs-baked-v7` |
 
 **Key difference**: the bake stamp (`rootfs-baked-v7`) controls tool installation and is checked separately from the agent hash. A new agent fix only requires deleting the agent hash file — the bake stamp does not need to be deleted unless tools changed.
@@ -728,4 +728,4 @@ rm -f ~/.local/state/nexus/rootfs-agent.sha256
 strings ~/.local/share/nexus/vm/rootfs.ext4 | grep -c 'YOUR_FIX_STRING'
 # Must return > 0
 ```
-Note: per-workspace rootfs copies (`/data/nexus/libkrun-vms/<ws-id>/rootfs.ext4`) are made from the base at spawn time — existing running workspaces must be stopped and restarted to pick up the injected fix.
+Note: per-workspace rootfs copies under `<workdir-root>/<ws-id>/rootfs.ext4` are made from the base at spawn time — existing running workspaces must be stopped and restarted to pick up the injected fix.

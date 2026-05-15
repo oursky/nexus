@@ -52,11 +52,13 @@ See [CLI reference](docs/reference/cli.md) for the full command tree.
 
 ## What it does
 
-| Feature | How |
-| ------- | --- |
-| **Isolated Linux workspaces** | Lightweight libkrun microVMs — Linux kernel, Docker, isolated network |
-| **TUI / CLI** | Full lifecycle: daemon, workspaces, port forwards (`spotlight`), exec |
-| **Git + Docker inside the VM** | Develop and run containers in each microVM |
+
+| Feature                        | How                                                                   |
+| ------------------------------ | --------------------------------------------------------------------- |
+| **Isolated Linux workspaces**  | Lightweight libkrun microVMs — Linux kernel, Docker, isolated network |
+| **TUI / CLI**                  | Full lifecycle: daemon, workspaces, port forwards (`spotlight`), exec |
+| **Git + Docker inside the VM** | Develop and run containers in each microVM                            |
+
 
 ---
 

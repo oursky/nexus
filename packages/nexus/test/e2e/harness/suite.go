@@ -94,7 +94,7 @@ func startSharedDaemon() *Harness {
 
 	workdirBase := ""
 	if _, statErr := os.Stat("/data/nexus"); statErr == nil {
-		workdirBase = "/data/nexus/libkrun-vms-e2e"
+		workdirBase = "/data/nexus/e2e"
 		_ = os.MkdirAll(workdirBase, 0o755)
 	}
 	workdir, err := os.MkdirTemp(workdirBase, "nexus-e2e-suite-workdir-*")

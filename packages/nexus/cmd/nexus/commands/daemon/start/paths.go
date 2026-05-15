@@ -77,6 +77,14 @@ func preferredLibkrunStorageRoot() (string, bool) {
 	return root, true
 }
 
+// vmPromoteDirForLibkrun returns where kernel/rootfs templates are copied so libkrun can
+// reflink-clone them into per-workspace images. Always under the daemon instance's
+// --workdir-root (e.g. /data/nexus/default for prod, /data/nexus/e2e for tests) so each
+// instance is self-contained and never crosses mounts vs sibling dirs under /data/nexus.
+func vmPromoteDirForLibkrun(resolvedWorkDirRoot string) string {
+	return filepath.Join(resolvedWorkDirRoot, ".nexus-vm")
+}
+
 func promoteVMAssetToDir(srcPath, destDir string) (string, error) {
 	src := strings.TrimSpace(srcPath)
 	if src == "" {

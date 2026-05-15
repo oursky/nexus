@@ -48,7 +48,10 @@ func StopLocalDaemon(stdout, stderr io.Writer, socketPath string, port int) int 
 
 	pids := make(map[int]struct{})
 	for _, pid := range append(
-		pidsFromLsof("lsof", "-t", "--", socketPath),
+		append(
+			pidsFromLsof("lsof", "-t", "--", socketPath),
+			pidsUsingUnixSocket(socketPath)...,
+		),
 		pidsFromLsof("lsof", "-ti", fmt.Sprintf("tcp:%d", port))...,
 	) {
 		pids[pid] = struct{}{}

@@ -227,29 +227,36 @@ func resolveVMPaths(isLibkrun bool, rootfsPath, kernelPath, workDirRoot string) 
 		}, nil
 	}
 
-	basesDir = filepath.Join(storageRoot, "bases")
+	resolvedWorkDir := strings.TrimSpace(workDirRoot)
+	if resolvedWorkDir == "" {
+		resolvedWorkDir = filepath.Join(storageRoot, DefaultLibkrunWorkDirSegment)
+	}
+	if err := os.MkdirAll(resolvedWorkDir, 0o755); err != nil {
+		return resolvedPaths{}, fmt.Errorf("daemon start: mkdir libkrun workdir root %s: %w", resolvedWorkDir, err)
+	}
+
+	basesDir = filepath.Join(resolvedWorkDir, "bases")
+	vmPromoteDir := vmPromoteDirForLibkrun(resolvedWorkDir)
 
 	if rootfsPath != "" {
-		promotedRootfs, err := promoteVMAssetToDir(rootfsPath, filepath.Join(storageRoot, "vm"))
+		promotedRootfs, err := promoteVMAssetToDir(rootfsPath, vmPromoteDir)
 		if err != nil {
-			return resolvedPaths{}, fmt.Errorf("daemon start: promote rootfs to %s: %w", storageRoot, err)
+			return resolvedPaths{}, fmt.Errorf("daemon start: promote rootfs to %s: %w", vmPromoteDir, err)
 		}
 		rootfsPath = promotedRootfs
 	}
 	if kernelPath != "" {
-		promotedKernel, err := promoteVMAssetToDir(kernelPath, filepath.Join(storageRoot, "vm"))
+		promotedKernel, err := promoteVMAssetToDir(kernelPath, vmPromoteDir)
 		if err == nil {
 			kernelPath = promotedKernel
 		} else {
 			log.Printf("daemon: kernel promote skipped (non-fatal): %v", err)
 		}
 	}
-	if strings.TrimSpace(workDirRoot) == "" {
-		workDirRoot = filepath.Join(storageRoot, DefaultLibkrunWorkDirSegment)
-	}
+	workDirRoot = resolvedWorkDir
 	log.Printf(
-		"daemon: libkrun storage root=%s rootfs=%s bases=%s workdir=%s",
-		storageRoot, rootfsPath, basesDir, workDirRoot,
+		"daemon: libkrun storage root=%s vm_templates=%s rootfs=%s bases=%s workdir=%s",
+		storageRoot, vmPromoteDir, rootfsPath, basesDir, workDirRoot,
 	)
 
 	return resolvedPaths{

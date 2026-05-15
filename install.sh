@@ -12,8 +12,12 @@
 #   NEXUS_XFS_SIZE_GB   sparse backing size when creating an XFS loop volume (default 20)
 #   NEXUS_INSTALL_VERBOSE  set to 1 to print full sudo command lines
 #
-# Requires: curl, sha256sum or shasum -a 256 for release checksums, gzip when installing a prebaked rootfs
-# (linux/amd64 host or darwin/arm64 guest), and python3 or jq to read the releases API when NEXUS_VERSION is unset.
+# Production daemon VM state defaults to /data/nexus/default (install.sh prepares /data/nexus).
+# Other daemon instances should use their own directory, e.g. nexus daemon start --workdir-root /data/nexus/e2e.
+#
+# Requires: curl, sha256sum or shasum -a 256 for release checksums, gzip when installing a prebaked rootfs or extracting smolvm,
+# (linux/amd64 host or darwin/arm64 guest), python3 or jq to read the releases API when NEXUS_VERSION is unset,
+# and optionally pv for ETA/progress bars during gzip/tar steps.
 # Linux libkrun: when auto-creating an XFS loop volume, mkfs.xfs (package xfsprogs) is required.
 set -euo pipefail
 
@@ -46,6 +50,38 @@ sudo_run() {
     echo "nexus-install: \$ sudo${parts}" >&2
   fi
   sudo "$@"
+}
+
+# Fetch URL → file. Uses curl's progress bar on stderr when it is a TTY; otherwise silent.
+# Optional extra curl flags after DEST (e.g. --retry 3).
+curl_download_progress() {
+  local url="$1" dest="$2"
+  shift 2
+  if [ -t 2 ]; then
+    curl -fSL --progress-bar -L "$@" "$url" -o "$dest"
+  else
+    curl -fsSL -L "$@" "$url" -o "$dest"
+  fi
+}
+
+# Stream FILE to stdout: cat, or pv with byte-accurate progress when pv is installed (-s = compressed/read size).
+pv_through_file() {
+  local file="$1"
+  local label="${2:-}"
+  local sz=""
+  [ -f "${file}" ] || die "pv_through_file: not a regular file: ${file}"
+  sz="$(wc -c < "${file}" | awk '{print $1}')"
+  if command -v pv >/dev/null 2>&1 && [ -n "${sz}" ] && [ "${sz}" -gt 0 ]; then
+    if [ -n "${label}" ]; then
+      pv -s "${sz}" -N "${label}" "${file}"
+    else
+      pv -s "${sz}" "${file}"
+    fi
+  elif command -v pv >/dev/null 2>&1; then
+    pv "${file}"
+  else
+    cat "${file}"
+  fi
 }
 
 verify_checksum_file() {
@@ -88,19 +124,23 @@ install_smolvm_libs_amd64() {
   base_smol="https://github.com/smol-machines/smolvm/releases/download/${SMOLVM_VERSION}"
   sums_smol="${td}/checksums.sha256"
   tball="${td}/${tarball}"
-  curl -fsSL -L "${base_smol}/checksums.sha256" -o "${sums_smol}"
-  curl -fsSL -L "${base_smol}/${tarball}" -o "${tball}"
+  echo "nexus-install: smolvm — downloading checksums (${SMOLVM_VERSION}) …"
+  curl_download_progress "${base_smol}/checksums.sha256" "${sums_smol}"
+  echo "nexus-install: smolvm — downloading ${tarball} …"
+  curl_download_progress "${base_smol}/${tarball}" "${tball}"
+  echo "nexus-install: smolvm — verifying tarball checksum …"
   (
     cd "${td}"
     verify_checksum_file "checksums.sha256" "${tarball}"
   )
   ex="${td}/extract"
   mkdir -p "${ex}"
-  tar -xzf "${tball}" -C "${ex}" --strip-components=2 "smolvm-${ver_plain}-linux-x86_64/lib"
+  echo "nexus-install: smolvm — extracting libkrun libraries (${tarball}; install pv for an ETA/progress bar)"
+  pv_through_file "${tball}" "${tarball}" | tar -xzf - -C "${ex}" --strip-components=2 "smolvm-${ver_plain}-linux-x86_64/lib"
   mkdir -p "${libdir}"
   cp -a "${ex}/." "${libdir}/"
   cleanup
-  echo "nexus-install: installed libkrun + libkrunfw from smolvm ${SMOLVM_VERSION} → ${libdir}"
+  echo "nexus-install: smolvm — installed libkrun + libkrunfw (${SMOLVM_VERSION}) → ${libdir}"
 }
 
 install_libkrun_libs_from_host_arm64() {
@@ -186,15 +226,20 @@ install_prebaked_rootfs_for_platform() {
     return 0
   fi
 
-  curl -fsSL -L "${base}/${asset}" -o "${tmp}/${asset}"
+  echo "nexus-install: VM rootfs — downloading ${asset} (${NEXUS_VERSION:-release}) …"
+  curl_download_progress "${base}/${asset}" "${tmp}/${asset}"
+
+  echo "nexus-install: VM rootfs — verifying checksum for ${asset}"
   (
     cd "${tmp}"
     verify_checksum_file "${sums}" "${asset}"
   )
-  echo "nexus-install: extracting ${asset} → ${dest} (large file; may take a minute)"
-  gzip -dc "${tmp}/${asset}" > "${dest}.tmp"
+
+  echo "nexus-install: VM rootfs — decompressing ${asset} → ${dest} (gzip; install pv for an ETA/progress bar)"
+  pv_through_file "${tmp}/${asset}" "${asset}" | gzip -dc > "${dest}.tmp"
+
   mv "${dest}.tmp" "${dest}"
-  echo "nexus-install: installed prebaked rootfs at ${dest}"
+  echo "nexus-install: VM rootfs — installed prebaked disk at ${dest}"
 }
 
 install_nexus_libkrun_vm() {
@@ -202,23 +247,26 @@ install_nexus_libkrun_vm() {
   local asset="nexus-libkrun-vm-linux-${GOARCH}"
   mkdir -p "${bindir}"
   if grep -qF " ${asset}" "${sums}" 2>/dev/null; then
-    curl -fsSL -L "${base}/${asset}" -o "${tmp}/${asset}"
+    echo "nexus-install: VM helper — downloading ${asset} …"
+    curl_download_progress "${base}/${asset}" "${tmp}/${asset}"
+    echo "nexus-install: VM helper — verifying checksum for ${asset}"
     (
       cd "${tmp}"
       verify_checksum_file "${sums}" "${asset}"
     )
     install -m 0755 "${tmp}/${asset}" "${bindir}/nexus-libkrun-vm"
-    echo "nexus-install: installed ${bindir}/nexus-libkrun-vm (${asset})"
+    echo "nexus-install: VM helper — installed ${bindir}/nexus-libkrun-vm (${asset})"
     return
   fi
   if [ "${GOARCH}" != "amd64" ]; then
     die "this Nexus release has no checksum entry for ${asset}; use Linux amd64 or build nexus-libkrun-vm from source"
   fi
   local raw="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${NEXUS_VERSION}/packages/nexus/cmd/nexus/nexus-libkrun-vm"
-  echo "nexus-install: release checksums omit ${asset}; fetching VM helper from ${raw}"
-  curl -fsSL -L "${raw}" -o "${tmp}/nexus-libkrun-vm"
+  echo "nexus-install: VM helper — fetching script from GitHub (release had no ${asset} checksums)"
+  curl_download_progress "${raw}" "${tmp}/nexus-libkrun-vm"
   [ -s "${tmp}/nexus-libkrun-vm" ] || die "failed to download nexus-libkrun-vm (empty file)"
   install -m 0755 "${tmp}/nexus-libkrun-vm" "${bindir}/nexus-libkrun-vm"
+  echo "nexus-install: VM helper — installed ${bindir}/nexus-libkrun-vm (from GitHub)"
 }
 
 install_passt_user_local() {
@@ -231,14 +279,14 @@ install_passt_user_local() {
     local sys
     sys="$(command -v passt)"
     install -m 0755 "${sys}" "${dest}"
-    echo "nexus-install: installed passt at ${dest} (copied from ${sys})"
+    echo "nexus-install: passt — installed at ${dest} (copied from ${sys})"
     return 0
   fi
   if [ "${GOARCH}" = "amd64" ]; then
-    echo "nexus-install: downloading static passt for amd64 ..."
-    curl -fsSL --retry 3 -o "${dest}" "https://passt.top/builds/latest/x86_64/passt"
+    echo "nexus-install: passt — downloading static binary for amd64 (passt.top) …"
+    curl_download_progress "https://passt.top/builds/latest/x86_64/passt" "${dest}" --retry 3
     chmod 0755 "${dest}"
-    echo "nexus-install: installed ${dest} (passt.top static build)"
+    echo "nexus-install: passt — installed static build at ${dest}"
     return 0
   fi
   return 1

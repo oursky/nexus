@@ -55,8 +55,10 @@ cleanup() {
   sudo rm -rf /tmp/nexus-* 2>/dev/null || rm -rf /tmp/nexus-* 2>/dev/null || true
   shopt -u nullglob
 
-  for d in /data/nexus/libkrun-vms /data/nexus/libkrun-vms-e2e \
+  for d in /data/nexus/e2e /data/nexus/e2e-tui \
+    /data/nexus/libkrun-vms /data/nexus/libkrun-vms-e2e \
     /data/nexus/libkrun-vms-provision /data/nexus/libkrun-vms-prewarm \
+    /data/nexus/libkrun-vms-tui-e2e \
     "${HOME}/.local/share/nexus/libkrun-vms"; do
     if [[ -d "$d" ]] && [[ -w "$d" ]]; then
       rm -rf "${d:?}"/* 2>/dev/null || true

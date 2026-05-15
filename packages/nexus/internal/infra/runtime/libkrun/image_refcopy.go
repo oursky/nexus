@@ -31,15 +31,45 @@ func copyFile(src, dst string) error {
 	return nil
 }
 
+// reflinkCloneReportedFailure returns true when cp cannot use reflink for this src/dst pair
+// (e.g. GNU cp stderr "failed to clone" / "Invalid cross-device link").
+func reflinkCloneReportedFailure(outStr string, err error) bool {
+	lower := strings.ToLower(outStr)
+	if strings.Contains(lower, "cross-device") {
+		return true
+	}
+	if strings.Contains(outStr, "failed to clone") {
+		return true
+	}
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "cross-device") {
+		return true
+	}
+	return false
+}
+
+func sparseCopyFile(ctx context.Context, src, dst string) error {
+	out, err := exec.CommandContext(ctx, "cp", "--sparse=always", src, dst).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("sparse cp %s → %s: %w: %s", src, dst, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // copyFileWithContext copies src→dst using reflink clone when available (O(1) CoW on XFS/btrfs),
-// falling back to sparse copy on filesystems that don't support reflinks.
-// Retries transient failures up to 3 times with exponential backoff.
+// falling back to sparse copy on filesystems that don't support reflinks or when src and dst
+// are on different devices (EXDEV / "Invalid cross-device link").
+// Retries transient failures up to 3 times with exponential backoff before sparse fallback.
 func copyFileWithContext(ctx context.Context, src, dst string) error {
 	start := time.Now()
 	log.Printf("[libkrun] copyFile start: %s → %s", src, dst)
 	defer func() {
 		log.Printf("[libkrun] copyFile done: %s → %s (%s)", src, dst, time.Since(start).Round(time.Millisecond))
 	}()
+
+	trySparse := func(reason string) error {
+		log.Printf("[libkrun] copyFile sparse fallback (%s): %s → %s", reason, src, dst)
+		return sparseCopyFile(ctx, src, dst)
+	}
 
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -53,24 +83,31 @@ func copyFileWithContext(ctx context.Context, src, dst string) error {
 			}
 		}
 
-		// Require reflink (O(1) CoW on XFS/btrfs). cp --reflink=always returns 0
-		// even when reflink fails (falls back to regular copy on coreutils ≥9), so
-		// we inspect stderr to detect the failure.
+		// Prefer reflink (O(1) CoW). cp --reflink=always may return 0 but print "failed to clone"
+		// on coreutils ≥9 when reflink is unavailable, so inspect stderr too.
 		cmd := exec.CommandContext(ctx, "cp", "--reflink=always", "--sparse=auto", src, dst)
 		out, err := cmd.CombinedOutput()
 		outStr := strings.TrimSpace(string(out))
+		if err == nil && !strings.Contains(outStr, "failed to clone") {
+			log.Printf("[libkrun] copyFile reflink clone enabled: %s → %s", src, dst)
+			return nil
+		}
+
 		if err != nil {
 			lastErr = fmt.Errorf("cp %s → %s: %w: %s", src, dst, err, outStr)
-			continue
-		}
-		if strings.Contains(outStr, "failed to clone") {
+		} else {
 			lastErr = fmt.Errorf("reflink clone failed for %s → %s: %s", src, dst, outStr)
-			continue
 		}
-		log.Printf("[libkrun] copyFile reflink clone enabled: %s → %s", src, dst)
-		return nil
+
+		if reflinkCloneReportedFailure(outStr, err) {
+			return trySparse("reflink not possible for this path pair")
+		}
 	}
-	return fmt.Errorf("copyFile failed after 3 attempts: %w", lastErr)
+
+	if err := trySparse(fmt.Sprintf("after reflink retries: %v", lastErr)); err != nil {
+		return fmt.Errorf("copyFile failed after 3 reflink attempts and sparse fallback: %w", err)
+	}
+	return nil
 }
 
 // FIEMAP constants (linux/fiemap.h)

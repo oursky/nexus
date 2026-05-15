@@ -87,7 +87,8 @@ func buildLibkrunDriver(cfg Config, wsStore *store.WorkspaceStore, hub *transpor
 
 	// VM state (overlays, docker-data images, snapshots) lives under the data dir.
 	// Default to /data/nexus/default for O(1) CoW clones via reflink on XFS/btrfs.
-	// Falls back to $dataDir/default if /data/nexus is not available.
+	// Kernel/rootfs templates and per-repo base images are stored under that same
+	// directory (.nexus-vm/, bases/). Falls back to $dataDir/default if /data/nexus is absent.
 	workDirRoot := cfg.WorkDirRoot
 	if workDirRoot == "" {
 		if _, err := os.Stat("/data/nexus"); err == nil {

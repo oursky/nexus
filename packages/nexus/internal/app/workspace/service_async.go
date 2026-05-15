@@ -108,16 +108,25 @@ func enrichDriverStartError(err error) error {
 func (s *Service) performStart(ctx context.Context, ws *workspace.Workspace) (*workspace.Workspace, bool) {
 	var startErr error
 	if s.registry != nil {
-		driver, ok := s.registry.Driver(ws.Backend)
-		backendLabel := ws.Backend
-		if backendLabel == "" {
-			backendLabel = s.registry.DefaultBackend()
+		backend := ws.Backend
+		if backend == "" {
+			backend = s.registry.DefaultBackend()
 		}
-		if !ok {
-			startErr = fmt.Errorf("installation corrupted: %q runtime is not available on this host — re-run install.sh and ensure the libkrun VM stack is provisioned", backendLabel)
-		} else {
-			startErr = driver.Start(ctx, ws)
-			startErr = enrichDriverStartError(startErr)
+		if workspace.UsesGuestVM(backend) {
+			startErr = validateLocalDaemonRepoPath(ws)
+		}
+		if startErr == nil {
+			driver, ok := s.registry.Driver(ws.Backend)
+			backendLabel := ws.Backend
+			if backendLabel == "" {
+				backendLabel = s.registry.DefaultBackend()
+			}
+			if !ok {
+				startErr = fmt.Errorf("installation corrupted: %q runtime is not available on this host — re-run install.sh and ensure the libkrun VM stack is provisioned", backendLabel)
+			} else {
+				startErr = driver.Start(ctx, ws)
+				startErr = enrichDriverStartError(startErr)
+			}
 		}
 	}
 
@@ -135,6 +144,32 @@ func (s *Service) performStart(ctx context.Context, ws *workspace.Workspace) (*w
 		return nil, false
 	}
 	return current, true
+}
+
+// validateLocalDaemonRepoPath ensures libkrun can virtiofs-mount the project tree on this host.
+// Workspaces created from remote URLs (https/git@) hit this and fail fast with an actionable message.
+func validateLocalDaemonRepoPath(ws *workspace.Workspace) error {
+	if ws == nil {
+		return fmt.Errorf("workspace is nil")
+	}
+	root := strings.TrimSpace(ws.Repo)
+	if root == "" {
+		root = strings.TrimSpace(ws.RootPath)
+	}
+	if root == "" {
+		return fmt.Errorf("workspace has no repo path — libkrun needs a project directory on the daemon host")
+	}
+	if looksLikeRemoteGitRepo(root) {
+		return fmt.Errorf("repo %q is a remote URL — clone it on the machine running nexusd and recreate/start the workspace with that filesystem path (compose presets often default to GitHub URLs)", root)
+	}
+	st, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("repo path %q is not reachable on the daemon host: %w", root, err)
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("repo path %q must be a directory on the daemon host", root)
+	}
+	return nil
 }
 
 func (s *Service) waitForReadiness(ctx context.Context, current *workspace.Workspace) *workspace.Workspace {

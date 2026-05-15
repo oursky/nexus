@@ -239,7 +239,7 @@ func checkRuntimeArtifacts(env EnvReader) CheckResult {
 			Status:      PreflightMisconfigured,
 			Observed:    fmt.Sprintf("NEXUS_VM_KERNEL=%q NEXUS_VM_ROOTFS=%q", kernel, rootfs),
 			Expected:    "both env vars set and paths must exist on disk",
-			Remediation: "export NEXUS_VM_KERNEL=/data/nexus/vm/vmlinux.bin NEXUS_VM_ROOTFS=/data/nexus/vm/rootfs.ext4",
+			Remediation: "export NEXUS_VM_KERNEL=\"$HOME/.local/share/nexus/vm/vmlinux.bin\" NEXUS_VM_ROOTFS=\"$HOME/.local/share/nexus/vm/rootfs.ext4\" (or under $XDG_DATA_HOME/nexus/vm); nexusd mirrors them under each instance's --workdir-root/.nexus-vm",
 		}
 	}
 

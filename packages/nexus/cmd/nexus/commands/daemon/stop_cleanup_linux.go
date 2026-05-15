@@ -24,7 +24,11 @@ func cleanupDaemonResidue() {
 
 	workRoots := []string{
 		"/data/nexus/default",
-		"/data/nexus/libkrun-vms", // legacy workdir-root default
+		"/data/nexus/e2e",
+		"/data/nexus/e2e-tui",
+		"/data/nexus/libkrun-vms",       // legacy shared VM dir
+		"/data/nexus/libkrun-vms-e2e",   // legacy e2e parent
+		"/data/nexus/libkrun-vms-tui-e2e",
 		filepath.Join(defaultStateDataDir(), "default"),
 		filepath.Join(defaultStateDataDir(), "libkrun-vms"),
 	}

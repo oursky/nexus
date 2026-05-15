@@ -145,7 +145,7 @@ func TempWorkdir(t *testing.T) string {
 	t.Helper()
 	base := ""
 	if _, err := os.Stat("/data/nexus"); err == nil {
-		base = "/data/nexus/libkrun-vms-e2e"
+		base = "/data/nexus/e2e"
 		_ = os.MkdirAll(base, 0o755)
 	}
 	dir, err := os.MkdirTemp(base, "nexus-e2e-workdir-*")

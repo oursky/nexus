@@ -29,7 +29,7 @@ func implodeCommand() *cobra.Command {
   • Kills helper processes (libkrun, passt, pty-host)
   • Removes client profile + token, XDG/config state, ~/.nexus
   • Removes co-installed CLI binaries (nexus, pty-host, passt under common paths)
-  • On Linux: clears /data/nexus contents Nexus uses for VM workspaces (unless --keep-vm-store)
+  • On Linux: unmounts loop-backed XFS under /data/nexus when needed, removes /var/lib/nexus-xfs-backing.img, then deletes /data/nexus entirely (unless --keep-vm-store; uses sudo when not root)
   • On Linux: best-effort disables user systemd units matching *nexus*
 
 Afterward, reinstall with install.sh or your package manager.`,
