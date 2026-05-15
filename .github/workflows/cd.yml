@@ -26,12 +26,6 @@ jobs:
           - runner: ubuntu-latest
             goos: linux
             goarch: amd64
-          - runner: ubuntu-latest
-            goos: linux
-            goarch: arm64
-          - runner: macos-latest
-            goos: darwin
-            goarch: amd64
           - runner: macos-latest
             goos: darwin
             goarch: arm64
@@ -63,7 +57,7 @@ jobs:
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: bash scripts/ci/stage-nexus-linux-embeds.sh
 
-      # go:embed libkrun-darwin-arm64.dylib (committed .gitignore); same blobs used for amd64/arm64 slices.
+      # go:embed libkrun-darwin-arm64.dylib (Apple Silicon daemon only).
       - name: Stage libkrun dylibs for macOS embed
         if: matrix.goos == 'darwin'
         run: bash scripts/local/build-libkrun-darwin.sh
@@ -293,17 +287,10 @@ jobs:
             ls -la
             exit 1
           fi
-          VM_HELPER_SRC="${GITHUB_WORKSPACE}/packages/nexus/cmd/nexus/nexus-libkrun-vm"
-          if [ -f "${VM_HELPER_SRC}" ]; then
-            cp -f "${VM_HELPER_SRC}" nexus-libkrun-vm-linux-amd64
-          else
-            echo "missing nexus-libkrun-vm at ${VM_HELPER_SRC}" >&2
-            exit 1
-          fi
           extra=()
           [ -f rootfs-linux-amd64.ext4.gz ] && extra+=(rootfs-linux-amd64.ext4.gz)
           [ -f rootfs-darwin-arm64.ext4.gz ] && extra+=(rootfs-darwin-arm64.ext4.gz)
-          sha256sum nexus-* nexus-libkrun-vm-linux-amd64 "${extra[@]}" > checksums.txt
+          sha256sum nexus-* "${extra[@]}" > checksums.txt
 
           VERSION="${RELEASE_TAG}"
           PUB_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -329,8 +316,6 @@ jobs:
             --arg pub "${PUB_DATE}" \
             --arg b "${BASE_URL}" \
             --arg h_la "$(hash_for nexus-linux-amd64)" \
-            --arg h_larm "$(hash_for nexus-linux-arm64)" \
-            --arg h_da "$(hash_for nexus-darwin-amd64)" \
             --arg h_darm "$(hash_for nexus-darwin-arm64)" \
             --arg h_rf "${ROOTFS_SHA}" \
             --arg h_rfd "${ROOTFS_DARWIN_SHA}" \
@@ -340,8 +325,6 @@ jobs:
               pub_date: $pub,
               platforms: {
                 "linux-amd64": { url: ($b + "/nexus-linux-amd64"), sha256: $h_la },
-                "linux-arm64": { url: ($b + "/nexus-linux-arm64"), sha256: $h_larm },
-                "darwin-amd64": { url: ($b + "/nexus-darwin-amd64"), sha256: $h_da },
                 "darwin-arm64": { url: ($b + "/nexus-darwin-arm64"), sha256: $h_darm }
               }
             }
@@ -372,19 +355,16 @@ jobs:
           {
             echo "Automated release build for \`${TAG_NAME}\`."
             echo ""
-            echo "Assets include cross-platform CLI binaries, optional prebuilt **Linux/amd64 libkrun host** rootfs (\`rootfs-linux-amd64.ext4.gz\`), optional **macOS/ARM64 guest** VM disk (\`rootfs-darwin-arm64.ext4.gz\`, matches \`macvm\` cache layout), \`checksums.txt\`, and \`latest.json\`."
+            echo "Assets include Linux amd64 and **Darwin/arm64** (Apple Silicon) CLI binaries, optional prebuilt **Linux/amd64 libkrun host** rootfs (\`rootfs-linux-amd64.ext4.gz\`), optional **macOS/arm64 guest** VM disk (\`rootfs-darwin-arm64.ext4.gz\`, matches \`macvm\` cache layout), \`checksums.txt\`, and \`latest.json\`."
             echo ""
-            echo "**Note:** Linux binaries embed the Linux guest-agent (\`CGO_ENABLED=0\`). macOS binaries embed matching Linux guest-agent blobs used by \`nexus vm bake\`."
+            echo "**Note:** Linux amd64 embeds libkrun helpers (incl. \`nexus-libkrun-vm\`), passt, and the Linux guest-agent (\`CGO_ENABLED=0\`). macOS binaries embed matching Linux guest-agent blobs used by \`nexus vm bake\`."
           } >"$NOTES"
           EXTRA=()
           [ -f dist/rootfs-linux-amd64.ext4.gz ] && EXTRA+=(dist/rootfs-linux-amd64.ext4.gz)
           [ -f dist/rootfs-darwin-arm64.ext4.gz ] && EXTRA+=(dist/rootfs-darwin-arm64.ext4.gz)
           ASSETS=(
             dist/nexus-linux-amd64
-            dist/nexus-linux-arm64
-            dist/nexus-darwin-amd64
             dist/nexus-darwin-arm64
-            dist/nexus-libkrun-vm-linux-amd64
             dist/checksums.txt
             dist/latest.json
             "${EXTRA[@]}"
@@ -437,10 +417,7 @@ jobs:
           [ -f dist/rootfs-darwin-arm64.ext4.gz ] && EXTRA+=(dist/rootfs-darwin-arm64.ext4.gz)
           ASSETS=(
             dist/nexus-linux-amd64
-            dist/nexus-linux-arm64
-            dist/nexus-darwin-amd64
             dist/nexus-darwin-arm64
-            dist/nexus-libkrun-vm-linux-amd64
             dist/checksums.txt
             dist/latest.json
             "${EXTRA[@]}"

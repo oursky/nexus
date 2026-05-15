@@ -16,7 +16,7 @@
 # Other daemon instances should use their own directory, e.g. nexus daemon start --workdir-root /data/nexus/e2e.
 #
 # Requires: curl, sha256sum or shasum -a 256 for release checksums, gzip when installing a prebaked rootfs or extracting smolvm,
-# (linux/amd64 host or darwin/arm64 guest), python3 or jq to read the releases API when NEXUS_VERSION is unset,
+# (linux/amd64 host or darwin/arm64), python3 or jq to read the releases API when NEXUS_VERSION is unset,
 # and optionally pv for ETA/progress bars during gzip/tar steps.
 # Linux libkrun: when auto-creating an XFS loop volume, mkfs.xfs (package xfsprogs) is required.
 set -euo pipefail
@@ -102,8 +102,8 @@ verify_checksum_file() {
 }
 
 # ── Linux libkrun runtime (smolvm) + VM helper + passt ───────────────────────
-# Linux/amd64 release binaries embed libkrun + passt and extract on first boot.
-# This path still provisions host dirs and fills gaps for arm64, slim, or older builds.
+# Linux/amd64 release binaries embed libkrun, nexus-libkrun-vm, passt, etc. and extract on first daemon start.
+# install.sh pre-downloads smolvm libs (amd64 tarball) and passt for fresh Linux hosts; extracted embeds cover the rest.
 
 nexus_data_share_dir() {
   local xdg="${XDG_DATA_HOME:-}"
@@ -141,45 +141,6 @@ install_smolvm_libs_amd64() {
   cp -a "${ex}/." "${libdir}/"
   cleanup
   echo "nexus-install: smolvm — installed libkrun + libkrunfw (${SMOLVM_VERSION}) → ${libdir}"
-}
-
-install_libkrun_libs_from_host_arm64() {
-  local libdir="$1"
-  local krun="" fw="" kdir="" f
-  if command -v ldconfig >/dev/null 2>&1; then
-    krun="$(PATH="/sbin:/usr/sbin:$PATH" ldconfig -p 2>/dev/null | awk '/libkrun\.so\.1(\s|$)/ {print $NF; exit}')"
-  fi
-  if [ -z "${krun}" ]; then
-    for f in \
-      /usr/lib/aarch64-linux-gnu/libkrun.so.1 \
-      /usr/lib64/libkrun.so.1 \
-      /lib/aarch64-linux-gnu/libkrun.so.1; do
-      if [ -e "$f" ]; then
-        krun="$f"
-        break
-      fi
-    done
-  fi
-  if [ -z "${krun}" ] && [ -d /nix/store ]; then
-    krun="$(find /nix/store -maxdepth 5 -name 'libkrun.so.1' -type f 2>/dev/null | head -1 || true)"
-  fi
-  [ -n "${krun}" ] || return 1
-  kdir="$(dirname "${krun}")"
-  fw="$(ls -1 "${kdir}"/libkrunfw.so.* 2>/dev/null | grep -E '\.[0-9]+\.[0-9]+\.[0-9]+$' || true)" 
-  fw="$(echo "${fw}" | sort -V | tail -1)"
-  [ -n "${fw}" ] || return 1
-  mkdir -p "${libdir}"
-  cp -L "${krun}" "${libdir}/libkrun.so"
-  rm -f "${libdir}/libkrun.so.1"
-  ln -sf libkrun.so "${libdir}/libkrun.so.1"
-  local fwbase
-  fwbase="$(basename "${fw}")"
-  cp -L "${fw}" "${libdir}/${fwbase}"
-  rm -f "${libdir}/libkrunfw.so.5" "${libdir}/libkrunfw.so"
-  ln -sf "${fwbase}" "${libdir}/libkrunfw.so.5"
-  ln -sf libkrunfw.so.5 "${libdir}/libkrunfw.so"
-  echo "nexus-install: staged libkrun from host (${krun}) → ${libdir}"
-  return 0
 }
 
 # Default matches internal/infra/runtime/macvm/defaults.go (RootFSCachePath).
@@ -242,33 +203,6 @@ install_prebaked_rootfs_for_platform() {
   echo "nexus-install: VM rootfs — installed prebaked disk at ${dest}"
 }
 
-install_nexus_libkrun_vm() {
-  local tmp="$1" sums="$2" base="$3" bindir="$4"
-  local asset="nexus-libkrun-vm-linux-${GOARCH}"
-  mkdir -p "${bindir}"
-  if grep -qF " ${asset}" "${sums}" 2>/dev/null; then
-    echo "nexus-install: VM helper — downloading ${asset} …"
-    curl_download_progress "${base}/${asset}" "${tmp}/${asset}"
-    echo "nexus-install: VM helper — verifying checksum for ${asset}"
-    (
-      cd "${tmp}"
-      verify_checksum_file "${sums}" "${asset}"
-    )
-    install -m 0755 "${tmp}/${asset}" "${bindir}/nexus-libkrun-vm"
-    echo "nexus-install: VM helper — installed ${bindir}/nexus-libkrun-vm (${asset})"
-    return
-  fi
-  if [ "${GOARCH}" != "amd64" ]; then
-    die "this Nexus release has no checksum entry for ${asset}; use Linux amd64 or build nexus-libkrun-vm from source"
-  fi
-  local raw="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${NEXUS_VERSION}/packages/nexus/cmd/nexus/nexus-libkrun-vm"
-  echo "nexus-install: VM helper — fetching script from GitHub (release had no ${asset} checksums)"
-  curl_download_progress "${raw}" "${tmp}/nexus-libkrun-vm"
-  [ -s "${tmp}/nexus-libkrun-vm" ] || die "failed to download nexus-libkrun-vm (empty file)"
-  install -m 0755 "${tmp}/nexus-libkrun-vm" "${bindir}/nexus-libkrun-vm"
-  echo "nexus-install: VM helper — installed ${bindir}/nexus-libkrun-vm (from GitHub)"
-}
-
 install_passt_user_local() {
   local dest="$1"
   mkdir -p "$(dirname "$dest")"
@@ -296,39 +230,28 @@ install_linux_vm_runtime() {
   local tmp="$1" sums="$2" base="$3"
   [ "${GOOS:-}" = linux ] || return 0
 
-  local share libdir bindir
+  local share libdir
   share="$(nexus_data_share_dir)"
   libdir="${share}/lib"
-  bindir="${share}/bin"
-  mkdir -p "${libdir}" "${bindir}"
+  mkdir -p "${libdir}"
 
   if [ ! -e "${libdir}/libkrun.so.1" ]; then
     case "${GOARCH}" in
       amd64)
         install_smolvm_libs_amd64 "${libdir}"
         ;;
-      arm64)
-        if ! install_libkrun_libs_from_host_arm64 "${libdir}"; then
-          die "could not find libkrun.so.1 for Linux arm64 (install libkrun via Nix/your distro, or set NEXUS_LIBKRUN_* paths)"
-        fi
-        ;;
       *)
-        die "automatic libkrun provisioning is not implemented for Linux ${GOARCH}"
+        die "automatic libkrun provisioning is only implemented for Linux amd64 (host is ${GOARCH})"
         ;;
     esac
   else
     echo "nexus-install: libkrun already present at ${libdir}/libkrun.so.1"
   fi
 
-  if [ ! -x "${bindir}/nexus-libkrun-vm" ]; then
-    install_nexus_libkrun_vm "${tmp}" "${sums}" "${base}" "${bindir}"
-  else
-    echo "nexus-install: VM helper already at ${bindir}/nexus-libkrun-vm"
-  fi
-
+  # nexus-libkrun-vm is shipped inside the nexus binary on linux/amd64; skip separate download.
   local passt_dest="${HOME}/.local/bin/passt"
   if ! install_passt_user_local "${passt_dest}"; then
-    die "passt is required at ${passt_dest} for libkrun networking — install passt (e.g. apt install passt on Debian/Ubuntu arm64)"
+    die "passt is required at ${passt_dest} for libkrun networking — install passt or use a release nexus binary with embedded passt"
   fi
 }
 
@@ -352,6 +275,14 @@ detect_platform() {
     *)
       die "unsupported CPU: ${uncpu} (expected x86_64, aarch64, or arm64)" ;;
   esac
+
+  if [[ "${GOOS:-}" == "linux" && "${GOARCH}" == "arm64" ]]; then
+    die "Linux on ARM64 is not supported; use Linux x86_64 or macOS/Apple Silicon (darwin/arm64)"
+  fi
+
+  if [[ "${GOOS:-}" == "darwin" && "${GOARCH}" == "amd64" ]]; then
+    die "Intel Mac (darwin/amd64) is not supported — use Apple Silicon (darwin/arm64) or Linux amd64"
+  fi
 }
 
 linux_reflink_probe_sudo() {

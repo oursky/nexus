@@ -18,6 +18,10 @@ cd packages/nexus
 go build -tags dev -o ~/.local/bin/nexus-dev ./cmd/nexus
 ~/.local/bin/nexus-dev daemon start --port 7778 --driver sandbox
 
+# Manual libkrun on Linux — use a non-prod workdir (same layout as prod under that root):
+~/.local/bin/nexus-dev daemon start --port 7778 --driver libkrun \
+  --workdir-root "${LOCAL_WORKDIR_ROOT:-/data/nexus/nexus-dev}"
+
 # Use named instances for isolation
 task dev:daemon:start NAME=test1 PORT=7780 DRIVER=sandbox
 ```
@@ -57,6 +61,8 @@ Dev and prod daemons are fully separated by binary name, port, state directory, 
 > **Known gap — macOS Keychain token**: both `nexus` and `nexus-dev` write to the same Keychain entry (`service="nexus"`, `account="daemon-token"`). If both run on the same Mac simultaneously, the last `daemon connect` call wins. Workaround: avoid running prod and dev Mac daemons concurrently on the same Mac. A Swift fix to scope by binary name is tracked but not yet shipped.
 
 Configure in `.env.local` (copy from `.env.local.example`). Defaults are already set to dev values — no file needed to start dev work. Prod daemon is never touched by any `task dev:*` command.
+
+**Linux libkrun — local daemon:** `task dev:local` runs `scripts/local/daemon-restart.sh`, which always passes `--workdir-root` from **`LOCAL_WORKDIR_ROOT`** (Taskfile default **`/data/nexus/nexus-dev`**). All VM state for that instance lives under that directory (`ws-*`, `bases/`, `.nexus-vm/`). Override the path with `LOCAL_WORKDIR_ROOT=/data/nexus/local task dev:local` if you prefer. If you start **`nexus-dev daemon start` by hand** without `--workdir-root` and `/data/nexus` exists, the daemon defaults to **`/data/nexus/default`** (prod’s tree) — avoid that for libkrun; pass **`--workdir-root`** explicitly.
 
 ### Mac app: local dev build vs TestFlight prod
 
@@ -289,7 +295,7 @@ task dev:local
 
 ### macOS app resources
 
-The Xcode project copies `Resources/nexus` and Linux helper binaries (`Resources/nexus-linux-amd64`, `Resources/nexus-linux-arm64`) into the app bundle.
+The Xcode project copies `Resources/nexus` and `Resources/nexus-linux-amd64` into the app bundle for remote provisioning.
 
 Stage the macOS CLI binary with:
 
@@ -300,7 +306,7 @@ go build -C packages/nexus -o packages/nexus-swift/Resources/nexus ./cmd/nexus
 For Linux staging, prefer:
 
 ```bash
-scripts/swift/stage-linux-nexus.sh amd64   # or arm64 / both
+scripts/swift/stage-linux-nexus.sh
 ```
 
 This script builds/stages the embedded guest-agent artifact first, avoiding `pattern agent-linux-amd64: no matching files found`.
@@ -502,9 +508,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' \
 # Step 2 — compile nexus (embeds agent-linux-amd64 automatically)
 go build -tags dev -o ~/.local/bin/nexus-dev ./cmd/nexus
 
-# Step 3 — restart daemon
+# Step 3 — restart daemon (Linux libkrun: use dev workdir so you do not collide with prod default)
 ~/.local/bin/nexus-dev daemon stop 2>/dev/null || true
-~/.local/bin/nexus-dev daemon start --port 7778
+~/.local/bin/nexus-dev daemon start --port 7778 \
+  --workdir-root "${LOCAL_WORKDIR_ROOT:-/data/nexus/nexus-dev}"
 ```
 
 **Common trap**: running only `go build ./cmd/nexus/` without re-compiling `cmd/nexus-firecracker-agent/` first embeds the old agent binary. The daemon will detect the size/hash difference and inject properly, but any new agent-side features will not be present in the VM. Always build both.

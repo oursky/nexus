@@ -235,11 +235,6 @@ func resetVirtiofsWorkspaceMountOnce() {
 	virtiofsWorkspaceOnceErr = nil
 }
 
-func resetRootfsLocalWorkspaceMountOnce() {
-	rootfsLocalWorkspaceOnce = sync.Once{}
-	rootfsLocalWorkspaceOnceErr = nil
-}
-
 // setupBlockWorkspaceMount assembles the hybrid overlayfs workspace.
 // It mounts /dev/vdb as the mutable upperdir, virtiofs as the live host project
 // lowerdir, and (when NEXUS_WORKSPACE_BASE_DEV is set) /dev/vdd as the

@@ -432,7 +432,6 @@
 			inputPaths = (
 				"$(SRCROOT)/Resources/nexus",
 				"$(SRCROOT)/Resources/nexus-linux-amd64",
-				"$(SRCROOT)/Resources/nexus-linux-arm64",
 			);
 			name = "Copy bundled tools to app Resources";
 			outputFileListPaths = (
@@ -440,11 +439,10 @@
 			outputPaths = (
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus",
 				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-linux-amd64",
-				"$(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-linux-arm64",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "copy_tool() {\n  local src=\"$1\"\n  local dst=\"$2\"\n  local label=\"$3\"\n  if [ -f \"$src\" ]; then\n    mkdir -p \"$(dirname \"$dst\")\"\n    cp \"$src\" \"$dst\"\n    chmod +x \"$dst\"\n    echo \"Bundled ${label} -> ${dst}\"\n  else\n    echo \"warning: ${label} not found at ${src}; run 'go build -o packages/nexus-swift/Resources/nexus ./packages/nexus/cmd/nexus'\"\n  fi\n}\n\n# macOS nexus CLI — used by the app for workspace open-editor and daemon operations.\ncopy_tool \"${SRCROOT}/Resources/nexus\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus\" \"nexus\"\n\n# Linux nexus binaries for remote provisioning (uploading to fresh Linux hosts).\nfor arch in amd64 arm64; do\n  copy_tool \"${SRCROOT}/Resources/nexus-linux-${arch}\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-linux-${arch}\" \"nexus-linux-${arch}\"\ndone\n";
+			shellScript = "copy_tool() {\n  local src=\"$1\"\n  local dst=\"$2\"\n  local label=\"$3\"\n  if [ -f \"$src\" ]; then\n    mkdir -p \"$(dirname \"$dst\")\"\n    cp \"$src\" \"$dst\"\n    chmod +x \"$dst\"\n    echo \"Bundled ${label} -> ${dst}\"\n  else\n    echo \"warning: ${label} not found at ${src}; run 'go build -o packages/nexus-swift/Resources/nexus ./packages/nexus/cmd/nexus'\"\n  fi\n}\n\n# macOS nexus CLI — used by the app for workspace open-editor and daemon operations.\ncopy_tool \"${SRCROOT}/Resources/nexus\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus\" \"nexus\"\n\n# Linux nexus binary for remote provisioning (linux/amd64 hosts only).\ncopy_tool \"${SRCROOT}/Resources/nexus-linux-amd64\" \"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-linux-amd64\" \"nexus-linux-amd64\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

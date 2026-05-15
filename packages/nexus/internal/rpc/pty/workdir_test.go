@@ -19,7 +19,7 @@ func (r *fakeWorkspaceRepo) List(context.Context) ([]*domainws.Workspace, error)
 	return nil, nil
 }
 func (r *fakeWorkspaceRepo) Update(context.Context, *domainws.Workspace) error { return nil }
-func (r *fakeWorkspaceRepo) Delete(context.Context, string) error                { return nil }
+func (r *fakeWorkspaceRepo) Delete(context.Context, string) error              { return nil }
 func (r *fakeWorkspaceRepo) Get(ctx context.Context, id string) (*domainws.Workspace, error) {
 	if r.w == nil || r.w.ID != id {
 		return nil, domainws.ErrNotFound

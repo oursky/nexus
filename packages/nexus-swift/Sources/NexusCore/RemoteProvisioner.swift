@@ -544,7 +544,7 @@ public actor RemoteProvisioner {
     // MARK: - Binary bundling
 
     private func bundledLinuxBinary() -> URL? {
-        let candidates = ["nexus-linux-amd64", "nexus-linux-arm64"]
+        let candidates = ["nexus-linux-amd64"]
         for name in candidates {
             if let url = Bundle.main.url(forResource: name, withExtension: nil) {
                 return url

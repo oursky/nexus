@@ -52,24 +52,20 @@ targets:
       - name: Copy Linux nexus binaries for provisioning
         inputFiles:
           - $(SRCROOT)/Resources/nexus-linux-amd64
-          - $(SRCROOT)/Resources/nexus-linux-arm64
         outputFiles:
           - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-linux-amd64
-          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-linux-arm64
         script: |
           set -euo pipefail
-          for arch in amd64 arm64; do
-            SRC="${SRCROOT}/Resources/nexus-linux-${arch}"
-            DST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-linux-${arch}"
-            if [ -f "$SRC" ]; then
-              mkdir -p "$(dirname "$DST")"
-              cp "$SRC" "$DST"
-              chmod +x "$DST"
-              echo "Bundled nexus-linux-${arch} -> ${DST}"
-            else
-              echo "warning: nexus-linux-${arch} not found at ${SRC}; run 'go build'"
-            fi
-          done
+          SRC="${SRCROOT}/Resources/nexus-linux-amd64"
+          DST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-linux-amd64"
+          if [ -f "$SRC" ]; then
+            mkdir -p "$(dirname "$DST")"
+            cp "$SRC" "$DST"
+            chmod +x "$DST"
+            echo "Bundled nexus-linux-amd64 -> ${DST}"
+          else
+            echo "warning: nexus-linux-amd64 not found at ${SRC}; run 'go build'"
+          fi
     dependencies:
       - target: NexusCore
         link: true
@@ -105,24 +101,20 @@ targets:
       - name: Copy Linux nexus binaries for provisioning
         inputFiles:
           - $(SRCROOT)/Resources/nexus-linux-amd64
-          - $(SRCROOT)/Resources/nexus-linux-arm64
         outputFiles:
           - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-linux-amd64
-          - $(BUILT_PRODUCTS_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/nexus-linux-arm64
         script: |
           set -euo pipefail
-          for arch in amd64 arm64; do
-            SRC="${SRCROOT}/Resources/nexus-linux-${arch}"
-            DST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-linux-${arch}"
-            if [ -f "$SRC" ]; then
-              mkdir -p "$(dirname "$DST")"
-              cp "$SRC" "$DST"
-              chmod +x "$DST"
-              echo "Bundled nexus-linux-${arch} -> ${DST}"
-            else
-              echo "warning: nexus-linux-${arch} not found at ${SRC}; run 'go build'"
-            fi
-          done
+          SRC="${SRCROOT}/Resources/nexus-linux-amd64"
+          DST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/nexus-linux-amd64"
+          if [ -f "$SRC" ]; then
+            mkdir -p "$(dirname "$DST")"
+            cp "$SRC" "$DST"
+            chmod +x "$DST"
+            echo "Bundled nexus-linux-amd64 -> ${DST}"
+          else
+            echo "warning: nexus-linux-amd64 not found at ${SRC}; run 'go build'"
+          fi
     dependencies:
       - target: NexusCore
         embed: false

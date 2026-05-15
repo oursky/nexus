@@ -64,7 +64,7 @@ jobs:
         working-directory: packages/nexus
         run: go generate ./cmd/nexus/
 
-      # Stage libkrun dylibs needed by the //go:embed in embed_libkrun_darwin.go
+      # Stage libkrun dylibs needed by the //go:embed in embed_libkrun_darwin_arm64.go
       # when cross-compiling the darwin/arm64 nexus binary on Linux.
       - name: Stage libkrun dylibs for darwin cross-build
         run: bash scripts/local/build-libkrun-darwin.sh
@@ -297,7 +297,7 @@ jobs:
         timeout-minutes: 5
         run: scripts/ci/build-nexus-libkrun.sh
 
-      # Stage darwin dylibs required by //go:embed in embed_libkrun_darwin.go
+      # Stage darwin dylibs required by //go:embed in embed_libkrun_darwin_arm64.go
       # when cross-compiling the darwin/arm64 nexus binary on Linux.
       - name: Stage libkrun dylibs for darwin cross-build
         run: bash scripts/local/build-libkrun-darwin.sh
