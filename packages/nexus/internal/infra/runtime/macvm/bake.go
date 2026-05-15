@@ -220,7 +220,22 @@ func finishBakedRootfs(rootfsPath, serialLog string) (string, error) {
 	return relocateBakedRootfs(rootfsPath)
 }
 
+func bakeRunnerDiag(runnerLogPath string) string {
+	const maxBytes = 16000
+	b, err := os.ReadFile(runnerLogPath)
+	if err != nil {
+		return fmt.Sprintf("\n(no runner log at %s: %v)", runnerLogPath, err)
+	}
+	s := strings.TrimRight(string(b), "\n")
+	if len(s) > maxBytes {
+		s = "…(truncated)\n" + s[len(s)-maxBytes:]
+	}
+	return "\n--- macvm-runner log ---\n" + s
+}
+
 func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
+	raiseSpawnFDLimits()
+
 	workDir, err := os.MkdirTemp("", "nexus-macvm-bake-*")
 	if err != nil {
 		return "", err
@@ -371,21 +386,24 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 		close(childDone)
 	}()
 
-	listenCtx, listenCancel := context.WithCancel(ctx)
-	defer listenCancel()
-	go func() {
-		select {
-		case <-childDone:
-			listenCancel()
-		case <-ctx.Done():
-			listenCancel()
-		}
-	}()
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- waitAgentListening(ctx, sockDir) }()
 
-	if err := waitAgentListening(listenCtx, sockDir); err != nil {
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			_ = childCmd.Process.Kill()
+			_ = gvp.Stop()
+			return "", fmt.Errorf("bake VM agent not reachable: %w%s", err, bakeRunnerDiag(runnerLogPath))
+		}
+	case <-childDone:
 		_ = childCmd.Process.Kill()
 		_ = gvp.Stop()
-		return "", fmt.Errorf("bake VM agent not reachable: %w", err)
+		return "", fmt.Errorf("macvm-runner exited before guest agent socket was ready%s", bakeRunnerDiag(runnerLogPath))
+	case <-ctx.Done():
+		_ = childCmd.Process.Kill()
+		_ = gvp.Stop()
+		return "", fmt.Errorf("macvm bake cancelled waiting for agent: %w%s", ctx.Err(), bakeRunnerDiag(runnerLogPath))
 	}
 
 	start := time.Now()
