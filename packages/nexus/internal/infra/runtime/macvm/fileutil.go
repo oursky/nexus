@@ -24,6 +24,11 @@ func socketTempDir(pattern string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	dir, err = filepath.EvalSymlinks(dir)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return "", err
+	}
 	ctl := filepath.Join(dir, "gvproxy.sock.ctl")
 	// Darwin sockaddr_un.Path is 104 bytes including the terminating NUL for file paths.
 	if len(ctl) >= 104 {
@@ -38,7 +43,11 @@ func macvmBakeWorkDir() (string, error) {
 	if fi, err := os.Stat(base); err != nil || !fi.IsDir() {
 		base = os.TempDir()
 	}
-	return os.MkdirTemp(base, "nxmb-")
+	dir, err := os.MkdirTemp(base, "nxmb-")
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(dir)
 }
 
 func errSocketPathTooLong(p string) error {
