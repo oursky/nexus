@@ -282,9 +282,6 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 
 	var customKernelPath string
 	var customKernelFormat uint32 = libkrun.KernelFormatRaw
-	// When NEXUS_MACVM_BAKE_EMBEDDED_KERNEL_ONLY=1, do not call krun_set_kernel:
-	// use libkrunfw's bundled kernel. Needed when the extracted Image-custom drifts
-	// from the staged dylibs (Hypervisor VmCreate EINVAL on some CI runners).
 	if strings.TrimSpace(os.Getenv("NEXUS_MACVM_BAKE_EMBEDDED_KERNEL_ONLY")) != "1" {
 		for _, kp := range customKernelCandidates(cfg.LibDir, workDir) {
 			if _, statErr := os.Stat(kp); statErr == nil {

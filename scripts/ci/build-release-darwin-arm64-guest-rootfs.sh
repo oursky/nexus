@@ -87,12 +87,26 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags='-s -w' \
   -o "$REPO_ROOT/dist/nexus-darwin-arm64-bake" ./cmd/nexus
 popd >/dev/null
 
+echo "==> Ad-hoc sign nexus for Hypervisor.framework (unsigned binary → VmCreate EINVAL on CI)"
+BAKE_BIN="$REPO_ROOT/dist/nexus-darwin-arm64-bake"
+ENT_PLIST="$(mktemp -t nexus-ci-hv-entitlements)"
+cat >"$ENT_PLIST" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.hypervisor</key>
+    <true/>
+    <key>com.apple.security.virtualization</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+codesign --entitlements "$ENT_PLIST" --force --sign - "$BAKE_BIN"
+rm -f "$ENT_PLIST"
+
 echo "==> Run nexus vm bake (may take ~30–60m)"
 export NEXUS_LIBKRUN_BAKE_TIMEOUT="${NEXUS_LIBKRUN_BAKE_TIMEOUT:-55m}"
-# Staged libkrunfw + CLI-embedded aarch64 Image can disagree on CI; VmCreate then
-# fails with EINVAL (-22). Bake does not require krun_set_kernel — use libkrun's
-# bundled kernel (see NEXUS_MACVM_BAKE_EMBEDDED_KERNEL_ONLY in bake.go).
-export NEXUS_MACVM_BAKE_EMBEDDED_KERNEL_ONLY=1
 "$REPO_ROOT/dist/nexus-darwin-arm64-bake" vm bake --timeout 120m
 
 mkdir -p "$DIST"
