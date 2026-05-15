@@ -1,5 +1,5 @@
 // Package vmrootfs holds GitHub Release URLs for pre-built libkrun guest rootfs
-// assets (macOS and Linux arm64 hosts). Works on any GOOS (pure functions).
+// assets (Linux guests: amd64 on Linux hosts, arm64 on Apple Silicon). Works on any GOOS (pure functions).
 package vmrootfs
 
 import (
@@ -41,10 +41,10 @@ func MacOSGuestRootFSURL() string {
 	)
 }
 
-// LinuxARM64GuestRootFSURL is the gzipped ext4 for Linux arm64 libkrun hosts.
-func LinuxARM64GuestRootFSURL() string {
+// LinuxAMD64GuestRootFSURL is the gzipped ext4 for Linux amd64 libkrun guests.
+func LinuxAMD64GuestRootFSURL() string {
 	return fmt.Sprintf(
-		"https://github.com/oursky/nexus/releases/download/%s/rootfs-linux-arm64.ext4.gz",
+		"https://github.com/oursky/nexus/releases/download/%s/rootfs-linux-amd64.ext4.gz",
 		ReleaseTagForRootfsAssets(),
 	)
 }

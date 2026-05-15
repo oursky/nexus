@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the Linux/arm64 guest ext4 for darwin libkrun VMs by:
-#   1) assembling a minimal ubuntu 22.04 arm64 ext4 (guest agent only, no toolchain bake)
+#   1) assembling a minimal ubuntu 26.04 arm64 ext4 (guest agent only, no toolchain bake)
 #   2) running `nexus vm bake` locally on the macOS/arm64 GitHub runner (Hypervisor.framework + gvproxy)
 #   3) compressing the baked image to dist/rootfs-darwin-arm64.ext4.gz (+ .sha256)
 set -euo pipefail
@@ -44,7 +44,7 @@ popd >/dev/null
 
 echo "==> Assemble minimal (un-baked) ext4 base"
 curl -fsSL --retry 3 -o /tmp/ubuntu-arm64-root.tar.xz \
-  "https://cloud-images.ubuntu.com/releases/jammy/release/ubuntu-22.04-server-cloudimg-arm64-root.tar.xz"
+  "https://cloud-images.ubuntu.com/releases/resolute/release/ubuntu-26.04-server-cloudimg-arm64-root.tar.xz"
 
 STAGING="/tmp/nexus-rootfs-staging-minimal.$$"
 sudo rm -rf "$STAGING"

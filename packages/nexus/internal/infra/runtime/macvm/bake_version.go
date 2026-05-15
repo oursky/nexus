@@ -19,15 +19,15 @@ func LegacyMacRootFSTag() string {
 // RootFSSHA256 is the expected SHA256 of the **uncompressed** ext4 after download (optional).
 const RootFSSHA256 = ""
 
-// LinuxARM64RootFSSHA256 is optional verification for Linux arm64 guest rootfs URLs.
-const LinuxARM64RootFSSHA256 = ""
+// LinuxAMD64RootFSSHA256 is optional verification for Linux amd64 guest rootfs URLs.
+const LinuxAMD64RootFSSHA256 = ""
 
 // DefaultRootFSURL selects the gzipped darwin/arm64 guest ext4 artifact for download.
 func DefaultRootFSURL() string {
 	return vmrootfs.MacOSGuestRootFSURL()
 }
 
-// DefaultLinuxARM64RootFSURL is the gzipped linux/arm64 guest ext4 artifact URL.
-func DefaultLinuxARM64RootFSURL() string {
-	return vmrootfs.LinuxARM64GuestRootFSURL()
+// DefaultLinuxAMD64RootFSURL is the gzipped linux/amd64 guest ext4 artifact URL.
+func DefaultLinuxAMD64RootFSURL() string {
+	return vmrootfs.LinuxAMD64GuestRootFSURL()
 }
