@@ -25,7 +25,7 @@ func LegacyMacOSRootFSTag() string {
 func ReleaseTagForRootfsAssets() string {
 	v := strings.TrimSpace(buildinfo.Version)
 	if v == "" || v == "dev" {
-		return LegacyMacOSRootFSTag()
+		return "latest"
 	}
 	if !strings.HasPrefix(v, "v") {
 		return "v" + v
@@ -36,7 +36,7 @@ func ReleaseTagForRootfsAssets() string {
 // MacOSGuestRootFSURL is the gzipped ext4 for macOS libkrun VMs.
 func MacOSGuestRootFSURL() string {
 	return fmt.Sprintf(
-		"https://github.com/oursky/nexus/releases/download/%s/rootfs-macos-arm64.ext4.gz",
+		"https://github.com/oursky/nexus/releases/download/%s/rootfs-darwin-arm64.ext4.gz",
 		ReleaseTagForRootfsAssets(),
 	)
 }
