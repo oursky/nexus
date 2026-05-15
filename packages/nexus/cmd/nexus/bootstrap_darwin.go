@@ -49,7 +49,6 @@ func codesignDarwinAdhoc(w io.Writer, path string) {
 		return
 	}
 	cmd := exec.Command("codesign", "--force", "--sign", "-", path)
-	cmd.Stdout = io.Discard
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		fmt.Fprintf(w, "  warning: codesign %s failed: %v %s\n", filepath.Base(path), err, strings.TrimSpace(string(out)))
