@@ -157,30 +157,6 @@ func cleanupStaleMacBakeArtifacts() {
 	}
 }
 
-func createBakeWorkspaceExt4(path string) error {
-	const sz = 512 * 1024 * 1024
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return err
-	}
-	if err := f.Truncate(sz); err != nil {
-		_ = f.Close()
-		return err
-	}
-	_ = f.Close()
-
-	mkfs := resolveMkfsExt4()
-	out, err := exec.CommandContext(context.Background(), mkfs, "-F", path).CombinedOutput()
-	if err != nil {
-		_ = os.Remove(path)
-		return fmt.Errorf("mkfs bake workspace: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
 func readSerialSuccess(serialLog string) (ok bool, failed bool, data string) {
 	b, err := os.ReadFile(serialLog)
 	if err != nil || len(b) == 0 {
@@ -265,9 +241,9 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 		}
 	}
 
-	wsDisk := filepath.Join(workDir, "workspace.ext4")
-	if err := createBakeWorkspaceExt4(wsDisk); err != nil {
-		return "", fmt.Errorf("bake workspace disk: %w", err)
+	workspaceHostDir := filepath.Join(workDir, "workspace-host")
+	if err := os.MkdirAll(workspaceHostDir, 0o755); err != nil {
+		return "", fmt.Errorf("bake workspace host dir: %w", err)
 	}
 
 	sockDir, err := socketTempDir("mb-")
@@ -324,10 +300,11 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 		"NEXUS_BAKE=1",
 		"AGENT_REQUIRE_VSOCK=1",
 		fmt.Sprintf("AGENT_PORT=%d", guestAgentTCPPort),
-		// Omit dedicated docker-data virtio disk on bake VMs — libkrun hits VmCreate EINVAL on
-		// GitHub macOS runners when rootfs + workspace + docker (+ net/vsock/console) exceeds
-		// virtio/IRQ budgets. Bake-mode Docker prepull uses /workspace only (sysconfig.go).
-		"NEXUS_SKIP_DOCKER_DATA_DISK=1",
+		// GH Actions macOS runners return VmCreate EINVAL when attaching a dedicated workspace ext4
+		// virtio-blk alongside rootfs (even without docker-data). Bake uses virtiofs "nexus-workspace"
+		// instead; Docker prepull writes under /workspace only (sysconfig.go).
+		"NEXUS_WORKSPACE_MODE=virtiofs",
+		"NEXUS_VIRTIOFS_SKIP_DOCKER=1",
 	}
 
 	runnerCfg := macVMRunnerConfig{
@@ -336,8 +313,8 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 		WorkspaceID:        "rootfs-bake",
 		RootFSPath:         rootfsPath,
 		DockerDataPath:     "",
-		WorkspacePath:      "",
-		WorkspaceDiskPath:  wsDisk,
+		WorkspacePath:      workspaceHostDir,
+		WorkspaceDiskPath:  "",
 		ConfigDir:          "",
 		SockDir:            sockDir,
 		GVProxySockPath:    sockGV,
