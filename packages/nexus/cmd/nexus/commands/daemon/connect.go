@@ -50,6 +50,10 @@ func connectCommand() *cobra.Command {
 				return fmt.Errorf("update local SSH config: %w", err)
 			}
 
+			if ws := strings.TrimSpace(os.Getenv("NEXUS_E2E_DAEMON_WEBSOCKET")); ws != "" {
+				fmt.Fprintf(cmd.ErrOrStderr(), "nexus: warning: NEXUS_E2E_DAEMON_WEBSOCKET is set; the CLI will dial that URL for RPC instead of your saved profile (%s:%d). Unset it for normal local/prod use.\n", host, port)
+			}
+
 			// Establish connection to daemon.
 			var conn *websocket.Conn
 			if noTunnel {
@@ -61,7 +65,8 @@ func connectCommand() *cobra.Command {
 					return fmt.Errorf("direct connection failed: %w", err)
 				}
 			} else {
-				// Connection via SSH tunnel (uses cached tunnel from rpc package).
+				// EnsureDaemon: loopback hosts dial ws://127.0.0.1:<port>/ directly;
+				// remote hosts use an SSH tunnel (cached in rpc package).
 				var err error
 				conn, err = rpc.EnsureDaemonVerbose(verbose)
 				if err != nil {
@@ -124,12 +129,18 @@ func connectCommand() *cobra.Command {
 	cmd.Flags().IntVar(&sshPort, "ssh-port", 0, "SSH port (default: 22)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", true, "Print SSH commands and enable verbose SSH output")
 	cmd.Flags().StringVarP(&identityFile, "identity", "i", "", "SSH identity file (private key) to use")
-	cmd.Flags().BoolVar(&noTunnel, "no-tunnel", false, "skip SSH tunnel establishment (for local daemons or external tunnel management)")
+	cmd.Flags().BoolVar(&noTunnel, "no-tunnel", false, "dial host:port WebSocket directly (localhost already does this; use for remote hosts when you manage SSH/port-forward yourself)")
 	return cmd
 }
 
 func fetchDaemonBearerToken(host string, sshPort int, identityFile string, verbose bool) (string, error) {
 	if rpc.IsLoopbackHost(host) {
+		// Match daemon/start resolveDaemonToken: env overrides file/keyring so a
+		// daemon started with NEXUS_DAEMON_TOKEN authenticates the same token the
+		// CLI uses here (LoadOrGenerate alone would mismatch and yield 401/bad handshake).
+		if t := strings.TrimSpace(os.Getenv("NEXUS_DAEMON_TOKEN")); t != "" {
+			return t, nil
+		}
 		tok, err := tokenstore.LoadOrGenerate()
 		if err != nil {
 			return "", fmt.Errorf("local daemon token: %w", err)

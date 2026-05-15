@@ -174,12 +174,15 @@ func ensureGuestBasePackages() error {
 	}
 	emitDiagnostic("agent base packages: install package set OK")
 
-	if err := ensureGuestCLITools(); err != nil {
+	misePath, err := ensureGuestCLITools()
+	if err != nil {
 		return fmt.Errorf("install cli tools: %w", err)
 	}
 	if !toolchainPresentInPATH(os.Environ()) {
 		return fmt.Errorf("toolchain verification failed: required binaries are still missing")
 	}
+
+	slimGuestCachesBeforeStamp(ctx, env, misePath)
 
 	// Write stamp so subsequent boots skip this step.
 	_ = os.MkdirAll("/var/lib", 0o755)
@@ -224,7 +227,75 @@ func runAptGetWithRetry(ctx context.Context, env []string, label string, args ..
 	return lastErr
 }
 
-func ensureGuestCLITools() error {
+// slimGuestCachesBeforeStamp drops caches and offline documentation so the
+// rootfs (especially CI-baked ext4.gz) compresses smaller. Runs only once —
+// immediately before the base-package stamp is written — so later apt usage
+// starts with a normal `apt-get update`.
+func slimGuestCachesBeforeStamp(ctx context.Context, env []string, misePath string) {
+	slimCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+	defer cancel()
+
+	if isBakeMode() {
+		slimGuestCachesBakeOnly(slimCtx, misePath)
+	}
+
+	emitDiagnostic("agent slim: pruning apt archives and package indexes")
+	aptCommon := []string{"-o", "Acquire::Retries=3", "-o", "DEBIAN_FRONTEND=noninteractive"}
+	runAptQuiet := func(args ...string) {
+		cmd := exec.CommandContext(slimCtx, "apt-get", append(append([]string{}, aptCommon...), args...)...)
+		cmd.Env = env
+		if out, err := cmd.CombinedOutput(); err != nil {
+			emitDiagnostic("agent slim: apt-get %v failed (non-fatal): %v — %s", args, err, strings.TrimSpace(string(out)))
+		}
+	}
+	runAptQuiet("clean")
+	runAptQuiet("autoclean")
+
+	if err := os.RemoveAll("/var/lib/apt/lists"); err != nil {
+		emitDiagnostic("agent slim: remove apt lists dir failed (non-fatal): %v", err)
+	}
+	if err := os.MkdirAll("/var/lib/apt/lists/partial", 0o755); err != nil {
+		emitDiagnostic("agent slim: recreate apt lists/partial failed (non-fatal): %v", err)
+	}
+
+	if err := os.RemoveAll("/var/cache/apt/archives/partial"); err != nil {
+		emitDiagnostic("agent slim: clear apt archives/partial failed (non-fatal): %v", err)
+	}
+	_ = os.MkdirAll("/var/cache/apt/archives/partial", 0o755)
+}
+
+func slimGuestCachesBakeOnly(ctx context.Context, misePath string) {
+	emitDiagnostic("agent slim (bake): clearing toolchain caches and stripping man/info pages")
+
+	if strings.TrimSpace(misePath) != "" {
+		clear := exec.CommandContext(ctx, misePath, "cache", "clear")
+		clear.Env = ensurePathInEnv(os.Environ())
+		if out, err := clear.CombinedOutput(); err != nil {
+			emitDiagnostic("agent slim (bake): mise cache clear failed (non-fatal): %v — %s", err, strings.TrimSpace(string(out)))
+		}
+		npmClean := exec.CommandContext(ctx, misePath, "x", "node@20", "--", "npm", "cache", "clean", "--force")
+		npmClean.Env = ensurePathInEnv(os.Environ())
+		if out, err := npmClean.CombinedOutput(); err != nil {
+			emitDiagnostic("agent slim (bake): npm cache clean failed (non-fatal): %v — %s", err, strings.TrimSpace(string(out)))
+		}
+	}
+
+	// Strip offline documentation only (keep /usr/share/doc copyrights).
+	for _, p := range []string{"/usr/share/man", "/usr/share/info"} {
+		if err := os.RemoveAll(p); err != nil {
+			emitDiagnostic("agent slim (bake): remove %s failed (non-fatal): %v", p, err)
+		}
+	}
+
+	matches, _ := filepath.Glob("/tmp/*")
+	for _, m := range matches {
+		if err := os.RemoveAll(m); err != nil {
+			emitDiagnostic("agent slim (bake): remove %s failed (non-fatal): %v", m, err)
+		}
+	}
+}
+
+func ensureGuestCLITools() (string, error) {
 	start := time.Now()
 	type cliSpec struct {
 		binary string
@@ -241,25 +312,25 @@ func ensureGuestCLITools() error {
 	// through npx wrappers instead of global npm installs.
 	misePath, err := ensureMiseInstalled()
 	if err != nil {
-		return fmt.Errorf("install mise: %w", err)
+		return "", fmt.Errorf("install mise: %w", err)
 	}
 	if err := ensureMiseNodeAvailable(misePath); err != nil {
-		return fmt.Errorf("install node via mise: %w", err)
+		return "", fmt.Errorf("install node via mise: %w", err)
 	}
 
 	emitDiagnostic("agent cli tools: installing lightweight npx wrappers (on-demand package fetch)")
 	if err := installNpxBinaryWrapper(misePath); err != nil {
-		return fmt.Errorf("install npx wrapper: %w", err)
+		return "", fmt.Errorf("install npx wrapper: %w", err)
 	}
 	for _, tool := range tools {
 		if err := installNpxWrapper(tool.binary, tool.pkg, misePath); err != nil {
-			return fmt.Errorf("install wrapper for %s: %w", tool.binary, err)
+			return "", fmt.Errorf("install wrapper for %s: %w", tool.binary, err)
 		}
 		emitDiagnostic("agent cli tools: installed wrapper %s", tool.binary)
 	}
 
 	emitDiagnostic("agent cli tools: installed successfully (total %v)", time.Since(start).Round(time.Second))
-	return nil
+	return misePath, nil
 }
 
 func ensureMiseInstalled() (string, error) {
@@ -714,6 +785,9 @@ func realSetupNetwork() error {
 	if err := configureStaticGuestNetwork(); err != nil {
 		return fmt.Errorf("static network fallback failed: %w", err)
 	}
+	if !hasUsableIPv4OnEth0() {
+		return fmt.Errorf("static guest IP applied but eth0 still has no routable IPv4 or default via gateway on eth0")
+	}
 	return nil
 }
 
@@ -777,6 +851,24 @@ func networkLooksUsable(addrOutput, routeOutput string) bool {
 		}
 	}
 	return false
+}
+
+// verifyBakeOutboundReachable ensures virtio-net bake VMs can reach Ubuntu mirrors
+// before apt runs, so a broken passt/DHCP setup fails in seconds instead of
+// hanging on "Connecting to archive.ubuntu.com".
+func verifyBakeOutboundReachable() error {
+	if isTSINetworkMode() {
+		return nil
+	}
+	if !hasUsableIPv4OnEth0() {
+		return fmt.Errorf("eth0 has no routable IPv4 or default route via gateway (check passt / --address)")
+	}
+	conn, err := net.DialTimeout("tcp", "archive.ubuntu.com:80", 12*time.Second)
+	if err != nil {
+		return fmt.Errorf("cannot reach archive.ubuntu.com:80 for apt (outbound blocked or DNS broken): %w", err)
+	}
+	_ = conn.Close()
+	return nil
 }
 
 // readNexusGateway returns the guest's default gateway IP. It checks, in order:
@@ -849,11 +941,22 @@ func staticGuestIPForMAC(mac, gateway string) (string, error) {
 	}
 
 	// Derive subnet prefix from gateway (first two octets of "a.b.c.d").
-	gwParts := strings.SplitN(gateway, ".", 4)
+	gwTrim := strings.TrimSpace(gateway)
+	gwParts := strings.SplitN(gwTrim, ".", 4)
 	if len(gwParts) < 2 {
 		return fmt.Sprintf("172.26.%d.%d", b4, b5), nil
 	}
-	return fmt.Sprintf("%s.%s.%d.%d", gwParts[0], gwParts[1], b4, b5), nil
+	ip := fmt.Sprintf("%s.%s.%d.%d", gwParts[0], gwParts[1], b4, b5)
+	if ip == gwTrim {
+		// When the last two MAC octets match the gateway's host bits (e.g. bake
+		// workspace MAC → 192.168.44.1 with gateway 192.168.44.1), passt rejects
+		// --address and the guest never gets usable DHCP — shift host bits.
+		ip = fmt.Sprintf("%s.%s.%d.%d", gwParts[0], gwParts[1], (int(b4)+131)%256, (int(b5)+73)%256)
+	}
+	if ip == gwTrim {
+		return fmt.Sprintf("172.26.%d.%d", b4, b5), nil
+	}
+	return ip, nil
 }
 
 // setupDNSPath is the path to /etc/resolv.conf. Overridable in tests.

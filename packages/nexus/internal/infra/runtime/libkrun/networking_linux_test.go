@@ -28,3 +28,24 @@ func TestParseNameserversFromResolvConfIgnoresInvalid(t *testing.T) {
 		t.Fatalf("expected no usable nameservers, got %v", got)
 	}
 }
+
+func TestStaticGuestIPv4ForMACAvoidsGatewayCollision(t *testing.T) {
+	got := staticGuestIPv4ForMAC("02:da:ad:60:2c:01", "192.168.44.1")
+	if got == "192.168.44.1" {
+		t.Fatalf("guest IP must not equal gateway, got %s", got)
+	}
+	if want := "192.168.175.74"; got != want {
+		t.Fatalf("expected %s, got %q", want, got)
+	}
+}
+
+func TestPasstGuestIPv4ForWorkspaceWithGatewayMatchesBakeGW(t *testing.T) {
+	// Same bake workspace MAC-derived suffix must collide-shift against gw like bare helper.
+	got := passtGuestIPv4ForWorkspaceWithGateway("rootfs-bake", "192.168.44.1")
+	if got == "192.168.44.1" {
+		t.Fatalf("expected shifted ip, got gateway collision %s", got)
+	}
+	if want := "192.168.175.74"; got != want {
+		t.Fatalf("expected %s, got %q", want, got)
+	}
+}

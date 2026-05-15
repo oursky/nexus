@@ -9,9 +9,11 @@
 #   NEXUS_VERSION       release tag (e.g. v0.31.0); when unset, uses GitHub "latest" stable release
 #   INSTALL_DIR         default ~/.local/bin
 #   SMOLVM_VERSION      libkrun vendor tarball tag for Linux x86_64 (default v0.5.19; must match CI build-nexus-libkrun.sh)
+#   NEXUS_XFS_SIZE_GB   sparse backing size when creating an XFS loop volume (default 20)
 #
 # Requires: curl, sha256sum or shasum -a 256 for release checksums, gzip when installing a prebaked rootfs
 # (linux/amd64 host or darwin/arm64 guest), and python3 or jq to read the releases API when NEXUS_VERSION is unset.
+# Linux libkrun: when auto-creating an XFS loop volume, mkfs.xfs (package xfsprogs) is required.
 set -euo pipefail
 
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-oursky/nexus}"
@@ -31,6 +33,16 @@ die() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+sudo_run() {
+  local parts="" a q
+  for a in "$@"; do
+    printf -v q '%q' "$a"
+    parts+=" ${q}"
+  done
+  echo "nexus-install: \$ sudo${parts}" >&2
+  sudo "$@"
 }
 
 verify_checksum_file() {
@@ -291,6 +303,76 @@ detect_platform() {
   esac
 }
 
+linux_reflink_probe_sudo() {
+  local mp="$1"
+  sudo_run bash -ceu '
+mp="$1"
+s="$mp/.nexus-reflink-probe-src-$$"
+d="$mp/.nexus-reflink-probe-dst-$$"
+touch "$s" && cp --reflink=always "$s" "$d" 2>/dev/null
+rc=$?
+rm -f "$s" "$d"
+exit $rc
+' bash "${mp}"
+}
+
+# libkrun requires reflink (XFS with reflink=1 or btrfs). If /data/nexus is not on such a fs,
+# create or reuse a sparse XFS loopback image (same approach as scripts/ci/setup-xfs-reflink.sh).
+# Does not rm -rf or umount existing mounts (unlike CI); only attaches loop XFS when the path is empty.
+ensure_linux_libkrun_reflink_volume() {
+  [ "${GOOS:-}" = linux ] || return 0
+
+  local mount_point="/data/nexus"
+  local backing_file="/var/lib/nexus-xfs-backing.img"
+  local size_gb="${NEXUS_XFS_SIZE_GB:-20}"
+  local uid gid any_entry
+
+  uid="$(id -u)"
+  gid="$(id -g)"
+
+  if ! mkdir -p "${mount_point}" 2>/dev/null; then
+    sudo_run mkdir -p "${mount_point}"
+  fi
+
+  if linux_reflink_probe_sudo "${mount_point}"; then
+    echo "nexus-install: ${mount_point} supports reflink clones (libkrun workdir)"
+    sudo_run chown "${uid}:${gid}" "${mount_point}"
+    return 0
+  fi
+
+  if mountpoint -q "${mount_point}" 2>/dev/null; then
+    echo "nexus-install: warning: ${mount_point} is a separate mount without reflink support; libkrun may fail until you use XFS/btrfs with reflink there" >&2
+    return 0
+  fi
+
+  any_entry="$(sudo_run find "${mount_point}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)"
+  if [ -n "${any_entry}" ]; then
+    die "${mount_point} does not support reflink and is not empty — move its contents aside or mount XFS/btrfs with reflink at ${mount_point}, then re-run install (see scripts/ci/setup-xfs-reflink.sh on a dev checkout)"
+  fi
+
+  echo "nexus-install: host fs has no reflink at ${mount_point}; creating XFS loop volume (${size_gb} GB sparse image at ${backing_file})"
+
+  need_cmd truncate
+  command -v mkfs.xfs >/dev/null 2>&1 || die "mkfs.xfs not found — install xfsprogs (e.g. apt install xfsprogs)"
+
+  if [ -f "${backing_file}" ]; then
+    echo "nexus-install: reusing existing backing file ${backing_file}"
+  else
+    sudo_run mkdir -p "$(dirname "${backing_file}")"
+    sudo_run truncate -s "${size_gb}G" "${backing_file}"
+    sudo_run mkfs.xfs -f -m reflink=1 "${backing_file}"
+  fi
+
+  if sudo_run mount -o loop "${backing_file}" "${mount_point}"; then
+    sudo_run chown "${uid}:${gid}" "${mount_point}"
+    echo "nexus-install: mounted XFS with reflink=1 at ${mount_point}"
+    xfs_info "${mount_point}" 2>/dev/null | grep reflink || true
+    return 0
+  fi
+
+  die "could not loop-mount XFS at ${mount_point} — ensure loop devices are available and try scripts/ci/setup-xfs-reflink.sh from a repo checkout"
+}
+
 # On Linux: unconditionally provision /data/nexus and /data/nexus/default (required VM store paths).
 ensure_linux_daemon_data_dir() {
   [ "${GOOS:-}" = "linux" ] || return 0
@@ -299,16 +381,16 @@ ensure_linux_daemon_data_dir() {
   uid="$(id -u)"
   gid="$(id -g)"
 
-  echo "nexus-install: ensuring /data/nexus and /data/nexus/default (required for VM driver; mount XFS with reflink on /data in production)"
+  echo "nexus-install: ensuring /data/nexus/default (libkrun workspace store)"
 
   if ! mkdir -p /data/nexus /data/nexus/default 2>/dev/null; then
-    sudo mkdir -p /data/nexus /data/nexus/default
+    sudo_run mkdir -p /data/nexus /data/nexus/default
   fi
 
   if [ -O /data/nexus ] && [ -w /data/nexus ] && [ -w /data/nexus/default ] 2>/dev/null; then
     return 0
   fi
-  sudo chown "${uid}:${gid}" /data/nexus /data/nexus/default
+  sudo_run chown "${uid}:${gid}" /data/nexus /data/nexus/default
 }
 
 unix_socket_accepts_connections() {
@@ -353,7 +435,7 @@ prepare_install() {
   USE_SUDO=""
   if ! mkdir -p "${INSTALL_DIR}" 2>/dev/null; then
     echo "nexus-install: mkdir ${INSTALL_DIR} requires elevation; using sudo ..."
-    sudo mkdir -p "${INSTALL_DIR}"
+    sudo_run mkdir -p "${INSTALL_DIR}"
   fi
   local probe
   probe="$(mktemp "${INSTALL_DIR}/.nexus-write-probe.XXXXXX" 2>/dev/null || true)"
@@ -370,7 +452,7 @@ run_install() {
   if [ -z "${USE_SUDO}" ]; then
     install -m 0755 "${src}" "${dest}"
   else
-    sudo install -m 0755 "${src}" "${dest}"
+    sudo_run install -m 0755 "${src}" "${dest}"
   fi
 }
 
@@ -396,6 +478,7 @@ resolve_release_tag() {
 main() {
   need_cmd curl
   detect_platform
+  ensure_linux_libkrun_reflink_volume
   ensure_linux_daemon_data_dir
   summarize_host_setup
 

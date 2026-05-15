@@ -107,6 +107,11 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 		return "", fmt.Errorf("pick free port: %w", err)
 	}
 
+	bakeGW := strings.TrimSpace(hostDefaultGatewayIP())
+	if bakeGW == "" {
+		bakeGW = "192.168.0.1"
+	}
+
 	log.Printf("[libkrun] bake VM: starting passt for outbound internet access")
 	vmSideFD, hostSideFD, err := createPasstSocketPair()
 	if err != nil {
@@ -114,7 +119,7 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 	}
 	// NOTE: Do NOT use a timeout context for passt — it is a daemon that runs
 	// for the lifetime of the VM. Using a timeout would kill it prematurely.
-	passtProc, err := startPasstProcess(ctx, workDir, hostSideFD, sshPort, passtGuestIPv4ForWorkspace("rootfs-bake"))
+	passtProc, err := startPasstProcess(ctx, workDir, hostSideFD, sshPort, passtGuestIPv4ForWorkspaceWithGateway("rootfs-bake", bakeGW))
 	if err != nil {
 		_ = vmSideFD.Close()
 		_ = hostSideFD.Close()
@@ -123,10 +128,7 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 	// NOTE: Do NOT close hostSideFD here — passt owns it via ExtraFiles.
 	// It will be closed after childCmd starts (same pattern as manager.go).
 
-	kernelCmdline := "console=hvc0 root=/dev/vda rw init=/usr/local/bin/nexus-guest-agent nexus.bake=1"
-	if gw := strings.TrimSpace(hostDefaultGatewayIP()); gw != "" {
-		kernelCmdline += " nexus.gw=" + gw
-	}
+	kernelCmdline := "console=hvc0 root=/dev/vda rw init=/usr/local/bin/nexus-guest-agent nexus.bake=1 nexus.gw=" + bakeGW
 	if dns := strings.Join(hostDNSServers(), ","); dns != "" {
 		kernelCmdline += " nexus.dns=" + dns
 	}
@@ -222,12 +224,13 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 
 	bakeTimeout := bakeTimeout()
 	hvc0Path := serialLog + ".hvc0"
+	passtLogPath := filepath.Join(workDir, "passt.log")
 	start := time.Now()
 
 	// Poll every 5 s for the agent's "System halted" line in the hvc0 log.
 	// That line is emitted by the kernel immediately after poweroff() returns,
 	// so it's the most reliable signal that all writes are flushed.
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	const heartbeatEvery = 90 * time.Second
@@ -284,6 +287,18 @@ func runBakeVM(ctx context.Context, cfg ManagerConfig) (string, error) {
 
 		case <-ticker.C:
 			elapsed := time.Since(start)
+
+			if pdata, _ := os.ReadFile(passtLogPath); len(pdata) > 0 {
+				pl := strings.ToLower(string(pdata))
+				if strings.Contains(pl, "invalid address") {
+					_ = childCmd.Process.Kill()
+					if passtProc != nil {
+						_ = passtProc.Kill()
+					}
+					log.Printf("[libkrun] bake VM: passt rejected guest IP — log follows:\n%s", strings.TrimSpace(string(pdata)))
+					return "", fmt.Errorf("passt startup failed (invalid --address); check passt.log under bake workdir")
+				}
+			}
 
 			// Emit a progress line every 90 s.
 			if time.Since(lastHeartbeat) >= heartbeatEvery {

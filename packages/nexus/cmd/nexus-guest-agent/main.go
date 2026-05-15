@@ -78,9 +78,12 @@ func main() {
 	// Runs after the accept loop starts so the host can still reach the agent.
 	if isBakeMode() {
 		emitDiagnostic("agent bake: starting rootfs pre-bake")
-		bakeErr := ensureGuestBasePackages()
+		var bakeErr error
+		if bakeErr = verifyBakeOutboundReachable(); bakeErr == nil {
+			bakeErr = ensureGuestBasePackages()
+		}
 		if bakeErr != nil {
-			emitDiagnostic("agent bake: FAILED — base packages could not be installed: %v", bakeErr)
+			emitDiagnostic("agent bake: FAILED — %v", bakeErr)
 			// Stay alive briefly so the host can read the failure from the serial log.
 			time.Sleep(5 * time.Second)
 		} else {

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -226,9 +227,43 @@ func buildAPIKeyEnvFileLibkrun() string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-// hostDefaultGatewayIP returns the host's IPv4 default gateway by reading
-// /proc/net/route. Returns "" on error or if no default route is found.
+// hostDefaultGatewayIP returns the host's IPv4 default gateway. It prefers
+// `ip route show default` because /proc/net/route can disagree with the active
+// default when multiple tables or on-link routes are present; a wrong gateway
+// makes passt --address disagree with nexus.gw= and can pick an IP that
+// collides with the real LAN router.
 func hostDefaultGatewayIP() string {
+	if gw := hostDefaultGatewayFromIPRoute(); gw != "" {
+		return gw
+	}
+	return hostDefaultGatewayFromProcNetRoute()
+}
+
+func hostDefaultGatewayFromIPRoute() string {
+	out, err := exec.Command("ip", "-4", "route", "show", "default").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		for i := 0; i < len(fields)-1; i++ {
+			if fields[i] != "via" {
+				continue
+			}
+			gw := strings.TrimSpace(fields[i+1])
+			if ip := net.ParseIP(gw); ip != nil && !ip.IsUnspecified() {
+				return gw
+			}
+		}
+	}
+	return ""
+}
+
+func hostDefaultGatewayFromProcNetRoute() string {
 	f, err := os.Open("/proc/net/route")
 	if err != nil {
 		return ""

@@ -75,7 +75,8 @@ func startPasstProcess(ctx context.Context, workDir string, hostSide *os.File, s
 		// Keep passt's DHCP yiaddr aligned with the agent's static fallback so
 		// host->guest forwarded TCP reaches the same IPv4 even when DHCPv4 setup
 		// inside the guest fails and we fall back to a static address.
-		args = append(args, "--address", guestIPv4+"/16")
+		// passt expects a bare IPv4 for --address; prefix length belongs in --netmask.
+		args = append(args, "--address", guestIPv4, "--netmask", "16")
 	}
 	// Forward host loopback port → guest port 22 so Remote-SSH (Mac → ProxyJump → VM) works.
 	// The GuestIP stored in the workspace record uses this same port.
@@ -102,12 +103,23 @@ func passtMACForWorkspaceID(workspaceID string) [6]byte {
 }
 
 func passtGuestIPv4ForWorkspace(workspaceID string) string {
-	gateway := strings.TrimSpace(hostDefaultGatewayIP())
-	if gateway == "" {
-		gateway = "192.168.0.1"
+	gw := strings.TrimSpace(hostDefaultGatewayIP())
+	if gw == "" {
+		gw = "192.168.0.1"
+	}
+	return passtGuestIPv4ForWorkspaceWithGateway(workspaceID, gw)
+}
+
+// passtGuestIPv4ForWorkspaceWithGateway derives the guest IPv4 for passt's
+// --address using an explicit gateway. The bake VM must pass the same value as
+// kernel nexus.gw= so host passt, guest DHCP fallback, and static IP agree.
+func passtGuestIPv4ForWorkspaceWithGateway(workspaceID, gateway string) string {
+	gw := strings.TrimSpace(gateway)
+	if gw == "" {
+		gw = "192.168.0.1"
 	}
 	mac := passtMACForWorkspaceID(workspaceID)
-	return staticGuestIPv4ForMAC(fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]), gateway)
+	return staticGuestIPv4ForMAC(fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]), gw)
 }
 
 func hostDNSServers() []string {
@@ -175,9 +187,17 @@ func staticGuestIPv4ForMAC(mac, gateway string) string {
 	if err4 != nil || err5 != nil {
 		return "192.168.169.1"
 	}
-	gwParts := strings.SplitN(gateway, ".", 4)
+	gwTrim := strings.TrimSpace(gateway)
+	gwParts := strings.SplitN(gwTrim, ".", 4)
 	if len(gwParts) < 2 {
 		return fmt.Sprintf("172.26.%d.%d", b4, b5)
 	}
-	return fmt.Sprintf("%s.%s.%d.%d", gwParts[0], gwParts[1], b4, b5)
+	ip := fmt.Sprintf("%s.%s.%d.%d", gwParts[0], gwParts[1], b4, b5)
+	if ip == gwTrim {
+		ip = fmt.Sprintf("%s.%s.%d.%d", gwParts[0], gwParts[1], (int(b4)+131)%256, (int(b5)+73)%256)
+	}
+	if ip == gwTrim {
+		return fmt.Sprintf("172.26.%d.%d", b4, b5)
+	}
+	return ip
 }

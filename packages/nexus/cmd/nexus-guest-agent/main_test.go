@@ -344,6 +344,20 @@ func TestStaticGuestIPForMACInvalid(t *testing.T) {
 	}
 }
 
+func TestStaticGuestIPForMACAvoidsGatewayCollision(t *testing.T) {
+	// Matches workspace "rootfs-bake" libkrun MAC suffix → must not equal gw 192.168.44.1 or passt rejects --address.
+	ip, err := staticGuestIPForMAC("02:da:ad:60:2c:01", "192.168.44.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ip == "192.168.44.1" {
+		t.Fatalf("guest IP must not equal gateway, got %s", ip)
+	}
+	if want := "192.168.175.74"; ip != want {
+		t.Fatalf("expected shifted ip %s, got %q", want, ip)
+	}
+}
+
 func TestNetworkLooksUsableTrue(t *testing.T) {
 	addr := "2: eth0: <BROADCAST,UP> mtu 1500\n    inet 172.26.3.232/16 brd 172.26.255.255 scope global eth0\n"
 	route := "default via 172.26.0.1 dev eth0\n"

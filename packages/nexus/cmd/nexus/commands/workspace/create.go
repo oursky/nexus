@@ -43,14 +43,14 @@ func createCommand() *cobra.Command {
 			if len(args) == 1 && repo == "" {
 				repo = args[0]
 			}
+
+			resolvedRepo := normalizeRepoForCreate(repo)
+
 			// Infer name from the repo directory when not explicitly provided.
-			if repo != "" && name == "" {
-				abs, err := filepath.Abs(repo)
-				if err == nil {
-					name = filepath.Base(abs)
-				}
+			if resolvedRepo != "" && name == "" && !looksLikeRemoteRepo(resolvedRepo) {
+				name = filepath.Base(filepath.Clean(resolvedRepo))
 			}
-			if repo == "" || name == "" {
+			if resolvedRepo == "" || name == "" {
 				return fmt.Errorf("--repo and --name are required")
 			}
 
@@ -59,8 +59,6 @@ func createCommand() *cobra.Command {
 				return fmt.Errorf("nexus workspace create: %w", err)
 			}
 			defer conn.Close()
-
-			resolvedRepo := normalizeRepoForCreate(repo)
 
 			spec := domainworkspace.CreateSpec{
 				Repo:          resolvedRepo,
@@ -148,6 +146,8 @@ func normalizeRepoForCreate(repo string) string {
 		return repo
 	}
 
+	repo = expandHomeDirPrefix(repo)
+
 	if filepath.IsAbs(repo) {
 		return filepath.Clean(repo)
 	}
@@ -166,6 +166,28 @@ func normalizeRepoForCreate(repo string) string {
 	}
 
 	return repo
+}
+
+// expandHomeDirPrefix turns ~/path into an absolute path using the current user's
+// home directory. libkrun virtiofs host paths must exist on disk — a literal "~"
+// breaks VM startup (stat ~/… no such file).
+func expandHomeDirPrefix(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return path
+	}
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return path
+	}
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
 }
 
 func looksLikeRemoteRepo(repo string) bool {
