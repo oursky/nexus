@@ -327,6 +327,7 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 		AgentPath:          "/usr/local/bin/nexus-guest-agent",
 		GuestEnv:           guestEnv,
 		LogLevel:           1,
+		OmitSpotlightVSock: true,
 	}
 
 	runnerCfgPath := filepath.Join(sockDir, "vmrunner-bake.json")

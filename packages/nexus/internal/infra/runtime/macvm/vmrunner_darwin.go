@@ -53,6 +53,10 @@ type macVMRunnerConfig struct {
 
 	// Logging
 	LogLevel uint32 `json:"log_level,omitempty"`
+
+	// OmitSpotlightVSock skips the spotlight virtio-vsock endpoint (smaller virtio
+	// surface — helps constrained CI runners hit VmCreate EINVAL with otherwise-valid configs).
+	OmitSpotlightVSock bool `json:"omit_spotlight_vsock,omitempty"`
 }
 
 func writeMacVMRunnerConfig(path string, cfg macVMRunnerConfig) error {
@@ -168,8 +172,10 @@ func RunVMSubprocess(configPath string) {
 	if err := vmCtx.AddVsockPort(agentVSockPort, agentSockPath(cfg.SockDir), true); err != nil {
 		fatalf("vsock agent port %d: %v", agentVSockPort, err)
 	}
-	if err := vmCtx.AddVsockPort(spotlightVSockPort, spotlightSockPath(cfg.SockDir), true); err != nil {
-		fatalf("vsock spotlight port %d: %v", spotlightVSockPort, err)
+	if !cfg.OmitSpotlightVSock {
+		if err := vmCtx.AddVsockPort(spotlightVSockPort, spotlightSockPath(cfg.SockDir), true); err != nil {
+			fatalf("vsock spotlight port %d: %v", spotlightVSockPort, err)
+		}
 	}
 
 	// Write VM serial console (HVC0) to a file so the test harness can read it.
