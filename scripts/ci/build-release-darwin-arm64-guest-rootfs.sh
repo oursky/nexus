@@ -81,6 +81,10 @@ mkdir -p "$XDG_STATE_HOME/nexus"
 cp -f "$BASE_EXT4" "$XDG_CACHE_HOME/nexus/vm/rootfs.ext4"
 rm -f "$XDG_STATE_HOME/nexus"/rootfs-baked-* 2>/dev/null || true
 
+echo "==> Ad-hoc sign libkrun embed payloads (unsigned dylibs → VmCreate EINVAL on GHA)"
+codesign --force --sign - "$NEXUS_CMD/libkrun-darwin-arm64.dylib"
+codesign --force --sign - "$NEXUS_CMD/libkrunfw-darwin-arm64.dylib"
+
 echo "==> Build nexus (darwin/arm64) with embedded guest agent + libkrun"
 pushd "$NEXUS_PKG" >/dev/null
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags='-s -w' \
@@ -107,6 +111,7 @@ rm -f "$ENT_PLIST"
 
 echo "==> Run nexus vm bake (may take ~30–60m)"
 export NEXUS_LIBKRUN_BAKE_TIMEOUT="${NEXUS_LIBKRUN_BAKE_TIMEOUT:-55m}"
+export NEXUS_MACVM_BAKE_EMBEDDED_KERNEL_ONLY=1
 "$REPO_ROOT/dist/nexus-darwin-arm64-bake" vm bake --timeout 120m
 
 mkdir -p "$DIST"

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -49,10 +50,11 @@ func codesignDarwinAdhoc(w io.Writer, path string) {
 		return
 	}
 	cmd := exec.Command("codesign", "--force", "--sign", "-", path)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		fmt.Fprintf(w, "  warning: codesign %s failed: %v %s\n", filepath.Base(path), err, strings.TrimSpace(string(out)))
-		return
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(w, "  warning: codesign %s failed: %v %s\n", filepath.Base(path), err, strings.TrimSpace(out.String()))
 	}
 }
 
