@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/oursky/nexus/packages/nexus/internal/infra/config"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/guestagent"
 )
 
 // Driver implements the libkrun runtime driver.
@@ -161,7 +162,8 @@ func (d *Driver) AgentConn(ctx context.Context, workspaceID string) (net.Conn, e
 	agentSock := filepath.Join(inst.WorkDir, fmt.Sprintf("vsock_%d.sock", DefaultAgentVSockPort))
 
 	// Wait for libkrun to create the agent socket (VM may still be booting).
-	deadline := time.Now().Add(15 * time.Second)
+	maxSockWait := guestagent.AgentSocketWaitDuration()
+	deadline := time.Now().Add(maxSockWait)
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
 	}
@@ -359,9 +361,10 @@ func (d *Driver) WorkspaceReady(ctx context.Context, workspaceID string) (bool, 
 	// round-trip (not just a socket dial) so PTY create does not race guest
 	// listener startup and fail with connection reset.
 	start := time.Now()
-	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	probeBudget := guestagent.ProbeDialDuration()
+	probeCtx, cancel := context.WithTimeout(ctx, probeBudget)
 	defer cancel()
-	log.Printf("[libkrun] readiness: agent probe start workspace=%s timeout=8s", workspaceID)
+	log.Printf("[libkrun] readiness: agent probe start workspace=%s timeout=%s", workspaceID, probeBudget.Round(time.Millisecond))
 	conn, err := d.AgentConn(probeCtx, workspaceID)
 	if err != nil {
 		log.Printf("[libkrun] readiness: agent dial not-ready workspace=%s duration=%s err=%v", workspaceID, time.Since(start).Round(time.Millisecond), err)

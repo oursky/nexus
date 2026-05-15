@@ -12,6 +12,7 @@ import (
 
 	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/guestagent"
 )
 
 // runStartAsyncTimeout is the maximum time for the entire start operation including VM spawn.
@@ -224,7 +225,7 @@ func (s *Service) runReadinessProbe(ctx context.Context, rd runtimeReadinessDriv
 		err   error
 	}
 	resultCh := make(chan probeResult, 1)
-	probeCtx, cancelProbe := context.WithTimeout(ctx, 12*time.Second)
+	probeCtx, cancelProbe := context.WithTimeout(ctx, guestagent.ReadinessProbeOuterDuration())
 	go func() {
 		ready, err := rd.WorkspaceReady(probeCtx, wsCopy)
 		resultCh <- probeResult{ready: ready, err: err}

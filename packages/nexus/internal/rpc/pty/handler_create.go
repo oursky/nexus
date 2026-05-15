@@ -16,6 +16,7 @@ import (
 	creackpty "github.com/creack/pty"
 	appty "github.com/oursky/nexus/packages/nexus/internal/app/pty"
 	domainws "github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/guestagent"
 	rpcerrors "github.com/oursky/nexus/packages/nexus/internal/rpc/errors"
 	"github.com/oursky/nexus/packages/nexus/internal/transport"
 )
@@ -204,7 +205,7 @@ func (h *Handler) waitForShellOpenAck(sessionID string, dec *json.Decoder, conn 
 			return err
 		}
 		log.Printf("pty: createVMSession: ACK OK wsID=%s ack_ms=%d total_ms=%d", workspaceID, ackMs, time.Since(tStart).Milliseconds())
-	case <-time.After(8 * time.Second):
+	case <-time.After(guestagent.ProbeDialDuration()):
 		log.Printf("pty: createVMSession: ACK TIMEOUT wsID=%s total_ms=%d", workspaceID, time.Since(tStart).Milliseconds())
 		_ = conn.Close()
 		return errors.New("guest shell.open ack timed out")

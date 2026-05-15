@@ -11,6 +11,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/oursky/nexus/packages/nexus/internal/infra/guestagent"
 )
 
 // guestExecRequest mirrors the linux guest agent exec JSON envelope.
@@ -114,10 +116,11 @@ func (m *Manager) workspaceReady(ctx context.Context, workspaceID string) (bool,
 	}
 
 	start := time.Now()
-	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	probeBudget := guestagent.ProbeDialDuration()
+	probeCtx, cancel := context.WithTimeout(ctx, probeBudget)
 	defer cancel()
 
-	log.Printf("macvm readiness: probe start workspace=%s timeout=8s", workspaceID)
+	log.Printf("macvm readiness: probe start workspace=%s timeout=%s", workspaceID, probeBudget.Round(time.Millisecond))
 	conn, err := m.AgentConn(probeCtx, workspaceID)
 	if err != nil {
 		log.Printf("macvm readiness: agent dial not-ready workspace=%s duration=%s err=%v",
