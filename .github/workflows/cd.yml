@@ -244,9 +244,9 @@ jobs:
           if ! grep -q '/dev/vda' "$STAGING/etc/fstab" 2>/dev/null; then
             echo "/dev/vda / ext4 rw,relatime 0 1" | tee -a "$STAGING/etc/fstab"
           fi
-          "$MKE2FS" -F -t ext4 -L nexus-root -d "$STAGING" /tmp/rootfs-macos-arm64.ext4 10G
-          gzip -9 -c /tmp/rootfs-macos-arm64.ext4 > /tmp/rootfs-macos-arm64.ext4.gz
-          shasum -a 256 /tmp/rootfs-macos-arm64.ext4.gz | tee /tmp/rootfs-macos-arm64.ext4.gz.sha256
+          "$MKE2FS" -F -t ext4 -L nexus-root -d "$STAGING" /tmp/rootfs-darwin-arm64.ext4 10G
+          gzip -9 -c /tmp/rootfs-darwin-arm64.ext4 > /tmp/rootfs-darwin-arm64.ext4.gz
+          shasum -a 256 /tmp/rootfs-darwin-arm64.ext4.gz | tee /tmp/rootfs-darwin-arm64.ext4.gz.sha256
 
       - name: Upload rootfs to GitHub Release
         env:
@@ -254,8 +254,8 @@ jobs:
         run: |
           tag="${{ needs.semver.outputs.tag }}"
           gh release upload "$tag" \
-            /tmp/rootfs-macos-arm64.ext4.gz \
-            /tmp/rootfs-macos-arm64.ext4.gz.sha256 \
+            /tmp/rootfs-darwin-arm64.ext4.gz \
+            /tmp/rootfs-darwin-arm64.ext4.gz.sha256 \
             --repo "${{ github.repository }}" \
             --clobber
 
