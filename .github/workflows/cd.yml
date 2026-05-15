@@ -175,12 +175,11 @@ jobs:
   release-darwin-guest-rootfs:
     name: macOS guest rootfs (linux/arm64 image for libkrun)
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test-cd'
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 120
     env:
       NEXUS_LIBKRUN_BAKE_TIMEOUT: 55m
       NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "3"
-      NEXUS_MACVM_BAKE_EMBEDDED_KERNEL_ONLY: "1"
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
