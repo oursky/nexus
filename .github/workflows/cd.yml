@@ -174,7 +174,8 @@ jobs:
 
   release-darwin-guest-rootfs:
     name: macOS guest rootfs (linux/arm64 image for libkrun)
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test-cd'
+    # TODO: re-enable when macVM VmCreate on GHA is stable
+    if: false
     runs-on: macos-15
     timeout-minutes: 120
     env:
@@ -203,7 +204,7 @@ jobs:
   release-publish:
     name: Semantic release & publish artifacts
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test-cd'
-    needs: [release-build, release-host-rootfs, release-darwin-guest-rootfs]
+    needs: [release-build, release-host-rootfs]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -224,11 +225,7 @@ jobs:
           name: rootfs-linux-amd64-host
           path: dist
 
-      - name: Download darwin guest rootfs artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: rootfs-darwin-arm64-guest
-          path: dist
+      # Darwin guest rootfs is optional — baked in release-darwin-guest-rootfs (currently disabled).
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
