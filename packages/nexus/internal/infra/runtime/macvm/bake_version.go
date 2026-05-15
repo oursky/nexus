@@ -4,27 +4,30 @@ package macvm
 
 import "github.com/oursky/nexus/packages/nexus/internal/infra/runtime/vmrootfs"
 
-// BakeStampVersion is the legacy rootfs tag suffix (see vmrootfs.LegacyMacRootFSBakeStamp).
-const BakeStampVersion = vmrootfs.LegacyMacRootFSBakeStamp
+// HostBakeStampVersion must match Linux libkrun host-side bake stamps
+// (see packages/nexus/internal/infra/runtime/libkrun/bake_version.go).
+const HostBakeStampVersion = "v18"
 
-// RootFSSHA256 is the expected SHA256 of the **uncompressed** ext4 at
-// cfg.RootFSCachePath after download+decompress. Empty skips verification.
-const RootFSSHA256 = ""
+// BakeStampVersion is an alias for HostBakeStampVersion.
+const BakeStampVersion = HostBakeStampVersion
 
-// LinuxARM64RootFSSHA256 is optional verification for Linux arm64 rootfs downloads.
-const LinuxARM64RootFSSHA256 = ""
-
-// RootFSVersionLegacy is the legacy GitHub tag (pre-semver rootfs releases).
-func RootFSVersionLegacy() string {
+// LegacyMacRootFSTag is the legacy GitHub tag used before semver-aligned rootfs assets.
+func LegacyMacRootFSTag() string {
 	return vmrootfs.LegacyMacOSRootFSTag()
 }
 
-// DefaultRootFSURL downloads the macOS libkrun guest rootfs from the current release.
+// RootFSSHA256 is the expected SHA256 of the **uncompressed** ext4 after download (optional).
+const RootFSSHA256 = ""
+
+// LinuxARM64RootFSSHA256 is optional verification for Linux arm64 guest rootfs URLs.
+const LinuxARM64RootFSSHA256 = ""
+
+// DefaultRootFSURL selects the gzipped darwin/arm64 guest ext4 artifact for download.
 func DefaultRootFSURL() string {
 	return vmrootfs.MacOSGuestRootFSURL()
 }
 
-// DefaultLinuxARM64RootFSURL is the same guest image layout for Linux arm64 libkrun.
+// DefaultLinuxARM64RootFSURL is the gzipped linux/arm64 guest ext4 artifact URL.
 func DefaultLinuxARM64RootFSURL() string {
 	return vmrootfs.LinuxARM64GuestRootFSURL()
 }

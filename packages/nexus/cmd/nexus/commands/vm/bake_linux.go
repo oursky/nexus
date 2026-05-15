@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
 	startcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon/start"
 	lkruntime "github.com/oursky/nexus/packages/nexus/internal/infra/runtime/libkrun"
@@ -66,7 +65,7 @@ func runBake(stdout, stderr io.Writer, timeoutStr string) error {
 	}
 
 	// Parse timeout.
-	timeout, err := parseDuration(timeoutStr)
+	timeout, err := parseBakeOuterTimeout(timeoutStr)
 	if err != nil {
 		return fmt.Errorf("invalid timeout %q: %w", timeoutStr, err)
 	}
@@ -93,11 +92,3 @@ func runBake(stdout, stderr io.Writer, timeoutStr string) error {
 	return nil
 }
 
-func parseDuration(s string) (time.Duration, error) {
-	// Allow simple suffixes for convenience.
-	switch s {
-	case "":
-		return 10 * time.Minute, nil
-	}
-	return time.ParseDuration(s)
-}

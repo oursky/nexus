@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/oursky/nexus/packages/nexus/internal/vm/libkrun"
 )
@@ -25,9 +26,14 @@ type macVMRunnerConfig struct {
 	RootFSPath     string `json:"rootfs_path"`
 	DockerDataPath string `json:"docker_data_path,omitempty"` // empty = skip docker
 
-	// VirtioFS shares
+	// WorkspaceVirtioFS is the host directory for tag "nexus-workspace" when
+	// WorkspaceDiskPath is empty (normal macvm path).
 	WorkspacePath string `json:"workspace_path"`
-	ConfigDir     string `json:"config_dir,omitempty"`
+	// WorkspaceDiskPath, when non-empty, adds /dev/vdb as an ext4 workspace
+	// upper disk (same layout as Linux libkrun block bake) and skips virtiofs
+	// "nexus-workspace".
+	WorkspaceDiskPath string `json:"workspace_disk_path,omitempty"`
+	ConfigDir         string `json:"config_dir,omitempty"`
 
 	// Sockets
 	SockDir         string `json:"sock_dir"`
@@ -107,8 +113,15 @@ func RunVMSubprocess(configPath string) {
 	if err := vmCtx.SetVMConfig(vcpus, memMiB); err != nil {
 		fatalf("set_vm_config: %v", err)
 	}
+	useWorkspaceDisk := strings.TrimSpace(cfg.WorkspaceDiskPath) != ""
+
 	if err := vmCtx.AddDisk("rootfs", cfg.RootFSPath, 0, false); err != nil {
 		fatalf("add rootfs: %v", err)
+	}
+	if useWorkspaceDisk {
+		if err := vmCtx.AddDisk("workspace", cfg.WorkspaceDiskPath, 0, false); err != nil {
+			fatalf("add workspace: %v", err)
+		}
 	}
 	if cfg.DockerDataPath != "" {
 		if err := vmCtx.AddDisk("docker_data", cfg.DockerDataPath, 0, false); err != nil {
@@ -123,8 +136,20 @@ func RunVMSubprocess(configPath string) {
 	if err := vmCtx.SetRootDiskRemount("/dev/vda", "ext4", "rw"); err != nil {
 		fatalf("root disk remount: %v", err)
 	}
-	if err := vmCtx.AddVirtioFS("nexus-workspace", cfg.WorkspacePath); err != nil {
-		fatalf("virtiofs workspace: %v", err)
+	if useWorkspaceDisk {
+		// Bake / block layouts: mutable workspace upper on /dev/vdb; guest agent
+		// tolerates missing virtiofs lowerdir (same as Linux libkrun bake).
+		if strings.TrimSpace(cfg.WorkspacePath) != "" {
+			fatalf("workspace_path conflicts with workspace_disk_path (set one)")
+		}
+	} else {
+		wp := strings.TrimSpace(cfg.WorkspacePath)
+		if wp == "" {
+			fatalf("workspace_path required when workspace_disk_path is empty")
+		}
+		if err := vmCtx.AddVirtioFS("nexus-workspace", wp); err != nil {
+			fatalf("virtiofs workspace: %v", err)
+		}
 	}
 
 	if cfg.CustomKernelPath != "" {
@@ -164,8 +189,8 @@ func RunVMSubprocess(configPath string) {
 		fatalf("set_exec: %v", err)
 	}
 
-	log.Printf("[macvm-runner] config: vcpus=%d mem_mib=%d rootfs=%s docker_data=%q workspace=%s config_dir=%q gvproxy_sock=%s",
-		vcpus, memMiB, cfg.RootFSPath, cfg.DockerDataPath, cfg.WorkspacePath, cfg.ConfigDir, cfg.GVProxySockPath)
+	log.Printf("[macvm-runner] config: vcpus=%d mem_mib=%d rootfs=%s docker_data=%q workspace_vf=%q workspace_disk=%q config_dir=%q gvproxy_sock=%s",
+		vcpus, memMiB, cfg.RootFSPath, cfg.DockerDataPath, cfg.WorkspacePath, cfg.WorkspaceDiskPath, cfg.ConfigDir, cfg.GVProxySockPath)
 
 	// Pre-flight: verify disk images exist and are non-empty before entering
 	// the VM. A 0-byte or missing rootfs causes krun_start_enter to return
@@ -173,6 +198,7 @@ func RunVMSubprocess(configPath string) {
 	// configuration error. Catching it here gives a clear diagnostic instead.
 	for _, check := range []struct{ label, path string }{
 		{"rootfs", cfg.RootFSPath},
+		{"workspace", cfg.WorkspaceDiskPath},
 		{"docker_data", cfg.DockerDataPath},
 	} {
 		if check.path == "" {

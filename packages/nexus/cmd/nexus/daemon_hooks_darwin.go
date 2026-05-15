@@ -15,4 +15,7 @@ func init() {
 	startcmd.StartSetupFnJSON = func(w io.Writer) error {
 		return RunDarwinBootstrap(w, true)
 	}
+	// Mirrors Linux daemon hooks: exposes embedded guest-agent bytes for `nexus vm bake`
+	// and other rootfs tooling.
+	startcmd.EmbeddedAgentFn = func() []byte { return embeddedAgent }
 }
