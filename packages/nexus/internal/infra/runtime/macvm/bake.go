@@ -252,10 +252,11 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 		return "", fmt.Errorf("macvm bake: docker-data image required (install e2fsprogs)")
 	}
 
-	sockDir, err := os.MkdirTemp(workDir, "sock-")
+	sockDir, err := socketTempDir("mb-")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("macvm bake sock dir: %w", err)
 	}
+	defer func() { _ = os.RemoveAll(sockDir) }()
 
 	sshHostPort, err := pickTCPPort127()
 	if err != nil {

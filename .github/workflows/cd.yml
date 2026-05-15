@@ -291,7 +291,7 @@ jobs:
           cache-dependency-path: packages/nexus/go.sum
 
       - name: Build embedded Linux guest-agent
-        if: matrix.goos == 'linux'
+        if: matrix.goos == 'linux' || matrix.goos == 'darwin'
         working-directory: packages/nexus/cmd/nexus
         env:
           CGO_ENABLED: "0"

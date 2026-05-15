@@ -6,9 +6,36 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/unix"
 )
+
+// socketTempDir creates a directory for Unix domain sockets. gvproxy.sock.ctl and
+// virtio listen paths must fit in sockaddr_un (~104 bytes including NUL on
+// macOS). Default os.TempDir() under /var/folders/... plus long bake prefixes
+// overflows that limit; /tmp paths stay short.
+func socketTempDir(pattern string) (string, error) {
+	base := "/tmp"
+	if fi, err := os.Stat(base); err != nil || !fi.IsDir() {
+		base = os.TempDir()
+	}
+	dir, err := os.MkdirTemp(base, pattern)
+	if err != nil {
+		return "", err
+	}
+	ctl := filepath.Join(dir, "gvproxy.sock.ctl")
+	// Darwin sockaddr_un.Path is 104 bytes including the terminating NUL for file paths.
+	if len(ctl) >= 104 {
+		_ = os.RemoveAll(dir)
+		return "", errSocketPathTooLong(ctl)
+	}
+	return dir, nil
+}
+
+func errSocketPathTooLong(p string) error {
+	return &os.PathError{Op: "socketTempDir", Path: p, Err: unix.EINVAL}
+}
 
 type diskStat struct {
 	avail uint64

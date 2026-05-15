@@ -99,12 +99,40 @@ func StartGVProxy(gvproxyPath, socketPath string, logPath string) (*GVProxy, err
 		return nil, fmt.Errorf("start gvproxy: %w", err)
 	}
 
-	// Wait a moment for the sockets to be created.
-	for i := 0; i < 50; i++ {
-		if _, err := os.Stat(socketPath); err == nil {
-			break
+	// Wait for the vfkit datagram socket first, then the stream control socket
+	// (Expose* calls dial .ctl immediately after Start returns).
+	waitPath := func(p string, label string) error {
+		for i := 0; i < 50; i++ {
+			if _, err := os.Stat(p); err == nil {
+				return nil
+			}
+			time.Sleep(20 * time.Millisecond)
 		}
-		time.Sleep(20 * time.Millisecond)
+		return fmt.Errorf("gvproxy %s not ready: %s", label, p)
+	}
+	waitStreamSock := func(p string, label string) error {
+		for i := 0; i < 50; i++ {
+			fi, err := os.Stat(p)
+			if err == nil && fi.Mode()&os.ModeSocket != 0 {
+				return nil
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		return fmt.Errorf("gvproxy %s not ready: %s", label, p)
+	}
+	if err := waitPath(socketPath, "vfkit"); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		_ = os.Remove(socketPath)
+		_ = os.Remove(ctlSocket)
+		return nil, err
+	}
+	if err := waitStreamSock(ctlSocket, "ctl"); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		_ = os.Remove(socketPath)
+		_ = os.Remove(ctlSocket)
+		return nil, err
 	}
 
 	g := &GVProxy{

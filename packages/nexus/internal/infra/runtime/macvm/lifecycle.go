@@ -50,7 +50,7 @@ func (m *Manager) Start(ctx context.Context, ws *domainws.Workspace) error {
 		return fmt.Errorf("macvm: build config share: %w", err)
 	}
 
-	sockDir, err := os.MkdirTemp("", "nx-vm-")
+	sockDir, err := socketTempDir("nx-")
 	if err != nil {
 		_ = os.RemoveAll(configDir)
 		return fmt.Errorf("macvm: create sock dir: %w", err)
