@@ -47,7 +47,7 @@ func injectFileIntoExt4(imagePath string, data []byte, destPath string, mode os.
 // write-back didn't flush before the process was force-killed.
 func writeStampIntoRootfs(rootfsPath string) error {
 	// The agent checks for this stamp to skip package installation on subsequent boots.
-	const stampInsideRootfs = "/var/lib/nexus-tools-base-v15"
+	const stampInsideRootfs = "/var/lib/nexus-tools-base-v19"
 
 	// Write a temporary host-side file with the stamp content, then inject it
 	// into the ext4 image using debugfs. debugfs operates on the raw image
@@ -81,12 +81,21 @@ func writeStampIntoRootfs(rootfsPath string) error {
 	return nil
 }
 
-// ensureNPMBinSymlinksInRootfs is retained for backward compatibility with
-// legacy images that used npm global installs. New images use wrapper binaries.
+func debugfsStatLower(imagePath, guestPath string) string {
+	out, _ := exec.Command("debugfs", "-R", "stat "+guestPath, imagePath).CombinedOutput()
+	return strings.ToLower(string(out))
+}
+
+func debugfsPathMissing(statLower string) bool {
+	return strings.Contains(statLower, "not found") || strings.Contains(statLower, "ext2_lookup")
+}
+
+// ensureNPMBinSymlinksInRootfs repairs npm-global bin symlinks for legacy images.
+// Modern images use tiny mise+npx wrapper scripts at these paths — never overwrite those,
+// and skip dangling targets when node_modules was never populated globally.
 func ensureNPMBinSymlinksInRootfs(rootfsPath string) error {
 	symlinks := []struct {
-		link   string
-		target string
+		link, target string
 	}{
 		{"/usr/local/bin/opencode", "/usr/local/lib/node_modules/opencode-ai/bin/opencode"},
 		{"/usr/local/bin/codex", "/usr/local/lib/node_modules/@openai/codex/bin/codex.js"},
@@ -94,12 +103,20 @@ func ensureNPMBinSymlinksInRootfs(rootfsPath string) error {
 	}
 
 	for _, sl := range symlinks {
-		// Check if the symlink already exists.
-		out, _ := exec.Command("debugfs", "-R", "stat "+sl.link, rootfsPath).CombinedOutput()
-		if strings.Contains(string(out), "Type: symlink") {
+		tgt := debugfsStatLower(rootfsPath, sl.target)
+		if debugfsPathMissing(tgt) {
 			continue
 		}
-		// Ensure parent directory exists.
+
+		link := debugfsStatLower(rootfsPath, sl.link)
+		if strings.Contains(link, "type: symlink") || strings.Contains(link, "type: regular") {
+			continue
+		}
+		if !debugfsPathMissing(link) {
+			// Unexpected inode type — leave untouched.
+			continue
+		}
+
 		_ = exec.Command("debugfs", "-w", "-R", "mkdir /usr/local", rootfsPath).Run()
 		_ = exec.Command("debugfs", "-w", "-R", "mkdir /usr/local/bin", rootfsPath).Run()
 		out, err := exec.Command("debugfs", "-w", "-R",

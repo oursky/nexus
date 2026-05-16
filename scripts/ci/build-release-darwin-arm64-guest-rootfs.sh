@@ -2,7 +2,7 @@
 # Build the Linux/arm64 guest ext4 for darwin libkrun VMs by:
 #   1) assembling a minimal ubuntu 26.04 arm64 ext4 (guest agent only, no toolchain bake)
 #   2) running `nexus vm bake` locally on the macOS/arm64 GitHub runner (Hypervisor.framework + gvproxy)
-#   3) compressing the baked image to dist/rootfs-darwin-arm64.ext4.gz (+ .sha256)
+#   3) compressing the baked image to dist/rootfs-darwin-arm64.ext4.zst (+ gzip mirror + .sha256)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,7 +31,7 @@ if ! command -v brew >/dev/null 2>&1; then
   exit 1
 fi
 
-brew install e2fsprogs >/dev/null
+brew install e2fsprogs zstd >/dev/null
 
 echo "==> Stage libkrun dylibs for nexus embed"
 bash "$REPO_ROOT/scripts/local/build-libkrun-darwin.sh"
@@ -115,10 +115,15 @@ export NEXUS_MACVM_BAKE_EMBEDDED_KERNEL_ONLY=1
 "$REPO_ROOT/dist/nexus-darwin-arm64-bake" vm bake --timeout 120m
 
 mkdir -p "$DIST"
-gzip -9 -c "$XDG_CACHE_HOME/nexus/vm/rootfs.ext4" > "$DIST/rootfs-darwin-arm64.ext4.gz"
+bash "$REPO_ROOT/scripts/ci/shrink-rootfs-for-release.sh" "$XDG_CACHE_HOME/nexus/vm/rootfs.ext4"
+echo "==> Compress guest rootfs (zstd + gzip mirror)"
+zstd -19 --long -T0 -f "$XDG_CACHE_HOME/nexus/vm/rootfs.ext4" -o "$DIST/rootfs-darwin-arm64.ext4.zst"
+ls -lh "$DIST/rootfs-darwin-arm64.ext4.zst"
+gzip -9 -c "$XDG_CACHE_HOME/nexus/vm/rootfs.ext4" >"$DIST/rootfs-darwin-arm64.ext4.gz"
 ls -lh "$DIST/rootfs-darwin-arm64.ext4.gz"
 (
   cd "$DIST"
+  shasum -a 256 rootfs-darwin-arm64.ext4.zst | tee rootfs-darwin-arm64.ext4.zst.sha256
   shasum -a 256 rootfs-darwin-arm64.ext4.gz | tee rootfs-darwin-arm64.ext4.gz.sha256
 )
 

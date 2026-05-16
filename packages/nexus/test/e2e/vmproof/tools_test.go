@@ -117,14 +117,14 @@ func TestVMProof_GuestCLITools(t *testing.T) {
 	}
 
 	// Verify the bake/tool stamp file exists inside the VM.
-	out, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "cat", "/var/lib/nexus-tools-base-v15")
+	out, err := h.Run(t, repoPath, "workspace", "exec", wsID, "--", "cat", "/var/lib/nexus-tools-base-v19")
 	if err != nil {
 		t.Fatalf("tool stamp: %v\noutput: %s", err, out)
 	}
-	if !bytes.Contains(out, []byte("nexus-tools-base")) {
-		// The stamp file content may vary; just verify it's non-empty and contains the expected prefix.
-		if len(bytes.TrimSpace(out)) == 0 {
-			t.Error("tool stamp: expected non-empty stamp file")
-		}
+	if len(bytes.TrimSpace(out)) == 0 {
+		t.Error("tool stamp: expected non-empty stamp file")
+	}
+	if !bytes.Contains(out, []byte("ok")) {
+		t.Errorf("tool stamp: expected ok marker in output, got %q", string(out))
 	}
 }

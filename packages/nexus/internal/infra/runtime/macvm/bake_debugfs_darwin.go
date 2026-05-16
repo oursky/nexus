@@ -67,7 +67,7 @@ func injectFileIntoExt4(imagePath string, data []byte, destPath string, mode os.
 }
 
 func rootfsHasBakeStamp(rootfsPath string) bool {
-	const stampInsideRootfs = "/var/lib/nexus-tools-base-v15"
+	const stampInsideRootfs = "/var/lib/nexus-tools-base-v19"
 	dbg := resolveDebugFS()
 	if dbg == "" || strings.TrimSpace(rootfsPath) == "" {
 		return false
@@ -85,7 +85,7 @@ func rootfsHasBakeStamp(rootfsPath string) bool {
 
 func writeStampIntoRootfs(rootfsPath string) error {
 	dbg := resolveDebugFS()
-	const stampInsideRootfs = "/var/lib/nexus-tools-base-v15"
+	const stampInsideRootfs = "/var/lib/nexus-tools-base-v19"
 	if dbg == "" {
 		return fmt.Errorf("debugfs not found")
 	}
@@ -112,6 +112,15 @@ func writeStampIntoRootfs(rootfsPath string) error {
 	return nil
 }
 
+func debugfsStatLowerDarwin(dbg, imagePath, guestPath string) string {
+	out, _ := exec.Command(dbg, "-R", "stat "+guestPath, imagePath).CombinedOutput()
+	return strings.ToLower(string(out))
+}
+
+func debugfsPathMissingDarwin(statLower string) bool {
+	return strings.Contains(statLower, "not found") || strings.Contains(statLower, "ext2_lookup")
+}
+
 func ensureNPMBinSymlinksInRootfs(rootfsPath string) error {
 	dbg := resolveDebugFS()
 	if dbg == "" {
@@ -125,8 +134,15 @@ func ensureNPMBinSymlinksInRootfs(rootfsPath string) error {
 		{"/usr/local/bin/claude", "/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"},
 	}
 	for _, sl := range symlinks {
-		out, _ := exec.Command(dbg, "-R", "stat "+sl.link, rootfsPath).CombinedOutput()
-		if strings.Contains(strings.ToLower(string(out)), "type: symlink") {
+		tgt := debugfsStatLowerDarwin(dbg, rootfsPath, sl.target)
+		if debugfsPathMissingDarwin(tgt) {
+			continue
+		}
+		link := debugfsStatLowerDarwin(dbg, rootfsPath, sl.link)
+		if strings.Contains(link, "type: symlink") || strings.Contains(link, "type: regular") {
+			continue
+		}
+		if !debugfsPathMissingDarwin(link) {
 			continue
 		}
 		_ = exec.Command(dbg, "-w", "-R", "mkdir /usr/local", rootfsPath).Run()

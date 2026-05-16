@@ -14,6 +14,7 @@ import (
 
 	"github.com/oursky/nexus/packages/nexus/internal/auth/tokenstore"
 	"github.com/oursky/nexus/packages/nexus/internal/daemon"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/guestrootfs"
 	"github.com/spf13/cobra"
 )
 
@@ -319,6 +320,9 @@ func injectAgentAndBake(cfg daemon.Config, isLibkrun, isForegroundChild bool, em
 	if _, err := os.Stat(cfg.RootFSPath); err != nil {
 		emitPhase("guest-agent", "ok", "skipped (rootfs not provisioned yet)")
 		return nil
+	}
+	if err := guestrootfs.EnsureOperationalHeadroom(cfg.RootFSPath); err != nil {
+		return fmt.Errorf("daemon start: guest rootfs operational headroom: %w", err)
 	}
 	if err := ensureGuestAgent(cfg.RootFSPath); err != nil {
 		return fmt.Errorf("daemon start: guest agent refresh: %w", err)

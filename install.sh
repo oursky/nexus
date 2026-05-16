@@ -12,12 +12,19 @@
 #   NEXUS_INSTALL_PREFETCH_VM_RUNTIME  set to 1 to download smolvm libkrun tarball and passt before first daemon (default: skip; linux/amd64 release binary embeds them)
 #   NEXUS_XFS_SIZE_GB   sparse backing size when creating an XFS loop volume (default 20)
 #   NEXUS_INSTALL_VERBOSE  set to 1 to print full sudo command lines
+#   NEXUS_VM_ROOTFS_OPERATIONAL_GIB     after decompressing a shrunk release rootfs, grow to this GiB (default 8)
+#   NEXUS_VM_ROOTFS_OPERATIONAL_BYTES   overrides GiB when set (exact byte target for truncate + resize2fs)
+#   NEXUS_SKIP_HOMEBREW_INSTALL           on macOS: if 1, do not auto-install Homebrew when guest-disk tools are missing
+#   NEXUS_SKIP_LINUX_ROOTFS_PKGS          on Linux: if 1, do not sudo-install e2fsprogs/coreutils when guest-disk tools are missing
 #
 # Production daemon VM state defaults to /data/nexus/default (install.sh prepares /data/nexus).
 # Other daemon instances should use their own directory, e.g. nexus daemon start --workdir-root /data/nexus/e2e.
 #
 # Requires: curl, sha256sum or shasum -a 256 for release checksums, gzip when installing a prebaked rootfs,
 # (linux/amd64 host or darwin/arm64).
+# Shrunk libkrun guest disks need e2fsck + resize2fs + truncate when growing after decompress.
+#   Linux: sudo-install e2fsprogs + coreutils via apt/dnf/yum/zypper/pacman/apk/etc. when missing (opt-out: NEXUS_SKIP_LINUX_ROOTFS_PKGS=1).
+#   macOS: this script can install Homebrew non-interactively and brew-install e2fsprogs + coreutils when needed.
 # When NEXUS_VERSION is unset, the latest tag is inferred from GitHub’s /releases/latest redirect (curl only).
 # Optional: nc with OpenBSD-style -U (unix) for a best-effort daemon-socket warning.
 # Optional: pv for ETA/progress bars during gzip/tar steps (or NEXUS_INSTALL_PREFETCH_VM_RUNTIME smolvm tarball).
@@ -157,19 +164,250 @@ nexus_macvm_guest_rootfs_path() {
   echo "${cache_base}/vm/rootfs.ext4"
 }
 
+guest_rootfs_grow_tools_present() {
+  command -v e2fsck >/dev/null 2>&1 || return 1
+  command -v resize2fs >/dev/null 2>&1 || return 1
+  command -v truncate >/dev/null 2>&1 || command -v gtruncate >/dev/null 2>&1 || return 1
+  return 0
+}
+
+# Prepend Homebrew keg paths so e2fsck/resize2fs and GNU truncate are on PATH (macOS).
+prepend_brew_guest_rootfs_paths() {
+  command -v brew >/dev/null 2>&1 || return 0
+  local ep cu
+  ep="$(brew --prefix e2fsprogs 2>/dev/null)/sbin"
+  cu="$(brew --prefix coreutils 2>/dev/null)/libexec/gnubin"
+  [ -d "$ep" ] && PATH="${ep}:${PATH}"
+  [ -d "$cu" ] && PATH="${cu}:${PATH}"
+  export PATH
+}
+
+ensure_homebrew_installed_macos() {
+  [ "$(uname -s)" = "Darwin" ] || return 0
+
+  if command -v brew >/dev/null 2>&1; then
+    eval "$(brew shellenv)"
+    return 0
+  fi
+  if [ -x /opt/homebrew/bin/brew ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+    return 0
+  fi
+  if [ -x /usr/local/bin/brew ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+    return 0
+  fi
+
+  if [ "${NEXUS_SKIP_HOMEBREW_INSTALL:-}" = "1" ]; then
+    die "macOS needs Homebrew for e2fsck/resize2fs/truncate — install https://brew.sh or unset NEXUS_SKIP_HOMEBREW_INSTALL"
+  fi
+
+  echo "nexus-install: macOS — installing Homebrew (NONINTERACTIVE=1; guest VM disk tools) …" >&2
+  need_cmd curl bash
+
+  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" ||
+    die "Homebrew installation failed — see https://docs.brew.sh/Installation"
+
+  if [ -x /opt/homebrew/bin/brew ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [ -x /usr/local/bin/brew ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  else
+    die "Homebrew installed but brew not found — add Homebrew to PATH per the installer output"
+  fi
+}
+
+ensure_macos_guest_rootfs_tools() {
+  [ "$(uname -s)" = "Darwin" ] || return 0
+
+  prepend_brew_guest_rootfs_paths
+  if guest_rootfs_grow_tools_present; then
+    return 0
+  fi
+
+  ensure_homebrew_installed_macos
+
+  echo "nexus-install: macOS — brew install e2fsprogs coreutils (guest VM disk grow) …" >&2
+  brew install e2fsprogs coreutils
+
+  prepend_brew_guest_rootfs_paths
+
+  if ! guest_rootfs_grow_tools_present; then
+    die "guest rootfs tools still missing after brew install (e2fsck resize2fs truncate)"
+  fi
+}
+
+# Install e2fsprogs + coreutils on Linux when shrinking guest rootfs needs grow (truncate/resize2fs).
+ensure_linux_guest_rootfs_tools() {
+  [ "$(uname -s)" = "Linux" ] || return 0
+
+  if guest_rootfs_grow_tools_present; then
+    return 0
+  fi
+
+  if [ "${NEXUS_SKIP_LINUX_ROOTFS_PKGS:-}" = "1" ]; then
+    die "Linux needs e2fsprogs + coreutils for guest rootfs grow — install them or unset NEXUS_SKIP_LINUX_ROOTFS_PKGS"
+  fi
+
+  echo "nexus-install: Linux — installing e2fsprogs + coreutils (guest VM disk grow; may prompt for sudo) …" >&2
+
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo_run env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    sudo_run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq e2fsprogs coreutils
+  elif command -v apt >/dev/null 2>&1; then
+    sudo_run env DEBIAN_FRONTEND=noninteractive apt update -qq
+    sudo_run env DEBIAN_FRONTEND=noninteractive apt install -y -qq e2fsprogs coreutils
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo_run dnf install -y e2fsprogs coreutils
+  elif command -v yum >/dev/null 2>&1; then
+    sudo_run yum install -y e2fsprogs coreutils
+  elif command -v microdnf >/dev/null 2>&1; then
+    sudo_run microdnf install -y e2fsprogs coreutils
+  elif command -v zypper >/dev/null 2>&1; then
+    sudo_run zypper --non-interactive install -y e2fsprogs coreutils
+  elif command -v pacman >/dev/null 2>&1; then
+    sudo_run pacman -Sy --needed --noconfirm e2fsprogs coreutils
+  elif command -v apk >/dev/null 2>&1; then
+    sudo_run apk add --no-cache e2fsprogs coreutils
+  elif command -v xbps-install >/dev/null 2>&1; then
+    sudo_run xbps-install -Sy e2fsprogs coreutils
+  else
+    die "cannot auto-install e2fsprogs/coreutils — install them with your distro package manager"
+  fi
+
+  hash -r 2>/dev/null || true
+
+  if ! guest_rootfs_grow_tools_present; then
+    die "guest rootfs tools still missing after distro package install (e2fsck resize2fs truncate)"
+  fi
+}
+
+pick_rootfs_release_asset() {
+  local sums="$1" zst_asset="$2" gz_asset="$3"
+  local want_zst="" want_gz=""
+  grep -qF " ${zst_asset}" "$sums" 2>/dev/null && want_zst=1
+  grep -qF " ${gz_asset}" "$sums" 2>/dev/null && want_gz=1
+
+  if [ -n "${want_zst}" ] && command -v zstd >/dev/null 2>&1; then
+    echo "${zst_asset}"
+    return 0
+  fi
+  if [ -n "${want_gz}" ]; then
+    echo "${gz_asset}"
+    return 0
+  fi
+  if [ -n "${want_zst}" ] && [ -z "${want_gz}" ]; then
+    die "release ships ${zst_asset} only — install zstd, or use a release that includes ${gz_asset}"
+  fi
+  echo ""
+}
+
+ensure_zstd_cli_linux() {
+  command -v zstd >/dev/null 2>&1 && return 0
+  echo "nexus-install: Linux — installing zstd (guest VM disk download) …" >&2
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo_run env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    sudo_run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zstd
+  elif command -v apt >/dev/null 2>&1; then
+    sudo_run env DEBIAN_FRONTEND=noninteractive apt update -qq
+    sudo_run env DEBIAN_FRONTEND=noninteractive apt install -y -qq zstd
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo_run dnf install -y zstd
+  elif command -v yum >/dev/null 2>&1; then
+    sudo_run yum install -y zstd
+  elif command -v microdnf >/dev/null 2>&1; then
+    sudo_run microdnf install -y zstd
+  elif command -v zypper >/dev/null 2>&1; then
+    sudo_run zypper --non-interactive install -y zstd
+  elif command -v pacman >/dev/null 2>&1; then
+    sudo_run pacman -Sy --needed --noconfirm zstd
+  elif command -v apk >/dev/null 2>&1; then
+    sudo_run apk add --no-cache zstd
+  elif command -v xbps-install >/dev/null 2>&1; then
+    sudo_run xbps-install -Sy zstd
+  else
+    die "cannot install zstd — use gzip rootfs artifact or install zstd manually"
+  fi
+  hash -r 2>/dev/null || true
+}
+
+ensure_zstd_cli_macos() {
+  command -v zstd >/dev/null 2>&1 && return 0
+  ensure_homebrew_installed_macos
+  echo "nexus-install: macOS — brew install zstd (guest VM disk download) …" >&2
+  brew install zstd
+}
+
+ensure_zstd_cli_for_vm_disk() {
+  command -v zstd >/dev/null 2>&1 && return 0
+  case "$(uname -s)" in
+    Darwin) ensure_zstd_cli_macos ;;
+    Linux) ensure_zstd_cli_linux ;;
+    *) die "install zstd for .zst guest VM disk or pick gzip checksum asset" ;;
+  esac
+}
+
+# Grow shrunk release rootfs (minimal ext4 inside zstd/gzip) to operational headroom; mirrors guestrootfs.EnsureOperationalHeadroom.
+grow_guest_rootfs_operational_headroom() {
+  local dest="$1"
+  local target cur
+  if [ -n "${NEXUS_VM_ROOTFS_OPERATIONAL_BYTES:-}" ]; then
+    target="${NEXUS_VM_ROOTFS_OPERATIONAL_BYTES}"
+  else
+    local gib="${NEXUS_VM_ROOTFS_OPERATIONAL_GIB:-8}"
+    target=$((gib * 1024 * 1024 * 1024))
+  fi
+  cur=$(wc -c <"$dest" | tr -d ' ')
+  if [ "$cur" -ge "$target" ]; then
+    return 0
+  fi
+  echo "nexus-install: VM rootfs — expanding shrunk disk (${cur} → ${target} bytes)"
+
+  case "$(uname -s)" in
+    Darwin)
+      ensure_macos_guest_rootfs_tools
+      prepend_brew_guest_rootfs_paths
+      ;;
+    Linux)
+      ensure_linux_guest_rootfs_tools
+      ;;
+    *)
+      if ! guest_rootfs_grow_tools_present; then
+        die "guest rootfs grow unsupported on OS $(uname -s) — need e2fsck resize2fs truncate"
+      fi
+      ;;
+  esac
+
+  local trunc_bin=""
+  trunc_bin="$(command -v truncate 2>/dev/null || true)"
+  [ -n "$trunc_bin" ] || trunc_bin="$(command -v gtruncate 2>/dev/null || true)"
+  [ -n "$trunc_bin" ] || die "missing truncate (GNU coreutils)"
+  need_cmd e2fsck resize2fs
+
+  set +e
+  e2fsck -f -y "$dest"
+  local ecc=$?
+  set -e
+  [ "$ecc" -le 2 ] || die "e2fsck failed growing guest rootfs (exit $ecc)"
+  "$trunc_bin" -s "$target" "$dest"
+  resize2fs "$dest"
+}
+
 # Install at most one release rootfs artifact: linux/amd64 → host VM disk; darwin/arm64 → macOS guest cache.
 install_prebaked_rootfs_for_platform() {
   local tmp="$1" sums="$2" base="$3"
-  local asset="" dest="" vm_dir="" share label_miss=""
+  local zst_asset="" gz_asset="" asset="" dest="" vm_dir="" share label_miss=""
 
   if [ "${GOOS:-}" = "linux" ] && [ "${GOARCH}" = "amd64" ]; then
-    asset="rootfs-linux-amd64.ext4.gz"
+    zst_asset="rootfs-linux-amd64.ext4.zst"
+    gz_asset="rootfs-linux-amd64.ext4.gz"
     share="$(nexus_data_share_dir)"
     vm_dir="${share}/vm"
     dest="${vm_dir}/rootfs.ext4"
     label_miss="daemon may bake rootfs on first start"
   elif [ "${GOOS:-}" = "darwin" ] && [ "${GOARCH}" = "arm64" ]; then
-    asset="rootfs-darwin-arm64.ext4.gz"
+    zst_asset="rootfs-darwin-arm64.ext4.zst"
+    gz_asset="rootfs-darwin-arm64.ext4.gz"
     dest="$(nexus_macvm_guest_rootfs_path)"
     vm_dir="$(dirname "${dest}")"
     label_miss="macOS VM may build/download guest disk on first use"
@@ -178,17 +416,29 @@ install_prebaked_rootfs_for_platform() {
     return 0
   fi
 
-  if ! grep -qF " ${asset}" "${sums}" 2>/dev/null; then
-    echo "nexus-install: no ${asset} in release checksums; ${label_miss}"
+  asset="$(pick_rootfs_release_asset "${sums}" "${zst_asset}" "${gz_asset}")"
+  if [ -z "${asset}" ]; then
+    echo "nexus-install: no ${zst_asset} or ${gz_asset} in release checksums; ${label_miss}"
     return 0
   fi
 
-  need_cmd gzip
   mkdir -p "${vm_dir}"
   if [ -f "${dest}" ]; then
     echo "nexus-install: ${dest} already exists; skipping ${asset}"
     return 0
   fi
+
+  case "${asset}" in
+    *.zst)
+      ensure_zstd_cli_for_vm_disk
+      ;;
+    *.gz)
+      need_cmd gzip
+      ;;
+    *)
+      die "unsupported VM disk archive: ${asset}"
+      ;;
+  esac
 
   echo "nexus-install: VM rootfs — downloading ${asset} (${NEXUS_VERSION:-release}) …"
   curl_download_progress "${base}/${asset}" "${tmp}/${asset}"
@@ -200,9 +450,17 @@ install_prebaked_rootfs_for_platform() {
   )
 
   echo "nexus-install: VM rootfs — decompressing ${asset} → ${dest}"
-  pv_through_file "${tmp}/${asset}" "${asset}" | gzip -dc > "${dest}.tmp"
+  case "${asset}" in
+    *.zst)
+      pv_through_file "${tmp}/${asset}" "${asset}" | zstd -dc >"${dest}.tmp"
+      ;;
+    *.gz)
+      pv_through_file "${tmp}/${asset}" "${asset}" | gzip -dc >"${dest}.tmp"
+      ;;
+  esac
 
   mv "${dest}.tmp" "${dest}"
+  grow_guest_rootfs_operational_headroom "${dest}"
   echo "nexus-install: VM rootfs — installed prebaked disk at ${dest}"
 }
 

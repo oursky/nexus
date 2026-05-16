@@ -163,7 +163,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rootfs-linux-amd64-host
-          path: dist/rootfs-linux-amd64.ext4.gz
+          path: |
+            dist/rootfs-linux-amd64.ext4.zst
+            dist/rootfs-linux-amd64.ext4.gz
           if-no-files-found: error
 
   release-darwin-guest-rootfs:
@@ -193,7 +195,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rootfs-darwin-arm64-guest
-          path: dist/rootfs-darwin-arm64.ext4.gz
+          path: |
+            dist/rootfs-darwin-arm64.ext4.zst
+            dist/rootfs-darwin-arm64.ext4.gz
           if-no-files-found: error
 
   release-publish:
@@ -288,7 +292,9 @@ jobs:
             exit 1
           fi
           extra=()
+          [ -f rootfs-linux-amd64.ext4.zst ] && extra+=(rootfs-linux-amd64.ext4.zst)
           [ -f rootfs-linux-amd64.ext4.gz ] && extra+=(rootfs-linux-amd64.ext4.gz)
+          [ -f rootfs-darwin-arm64.ext4.zst ] && extra+=(rootfs-darwin-arm64.ext4.zst)
           [ -f rootfs-darwin-arm64.ext4.gz ] && extra+=(rootfs-darwin-arm64.ext4.gz)
           sha256sum nexus-* "${extra[@]}" > checksums.txt
 
@@ -301,14 +307,46 @@ jobs:
             grep -F " ${f}" checksums.txt | awk '{print $1}'
           }
 
-          ROOTFS_SHA=""
+          primary_rf_linux_url=""
+          primary_rf_linux_sha=""
+          primary_rf_linux_comp=""
+          mirror_rf_linux_gzip_url=""
+          mirror_rf_linux_gzip_sha=""
+          if [ -f rootfs-linux-amd64.ext4.zst ]; then
+            primary_rf_linux_url="${BASE_URL}/rootfs-linux-amd64.ext4.zst"
+            primary_rf_linux_sha="$(hash_for rootfs-linux-amd64.ext4.zst)"
+            primary_rf_linux_comp="zstd"
+          fi
           if [ -f rootfs-linux-amd64.ext4.gz ]; then
-            ROOTFS_SHA="$(hash_for rootfs-linux-amd64.ext4.gz)"
+            if [ -z "${primary_rf_linux_url}" ]; then
+              primary_rf_linux_url="${BASE_URL}/rootfs-linux-amd64.ext4.gz"
+              primary_rf_linux_sha="$(hash_for rootfs-linux-amd64.ext4.gz)"
+              primary_rf_linux_comp="gzip"
+            else
+              mirror_rf_linux_gzip_url="${BASE_URL}/rootfs-linux-amd64.ext4.gz"
+              mirror_rf_linux_gzip_sha="$(hash_for rootfs-linux-amd64.ext4.gz)"
+            fi
           fi
 
-          ROOTFS_DARWIN_SHA=""
+          primary_rf_darwin_url=""
+          primary_rf_darwin_sha=""
+          primary_rf_darwin_comp=""
+          mirror_rf_darwin_gzip_url=""
+          mirror_rf_darwin_gzip_sha=""
+          if [ -f rootfs-darwin-arm64.ext4.zst ]; then
+            primary_rf_darwin_url="${BASE_URL}/rootfs-darwin-arm64.ext4.zst"
+            primary_rf_darwin_sha="$(hash_for rootfs-darwin-arm64.ext4.zst)"
+            primary_rf_darwin_comp="zstd"
+          fi
           if [ -f rootfs-darwin-arm64.ext4.gz ]; then
-            ROOTFS_DARWIN_SHA="$(hash_for rootfs-darwin-arm64.ext4.gz)"
+            if [ -z "${primary_rf_darwin_url}" ]; then
+              primary_rf_darwin_url="${BASE_URL}/rootfs-darwin-arm64.ext4.gz"
+              primary_rf_darwin_sha="$(hash_for rootfs-darwin-arm64.ext4.gz)"
+              primary_rf_darwin_comp="gzip"
+            else
+              mirror_rf_darwin_gzip_url="${BASE_URL}/rootfs-darwin-arm64.ext4.gz"
+              mirror_rf_darwin_gzip_sha="$(hash_for rootfs-darwin-arm64.ext4.gz)"
+            fi
           fi
 
           jq -n \
@@ -317,8 +355,16 @@ jobs:
             --arg b "${BASE_URL}" \
             --arg h_la "$(hash_for nexus-linux-amd64)" \
             --arg h_darm "$(hash_for nexus-darwin-arm64)" \
-            --arg h_rf "${ROOTFS_SHA}" \
-            --arg h_rfd "${ROOTFS_DARWIN_SHA}" \
+            --arg rf_l_pri_url "${primary_rf_linux_url}" \
+            --arg rf_l_pri_sha "${primary_rf_linux_sha}" \
+            --arg rf_l_pri_comp "${primary_rf_linux_comp}" \
+            --arg rf_l_gz_url "${mirror_rf_linux_gzip_url}" \
+            --arg rf_l_gz_sha "${mirror_rf_linux_gzip_sha}" \
+            --arg rf_d_pri_url "${primary_rf_darwin_url}" \
+            --arg rf_d_pri_sha "${primary_rf_darwin_sha}" \
+            --arg rf_d_pri_comp "${primary_rf_darwin_comp}" \
+            --arg rf_d_gz_url "${mirror_rf_darwin_gzip_url}" \
+            --arg rf_d_gz_sha "${mirror_rf_darwin_gzip_sha}" \
             '
             {
               version: $ver,
@@ -328,16 +374,32 @@ jobs:
                 "darwin-arm64": { url: ($b + "/nexus-darwin-arm64"), sha256: $h_darm }
               }
             }
-            | if ($h_rf | length) > 0 then . + {
+            | if ($rf_l_pri_url | length) > 0 then . + {
                 rootfs_linux_amd64: {
-                  url: ($b + "/rootfs-linux-amd64.ext4.gz"),
-                  sha256: $h_rf
+                  url: $rf_l_pri_url,
+                  sha256: $rf_l_pri_sha,
+                  compression: $rf_l_pri_comp
                 }
               } else . end
-            | if ($h_rfd | length) > 0 then . + {
+            | if ($rf_l_gz_url | length) > 0 then . + {
+                rootfs_linux_amd64_gzip_mirror: {
+                  url: $rf_l_gz_url,
+                  sha256: $rf_l_gz_sha,
+                  compression: "gzip"
+                }
+              } else . end
+            | if ($rf_d_pri_url | length) > 0 then . + {
                 rootfs_darwin_arm64: {
-                  url: ($b + "/rootfs-darwin-arm64.ext4.gz"),
-                  sha256: $h_rfd
+                  url: $rf_d_pri_url,
+                  sha256: $rf_d_pri_sha,
+                  compression: $rf_d_pri_comp
+                }
+              } else . end
+            | if ($rf_d_gz_url | length) > 0 then . + {
+                rootfs_darwin_arm64_gzip_mirror: {
+                  url: $rf_d_gz_url,
+                  sha256: $rf_d_gz_sha,
+                  compression: "gzip"
                 }
               } else . end
             ' > latest.json
@@ -355,12 +417,14 @@ jobs:
           {
             echo "Automated release build for \`${TAG_NAME}\`."
             echo ""
-            echo "Assets include Linux amd64 and **Darwin/arm64** (Apple Silicon) CLI binaries, optional prebuilt **Linux/amd64 libkrun host** rootfs (\`rootfs-linux-amd64.ext4.gz\`), optional **macOS/arm64 guest** VM disk (\`rootfs-darwin-arm64.ext4.gz\`, matches \`macvm\` cache layout), \`checksums.txt\`, and \`latest.json\`."
+            echo "Assets include Linux amd64 and **Darwin/arm64** (Apple Silicon) CLI binaries, optional prebuilt **Linux/amd64 libkrun host** rootfs (\`rootfs-linux-amd64.ext4.zst\` preferred + \`.gz\` mirror), optional **macOS/arm64 guest** VM disk (\`rootfs-darwin-arm64.ext4.zst\` + \`.gz\`), \`checksums.txt\`, and \`latest.json\`."
             echo ""
             echo "**Note:** Linux amd64 embeds libkrun helpers (incl. \`nexus-libkrun-vm\`), passt, and the Linux guest-agent (\`CGO_ENABLED=0\`). macOS binaries embed matching Linux guest-agent blobs used by \`nexus vm bake\`."
           } >"$NOTES"
           EXTRA=()
+          [ -f dist/rootfs-linux-amd64.ext4.zst ] && EXTRA+=(dist/rootfs-linux-amd64.ext4.zst)
           [ -f dist/rootfs-linux-amd64.ext4.gz ] && EXTRA+=(dist/rootfs-linux-amd64.ext4.gz)
+          [ -f dist/rootfs-darwin-arm64.ext4.zst ] && EXTRA+=(dist/rootfs-darwin-arm64.ext4.zst)
           [ -f dist/rootfs-darwin-arm64.ext4.gz ] && EXTRA+=(dist/rootfs-darwin-arm64.ext4.gz)
           ASSETS=(
             dist/nexus-linux-amd64
@@ -413,7 +477,9 @@ jobs:
             echo 'Consume `latest.json` from this release for stable URLs on the prerelease channel, or use the tagged semver release above.'
           } >"$NOTES_FILE"
           EXTRA=()
+          [ -f dist/rootfs-linux-amd64.ext4.zst ] && EXTRA+=(dist/rootfs-linux-amd64.ext4.zst)
           [ -f dist/rootfs-linux-amd64.ext4.gz ] && EXTRA+=(dist/rootfs-linux-amd64.ext4.gz)
+          [ -f dist/rootfs-darwin-arm64.ext4.zst ] && EXTRA+=(dist/rootfs-darwin-arm64.ext4.zst)
           [ -f dist/rootfs-darwin-arm64.ext4.gz ] && EXTRA+=(dist/rootfs-darwin-arm64.ext4.gz)
           ASSETS=(
             dist/nexus-linux-amd64
