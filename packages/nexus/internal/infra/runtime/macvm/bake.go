@@ -157,15 +157,24 @@ func cleanupStaleMacBakeArtifacts() {
 	}
 }
 
-func readSerialSuccess(serialLog string) (ok bool, failed bool, data string) {
-	b, err := os.ReadFile(serialLog)
-	if err != nil || len(b) == 0 {
-		return false, false, ""
+func readSerialSuccess(serialLog string, extraLogs ...string) (ok bool, failed bool, data string) {
+	sources := []string{serialLog}
+	sources = append(sources, extraLogs...)
+
+	for _, path := range sources {
+		b, err := os.ReadFile(path)
+		if err != nil || len(b) == 0 {
+			continue
+		}
+		s := string(b)
+		if strings.Contains(s, "agent bake: all tools installed") {
+			return true, false, s
+		}
+		if strings.Contains(s, "agent bake: FAILED") {
+			return false, true, s
+		}
 	}
-	s := string(b)
-	return strings.Contains(s, "agent bake: all tools installed"),
-		strings.Contains(s, "agent bake: FAILED"),
-		s
+	return false, false, ""
 }
 
 func relocateBakedRootfs(rootfsPath string) (string, error) {
@@ -184,8 +193,8 @@ func relocateBakedRootfs(rootfsPath string) (string, error) {
 	return tmpPath, nil
 }
 
-func finishBakedRootfs(rootfsPath, serialLog string) (string, error) {
-	bakeOK, bakeFail, tail := readSerialSuccess(serialLog)
+func finishBakedRootfs(rootfsPath, serialLog, runnerLog string) (string, error) {
+	bakeOK, bakeFail, tail := readSerialSuccess(serialLog, runnerLog)
 	if bakeFail || !bakeOK {
 		lines := strings.Split(tail, "\n")
 		if len(lines) > 100 {
@@ -398,11 +407,11 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 	for {
 		select {
 		case <-childDone:
-			_, bakeFail, _ := readSerialSuccess(serialLog)
+			_, bakeFail, _ := readSerialSuccess(serialLog, runnerLogPath)
 			if bakeFail {
 				return "", fmt.Errorf("macvm bake VM failed inside guest (see %s)", serialLog)
 			}
-			return finishBakedRootfs(rootfsPath, serialLog)
+			return finishBakedRootfs(rootfsPath, serialLog, runnerLogPath)
 
 		case <-ticker.C:
 			elapsed := time.Since(start)
@@ -411,7 +420,7 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 				lastHeartbeat = time.Now()
 			}
 
-			_, bakeFail, serialData := readSerialSuccess(serialLog)
+			_, bakeFail, serialData := readSerialSuccess(serialLog, runnerLogPath)
 			if bakeFail {
 				_ = childCmd.Process.Kill()
 				return "", fmt.Errorf("macvm bake: guest agent reported failure — see %s", serialLog)
@@ -420,11 +429,11 @@ func runBakeMacVM(ctx context.Context, cfg BakeMacConfig) (string, error) {
 			if strings.Contains(serialData, "agent bake: all tools installed") {
 				log.Printf("[macvm] bake VM: success marker at %v — waiting for graceful exit", elapsed.Round(time.Second))
 				waitPoweroff(childCmd, childDone, gvp, 90*time.Second)
-				_, bakeFail2, _ := readSerialSuccess(serialLog)
+				_, bakeFail2, _ := readSerialSuccess(serialLog, runnerLogPath)
 				if bakeFail2 {
 					return "", fmt.Errorf("macvm bake failed during shutdown — see %s", serialLog)
 				}
-				return finishBakedRootfs(rootfsPath, serialLog)
+				return finishBakedRootfs(rootfsPath, serialLog, runnerLogPath)
 			}
 
 			if elapsed > bakeTimeoutDur {
