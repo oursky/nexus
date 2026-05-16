@@ -8,7 +8,7 @@ import (
 )
 
 func rootfsHasBakeStamp(rootfsPath string) bool {
-	const stampInsideRootfs = "/var/lib/nexus-tools-base-v15"
+	const stampInsideRootfs = "/var/lib/nexus-tools-base-v19"
 	if strings.TrimSpace(rootfsPath) == "" {
 		return false
 	}

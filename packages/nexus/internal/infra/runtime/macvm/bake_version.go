@@ -6,7 +6,7 @@ import "github.com/oursky/nexus/packages/nexus/internal/infra/runtime/vmrootfs"
 
 // HostBakeStampVersion must match Linux libkrun host-side bake stamps
 // (see packages/nexus/internal/infra/runtime/libkrun/bake_version.go).
-const HostBakeStampVersion = "v18"
+const HostBakeStampVersion = "v19"
 
 // BakeStampVersion is an alias for HostBakeStampVersion.
 const BakeStampVersion = HostBakeStampVersion

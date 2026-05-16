@@ -1,5 +1,8 @@
 // Package vmrootfs holds GitHub Release URLs for pre-built libkrun guest rootfs
 // assets (Linux guests: amd64 on Linux hosts, arm64 on Apple Silicon). Works on any GOOS (pure functions).
+//
+// Release pipelines publish shrunk ext4 images compressed with **zstd** (primary) and **gzip**
+// (fallback). Hosts restore operational disk headroom after download (install.sh / guestrootfs).
 package vmrootfs
 
 import (
@@ -20,7 +23,7 @@ func LegacyMacOSRootFSTag() string {
 }
 
 // ReleaseTagForRootfsAssets returns the GitHub release tag that holds
-// rootfs-*.ext4.gz files. Semver releases use the same tag as Nexus binaries
+// rootfs artifacts. Semver releases use the same tag as Nexus binaries
 // (e.g. v1.2.3). Dev builds use LegacyMacOSRootFSTag().
 func ReleaseTagForRootfsAssets() string {
 	v := strings.TrimSpace(buildinfo.Version)
@@ -33,18 +36,37 @@ func ReleaseTagForRootfsAssets() string {
 	return v
 }
 
-// MacOSGuestRootFSURL is the gzipped ext4 for macOS libkrun VMs.
-func MacOSGuestRootFSURL() string {
+func releaseDownloadBase() string {
 	return fmt.Sprintf(
-		"https://github.com/oursky/nexus/releases/download/%s/rootfs-darwin-arm64.ext4.gz",
+		"https://github.com/oursky/nexus/releases/download/%s/",
 		ReleaseTagForRootfsAssets(),
 	)
 }
 
-// LinuxAMD64GuestRootFSURL is the gzipped ext4 for Linux amd64 libkrun guests.
+// MacOSGuestRootFSDownloadCandidates returns preferred darwin/arm64 rootfs URLs (zstd first, gzip fallback).
+func MacOSGuestRootFSDownloadCandidates() []string {
+	b := releaseDownloadBase()
+	return []string{
+		b + "rootfs-darwin-arm64.ext4.zst",
+		b + "rootfs-darwin-arm64.ext4.gz",
+	}
+}
+
+// LinuxAMD64GuestRootFSDownloadCandidates returns preferred linux/amd64 host VM rootfs URLs (zstd first, gzip fallback).
+func LinuxAMD64GuestRootFSDownloadCandidates() []string {
+	b := releaseDownloadBase()
+	return []string{
+		b + "rootfs-linux-amd64.ext4.zst",
+		b + "rootfs-linux-amd64.ext4.gz",
+	}
+}
+
+// MacOSGuestRootFSURL is the preferred (zstd) darwin/arm64 guest rootfs URL.
+func MacOSGuestRootFSURL() string {
+	return MacOSGuestRootFSDownloadCandidates()[0]
+}
+
+// LinuxAMD64GuestRootFSURL is the preferred (zstd) linux/amd64 host rootfs URL.
 func LinuxAMD64GuestRootFSURL() string {
-	return fmt.Sprintf(
-		"https://github.com/oursky/nexus/releases/download/%s/rootfs-linux-amd64.ext4.gz",
-		ReleaseTagForRootfsAssets(),
-	)
+	return LinuxAMD64GuestRootFSDownloadCandidates()[0]
 }

@@ -362,6 +362,13 @@ tasks:
     cmds:
       - bash scripts/ci/build-release-host-rootfs-bake-and-package.sh
 
+  verify:linux-baked-rootfs:
+    desc: "Offline verify Linux baked rootfs (e2fsck + stamp). Override path with ROOTFS=/path/to/rootfs.ext4"
+    vars:
+      ROOTFS: '{{.ROOTFS | default ""}}'
+    cmds:
+      - bash scripts/local/verify-linux-baked-rootfs.sh "{{.ROOTFS}}"
+
   ci:local:
     desc: "Run all local CI checks (commits + lint + test + build)"
     cmds:

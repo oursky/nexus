@@ -111,7 +111,7 @@ func runStreamed(ctx context.Context, env []string, prefix, name string, args ..
 // re-running on every workspace start — packages only install once per rootfs.
 func ensureGuestBasePackages() error {
 	start := time.Now()
-	const stampFile = "/var/lib/nexus-tools-base-v15"
+	const stampFile = "/var/lib/nexus-tools-base-v19"
 	if _, err := os.Stat(stampFile); err == nil {
 		emitDiagnostic("agent base packages: already installed (stamp found)")
 		return nil
@@ -198,6 +198,7 @@ func runAptGetWithRetry(ctx context.Context, env []string, label string, args ..
 		"-o", "Acquire::Retries=5",
 		"-o", "Acquire::http::Timeout=20",
 		"-o", "Acquire::https::Timeout=20",
+		"-o", "APT::Install-Suggests=false",
 	}
 	if len(args) > 0 && args[0] == "update" {
 		// apt-get update can otherwise return zero even when some index fetches
@@ -250,6 +251,7 @@ func slimGuestCachesBeforeStamp(ctx context.Context, env []string, misePath stri
 	}
 	runAptQuiet("clean")
 	runAptQuiet("autoclean")
+	runAptQuiet("autoremove", "-y")
 
 	if err := os.RemoveAll("/var/lib/apt/lists"); err != nil {
 		emitDiagnostic("agent slim: remove apt lists dir failed (non-fatal): %v", err)
@@ -265,7 +267,7 @@ func slimGuestCachesBeforeStamp(ctx context.Context, env []string, misePath stri
 }
 
 func slimGuestCachesBakeOnly(ctx context.Context, misePath string) {
-	emitDiagnostic("agent slim (bake): clearing toolchain caches and stripping man/info pages")
+	emitDiagnostic("agent slim (bake): clearing toolchain caches and stripping doc/locale overhead")
 
 	if strings.TrimSpace(misePath) != "" {
 		clear := exec.CommandContext(ctx, misePath, "cache", "clear")
@@ -280,11 +282,20 @@ func slimGuestCachesBakeOnly(ctx context.Context, misePath string) {
 		}
 	}
 
-	// Strip offline documentation only (keep /usr/share/doc copyrights).
-	for _, p := range []string{"/usr/share/man", "/usr/share/info"} {
+	for _, p := range []string{
+		"/usr/share/doc",
+		"/usr/share/locale",
+		"/usr/share/man",
+		"/usr/share/info",
+		"/var/backups",
+	} {
 		if err := os.RemoveAll(p); err != nil {
 			emitDiagnostic("agent slim (bake): remove %s failed (non-fatal): %v", p, err)
 		}
+	}
+
+	if err := os.RemoveAll("/root/.cache"); err != nil {
+		emitDiagnostic("agent slim (bake): remove /root/.cache failed (non-fatal): %v", err)
 	}
 
 	matches, _ := filepath.Glob("/tmp/*")

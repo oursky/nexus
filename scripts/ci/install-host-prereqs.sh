@@ -3,7 +3,7 @@ set -euo pipefail
 
 for attempt in 1 2 3; do
   if sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update -qq \
-    && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y genext2fs e2fsprogs rsync xfsprogs build-essential git gcc make; then
+    && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y genext2fs e2fsprogs rsync xfsprogs build-essential git gcc make zstd gzip; then
     # Try to install passt from repos; ignore failure (build script will fall back to static download)
     sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y passt || true
     exit 0
