@@ -410,7 +410,7 @@ install_prebaked_rootfs_for_platform() {
     gz_asset="rootfs-darwin-arm64.ext4.gz"
     dest="$(nexus_macvm_guest_rootfs_path)"
     vm_dir="$(dirname "${dest}")"
-    label_miss="macOS VM may build/download guest disk on first use"
+    label_miss="will bake locally after install (~1–2 min)"
   else
     echo "nexus-install: no prebaked rootfs for ${GOOS:-unknown}/${GOARCH:-unknown} (skipped)"
     return 0
@@ -845,6 +845,21 @@ main() {
 
   echo "nexus-install: installed ${INSTALL_DIR}/nexus"
   echo "nexus-install: ensure ${INSTALL_DIR} is on your PATH"
+
+  # macOS: if no prebaked rootfs was in the release, bake it locally now.
+  # The release binary is already signed with Hypervisor.framework entitlements.
+  if [ "${GOOS:-}" = "darwin" ] && [ "${GOARCH}" = "arm64" ]; then
+    local macvm_rootfs
+    macvm_rootfs="$(nexus_macvm_guest_rootfs_path)"
+    if [ ! -f "${macvm_rootfs}" ]; then
+      echo "nexus-install: macOS — no prebaked guest rootfs in release; baking locally (one-time, ~1–2 min) …"
+      if "${INSTALL_DIR}/nexus" vm bake --timeout 10m; then
+        echo "nexus-install: macOS — guest rootfs baked at ${macvm_rootfs}"
+      else
+        echo "nexus-install: warning: macOS guest rootfs bake failed — run 'nexus vm bake' manually after ensuring ${INSTALL_DIR} is on PATH" >&2
+      fi
+    fi
+  fi
 }
 
 main "$@"
