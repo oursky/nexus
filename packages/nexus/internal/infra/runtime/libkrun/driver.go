@@ -251,7 +251,7 @@ func (d *Driver) EnsureStarted(ctx context.Context, workspaceID, projectRoot str
 	}
 
 	manifestHash := resolveManifestHash(root)
-	bakedRootfs := IsRootfsBaked(defaultStampDir())
+	bakedRootfs := !IsBakeStale(defaultStampDir())
 
 	spec := SpawnSpec{
 		WorkspaceID:      workspaceID,

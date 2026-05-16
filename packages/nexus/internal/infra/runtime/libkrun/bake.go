@@ -122,15 +122,4 @@ func BakeRootfsIfNeeded(ctx context.Context, cfg ManagerConfig, stampDir string)
 	return nil
 }
 
-// DeleteBakeStamp removes the host-side bake stamp so the next daemon start
-// triggers a fresh bake. Called when the base rootfs is rebuilt from scratch.
-func DeleteBakeStamp(stampDir string) {
-	_ = os.Remove(filepath.Join(stampDir, "rootfs-baked-"+BakeStampVersion))
-}
 
-// IsRootfsBaked reports whether the host-side bake stamp exists.
-func IsRootfsBaked(stampDir string) bool {
-	stampPath := filepath.Join(stampDir, "rootfs-baked-"+BakeStampVersion)
-	_, err := os.Stat(stampPath)
-	return err == nil
-}
