@@ -16,6 +16,7 @@ import (
 
 func bakeCommand() *cobra.Command {
 	var timeoutStr string
+	var force bool
 	cmd := &cobra.Command{
 		Use:   "bake",
 		Short: "Pre-bake developer tools into the base rootfs",
@@ -23,18 +24,20 @@ func bakeCommand() *cobra.Command {
 npm, etc.) into the base rootfs so that workspace starts are instant.
 
 Idempotent: skips if the bake stamp is already present.
+Use --force to delete any existing bake stamp and re-bake from scratch.
 
 This is the same bake that happens automatically during 'nexus daemon start',
 but exposed as an explicit command for better visibility and debugging.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runBake(cmd.OutOrStdout(), cmd.ErrOrStderr(), timeoutStr)
+			return runBake(cmd.OutOrStdout(), cmd.ErrOrStderr(), timeoutStr, force)
 		},
 	}
 	cmd.Flags().StringVar(&timeoutStr, "timeout", "10m", "Max time to wait for bake completion")
+	cmd.Flags().BoolVar(&force, "force", false, "Delete existing bake stamp and force a fresh bake")
 	return cmd
 }
 
-func runBake(stdout, stderr io.Writer, timeoutStr string) error {
+func runBake(stdout, stderr io.Writer, timeoutStr string, force bool) error {
 	// Ensure bootstrap has run so kernel, passt, and libkrun libs are present.
 	if startcmd.StartSetupFn != nil {
 		fmt.Fprintln(stderr, "vm bake: ensuring host prerequisites...")
@@ -84,6 +87,10 @@ func runBake(stdout, stderr io.Writer, timeoutStr string) error {
 	defer cancel()
 
 	stampDir := startcmd.DefaultDataDir()
+	if force {
+		fmt.Fprintf(stderr, "vm bake: --force: deleting existing bake stamp...\n")
+		lkruntime.DeleteBakeStamp(stampDir)
+	}
 	if err := lkruntime.BakeRootfsIfNeeded(ctx, cfg, stampDir); err != nil {
 		return fmt.Errorf("bake failed: %w", err)
 	}

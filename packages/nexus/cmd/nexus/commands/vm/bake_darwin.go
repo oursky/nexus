@@ -17,21 +17,25 @@ import (
 
 func bakeCommand() *cobra.Command {
 	var timeoutStr string
+	var force bool
 	cmd := &cobra.Command{
 		Use:   "bake",
 		Short: "Pre-bake developer tools into the base rootfs",
 		Long: `Boots a temporary libkrun VM using Hypervisor.framework and gvproxy networking,
 runs the embedded Linux guest-agent in bake mode (apt toolchain + mise + Docker tooling),
-then replaces the cached base rootfs at ~/.cache/nexus/vm/rootfs.ext4.`,
+then replaces the cached base rootfs at ~/.cache/nexus/vm/rootfs.ext4.
+
+Use --force to delete any existing bake stamp and re-bake from scratch.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDarwinBake(cmd.OutOrStdout(), cmd.ErrOrStderr(), timeoutStr)
+			return runDarwinBake(cmd.OutOrStdout(), cmd.ErrOrStderr(), timeoutStr, force)
 		},
 	}
 	cmd.Flags().StringVar(&timeoutStr, "timeout", "", "Outer wall-clock limit for the bake command (go duration; defaults to baked-in VM/network timeout)")
+	cmd.Flags().BoolVar(&force, "force", false, "Delete existing bake stamp and force a fresh bake")
 	return cmd
 }
 
-func runDarwinBake(stdout, stderr io.Writer, timeoutStr string) error {
+func runDarwinBake(stdout, stderr io.Writer, timeoutStr string, force bool) error {
 	if startcmd.StartSetupFn != nil {
 		fmt.Fprintln(stderr, "vm bake: ensuring Hypervisor.framework + libkrun assets...")
 		if err := startcmd.StartSetupFn(stderr); err != nil {
@@ -73,6 +77,11 @@ func runDarwinBake(stdout, stderr io.Writer, timeoutStr string) error {
 	fmt.Fprintf(stderr, "vm bake: baking base rootfs (outer timeout=%s)...\n", timeout)
 
 	stampDir := startcmd.DefaultDataDir()
+	if force {
+		fmt.Fprintf(stderr, "vm bake: --force: deleting existing bake stamp...\n")
+		macruntime.DeleteBakeStamp(stampDir)
+	}
+
 	cfg := macruntime.BakeMacConfig{
 		LibDir:          mc.LibDir,
 		RootFSBasePath:  rootfsPath,
