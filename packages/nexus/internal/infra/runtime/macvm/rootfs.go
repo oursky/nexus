@@ -93,7 +93,6 @@ func downloadAndDecompress(ctx context.Context, urlStr, dst string) error {
 	}
 
 	var r io.Reader = resp.Body
-	var wrapCloser io.Closer
 
 	switch {
 	case strings.HasSuffix(pathLower, ".zst"):
@@ -101,18 +100,15 @@ func downloadAndDecompress(ctx context.Context, urlStr, dst string) error {
 		if zerr != nil {
 			return zerr
 		}
-		wrapCloser = dec
+		defer dec.Close()
 		r = dec
 	case strings.HasSuffix(pathLower, ".gz"):
 		gr, gerr := gzip.NewReader(resp.Body)
 		if gerr != nil {
 			return gerr
 		}
-		wrapCloser = gr
+		defer gr.Close()
 		r = gr
-	}
-	if wrapCloser != nil {
-		defer wrapCloser.Close()
 	}
 
 	tmp := dst + ".tmp"
