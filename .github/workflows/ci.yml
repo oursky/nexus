@@ -14,8 +14,10 @@ concurrency:
 
 # Heavy libkrun/KVM e2e under packages/nexus/test/e2e/... is run on developer hosts
 # (Mac + Linux KVM box), not on GitHub-hosted VMs for every PR — except the slim
-# `tui-e2e` job on ubuntu-latest (KVM) below. Use Taskfile `task test:e2e:local` or
-# scripts/local/run-linux-e2e.sh / run-mac-e2e.sh for the full suite (see repo README).
+# `tui-e2e` job on ubuntu-latest (KVM) below and `rootfs-bake-test`, which mirrors the
+# CD Linux host rootfs bake (`vm bake` + shrink + zstd/gzip) on pull requests only.
+# Use Taskfile `task test:e2e:local` or scripts/local/run-linux-e2e.sh / run-mac-e2e.sh
+# for the full suite (see repo README).
 
 jobs:
   lint:
@@ -497,3 +499,99 @@ jobs:
       - name: Dump VM diagnostics on failure
         if: failure()
         run: bash scripts/ci/dump-linux-vm-diagnostics.sh
+
+  # Mirrors CD `release-host-rootfs`: full `nexus vm bake`, shrink, and dual compression.
+  # Runs on PRs only so merges to main are not double-baked (CD already publishes there).
+  rootfs-bake-test:
+    name: Rootfs bake test (linux/amd64)
+    if: github.event_name == 'pull_request'
+    needs: [lint, unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CI: "true"
+      GOTOOLCHAIN: local
+      NEXUS_LIBKRUN_SKIP_BAKE: "1"
+      NEXUS_LIBKRUN_BAKE_TIMEOUT: "120s"
+      NEXUS_LIBKRUN_BAKE_MAX_ATTEMPTS: "1"
+      NEXUS_WORKSPACE_IMAGE_MIN_MIB: "128"
+      NEXUS_RUNNER_ROOTFS_MIN_MIB: "128"
+      NEXUS_LIBKRUN_MEM_MIB: "256"
+      NEXUS_PASST_PATH: /tmp/passt-patched
+      NEXUS_RELEASE_ROOTFS_BAKE_TIMEOUT: "55m"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: packages/nexus/go.mod
+          cache-dependency-path: packages/nexus/go.sum
+
+      - name: Enable KVM access
+        run: scripts/ci/enable-kvm.sh
+
+      - name: Install host prerequisites
+        run: scripts/ci/install-host-prereqs.sh
+
+      - name: Set up XFS reflink volume for libkrun workspaces
+        run: scripts/ci/setup-xfs-reflink.sh
+
+      - name: Prepare libkrun bake cache paths
+        run: scripts/ci/prepare-libkrun-cache-env.sh
+
+      - name: Restore pre-baked libkrun VM assets
+        id: libkrun-baked-cache
+        timeout-minutes: 5
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LIBKRUN_BAKED_CACHE_DIR }}
+          key: libkrun-baked-v6-${{ runner.os }}-${{ hashFiles('Nexusfile', 'schemas/nexusfile.schema.json', 'packages/nexus/internal/infra/runtime/libkrun/bake.go', 'packages/nexus/internal/infra/runtime/libkrun/bake_version.go', 'packages/nexus/cmd/nexus-guest-agent/**', 'packages/nexus/cmd/nexus/nexus-libkrun-vm', 'packages/nexus/cmd/nexus/rootless_bootstrap_linux.go') }}
+          restore-keys: |
+            libkrun-baked-v6-${{ runner.os }}-
+
+      - name: Hydrate cached VM assets to host paths
+        timeout-minutes: 25
+        env:
+          STEP_TIMEOUT_SECONDS: "1200"
+        run: scripts/ci/hydrate-libkrun-cache.sh
+
+      - name: Verify pre-baked VM assets (cache hint)
+        run: scripts/ci/verify-vm-assets.sh hint
+
+      - name: Build embedded guest-agent + libkrun nexus (Linux CI)
+        timeout-minutes: 10
+        run: scripts/ci/build-nexus-libkrun.sh
+
+      - name: Build patched passt for bake VM networking
+        timeout-minutes: 10
+        run: bash scripts/ci/build-passt.sh
+
+      - name: Provision libkrun host (kernel + base rootfs)
+        timeout-minutes: 10
+        run: scripts/ci/provision-libkrun-host.sh
+
+      - name: Verify VM assets after provisioning
+        run: scripts/ci/verify-vm-assets.sh required
+
+      - name: Pre-bake tools into host rootfs and compress
+        timeout-minutes: 65
+        env:
+          NEXUS_PASST_PATH: /tmp/passt-patched
+        run: bash scripts/ci/build-release-host-rootfs-bake-and-package.sh
+
+      - name: Verify baked rootfs (offline stamp + e2fsck)
+        run: bash scripts/local/verify-linux-baked-rootfs.sh "${HOME}/.local/share/nexus/vm/rootfs.ext4"
+
+      - name: Upload bake artifacts (PR debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs-linux-amd64-pr-bake
+          path: |
+            dist/rootfs-linux-amd64.ext4.zst
+            dist/rootfs-linux-amd64.ext4.gz
+            dist/rootfs-linux-amd64.ext4.zst.sha256
+            dist/rootfs-linux-amd64.ext4.gz.sha256
+          retention-days: 3
+          if-no-files-found: error
