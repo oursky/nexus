@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
@@ -73,4 +75,30 @@ func ForkWorkspace(mux *rpc.MuxConn, id string) tea.Cmd {
 			Kind:    messages.ToastSuccess,
 		}
 	}
+}
+
+// PollWorkspacesCmd returns a command that fetches workspace list after a 3s delay.
+// Combined with the router handler, this creates a continuous polling loop.
+func PollWorkspacesCmd(mux *rpc.MuxConn) tea.Cmd {
+	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+		if mux == nil {
+			return nil
+		}
+		var result struct {
+			Workspaces []workspace.Workspace `json:"workspaces"`
+		}
+		if err := mux.Call("workspace.list", map[string]any{}, &result); err != nil {
+			return nil // silently skip on error; daemon may be restarting
+		}
+		items := make([]messages.WorkspaceItem, len(result.Workspaces))
+		for i, ws := range result.Workspaces {
+			items[i] = messages.WorkspaceItem{
+				ID:    ws.ID,
+				Name:  ws.WorkspaceName,
+				Repo:  ws.Repo,
+				State: string(ws.State),
+			}
+		}
+		return messages.WorkspaceListReceived{Workspaces: items}
+	})
 }

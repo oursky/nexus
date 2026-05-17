@@ -6,6 +6,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/tui/commands"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/messages"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/model"
+	"github.com/oursky/nexus/packages/nexus/internal/tui/pty"
 )
 
 // KeyHelpStyle is the style for key help text.
@@ -15,6 +16,29 @@ var KeyHelpStyle = lipgloss.NewStyle().
 
 // HandleKeyMsg handles keyboard input.
 func HandleKeyMsg(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// If PTY is active, forward keys to PTY
+	if m.PTYPane() != nil && m.ActiveTab() >= 0 {
+		if msg.Type == tea.KeyEsc {
+			tabs := m.Tabs()
+			activeIdx := m.ActiveTab()
+			if activeIdx >= 0 && activeIdx < len(tabs) {
+				if tabs[activeIdx].CancelFn != nil {
+					tabs[activeIdx].CancelFn()
+				}
+				tabs = append(tabs[:activeIdx], tabs[activeIdx+1:]...)
+				m.SetTabs(tabs)
+				if len(tabs) > 0 {
+					m.SetActiveTab(0)
+				} else {
+					m.SetActiveTab(-1)
+					m.SetPTYPane(nil)
+				}
+			}
+			return m, nil
+		}
+		return m, m.PTYPane().SendInputCmd(m.Mux(), msg)
+	}
+
 	// Handle modal/confirm dialogs first
 	if m.Modal().Active {
 		return handleConfirmModalKeys(m, msg)
@@ -67,9 +91,8 @@ func handleGlobalKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "q":
 			return m, tea.Quit
 		case "?":
-			return m, func() tea.Msg {
-				return messages.ViewChanged{View: messages.ViewHelp}
-			}
+			m.SetCurrentView(model.ViewHelp)
+			return m, nil
 		}
 	}
 	return m, nil
@@ -87,9 +110,8 @@ func handleDashboardKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 			if idx >= 0 && idx < len(m.Workspaces()) {
 				ws := m.Workspaces()[idx]
 				m.SetSelectedWS(ws.ID)
-				return m, func() tea.Msg {
-					return messages.ViewChanged{View: messages.ViewDetail}
-				}
+				m.SetCurrentView(model.ViewDetail)
+				return m, nil
 			}
 		}
 	case tea.KeyUp, tea.KeyCtrlK:
@@ -116,22 +138,20 @@ func handleDashboardKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 			m.SetSearchInput(searchInput)
 			return m, nil
 		case "c":
-			return m, func() tea.Msg {
-				return messages.ViewChanged{View: messages.ViewCreate}
-			}
+			m.SetCurrentView(model.ViewCreate)
+			return m, nil
 		case "t":
 			if len(m.Workspaces()) > 0 {
 				idx := wsList.Index()
 				if idx >= 0 && idx < len(m.Workspaces()) {
 					ws := m.Workspaces()[idx]
 					m.SetSelectedWS(ws.ID)
-					m.AddToast(model.Toast{
-						Message: "Terminal: " + ws.Name,
-						Kind:    messages.ToastInfo,
-					})
-					return m, nil
+					return m, pty.OpenPTYCmd(m.Mux(), ws.ID, m.Width(), m.Height()-4)
 				}
 			}
+		case "?":
+			m.SetCurrentView(model.ViewHelp)
+			return m, nil
 		}
 	}
 
@@ -165,9 +185,8 @@ func handleConfirmModalKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.C
 func handleOnrampKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc, tea.KeyCtrlC:
-		return m, func() tea.Msg {
-			return messages.ViewChanged{View: messages.ViewDashboard}
-		}
+		m.SetCurrentView(model.ViewDashboard)
+		return m, nil
 	}
 	return m, nil
 }
@@ -178,9 +197,8 @@ func handleDetailKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.Type {
 	case tea.KeyEsc:
-		return m, func() tea.Msg {
-			return messages.ViewChanged{View: messages.ViewDashboard}
-		}
+		m.SetCurrentView(model.ViewDashboard)
+		return m, nil
 	case tea.KeyRunes:
 		switch msg.String() {
 		case "q":
@@ -209,18 +227,7 @@ func handleDetailKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "t":
 			if selectedID != "" {
-				wsName := selectedID
-				for _, ws := range m.Workspaces() {
-					if ws.ID == selectedID {
-						wsName = ws.Name
-						break
-					}
-				}
-				m.AddToast(model.Toast{
-					Message: "Terminal: " + wsName,
-					Kind:    messages.ToastInfo,
-				})
-				return m, nil
+				return m, pty.OpenPTYCmd(m.Mux(), selectedID, m.Width(), m.Height()-4)
 			}
 		case "l":
 			return m, func() tea.Msg {
@@ -231,9 +238,8 @@ func handleDetailKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return messages.SyncRequested{}
 			}
 		case "?":
-			return m, func() tea.Msg {
-				return messages.ViewChanged{View: messages.ViewHelp}
-			}
+			m.SetCurrentView(model.ViewHelp)
+			return m, nil
 		}
 	}
 	return m, nil
@@ -265,9 +271,8 @@ func handleSyncKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func handleCreateKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
-		return m, func() tea.Msg {
-			return messages.ViewChanged{View: messages.ViewDashboard}
-		}
+		m.SetCurrentView(model.ViewDashboard)
+		return m, nil
 	}
 	return m, nil
 }
@@ -276,14 +281,12 @@ func handleCreateKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func handleHelpKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc, tea.KeyCtrlC:
-		return m, func() tea.Msg {
-			return messages.ViewChanged{View: messages.ViewDashboard}
-		}
+		m.SetCurrentView(model.ViewDashboard)
+		return m, nil
 	case tea.KeyRunes:
 		if msg.String() == "q" {
-			return m, func() tea.Msg {
-				return messages.ViewChanged{View: messages.ViewDashboard}
-			}
+			m.SetCurrentView(model.ViewDashboard)
+			return m, nil
 		}
 	}
 	return m, nil

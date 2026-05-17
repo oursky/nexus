@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/oursky/nexus/packages/nexus/internal/tui/commands"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/messages"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/model"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/pty"
@@ -57,6 +58,8 @@ func Router(m *model.AppModel, msg tea.Msg) (tea.Model, tea.Cmd) {
 		result, cmd = HandleWorkspaceListReceived(m, msg)
 		m = result.(*model.AppModel)
 		cmds = append(cmds, cmd)
+		// Schedule next poll
+		cmds = append(cmds, commands.PollWorkspacesCmd(m.Mux()))
 	case messages.WorkspaceSelected:
 		var result tea.Model
 		result, cmd = HandleWorkspaceSelected(m, msg)
@@ -84,6 +87,20 @@ func Router(m *model.AppModel, msg tea.Msg) (tea.Model, tea.Cmd) {
 		result, cmd = handlePTYData(msg, m)
 		m = result.(*model.AppModel)
 		cmds = append(cmds, cmd)
+		// Re-listen on the same channel
+		for _, t := range m.Tabs() {
+			if t.ID == msg.SessionID {
+				cmds = append(cmds, pty.ListenPTYCmd(t.DataCh, msg.SessionID))
+				break
+			}
+		}
+		// Re-listen on the same channel
+		for _, t := range m.Tabs() {
+			if t.ID == msg.SessionID && t.DataCh != nil {
+				cmds = append(cmds, pty.ListenPTYCmd(t.DataCh, msg.SessionID))
+				break
+			}
+		}
 	case pty.PtyClosedMsg:
 		var result tea.Model
 		result, cmd = handlePTYClosed(msg, m)

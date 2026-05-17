@@ -57,6 +57,9 @@ type AppModel struct {
 
 	// Update router function (set by tui.go to break model↔update cycle)
 	updateRouter UpdateFunc
+
+	// Poll command factory (set by tui.go to break model↔commands cycle)
+	pollCmd func() tea.Cmd
 }
 
 // View represents the current active view.
@@ -177,25 +180,33 @@ func NewAppModel(mux *rpc.MuxConn) *AppModel {
 
 // Init initializes the model and returns initial commands.
 func (m *AppModel) Init() tea.Cmd {
-	return func() tea.Msg {
-		var result struct {
-			Workspaces []workspace.Workspace `json:"workspaces"`
-		}
-		if err := m.mux.Call("workspace.list", map[string]any{}, &result); err != nil {
-			return messages.DaemonDisconnected{Error: err}
-		}
-
-		items := make([]messages.WorkspaceItem, len(result.Workspaces))
-		for i, ws := range result.Workspaces {
-			items[i] = messages.WorkspaceItem{
-				ID:    ws.ID,
-				Name:  ws.WorkspaceName,
-				Repo:  ws.Repo,
-				State: string(ws.State),
+	cmds := []tea.Cmd{
+		// Initial workspace fetch
+		func() tea.Msg {
+			var result struct {
+				Workspaces []workspace.Workspace `json:"workspaces"`
 			}
-		}
-		return messages.WorkspaceListReceived{Workspaces: items}
+			if err := m.mux.Call("workspace.list", map[string]any{}, &result); err != nil {
+				return messages.DaemonDisconnected{Error: err}
+			}
+
+			items := make([]messages.WorkspaceItem, len(result.Workspaces))
+			for i, ws := range result.Workspaces {
+				items[i] = messages.WorkspaceItem{
+					ID:    ws.ID,
+					Name:  ws.WorkspaceName,
+					Repo:  ws.Repo,
+					State: string(ws.State),
+				}
+			}
+			return messages.WorkspaceListReceived{Workspaces: items}
+		},
 	}
+	// Start polling loop if poll command factory is set
+	if m.pollCmd != nil {
+		cmds = append(cmds, m.pollCmd())
+	}
+	return tea.Batch(cmds...)
 }
 
 // SetRenderer sets the view renderer. Called from tui.go to break the model↔views cycle.
@@ -225,6 +236,11 @@ type UpdateFunc func(m *AppModel, msg tea.Msg) (tea.Model, tea.Cmd)
 // SetUpdateRouter sets the update router function. Called from tui.go.
 func (m *AppModel) SetUpdateRouter(fn UpdateFunc) {
 	m.updateRouter = fn
+}
+
+// SetPollCmd sets the polling command factory. Called from tui.go.
+func (m *AppModel) SetPollCmd(fn func() tea.Cmd) {
+	m.pollCmd = fn
 }
 
 // View renders the model using the configured view renderer.

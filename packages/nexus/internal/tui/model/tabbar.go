@@ -1,6 +1,8 @@
 package model
 
 import (
+	"encoding/json"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -10,6 +12,8 @@ type PTYSession struct {
 	Label       string
 	WorkspaceID string
 	Active      bool
+	DataCh      <-chan json.RawMessage `json:"-"`
+	CancelFn    func()                 `json:"-"`
 }
 
 // UpdateTabs handles tab-related messages.

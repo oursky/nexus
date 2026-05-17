@@ -8,18 +8,25 @@ import (
 
 // handlePTYOpened handles when a new PTY session is opened.
 func handlePTYOpened(msg pty.PtyOpenedMsg, m *model.AppModel) (tea.Model, tea.Cmd) {
-	tabs := m.Tabs()
+	// Create PTY pane
+	pane := pty.NewPtyPane(msg.WsID, msg.SessionID, m.Width(), m.Height()-4)
+	m.SetPTYPane(pane)
 
-	// Add new active tab
+	// Add tab with DataCh and CancelFn
+	tabs := m.Tabs()
 	tabs = append(tabs, model.PTYSession{
 		ID:          msg.SessionID,
-		Label:       msg.SessionID,
+		Label:       "terminal:" + msg.SessionID[:8],
 		WorkspaceID: msg.WsID,
+		Active:      true,
+		DataCh:      msg.DataCh,
+		CancelFn:    msg.CancelFn,
 	})
 	m.SetTabs(tabs)
 	m.SetActiveTab(len(tabs) - 1)
 
-	return m, nil
+	// Start listening for PTY data
+	return m, pty.ListenPTYCmd(msg.DataCh, msg.SessionID)
 }
 
 // handlePTYData handles PTY output from a terminal session.

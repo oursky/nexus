@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
+	"github.com/oursky/nexus/packages/nexus/internal/tui/commands"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/components"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/design"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/messages"
@@ -18,6 +19,10 @@ import (
 // renderer implements model.ViewRenderer using the views package.
 type renderer struct {
 	dashboard *views.DashboardView
+	spotlight *views.SpotlightView
+	sync      *views.SyncView
+	create    *views.CreateView
+	help      *views.HelpView
 	connected bool
 }
 
@@ -27,26 +32,56 @@ func (r *renderer) Render(m *model.AppModel) string {
 	footer := r.renderFooter(m)
 
 	var body string
-	switch m.CurrentView() {
-	case model.ViewDetail:
-		body = r.renderDetail(m)
-	case model.ViewDashboard:
-		body = r.dashboard.View(m)
-	default:
-		body = r.dashboard.View(m)
+	if m.PTYPane() != nil && m.ActiveTab() >= 0 {
+		body = m.PTYPane().Render()
+	} else {
+		switch m.CurrentView() {
+		case model.ViewDetail:
+			body = r.renderDetail(m)
+		case model.ViewSpotlight:
+			body = r.spotlight.View(m)
+		case model.ViewSync:
+			body = r.sync.View(m)
+		case model.ViewCreate:
+			body = r.create.View(m)
+		case model.ViewHelp:
+			body = r.help.View(m)
+		case model.ViewDashboard:
+			body = r.dashboard.View(m)
+		default:
+			body = r.dashboard.View(m)
+		}
 	}
 
-	// Stack: header + body + footer
-	base := lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	tabBar := r.renderTabBar(m)
+	base := lipgloss.JoinVertical(lipgloss.Left, header, tabBar, body, footer)
 
-	// Overlay toasts on top of the base content
 	toasts := r.renderToasts(m)
 	if toasts != "" {
-		// Place toasts at the bottom-right of the screen
 		base = lipgloss.JoinVertical(lipgloss.Left, base, toasts)
 	}
 
 	return base
+}
+
+func (r *renderer) renderTabBar(m *model.AppModel) string {
+	tabs := m.Tabs()
+	if len(tabs) == 0 {
+		return ""
+	}
+
+	colors := design.ActiveTheme.Colors
+	var tabStrs []string
+	for i, t := range tabs {
+		style := lipgloss.NewStyle().Padding(0, 2).Foreground(colors.TextMuted)
+		if i == m.ActiveTab() {
+			style = style.Foreground(colors.Text).Bold(true).Underline(true)
+		}
+		tabStrs = append(tabStrs, style.Render(t.Label))
+	}
+
+	tabBar := strings.Join(tabStrs, lipgloss.NewStyle().Foreground(colors.Border).Render("│"))
+	return lipgloss.NewStyle().Padding(0, 1).Render(tabBar)
 }
 
 // renderToasts renders active toast notifications.
@@ -196,18 +231,29 @@ func daemonStatus(m *model.AppModel) string {
 func Run(mux *rpc.MuxConn) error {
 	appModel := model.NewAppModel(mux)
 
-	// Create views
 	dash := views.NewDashboardView(appModel.Width(), appModel.Height())
+	spot := views.NewSpotlightView()
+	syncV := views.NewSyncView()
+	create := views.NewCreateView()
+	help := views.NewHelpView()
 
-	// Wire the view renderer
-	appModel.SetRenderer(&renderer{dashboard: dash})
+	appModel.SetRenderer(&renderer{
+		dashboard: dash,
+		spotlight: spot,
+		sync:      syncV,
+		create:    create,
+		help:      help,
+	})
 
-	// Wire the update router
 	appModel.SetUpdateRouter(func(m *model.AppModel, msg tea.Msg) (tea.Model, tea.Cmd) {
 		return update.Router(m, msg)
 	})
 
-	// Create and start the Bubble Tea program
+	// Wire polling command factory (breaks model↔commands cycle)
+	appModel.SetPollCmd(func() tea.Cmd {
+		return commands.PollWorkspacesCmd(mux)
+	})
+
 	p := tea.NewProgram(
 		appModel,
 		tea.WithAltScreen(),
