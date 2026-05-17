@@ -1,13 +1,12 @@
 package model
 
 import (
-	"time"
-
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/design"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/messages"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/pty"
@@ -144,7 +143,8 @@ func NewAppModel(mux *rpc.MuxConn) *AppModel {
 		Foreground(t.Colors.TextMuted)
 	workspaceList := list.New(nil, delegate, 80, 24)
 	workspaceList.Title = "Workspaces"
-	workspaceList.SetShowStatusBar(true)
+	workspaceList.SetShowStatusBar(false)
+	workspaceList.SetShowHelp(false)
 	workspaceList.Styles.Title = design.Title
 	workspaceList.Styles.FilterPrompt = design.Body
 	workspaceList.Styles.StatusBarFilterCount = design.Caption
@@ -174,22 +174,25 @@ func NewAppModel(mux *rpc.MuxConn) *AppModel {
 
 // Init initializes the model and returns initial commands.
 func (m *AppModel) Init() tea.Cmd {
-	// Fetch workspaces on startup to populate the dashboard
-	return tea.Tick(0, func(t time.Time) tea.Msg {
-		// TODO: Implement actual RPC call via m.mux
-		// For now, return mock data to verify rendering
-		return messages.WorkspaceListReceived{
-			Workspaces: []messages.WorkspaceItem{
-				{
-					ID:      "ws-001",
-					Name:    "base",
-					Repo:    "/home/newman/magic/nexus",
-					State:   "STOPPED",
-					Project: "nexus",
-				},
-			},
+	return func() tea.Msg {
+		var result struct {
+			Workspaces []workspace.Workspace `json:"workspaces"`
 		}
-	})
+		if err := m.mux.Call("workspace.list", map[string]any{}, &result); err != nil {
+			return messages.DaemonDisconnected{Error: err}
+		}
+
+		items := make([]messages.WorkspaceItem, len(result.Workspaces))
+		for i, ws := range result.Workspaces {
+			items[i] = messages.WorkspaceItem{
+				ID:    ws.ID,
+				Name:  ws.WorkspaceName,
+				Repo:  ws.Repo,
+				State: string(ws.State),
+			}
+		}
+		return messages.WorkspaceListReceived{Workspaces: items}
+	}
 }
 
 // SetRenderer sets the view renderer. Called from tui.go to break the model↔views cycle.
@@ -386,6 +389,11 @@ func (m *AppModel) Filter() string {
 // SetFilterText sets the filter text.
 func (m *AppModel) SetFilterText(text string) {
 	m.filter = text
+}
+
+// Mux returns the RPC multiplexed connection.
+func (m *AppModel) Mux() *rpc.MuxConn {
+	return m.mux
 }
 
 // UpdateStyles rebuilds styles for the current dimensions.
