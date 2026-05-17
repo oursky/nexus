@@ -57,13 +57,13 @@ func (m *Manager) Start(ctx context.Context, ws *domainws.Workspace) error {
 	}
 
 	inst, err := spawnVM(ctx, spawnConfig{
-		workspaceID:    ws.ID,
-		workDir:        wsDir,
-		rootFSPath:     wsRootFS,
-		workspacePath:  ws.Repo,
-		configDir:      configDir,
-		sockDir:        sockDir,
-		libDir:         m.cfg.LibDir,
+		workspaceID:   ws.ID,
+		workDir:       wsDir,
+		rootFSPath:    wsRootFS,
+		workspacePath: ws.Repo,
+		configDir:     configDir,
+		sockDir:       sockDir,
+		libDir:        m.cfg.LibDir,
 	})
 	if err != nil {
 		_ = os.RemoveAll(configDir)

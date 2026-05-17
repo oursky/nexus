@@ -12,9 +12,11 @@ import (
 
 	bundlecmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/bundle"
 	daemoncmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/daemon"
+	installcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/install"
 	projectcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/project"
 	spotlightcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/spotlight"
 	tuicmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/tui"
+	updatecmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/update"
 	vmcmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/vm"
 	workspacecmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/workspace"
 )
@@ -75,7 +77,9 @@ func main() {
 		spotlightcmd.Command(),
 		projectcmd.Command(),
 		tuicmd.Command(),
+		updatecmd.Command(),
 		vmcmd.Command(),
+		installcmd.Command(),
 	)
 	for _, cmd := range extraCommands {
 		root.AddCommand(cmd)

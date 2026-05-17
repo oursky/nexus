@@ -15,6 +15,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/auth/tokenstore"
 	"github.com/oursky/nexus/packages/nexus/internal/daemon"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/guestrootfs"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/runtime/vmrootfs"
 	"github.com/spf13/cobra"
 )
 
@@ -64,6 +65,13 @@ func Command() *cobra.Command {
 			if err := runHostPrerequisites(cmd, isForegroundChild); err != nil {
 				return err
 			}
+
+			// Check rootfs release stamp after host prerequisites
+			if !isForegroundChild {
+				stampDir := DefaultDataDir()
+				checkRootFSReleaseMatch(stampDir)
+			}
+
 			applyCanonicalPaths()
 
 			token, err := resolveDaemonToken(cmd, network)
@@ -366,6 +374,21 @@ func skipBakeReason() string {
 		return "CI environment"
 	}
 	return "NEXUS_LIBKRUN_SKIP_BAKE set"
+}
+
+// checkRootFSReleaseMatch warns if the cached rootfs is from a different release
+// than the current binary. Rootfs stamps are written by nexus install.
+func checkRootFSReleaseMatch(stampDir string) {
+	expected := vmrootfs.ReleaseTagForRootfsAssets()
+	if expected == "" || expected == "latest" || expected == "dev" {
+		return // dev builds don't have meaningful release tags
+	}
+
+	if isRootFSReleaseStale(stampDir, expected) {
+		stored := readRootFSReleaseStamp(stampDir)
+		log.Printf("daemon: WARNING — rootfs from release %q, binary is release %q", stored, expected)
+		log.Printf("daemon: WARNING — run 'nexus install' to update rootfs")
+	}
 }
 
 // runDaemonForeground creates, starts, and blocks on the daemon until signal.
