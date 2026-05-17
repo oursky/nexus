@@ -121,5 +121,3 @@ func BakeRootfsIfNeeded(ctx context.Context, cfg ManagerConfig, stampDir string)
 	log.Printf("[libkrun] rootfs bake: complete — all future workspace clones will start with tools pre-installed")
 	return nil
 }
-
-

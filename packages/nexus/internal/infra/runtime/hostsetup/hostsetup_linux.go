@@ -111,7 +111,7 @@ func EnsureLinuxZstd() error {
 	}
 
 	fmt.Fprintf(os.Stderr, "hostsetup: installing zstd via %s ...\n", pm)
-	args := append(sudoPrefix(), pm)
+	var args []string
 	switch pm {
 	case "apt-get":
 		args = append(sudoPrefix(), "apt-get", "install", "-y", "-qq", "zstd")
@@ -150,7 +150,7 @@ func EnsureLinuxXFSProgs() error {
 	}
 
 	fmt.Fprintf(os.Stderr, "hostsetup: installing xfsprogs via %s ...\n", pm)
-	args := append(sudoPrefix(), pm)
+	var args []string
 	switch pm {
 	case "apt-get":
 		args = append(sudoPrefix(), "apt-get", "install", "-y", "-qq", "xfsprogs")
@@ -298,7 +298,10 @@ func EnsureLinuxDaemonDataDir() error {
 		if err != nil {
 			continue
 		}
-		if stat, ok := info.Sys().(interface{ Uid() int; Gid() int }); ok {
+		if stat, ok := info.Sys().(interface {
+			Uid() int
+			Gid() int
+		}); ok {
 			if stat.Uid() != uid || stat.Gid() != gid {
 				cmd := exec.Command("sudo", "chown", fmt.Sprintf("%d:%d", uid, gid), d)
 				cmd.Stdout = os.Stderr

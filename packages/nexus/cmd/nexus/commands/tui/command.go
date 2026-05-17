@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	nexustui "github.com/oursky/nexus/packages/nexus/internal/tui"
 	updatecmd "github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/update"
+	nexustui "github.com/oursky/nexus/packages/nexus/internal/tui"
 	"github.com/spf13/cobra"
 )
 
