@@ -3,6 +3,7 @@ package update
 import (
 	"time"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/messages"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/model"
@@ -119,19 +120,23 @@ func Router(m *model.AppModel, msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.RemoveToast(msg.index)
 	}
 
-	// Always pass messages through to the bubbles workspace list and search input
-	// so built-in list navigation (arrows, filtering) still works
-	var listCmd tea.Cmd
-	wsList := m.WorkspaceList()
-	wsList, listCmd = wsList.Update(msg)
-	m.SetWorkspaceList(wsList)
-	cmds = append(cmds, listCmd)
+	// Pass non-key messages through to bubbles components.
+	// Key messages are handled by HandleKeyMsg above which already updates
+	// the list for navigation keys; we skip the passthrough to avoid
+	// double-processing (e.g., list intercepting Enter for its own selection).
+	if _, ok := msg.(tea.KeyMsg); !ok {
+		var listCmd tea.Cmd
+		wsList := m.WorkspaceList()
+		wsList, listCmd = wsList.Update(msg)
+		m.SetWorkspaceList(wsList)
+		cmds = append(cmds, listCmd)
 
-	searchInput := m.SearchInput()
-	var inputCmd tea.Cmd
-	searchInput, inputCmd = searchInput.Update(msg)
-	m.SetSearchInput(searchInput)
-	cmds = append(cmds, inputCmd)
+		searchInput := m.SearchInput()
+		var inputCmd tea.Cmd
+		searchInput, inputCmd = searchInput.Update(msg)
+		m.SetSearchInput(searchInput)
+		cmds = append(cmds, inputCmd)
+	}
 
 	return m, tea.Batch(cmds...)
 }
@@ -164,13 +169,74 @@ func HandleWorkspaceSelected(m *model.AppModel, msg messages.WorkspaceSelected) 
 }
 
 func HandleWorkspaceStateChanged(m *model.AppModel, msg messages.WorkspaceStateChanged) (tea.Model, tea.Cmd) {
-	// TODO: Update workspace state in list
-	return m, nil
+	// Update workspace in the workspaces slice
+	workspaces := m.Workspaces()
+	for i, ws := range workspaces {
+		if ws.ID == msg.ID {
+			workspaces[i].State = msg.State
+			break
+		}
+	}
+	m.SetWorkspaces(workspaces)
+
+	// Rebuild list items
+	items := make([]list.Item, len(workspaces))
+	for i, ws := range workspaces {
+		items[i] = messages.WorkspaceItem{
+			ID:    ws.ID,
+			Name:  ws.Name,
+			Repo:  ws.Repo,
+			State: ws.State,
+		}
+	}
+	wsList := m.WorkspaceList()
+	wsList.SetItems(items)
+	m.SetWorkspaceList(wsList)
+
+	// Show toast
+	return m, func() tea.Msg {
+		return messages.ToastShown{
+			Message: "Workspace " + msg.ID + ": " + msg.State,
+			Kind:    messages.ToastInfo,
+		}
+	}
 }
 
 func HandleWorkspaceDeleteConfirmed(m *model.AppModel, msg messages.WorkspaceDeleteConfirmed) (tea.Model, tea.Cmd) {
-	// TODO: Remove workspace from list, show toast
-	return m, nil
+	// Remove from workspaces slice
+	workspaces := m.Workspaces()
+	filtered := make([]model.Workspace, 0, len(workspaces))
+	for _, ws := range workspaces {
+		if ws.ID != msg.ID {
+			filtered = append(filtered, ws)
+		}
+	}
+	m.SetWorkspaces(filtered)
+
+	// Rebuild list items
+	items := make([]list.Item, len(filtered))
+	for i, ws := range filtered {
+		items[i] = messages.WorkspaceItem{
+			ID:    ws.ID,
+			Name:  ws.Name,
+			Repo:  ws.Repo,
+			State: ws.State,
+		}
+	}
+	wsList := m.WorkspaceList()
+	wsList.SetItems(items)
+	m.SetWorkspaceList(wsList)
+
+	// Navigate back to dashboard
+	m.SetCurrentView(model.ViewDashboard)
+
+	// Show toast
+	return m, func() tea.Msg {
+		return messages.ToastShown{
+			Message: "Workspace deleted",
+			Kind:    messages.ToastSuccess,
+		}
+	}
 }
 
 func HandleTabOpened(m *model.AppModel, msg model.TabOpenedMsg) (tea.Model, tea.Cmd) {
@@ -189,7 +255,8 @@ func HandleTabSwitched(m *model.AppModel, msg model.TabSelectedMsg) (tea.Model, 
 }
 
 func HandleViewChanged(m *model.AppModel, msg messages.ViewChanged) (tea.Model, tea.Cmd) {
-	// TODO: Switch current view
+	newView := model.View(msg.View)
+	m.SetCurrentView(newView)
 	return m, nil
 }
 

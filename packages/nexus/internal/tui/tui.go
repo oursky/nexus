@@ -28,6 +28,8 @@ func (r *renderer) Render(m *model.AppModel) string {
 
 	var body string
 	switch m.CurrentView() {
+	case model.ViewDetail:
+		body = r.renderDetail(m)
 	case model.ViewDashboard:
 		body = r.dashboard.View(m)
 	default:
@@ -103,6 +105,63 @@ func (r *renderer) renderHeader(m *model.AppModel) string {
 
 	content := "nexus " + dotStyle.Render(statusDot) + " " + textStyle.Render(statusText)
 	return style.Render(content)
+}
+
+// renderDetail renders the workspace detail view.
+func (r *renderer) renderDetail(m *model.AppModel) string {
+	colors := design.ActiveTheme.Colors
+
+	// Find selected workspace
+	var ws *model.Workspace
+	for i, w := range m.Workspaces() {
+		if w.ID == m.SelectedWS() {
+			ws = &m.Workspaces()[i]
+			break
+		}
+	}
+
+	if ws == nil {
+		return lipgloss.NewStyle().
+			Foreground(colors.TextMuted).
+			Render("No workspace selected")
+	}
+
+	// Title
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(colors.Text).
+		MarginBottom(design.SpaceSM)
+	title := titleStyle.Render(ws.Name)
+
+	// Info rows
+	infoStyle := lipgloss.NewStyle().Foreground(colors.Text)
+	labelStyle := lipgloss.NewStyle().Foreground(colors.TextMuted)
+	sepStyle := lipgloss.NewStyle().Foreground(colors.Border)
+
+	info := []string{
+		labelStyle.Render("ID:    ") + infoStyle.Render(ws.ID),
+		labelStyle.Render("Repo:  ") + infoStyle.Render(ws.Repo),
+		labelStyle.Render("State: ") + infoStyle.Render(ws.State),
+		labelStyle.Render("Path:  ") + infoStyle.Render(ws.Path),
+	}
+	infoBlock := strings.Join(info, "\n")
+
+	// Key hints
+	hints := []string{"s start", "x stop", "d delete", "f fork", "t terminal", "l spotlight", "y sync", "Esc back"}
+	hintStyle := lipgloss.NewStyle().Foreground(colors.TextMuted)
+	parts := make([]string, len(hints))
+	for i, h := range hints {
+		parts[i] = hintStyle.Render(h)
+	}
+	hintsBar := strings.Join(parts, sepStyle.Render(" • "))
+
+	// Combine
+	content := lipgloss.JoinVertical(lipgloss.Left, title, infoBlock, "", hintsBar)
+	return lipgloss.NewStyle().
+		Padding(design.SpaceMD).
+		Width(m.Width()).
+		Height(m.Height() - 4).
+		Render(content)
 }
 
 // renderFooter renders the keybinding hints bar.

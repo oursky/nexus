@@ -3,6 +3,7 @@ package update
 import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/oursky/nexus/packages/nexus/internal/tui/commands"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/messages"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/model"
 )
@@ -14,8 +15,6 @@ var KeyHelpStyle = lipgloss.NewStyle().
 
 // HandleKeyMsg handles keyboard input.
 func HandleKeyMsg(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-
 	// Handle modal/confirm dialogs first
 	if m.Modal().Active {
 		return handleConfirmModalKeys(m, msg)
@@ -27,50 +26,39 @@ func HandleKeyMsg(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// View-specific shortcuts
-	switch m.CurrentView() {
-	case model.ViewDashboard:
-		var result tea.Model
-		result, cmd = handleDashboardKeys(m, msg)
-		m = result.(*model.AppModel)
-	case model.ViewOnramp:
-		var result tea.Model
-		result, cmd = handleOnrampKeys(m, msg)
-		m = result.(*model.AppModel)
-	case model.ViewDetail:
-		var result tea.Model
-		result, cmd = handleDetailKeys(m, msg)
-		m = result.(*model.AppModel)
-	case model.ViewSpotlight:
-		var result tea.Model
-		result, cmd = handleSpotlightKeys(m, msg)
-		m = result.(*model.AppModel)
-	case model.ViewSync:
-		var result tea.Model
-		result, cmd = handleSyncKeys(m, msg)
-		m = result.(*model.AppModel)
-	case model.ViewCreate:
-		var result tea.Model
-		result, cmd = handleCreateKeys(m, msg)
-		m = result.(*model.AppModel)
-	case model.ViewHelp:
-		var result tea.Model
-		result, cmd = handleHelpKeys(m, msg)
-		m = result.(*model.AppModel)
-	default:
-		// Global keys
-		var result tea.Model
-		result, cmd = handleGlobalKeys(m, msg)
-		m = result.(*model.AppModel)
-	}
+	currentView := m.CurrentView()
 
-	return m, cmd
+	// View-specific shortcuts
+	switch currentView {
+	case model.ViewDashboard:
+		result, c := handleDashboardKeys(m, msg)
+		return result.(*model.AppModel), c
+	case model.ViewOnramp:
+		result, c := handleOnrampKeys(m, msg)
+		return result.(*model.AppModel), c
+	case model.ViewDetail:
+		result, c := handleDetailKeys(m, msg)
+		return result.(*model.AppModel), c
+	case model.ViewSpotlight:
+		result, c := handleSpotlightKeys(m, msg)
+		return result.(*model.AppModel), c
+	case model.ViewSync:
+		result, c := handleSyncKeys(m, msg)
+		return result.(*model.AppModel), c
+	case model.ViewCreate:
+		result, c := handleCreateKeys(m, msg)
+		return result.(*model.AppModel), c
+	case model.ViewHelp:
+		result, c := handleHelpKeys(m, msg)
+		return result.(*model.AppModel), c
+	default:
+		result, c := handleGlobalKeys(m, msg)
+		return result.(*model.AppModel), c
+	}
 }
 
 // handleGlobalKeys handles global key bindings.
 func handleGlobalKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-
 	switch msg.Type {
 	case tea.KeyCtrlC, tea.KeyEsc:
 		return m, tea.Quit
@@ -84,48 +72,41 @@ func handleGlobalKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-
-	return m, cmd
+	return m, nil
 }
 
 // handleDashboardKeys handles key bindings in dashboard view.
 func handleDashboardKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	wsList := m.WorkspaceList()
 	var cmd tea.Cmd
 
 	switch msg.Type {
 	case tea.KeyEnter:
-		wsList := m.WorkspaceList()
 		if len(m.Workspaces()) > 0 {
 			idx := wsList.Index()
-			if idx >= 0 && idx < len(wsList.Items()) {
-				_ = wsList.Items()[idx] // Use the workspace data
+			if idx >= 0 && idx < len(m.Workspaces()) {
+				ws := m.Workspaces()[idx]
+				m.SetSelectedWS(ws.ID)
 				return m, func() tea.Msg {
-					return messages.ViewChanged{
-						View: messages.ViewDetail,
-						// WorkspaceID: ws.ID,
-					}
+					return messages.ViewChanged{View: messages.ViewDetail}
 				}
 			}
 		}
 	case tea.KeyUp, tea.KeyCtrlK:
-		wsList := m.WorkspaceList()
 		wsList, cmd = wsList.Update(msg)
 		m.SetWorkspaceList(wsList)
 		return m, cmd
 	case tea.KeyDown, tea.KeyCtrlJ:
-		wsList := m.WorkspaceList()
 		wsList, cmd = wsList.Update(msg)
 		m.SetWorkspaceList(wsList)
 		return m, cmd
 	case tea.KeyRunes:
 		switch msg.String() {
 		case "k", "h":
-			wsList := m.WorkspaceList()
 			wsList, cmd = wsList.Update(tea.KeyMsg{Type: tea.KeyUp})
 			m.SetWorkspaceList(wsList)
 			return m, cmd
 		case "j", "l":
-			wsList := m.WorkspaceList()
 			wsList, cmd = wsList.Update(tea.KeyMsg{Type: tea.KeyDown})
 			m.SetWorkspaceList(wsList)
 			return m, cmd
@@ -138,6 +119,19 @@ func handleDashboardKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 			return m, func() tea.Msg {
 				return messages.ViewChanged{View: messages.ViewCreate}
 			}
+		case "t":
+			if len(m.Workspaces()) > 0 {
+				idx := wsList.Index()
+				if idx >= 0 && idx < len(m.Workspaces()) {
+					ws := m.Workspaces()[idx]
+					m.SetSelectedWS(ws.ID)
+					m.AddToast(model.Toast{
+						Message: "Terminal: " + ws.Name,
+						Kind:    messages.ToastInfo,
+					})
+					return m, nil
+				}
+			}
 		}
 	}
 
@@ -147,61 +141,151 @@ func handleDashboardKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 // handleConfirmModalKeys handles key bindings in confirm modal.
 func handleConfirmModalKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
-	case tea.KeyEnter:
-		// Confirm action
-		m.SetModal(model.ModalState{Active: false})
-		return m, nil
-	case tea.KeyEsc, tea.KeyCtrlC:
-		// Cancel
+	case tea.KeyEnter, tea.KeyEsc, tea.KeyCtrlC:
 		m.SetModal(model.ModalState{Active: false})
 		return m, nil
 	case tea.KeyRunes:
 		switch msg.String() {
 		case "y", "Y":
+			modal := m.Modal()
 			m.SetModal(model.ModalState{Active: false})
+			if modal.Action == "delete" && m.SelectedWS() != "" {
+				return m, commands.DeleteWorkspace(m.Mux(), m.SelectedWS())
+			}
 			return m, nil
 		case "n", "N":
 			m.SetModal(model.ModalState{Active: false})
 			return m, nil
 		}
 	}
-
 	return m, nil
 }
 
 // handleOnrampKeys handles key bindings in onramp view.
 func handleOnrampKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// TODO: Implement
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyCtrlC:
+		return m, func() tea.Msg {
+			return messages.ViewChanged{View: messages.ViewDashboard}
+		}
+	}
 	return m, nil
 }
 
 // handleDetailKeys handles key bindings in detail view.
 func handleDetailKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// TODO: Implement
+	selectedID := m.SelectedWS()
+
+	switch msg.Type {
+	case tea.KeyEsc:
+		return m, func() tea.Msg {
+			return messages.ViewChanged{View: messages.ViewDashboard}
+		}
+	case tea.KeyRunes:
+		switch msg.String() {
+		case "q":
+			return m, tea.Quit
+		case "s":
+			if selectedID != "" {
+				return m, commands.StartWorkspace(m.Mux(), selectedID)
+			}
+		case "x":
+			if selectedID != "" {
+				return m, commands.StopWorkspace(m.Mux(), selectedID)
+			}
+		case "d":
+			if selectedID != "" {
+				m.SetModal(model.ModalState{
+					Active: true,
+					Title:  "Delete Workspace",
+					Body:   "Are you sure you want to delete this workspace? This cannot be undone.",
+					Action: "delete",
+				})
+				return m, nil
+			}
+		case "f":
+			if selectedID != "" {
+				return m, commands.ForkWorkspace(m.Mux(), selectedID)
+			}
+		case "t":
+			if selectedID != "" {
+				wsName := selectedID
+				for _, ws := range m.Workspaces() {
+					if ws.ID == selectedID {
+						wsName = ws.Name
+						break
+					}
+				}
+				m.AddToast(model.Toast{
+					Message: "Terminal: " + wsName,
+					Kind:    messages.ToastInfo,
+				})
+				return m, nil
+			}
+		case "l":
+			return m, func() tea.Msg {
+				return messages.SpotlightRequested{}
+			}
+		case "y":
+			return m, func() tea.Msg {
+				return messages.SyncRequested{}
+			}
+		case "?":
+			return m, func() tea.Msg {
+				return messages.ViewChanged{View: messages.ViewHelp}
+			}
+		}
+	}
 	return m, nil
 }
 
 // handleSpotlightKeys handles key bindings in spotlight view.
 func handleSpotlightKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// TODO: Implement
+	switch msg.Type {
+	case tea.KeyEsc:
+		return m, func() tea.Msg {
+			return messages.SpotlightClosed{}
+		}
+	}
 	return m, nil
 }
 
 // handleSyncKeys handles key bindings in sync view.
 func handleSyncKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// TODO: Implement
+	switch msg.Type {
+	case tea.KeyEsc:
+		return m, func() tea.Msg {
+			return messages.SyncClosed{}
+		}
+	}
 	return m, nil
 }
 
 // handleCreateKeys handles key bindings in create view.
 func handleCreateKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// TODO: Implement
+	switch msg.Type {
+	case tea.KeyEsc:
+		return m, func() tea.Msg {
+			return messages.ViewChanged{View: messages.ViewDashboard}
+		}
+	}
 	return m, nil
 }
 
 // handleHelpKeys handles key bindings in help view.
 func handleHelpKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// TODO: Implement
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyCtrlC:
+		return m, func() tea.Msg {
+			return messages.ViewChanged{View: messages.ViewDashboard}
+		}
+	case tea.KeyRunes:
+		if msg.String() == "q" {
+			return m, func() tea.Msg {
+				return messages.ViewChanged{View: messages.ViewDashboard}
+			}
+		}
+	}
 	return m, nil
 }
 

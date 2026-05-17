@@ -65,10 +65,10 @@ type View int
 const (
 	ViewDashboard View = iota
 	ViewOnramp
-	ViewSpotlight
-	ViewSync
 	ViewCreate
 	ViewDetail
+	ViewSpotlight
+	ViewSync
 	ViewHelp
 )
 
@@ -92,6 +92,9 @@ type Toast struct {
 type ModalState struct {
 	Active bool
 	Type   string
+	Title  string
+	Body   string
+	Action string
 }
 
 // Shortcut represents a keyboard shortcut with its description.
