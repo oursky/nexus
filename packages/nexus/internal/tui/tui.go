@@ -2,11 +2,14 @@ package tui
 
 import (
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
+	"github.com/oursky/nexus/packages/nexus/internal/tui/components"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/design"
+	"github.com/oursky/nexus/packages/nexus/internal/tui/messages"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/model"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/update"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/views"
@@ -32,7 +35,56 @@ func (r *renderer) Render(m *model.AppModel) string {
 	}
 
 	// Stack: header + body + footer
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	base := lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+
+	// Overlay toasts on top of the base content
+	toasts := r.renderToasts(m)
+	if toasts != "" {
+		// Place toasts at the bottom-right of the screen
+		base = lipgloss.JoinVertical(lipgloss.Left, base, toasts)
+	}
+
+	return base
+}
+
+// renderToasts renders active toast notifications.
+func (r *renderer) renderToasts(m *model.AppModel) string {
+	modelToasts := m.Toasts()
+	if len(modelToasts) == 0 {
+		return ""
+	}
+
+	colors := design.ActiveTheme.Colors
+	var rendered []string
+	for _, t := range modelToasts {
+		// Convert model.ToastKind to components.ToastLevel
+		var level components.ToastLevel
+		switch t.Kind {
+		case messages.ToastSuccess:
+			level = components.ToastSuccess
+		case messages.ToastError:
+			level = components.ToastError
+		case messages.ToastWarning:
+			level = components.ToastWarning
+		default:
+			level = components.ToastInfo
+		}
+
+		ct := &components.Toast{
+			Level:   level,
+			Message: t.Message,
+			Time:    time.Now(),
+		}
+		rendered = append(rendered, ct.View())
+	}
+
+	// Stack toasts vertically, right-aligned
+	toastBox := lipgloss.NewStyle().
+		Align(lipgloss.Right).
+		Foreground(colors.Text).
+		MaxWidth(m.Width())
+
+	return toastBox.Render(strings.Join(rendered, "\n"))
 }
 
 // renderHeader renders the top status bar with connection status.
