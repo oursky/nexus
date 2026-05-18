@@ -1,6 +1,8 @@
 package tui_test
 
 import (
+	"strconv"
+	"github.com/oursky/nexus/packages/nexus/internal/tui/design"
 	"fmt"
 	"testing"
 
@@ -879,8 +881,9 @@ func TestWizardEscSubmitsDefault(t *testing.T) {
 	if wizard.HostInput.Value() != "localhost" {
 		t.Errorf("expected host 'localhost', got '%s'", wizard.HostInput.Value())
 	}
-	if wizard.PortInput.Value() != "7777" {
-		t.Errorf("expected port '7777', got '%s'", wizard.PortInput.Value())
+	expectedPort := strconv.Itoa(design.DefaultDaemonPort)
+	if wizard.PortInput.Value() != expectedPort {
+		t.Errorf("expected port '%s', got '%s'", expectedPort, wizard.PortInput.Value())
 	}
 	if cmd == nil {
 		t.Error("expected non-nil cmd after Esc")

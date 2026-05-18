@@ -8,6 +8,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/commands"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/messages"
+	"github.com/oursky/nexus/packages/nexus/internal/tui/design"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/model"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/pty"
 )
@@ -403,7 +404,7 @@ func HandleLocalCheck(m *model.AppModel, msg messages.LocalCheckMsg) (tea.Model,
 		// Daemon already running — save profile and connect
 		m.SetStatusLine("connecting…")
 		m.SetNoProfile(noProfile)
-		return m, commands.SaveLocalProfileCmd(7777)
+		return m, commands.SaveLocalProfileCmd(design.DefaultDaemonPort)
 	}
 	m.SetNoProfile(noProfile)
 	return m, nil
@@ -421,7 +422,7 @@ func HandleDaemonStartDone(m *model.AppModel, msg messages.DaemonStartDoneMsg) (
 	// Daemon started — save profile and connect
 	m.SetStatusLine("connecting…")
 	m.SetNoProfile(noProfile)
-	return m, commands.SaveLocalProfileCmd(7777)
+	return m, commands.SaveLocalProfileCmd(design.DefaultDaemonPort)
 }
 
 // HandleNoProfileSpinTick handles spinner animation ticks.

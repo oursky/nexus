@@ -2,10 +2,12 @@ package update
 
 import (
 	"fmt"
+	"strconv"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/commands"
+	"github.com/oursky/nexus/packages/nexus/internal/tui/design"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/messages"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/model"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/pty"
@@ -237,14 +239,14 @@ func handleOnrampKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc:
 		// Skip to localhost default
 		wizard.HostInput.SetValue("localhost")
-		wizard.PortInput.SetValue("7777")
+		wizard.PortInput.SetValue(strconv.Itoa(design.DefaultDaemonPort))
 		wizard.Busy = true
 		wizard.Err = ""
 		m.SetWizard(wizard)
 		return m, func() tea.Msg {
 			return messages.WizardSubmitMsg{
 				Host: "localhost",
-				Port: "7777",
+				Port: strconv.Itoa(design.DefaultDaemonPort),
 				Key:  "",
 			}
 		}
@@ -520,7 +522,7 @@ func handleNoProfileKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 			noProfile.Busy = true
 			noProfile.Err = ""
 			m.SetNoProfile(noProfile)
-			return m, tea.Batch(commands.StartLocalDaemonCmd(7777), commands.NoProfileSpinTick())
+			return m, tea.Batch(commands.StartLocalDaemonCmd(design.DefaultDaemonPort), commands.NoProfileSpinTick())
 		case 1:
 			// Connect to remote — show wizard
 			m.SetShowNoProfile(false)

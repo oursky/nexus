@@ -3,3 +3,4 @@ tmp/
 # Local build artifacts (wrong-path outputs from 'go build ./...' etc.)
 /packages/
 /nexus-guest-agent
+.opencode/background-tasks/

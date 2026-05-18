@@ -12,6 +12,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	"github.com/oursky/nexus/packages/nexus/internal/auth/tokenstore"
 	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
+	"github.com/oursky/nexus/packages/nexus/internal/tui/design"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/messages"
 )
 
@@ -97,7 +98,7 @@ func WizardSaveCmd(host string, portStr string, sshKey string) tea.Cmd {
 	return func() tea.Msg {
 		port, _ := strconv.Atoi(portStr)
 		if port == 0 {
-			port = 7777
+			port = design.DefaultDaemonPort
 		}
 		// Load or generate local daemon token
 		token, err := tokenstore.LoadOrGenerate()

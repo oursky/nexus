@@ -8,6 +8,7 @@ type ColorTokens struct {
 	Bg         lipgloss.Color
 	BgSubtle   lipgloss.Color
 	BgSelected lipgloss.Color
+	BgOverlay  lipgloss.Color
 
 	// Text
 	Text       lipgloss.Color

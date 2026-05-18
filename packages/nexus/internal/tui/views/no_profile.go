@@ -21,6 +21,7 @@ func NewNoProfileView() *NoProfileView {
 func (v *NoProfileView) View(m *model.AppModel) string {
 	colors := design.ActiveTheme.Colors
 	w := m.Width()
+	h := m.Height()
 
 	noProfile := m.NoProfile()
 
@@ -91,10 +92,25 @@ func (v *NoProfileView) View(m *model.AppModel) string {
 		)
 	}
 
-	return lipgloss.NewStyle().
+	modalBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colors.Accent).
+		BorderForeground(colors.Border).
 		Padding(1, 2).
 		Width(w).
 		Render(b.String())
+
+	// Center the modal box within a full-screen dimmed overlay
+	overlayStyle := lipgloss.NewStyle().
+		Width(w).
+		Height(h).
+		Background(colors.BgOverlay)
+
+	centered := lipgloss.Place(w, h,
+		lipgloss.Center, lipgloss.Center,
+		modalBox,
+		lipgloss.WithWhitespaceChars(" "),
+		lipgloss.WithWhitespaceForeground(colors.BgOverlay),
+	)
+
+	return overlayStyle.Render(centered)
 }

@@ -34,21 +34,12 @@ func (r *renderer) Render(m *model.AppModel) string {
 	header := r.renderHeader(m)
 	footer := r.renderFooter(m)
 
-	// Show onramp wizard if not connected
+	// Show no-profile or onramp wizard if not connected — fullscreen overlay
 	if !m.Connected() {
-		var body string
 		if m.ShowNoProfile() {
-			body = r.noProfile.View(m)
-		} else {
-			body = r.onramp.View(m)
+			return r.noProfile.View(m)
 		}
-		// Force each layer to full width for consistent layout
-		fullWidth := lipgloss.NewStyle().Width(m.Width())
-		return lipgloss.JoinVertical(lipgloss.Left,
-			fullWidth.Render(header),
-			fullWidth.Render(body),
-			fullWidth.Render(footer),
-		)
+		return r.onramp.View(m)
 	}
 
 	var body string

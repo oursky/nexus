@@ -1,6 +1,7 @@
 package views
 
 import (
+	"strconv"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/design"
@@ -43,7 +44,7 @@ func (v *OnrampView) View(m *model.AppModel) string {
 	// Field labels and inputs
 	labels := []string{"Host", "Port", "SSH Identity"}
 	inputs := []*textinput.Model{&wizard.HostInput, &wizard.PortInput, &wizard.KeyInput}
-	placeholders := []string{"localhost", "7777", "~/.ssh/id_ed25519"}
+	placeholders := []string{"localhost", strconv.Itoa(design.DefaultDaemonPort), "~/.ssh/id_ed25519"}
 
 	fieldWidth := min(50, w-24)
 

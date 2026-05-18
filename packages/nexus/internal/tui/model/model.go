@@ -1,6 +1,8 @@
 package model
 
 import (
+	"fmt"
+
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -190,7 +192,7 @@ func NewWizardState() WizardState {
 	hostInput.Focus()
 
 	portInput := textinput.New()
-	portInput.Placeholder = "7777"
+	portInput.Placeholder = fmt.Sprintf("%d", design.DefaultDaemonPort)
 
 	keyInput := textinput.New()
 	keyInput.Placeholder = "~/.ssh/id_ed25519"
@@ -259,7 +261,7 @@ func (m *AppModel) Init() tea.Cmd {
 			Checking: true,
 		})
 		return tea.Batch(
-			commands.CheckLocalDaemonCmd(7777),
+			commands.CheckLocalDaemonCmd(design.DefaultDaemonPort),
 			commands.NoProfileSpinTick(),
 		)
 	}
