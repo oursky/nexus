@@ -79,6 +79,10 @@ type AppModel struct {
 	// Update router function (set by tui.go to break model↔update cycle)
 	updateRouter UpdateFunc
 
+   // Split-pane focus
+	leftFocused  bool
+	ptyFocused   bool
+	rightFocused bool
 	// Poll command factory (set by tui.go to break model↔commands cycle)
 	pollCmd func() tea.Cmd
 }
@@ -246,6 +250,7 @@ func NewAppModel(mux *rpc.MuxConn) *AppModel {
 		connected:     mux != nil,
 		wizard:        NewWizardState(),
 		width:         80,
+		leftFocused:  true,
 		height:        24,
 	}
 }
@@ -587,6 +592,15 @@ func (m *AppModel) SetMux(mux *rpc.MuxConn) {
 }
 
 // UpdateStyles rebuilds styles for the current dimensions.
+
+// Focus getters/setters for split-pane navigation.
+func (m *AppModel) LeftFocused() bool     { return m.leftFocused }
+func (m *AppModel) SetLeftFocused(v bool) { m.leftFocused = v }
+func (m *AppModel) PTYFocused() bool      { return m.ptyFocused }
+func (m *AppModel) SetPTYFocused(v bool)  { m.ptyFocused = v }
+func (m *AppModel) RightFocused() bool     { return m.rightFocused }
+func (m *AppModel) SetRightFocused(v bool) { m.rightFocused = v }
+
 func UpdateStyles(width, height int) {
 	// Styles are already design tokens; this is a no-op placeholder
 	// for future use if dynamic styling is needed

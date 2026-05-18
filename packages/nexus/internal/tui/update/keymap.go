@@ -122,6 +122,26 @@ func handleDashboardKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		wsList, cmd = wsList.Update(msg)
 		m.SetWorkspaceList(wsList)
 		return m, cmd
+	case tea.KeyTab:
+		if m.Width() >= 90 {
+			if m.LeftFocused() {
+				m.SetLeftFocused(false)
+				m.SetPTYFocused(true)
+			} else if m.PTYFocused() {
+				if m.Width() >= 110 {
+					m.SetPTYFocused(false)
+					m.SetRightFocused(true)
+				} else {
+					m.SetPTYFocused(false)
+					m.SetLeftFocused(true)
+				}
+			} else {
+				m.SetRightFocused(false)
+				m.SetLeftFocused(true)
+			}
+			return m, nil
+		}
+
 	case tea.KeyDown, tea.KeyCtrlJ:
 		wsList, cmd = wsList.Update(msg)
 		m.SetWorkspaceList(wsList)

@@ -30,6 +30,7 @@ type renderer struct {
 }
 
 // Render dispatches to the appropriate view based on current state.
+// In split mode (>=90 cols), shows workspace list left and detail/PTY right.
 func (r *renderer) Render(m *model.AppModel) string {
 	header := r.renderHeader(m)
 	footer := r.renderFooter(m)
@@ -42,34 +43,21 @@ func (r *renderer) Render(m *model.AppModel) string {
 		return r.onramp.View(m)
 	}
 
-	// Render normal body
+	// Build the body based on terminal width
+	w := m.Width()
+	isThreePane := w >= 110
+	isTwoPane := w >= 90
+
 	var body string
-	if m.PTYPane() != nil && m.ActiveTab() >= 0 {
-		body = m.PTYPane().Render()
+	if isTwoPane || isThreePane {
+		body = r.renderSplitBody(m, isTwoPane, isThreePane)
 	} else {
-		switch m.CurrentView() {
-		case model.ViewDetail:
-			body = r.renderDetail(m)
-		case model.ViewSpotlight:
-			body = r.spotlight.View(m)
-		case model.ViewSync:
-			body = r.sync.View(m)
-		case model.ViewCreate:
-			body = r.create.View(m)
-		case model.ViewHelp:
-			body = r.help.View(m)
-		case model.ViewConnect:
-			body = r.connect.View(m)
-		case model.ViewDashboard:
-			body = r.dashboard.View(m)
-		default:
-			body = r.dashboard.View(m)
-		}
+		body = r.renderSingleBody(m)
 	}
 
+	// Assemble full screen
+	fullWidth := lipgloss.NewStyle().Width(w)
 	tabBar := r.renderTabBar(m)
-	// Force full width for each layout layer
-	fullWidth := lipgloss.NewStyle().Width(m.Width())
 	layers := []string{
 		fullWidth.Render(header),
 		fullWidth.Render(tabBar),
@@ -83,12 +71,34 @@ func (r *renderer) Render(m *model.AppModel) string {
 		base = lipgloss.JoinVertical(lipgloss.Left, base, toasts)
 	}
 
-	// Overlays: render on top of the dashboard when connected
+	// Profile/onramp overlay when connected
 	if m.CurrentView() == model.ViewOnramp {
 		return r.onramp.View(m)
 	}
 
 	return base
+}
+
+// renderSingleBody renders content for terminals <90 cols (no split).
+func (r *renderer) renderSingleBody(m *model.AppModel) string {
+	switch m.CurrentView() {
+	case model.ViewDetail:
+		return r.renderDetail(m)
+	case model.ViewSpotlight:
+		return r.spotlight.View(m)
+	case model.ViewSync:
+		return r.sync.View(m)
+	case model.ViewCreate:
+		return r.create.View(m)
+	case model.ViewHelp:
+		return r.help.View(m)
+	case model.ViewConnect:
+		return r.connect.View(m)
+	case model.ViewDashboard:
+		return r.dashboard.View(m)
+	default:
+		return r.dashboard.View(m)
+	}
 }
 
 func (r *renderer) renderTabBar(m *model.AppModel) string {
@@ -240,7 +250,7 @@ func (r *renderer) renderDetail(m *model.AppModel) string {
 // renderFooter renders the keybinding hints bar.
 func (r *renderer) renderFooter(m *model.AppModel) string {
 	colors := design.ActiveTheme.Colors
-	hints := []string{"↑/k up", "↓/j down", "/ filter", "q quit", "? more"}
+	hints := []string{"↑/k up", "↓/j down", "/ filter", "Tab focus", "C connect", "q quit", "? more"}
 	hintStyle := lipgloss.NewStyle().Foreground(colors.TextMuted)
 	sepStyle := lipgloss.NewStyle().Foreground(colors.Border)
 
@@ -258,6 +268,138 @@ func (r *renderer) renderFooter(m *model.AppModel) string {
 	return barStyle.Render(footer)
 }
 
+// renderSplitBody composites left/right (and right sidebar for three-pane) panels.
+func (r *renderer) renderSplitBody(m *model.AppModel, isTwoPane, isThreePane bool) string {
+	colors := design.ActiveTheme.Colors
+	leftW, centerW, rightW := paneDimensions(m.Width(), isThreePane, isTwoPane)
+	bodyH := max(m.Height()-7, 4)
+
+	// === LEFT PANE: workspace list ===
+	leftInnerW := max(leftW-2, 4)
+	leftInnerH := max(bodyH-2, 2)
+	leftBorderColor := colors.Border
+	if m.LeftFocused() {
+		leftBorderColor = colors.Accent
+	}
+
+	listModel := m.WorkspaceList()
+	listModel.SetSize(leftInnerW, leftInnerH)
+	leftContent := listModel.View()
+
+	leftPane := lipgloss.NewStyle().
+		Width(leftInnerW).
+		Height(leftInnerH).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(leftBorderColor).
+		Render(leftContent)
+
+	// === CENTER PANE ===
+	var centerContent string
+	if m.PTYPane() != nil && m.ActiveTab() >= 0 {
+		centerContent = m.PTYPane().Render()
+	} else {
+		centerContent = r.renderCenterContent(m, centerW, bodyH)
+	}
+
+	sepStyle := lipgloss.NewStyle().Foreground(colors.Border)
+
+	if !isThreePane {
+		centerBorderColor := colors.Border
+		if m.PTYFocused() {
+			centerBorderColor = colors.Accent
+		}
+		centerInnerW := max(centerW-1, 4)
+		centerPane := lipgloss.NewStyle().
+			Width(centerInnerW).
+			Height(bodyH).
+			Border(lipgloss.NormalBorder(), false, false, false, true).
+			BorderForeground(centerBorderColor).
+			Render(centerContent)
+		return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, centerPane)
+	}
+
+	// Three-pane
+	centerPane := lipgloss.NewStyle().
+		Width(centerW).
+		Height(bodyH).
+		Render(centerContent)
+
+	rightInnerW := max(rightW-2, 4)
+	rightInnerH := max(bodyH-2, 2)
+	rightBorderColor := colors.Border
+	if m.RightFocused() {
+		rightBorderColor = colors.Accent
+	}
+	rightContent := r.renderSidebar(m, rightInnerW, rightInnerH)
+	rightPane := lipgloss.NewStyle().
+		Width(rightInnerW).
+		Height(rightInnerH).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(rightBorderColor).
+		Render(rightContent)
+
+	sep := sepStyle.Render("\u2502")
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, centerPane, sep, rightPane)
+}
+
+// renderCenterContent returns content for the center pane in split mode.
+func (r *renderer) renderCenterContent(m *model.AppModel, width, height int) string {
+	colors := design.ActiveTheme.Colors
+
+	switch m.CurrentView() {
+	case model.ViewDetail:
+		return r.renderDetail(m)
+	case model.ViewConnect:
+		return r.connect.View(m)
+	case model.ViewHelp:
+		return r.help.View(m)
+	default:
+		hint := lipgloss.NewStyle().
+			Foreground(colors.TextMuted).
+			Render("select a workspace")
+		return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, hint)
+	}
+}
+
+// renderSidebar returns content for the right pane in three-pane mode.
+func (r *renderer) renderSidebar(m *model.AppModel, width, height int) string {
+	colors := design.ActiveTheme.Colors
+
+	switch m.CurrentView() {
+	case model.ViewSpotlight:
+		return r.spotlight.View(m)
+	case model.ViewSync:
+		return r.sync.View(m)
+	default:
+		hint := lipgloss.NewStyle().
+			Foreground(colors.TextMuted).
+			Render("l:spotlight  y:sync")
+		return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, hint)
+	}
+}
+
+// paneDimensions returns (leftW, centerW, rightW) for the current layout.
+func paneDimensions(width int, isThreePane, isTwoPane bool) (leftW, centerW, rightW int) {
+	inner := max(width-4, 24)
+	if isThreePane {
+		leftW = int(float64(inner) * 0.28)
+		rightW = int(float64(inner) * 0.22)
+		centerW = max(inner-leftW-rightW-1, 20)
+		return
+	}
+	if isTwoPane {
+		leftW = int(float64(inner) * 0.28)
+		centerW = max(inner-leftW, 20)
+		rightW = 0
+		return
+	}
+	leftW = inner
+	centerW = inner
+	rightW = 0
+	return
+}
+
+// Run starts the TUI application.
 // Run starts the TUI application.
 // It attempts to connect to the daemon via stored profile.
 // If connection fails, the onramp/connect wizard is shown.
