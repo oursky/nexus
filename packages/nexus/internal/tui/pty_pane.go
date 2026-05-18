@@ -1,4 +1,4 @@
-package pty
+package tui
 
 import (
 	"encoding/json"
@@ -9,6 +9,24 @@ import (
 
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
 )
+
+// mouseModeEnableSeqs are DEC private mode sequences that enable mouse
+// reporting in a terminal. When a program inside the PTY sends one of these,
+// it means it wants to receive mouse events.
+var mouseModeEnableSeqs = []string{
+	"\x1b[?1000h", // VT200 X10 — button press only
+	"\x1b[?1002h", // button-event tracking
+	"\x1b[?1003h", // any-event tracking
+	"\x1b[?1006h", // SGR extended mouse
+}
+
+// mouseModeDisableSeqs are the corresponding disable sequences.
+var mouseModeDisableSeqs = []string{
+	"\x1b[?1000l",
+	"\x1b[?1002l",
+	"\x1b[?1003l",
+	"\x1b[?1006l",
+}
 
 // PtyPane manages an interactive PTY session rendered as a VT100 terminal
 // inside a Bubble Tea view. It feeds incoming pty.data bytes into a
@@ -42,17 +60,17 @@ func NewPtyPane(wsID, sessionID string, width, height int) *PtyPane {
 // Write feeds raw PTY output bytes into the VT100 emulator and tracks whether
 // the program inside the PTY has requested mouse-reporting mode.
 func (p *PtyPane) Write(data string) {
-	for _, seq := range MouseModeEnableSeqs {
+	for _, seq := range mouseModeEnableSeqs {
 		if strings.Contains(data, seq) {
 			p.ptyMouseEnabled = true
 			break
 		}
 	}
-	for _, seq := range MouseModeDisableSeqs {
+	for _, seq := range mouseModeDisableSeqs {
 		if strings.Contains(data, seq) {
 			// Only clear if no enable sequence also appears in the same chunk.
 			hasEnable := false
-			for _, en := range MouseModeEnableSeqs {
+			for _, en := range mouseModeEnableSeqs {
 				if strings.Contains(data, en) {
 					hasEnable = true
 					break
@@ -74,11 +92,6 @@ func (p *PtyPane) MouseEnabled() bool {
 	return p.ptyMouseEnabled
 }
 
-// SessionID returns the PTY session ID.
-func (p *PtyPane) SessionID() string {
-	return p.sessionID
-}
-
 // Render returns the current terminal screen as an ANSI-encoded string
 // suitable for embedding directly in a BubbleTea View string.
 func (p *PtyPane) Render() string {
@@ -95,10 +108,10 @@ func (p *PtyPane) Resize(width, height int) {
 	p.term.Resize(width, height)
 }
 
-// SendInputCmd returns a tea.Cmd that forwards a BubbleTea key event as raw
+// sendInputCmd returns a tea.Cmd that forwards a BubbleTea key event as raw
 // bytes to the PTY via the pty.write RPC.
-func (p *PtyPane) SendInputCmd(mux *rpc.MuxConn, msg tea.KeyMsg) tea.Cmd {
-	data := KeyMsgToBytes(msg)
+func (p *PtyPane) sendInputCmd(mux *rpc.MuxConn, msg tea.KeyMsg) tea.Cmd {
+	data := keyMsgToBytes(msg)
 	if data == "" {
 		return nil
 	}
@@ -112,9 +125,9 @@ func (p *PtyPane) SendInputCmd(mux *rpc.MuxConn, msg tea.KeyMsg) tea.Cmd {
 	}
 }
 
-// ResizeCmd returns a tea.Cmd that sends a pty.resize notification to the
+// resizeCmd returns a tea.Cmd that sends a pty.resize notification to the
 // daemon with the pane's current dimensions.
-func (p *PtyPane) ResizeCmd(mux *rpc.MuxConn) tea.Cmd {
+func (p *PtyPane) resizeCmd(mux *rpc.MuxConn) tea.Cmd {
 	sessionID := p.sessionID
 	cols, rows := p.width, p.height
 	return func() tea.Msg {
@@ -127,9 +140,9 @@ func (p *PtyPane) ResizeCmd(mux *rpc.MuxConn) tea.Cmd {
 	}
 }
 
-// KeyMsgToBytes converts a BubbleTea KeyMsg to the ANSI byte sequence the PTY
+// keyMsgToBytes converts a BubbleTea KeyMsg to the ANSI byte sequence the PTY
 // expects. Returns an empty string for unrecognised keys.
-func KeyMsgToBytes(msg tea.KeyMsg) string {
+func keyMsgToBytes(msg tea.KeyMsg) string {
 	switch msg.Type {
 	case tea.KeyRunes:
 		if msg.Alt {
@@ -243,37 +256,37 @@ func KeyMsgToBytes(msg tea.KeyMsg) string {
 	return ""
 }
 
-// PtyOpenedMsg is delivered when a pty.create RPC succeeds.
-type PtyOpenedMsg struct {
-	SessionID string
-	WsID      string
-	DataCh    <-chan json.RawMessage
-	CancelFn  func()
+// ptyOpenedMsg is delivered when a pty.create RPC succeeds.
+type ptyOpenedMsg struct {
+	sessionID string
+	wsID      string
+	dataCh    <-chan json.RawMessage
+	cancelFn  func()
 }
 
-// PtyDataMsg is delivered when a pty.data notification arrives for the active
+// ptyDataMsg is delivered when a pty.data notification arrives for the active
 // session.
-type PtyDataMsg struct {
-	SessionID string
-	Data      string
+type ptyDataMsg struct {
+	sessionID string
+	data      string
 }
 
-// PtyClosedMsg is delivered when the pty.data subscription channel is closed.
-type PtyClosedMsg struct {
-	SessionID string
+// ptyClosedMsg is delivered when the pty.data subscription channel is closed.
+type ptyClosedMsg struct {
+	sessionID string
 }
 
-// PtyErrMsg is delivered when pty.create fails.
-type PtyErrMsg struct {
-	Err error
+// ptyErrMsg is delivered when pty.create fails.
+type ptyErrMsg struct {
+	err error
 }
 
-// OpenPTYCmd fires a pty.create RPC and subscribes to pty.data notifications,
-// delivering PtyOpenedMsg on success or PtyErrMsg on failure.
-func OpenPTYCmd(mux *rpc.MuxConn, wsID string, cols, rows int) tea.Cmd {
+// openPTYCmd fires a pty.create RPC and subscribes to pty.data notifications,
+// delivering ptyOpenedMsg on success or ptyErrMsg on failure.
+func openPTYCmd(mux *rpc.MuxConn, wsID string, cols, rows int) tea.Cmd {
 	return func() tea.Msg {
 		if mux == nil {
-			return PtyErrMsg{Err: nil}
+			return ptyErrMsg{err: nil}
 		}
 		// Subscribe before calling pty.create so we never miss the first bytes.
 		dataCh, cancelFn := mux.Subscribe("pty.data")
@@ -290,25 +303,25 @@ func OpenPTYCmd(mux *rpc.MuxConn, wsID string, cols, rows int) tea.Cmd {
 			"rows":    rows,
 		}, &session); err != nil {
 			cancelFn()
-			return PtyErrMsg{Err: err}
+			return ptyErrMsg{err: err}
 		}
-		return PtyOpenedMsg{
-			SessionID: session.ID,
-			WsID:      wsID,
-			DataCh:    dataCh,
-			CancelFn:  cancelFn,
+		return ptyOpenedMsg{
+			sessionID: session.ID,
+			wsID:      wsID,
+			dataCh:    dataCh,
+			cancelFn:  cancelFn,
 		}
 	}
 }
 
-// ListenPTYCmd blocks until a pty.data notification arrives for sessionID on
-// ch, then returns a PtyDataMsg. Returns PtyClosedMsg if ch is closed.
-func ListenPTYCmd(ch <-chan json.RawMessage, sessionID string) tea.Cmd {
+// listenPTYCmd blocks until a pty.data notification arrives for sessionID on
+// ch, then returns a ptyDataMsg. Returns ptyClosedMsg if ch is closed.
+func listenPTYCmd(ch <-chan json.RawMessage, sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		for {
 			raw, ok := <-ch
 			if !ok {
-				return PtyClosedMsg{SessionID: sessionID}
+				return ptyClosedMsg{sessionID: sessionID}
 			}
 			var p struct {
 				SessionID string `json:"sessionId"`
@@ -317,7 +330,7 @@ func ListenPTYCmd(ch <-chan json.RawMessage, sessionID string) tea.Cmd {
 			if err := json.Unmarshal(raw, &p); err != nil || p.SessionID != sessionID {
 				continue
 			}
-			return PtyDataMsg{Data: p.Data, SessionID: p.SessionID}
+			return ptyDataMsg{data: p.Data, sessionID: p.SessionID}
 		}
 	}
 }
