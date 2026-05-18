@@ -2,8 +2,8 @@ package commands
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/oursky/nexus/packages/nexus/internal/tui/model"
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
+	"github.com/oursky/nexus/packages/nexus/internal/tui/model"
 )
 
 // OpenPTY opens a new PTY session for a workspace.

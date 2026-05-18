@@ -77,6 +77,29 @@ func ForkWorkspace(mux *rpc.MuxConn, id string) tea.Cmd {
 	}
 }
 
+// CreateWorkspace creates a new workspace via RPC.
+func CreateWorkspace(mux *rpc.MuxConn, name, repo, ref string) tea.Cmd {
+	return func() tea.Msg {
+		var result struct {
+			Workspace workspace.Workspace `json:"workspace"`
+		}
+		params := map[string]any{
+			"spec": map[string]any{
+				"workspaceName": name,
+				"repo":          repo,
+				"ref":           ref,
+			},
+		}
+		if err := mux.Call("workspace.create", params, &result); err != nil {
+			return messages.ToastShown{Message: "Create failed: " + err.Error(), Kind: messages.ToastError}
+		}
+		return messages.ToastShown{
+			Message: "Workspace created: " + result.Workspace.WorkspaceName,
+			Kind:    messages.ToastSuccess,
+		}
+	}
+}
+
 // PollWorkspacesCmd returns a command that fetches workspace list after a 3s delay.
 // Combined with the router handler, this creates a continuous polling loop.
 func PollWorkspacesCmd(mux *rpc.MuxConn) tea.Cmd {

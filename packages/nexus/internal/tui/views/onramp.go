@@ -50,8 +50,6 @@ func (v *OnrampView) Update(msg tea.Msg, m *model.AppModel) (*model.AppModel, te
 			v.hostInput.Blur()
 		} else if v.step == 1 {
 			v.step = 2
-			// TODO: Emit DaemonConnected message via commands.ConnectDaemon()
-			// This will be implemented in Wave 7 (T16-T18)
 		}
 	}
 

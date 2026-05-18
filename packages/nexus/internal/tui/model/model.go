@@ -52,6 +52,9 @@ type AppModel struct {
 	forwards     []messages.PortForwardItem
 	syncSessions []messages.SyncSessionItem
 
+	// Create form state
+	createForm CreateForm
+
 	// Dimensions
 	width  int
 	height int
@@ -138,6 +141,15 @@ type SyncFile struct {
 	Path   string
 	Status string
 	Size   int64
+}
+
+// CreateForm holds the state for the workspace creation form.
+type CreateForm struct {
+	Name  string
+	Repo  string
+	Ref   string
+	Focus int // 0=name, 1=repo, 2=ref
+	Err   string
 }
 
 // NewAppModel creates a new AppModel.
@@ -438,6 +450,16 @@ func (m *AppModel) SetSyncSessions(s []messages.SyncSessionItem) {
 // Mux returns the RPC multiplexed connection.
 func (m *AppModel) Mux() *rpc.MuxConn {
 	return m.mux
+}
+
+// CreateForm returns the current create form state.
+func (m *AppModel) CreateForm() CreateForm {
+	return m.createForm
+}
+
+// SetCreateForm sets the create form state.
+func (m *AppModel) SetCreateForm(f CreateForm) {
+	m.createForm = f
 }
 
 // UpdateStyles rebuilds styles for the current dimensions.

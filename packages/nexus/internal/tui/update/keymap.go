@@ -322,9 +322,70 @@ func handleSyncKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleCreateKeys handles key bindings in create view.
 func handleCreateKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	form := m.CreateForm()
+
 	switch msg.Type {
 	case tea.KeyEsc:
 		m.SetCurrentView(model.ViewDashboard)
+		return m, nil
+
+	case tea.KeyTab:
+		form.Focus = (form.Focus + 1) % 3
+		m.SetCreateForm(form)
+		return m, nil
+
+	case tea.KeyShiftTab:
+		form.Focus = (form.Focus + 2) % 3
+		m.SetCreateForm(form)
+		return m, nil
+
+	case tea.KeyEnter:
+		// Validate
+		if form.Name == "" {
+			form.Err = "Name is required"
+			m.SetCreateForm(form)
+			return m, nil
+		}
+		if form.Repo == "" {
+			form.Err = "Repo URL is required"
+			m.SetCreateForm(form)
+			return m, nil
+		}
+		// Create workspace via RPC
+		form.Err = ""
+		m.SetCreateForm(form)
+		return m, commands.CreateWorkspace(m.Mux(), form.Name, form.Repo, form.Ref)
+
+	case tea.KeyBackspace:
+		switch form.Focus {
+		case 0:
+			if len(form.Name) > 0 {
+				form.Name = form.Name[:len(form.Name)-1]
+			}
+		case 1:
+			if len(form.Repo) > 0 {
+				form.Repo = form.Repo[:len(form.Repo)-1]
+			}
+		case 2:
+			if len(form.Ref) > 0 {
+				form.Ref = form.Ref[:len(form.Ref)-1]
+			}
+		}
+		m.SetCreateForm(form)
+		return m, nil
+
+	case tea.KeyRunes:
+		ch := msg.String()
+		switch form.Focus {
+		case 0:
+			form.Name += ch
+		case 1:
+			form.Repo += ch
+		case 2:
+			form.Ref += ch
+		}
+		form.Err = ""
+		m.SetCreateForm(form)
 		return m, nil
 	}
 	return m, nil
