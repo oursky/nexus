@@ -34,7 +34,7 @@ func (r *renderer) Render(m *model.AppModel) string {
 	header := r.renderHeader(m)
 	footer := r.renderFooter(m)
 
-	// Show no-profile or onramp wizard if not connected — fullscreen overlay
+	// Not connected: no-profile or onramp IS the full screen
 	if !m.Connected() {
 		if m.ShowNoProfile() {
 			return r.noProfile.View(m)
@@ -42,6 +42,7 @@ func (r *renderer) Render(m *model.AppModel) string {
 		return r.onramp.View(m)
 	}
 
+	// Render normal body
 	var body string
 	if m.PTYPane() != nil && m.ActiveTab() >= 0 {
 		body = m.PTYPane().Render()
@@ -80,6 +81,11 @@ func (r *renderer) Render(m *model.AppModel) string {
 	toasts := r.renderToasts(m)
 	if toasts != "" {
 		base = lipgloss.JoinVertical(lipgloss.Left, base, toasts)
+	}
+
+	// Overlays: render on top of the dashboard when connected
+	if m.CurrentView() == model.ViewOnramp {
+		return r.onramp.View(m)
 	}
 
 	return base

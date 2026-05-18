@@ -11,7 +11,9 @@ import (
 
 var noProfileSpinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// NoProfileView renders the "start local daemon or connect remote" choice panel.
+// NoProfileView renders the connection profile manager panel.
+// It shows when no daemon connection exists, presenting options
+// to start a local daemon or connect to a remote host.
 type NoProfileView struct{}
 
 func NewNoProfileView() *NoProfileView {
@@ -23,94 +25,100 @@ func (v *NoProfileView) View(m *model.AppModel) string {
 	w := m.Width()
 	h := m.Height()
 
-	noProfile := m.NoProfile()
+	np := m.NoProfile()
 
-	sep := lipgloss.NewStyle().
-		Foreground(colors.Border).
-		Render(strings.Repeat("─", w-4))
+	modalWidth := 54
 
-	titleStyle := lipgloss.NewStyle().
-		Foreground(colors.Text).
-		Bold(true)
+	// ─── Styles ───────────────────────────────────────
+	titleStyle := lipgloss.NewStyle().Foreground(colors.Text).Bold(true)
+	mutedStyle := lipgloss.NewStyle().Foreground(colors.TextMuted)
+	accentStyle := lipgloss.NewStyle().Foreground(colors.Accent)
+	errStyle := lipgloss.NewStyle().Foreground(colors.Error)
+	warningStyle := lipgloss.NewStyle().Foreground(colors.Warning)
+	dimStyle := lipgloss.NewStyle().Foreground(colors.Border)
 
-	mutedStyle := lipgloss.NewStyle().
-		Foreground(colors.TextMuted)
+	spin := noProfileSpinFrames[np.SpinIdx%len(noProfileSpinFrames)]
 
-	accentStyle := lipgloss.NewStyle().
-		Foreground(colors.Accent)
-
-	errStyle := lipgloss.NewStyle().
-		Foreground(colors.Error)
-
-	warningStyle := lipgloss.NewStyle().
-		Foreground(colors.Warning)
-
-	keyStyle := lipgloss.NewStyle().
-		Foreground(colors.TextMuted)
-
-	spin := noProfileSpinFrames[noProfile.SpinIdx%len(noProfileSpinFrames)]
-
+	// ─── Content ──────────────────────────────────────
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n", titleStyle.Render("nexus"))
-	fmt.Fprintf(&b, "%s\n\n", sep)
 
 	switch {
-	case noProfile.Checking:
-		fmt.Fprintf(&b, "%s\n", mutedStyle.Render(spin+" Checking for local daemon…"))
-
-	case noProfile.Busy:
-		fmt.Fprintf(&b, "%s\n", mutedStyle.Render(spin+" Starting daemon…"))
-
+	case np.Checking:
+		fmt.Fprintf(&b, "%s\n", dimStyle.Render(spin+" Checking for local daemon…"))
+	case np.Busy:
+		fmt.Fprintf(&b, "%s\n", dimStyle.Render(spin+" Starting daemon…"))
 	default:
-		if noProfile.Err != "" {
-			fmt.Fprintf(&b, "%s\n\n", errStyle.Render("✗ "+noProfile.Err))
+		if np.Err != "" {
+			fmt.Fprintf(&b, "%s\n\n", errStyle.Render("✗ "+np.Err))
 		} else {
-			fmt.Fprintf(&b, "%s\n\n", warningStyle.Render("No daemon running."))
+			fmt.Fprintf(&b, "%s\n\n", warningStyle.Render("No daemon connection found."))
 		}
 
-		entries := []struct{ label, hint string }{
-			{"Start local daemon", "nexus daemon start"},
-			{"Connect to remote host…", "enter host/port/SSH key"},
+		entries := []string{
+			"Start local daemon",
+			"Connect to remote host",
 		}
-		for i, e := range entries {
-			if i == noProfile.Sel {
-				fmt.Fprintf(&b, "%s   %s\n",
-					accentStyle.Render("▶  "+e.label),
-					mutedStyle.Render("("+e.hint+")"),
-				)
-			} else {
-				fmt.Fprintf(&b, "%s   %s\n",
-					"   "+keyStyle.Render(e.label),
-					mutedStyle.Render("("+e.hint+")"),
-				)
+		for i, label := range entries {
+			prefix := "   "
+			style := mutedStyle
+			if i == np.Sel {
+				prefix = "▶  "
+				style = accentStyle
 			}
+			fmt.Fprintf(&b, "%s\n", style.Render(prefix+label))
 		}
 
-		fmt.Fprintf(&b, "\n%s   %s",
-			accentStyle.Render("[ enter  select ]"),
-			mutedStyle.Render("[ esc / q  quit ]"),
-		)
+		// Footer hint
+		if np.Sel == 0 {
+			fmt.Fprintf(&b, "%s", mutedStyle.Render("starts a local nexus daemon"))
+		} else {
+			fmt.Fprintf(&b, "%s", mutedStyle.Render("enter host address and SSH key"))
+		}
 	}
 
-	modalBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colors.Border).
-		Padding(1, 2).
-		Width(w).
-		Render(b.String())
-
-	// Center the modal box within a full-screen dimmed overlay
-	overlayStyle := lipgloss.NewStyle().
-		Width(w).
-		Height(h).
-		Background(colors.BgOverlay)
-
-	centered := lipgloss.Place(w, h,
-		lipgloss.Center, lipgloss.Center,
-		modalBox,
-		lipgloss.WithWhitespaceChars(" "),
-		lipgloss.WithWhitespaceForeground(colors.BgOverlay),
+	inner := lipgloss.JoinVertical(lipgloss.Center,
+		titleStyle.Render("  nexus  "),
+		"",
+		b.String(),
+		"",
+		mutedStyle.Render("[ enter ] select    [ esc / q ] quit"),
 	)
 
-	return overlayStyle.Render(centered)
+	// ─── Dimmed overlay + centered modal ─────────────
+	return renderModal(colors, inner, w, h, modalWidth)
 }
+
+// renderModal renders a centered bordered box on top of a
+// dimmed full-screen background. Used by both no-profile
+// and onramp views for visual consistency.
+func renderModal(colors design.ColorTokens, content string, termW, termH, boxW int) string {
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colors.Border).
+		Padding(2, 3).
+		Width(boxW).
+		Render(content)
+
+	overlay := lipgloss.NewStyle().
+		Width(termW).
+		Height(termH).
+		Background(colors.BgOverlay)
+
+	centered := lipgloss.Place(termW, termH,
+		lipgloss.Center, lipgloss.Center,
+		box,
+	)
+
+	// Pad to terminal width so background fills the full width
+	lines := strings.Split(centered, "\n")
+	var padded []string
+	for _, line := range lines {
+		lineW := lipgloss.Width(line)
+		if lineW < termW {
+			line += strings.Repeat(" ", termW-lineW)
+		}
+		padded = append(padded, line)
+	}
+	return overlay.Render(strings.Join(padded, "\n"))
+}
+
