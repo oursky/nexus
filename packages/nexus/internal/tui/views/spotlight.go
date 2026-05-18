@@ -1,6 +1,7 @@
 package views
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -34,15 +35,29 @@ func (v *SpotlightView) View(m *model.AppModel) string {
 	labelStyle := lipgloss.NewStyle().Foreground(colors.TextMuted)
 	valueStyle := lipgloss.NewStyle().Foreground(colors.Text)
 
-	content := []string{
-		labelStyle.Render("Workspace: ") + valueStyle.Render(wsName),
-		"",
-		labelStyle.Render("Port forwards will appear here when configured."),
-		"",
-		lipgloss.NewStyle().Foreground(colors.TextMuted).Italic(true).Render(
-			"Use the CLI to manage port forwards: nexus port-forward <workspace>",
-		),
+	var content []string
+	content = append(content, labelStyle.Render("Workspace: ")+valueStyle.Render(wsName))
+	content = append(content, "")
+
+	// TODO: replace with real forwards from model once SpotlightRefreshed is wired in update handlers
+	forwards := []model.PortForward{
+		{LocalPort: 8080, RemotePort: 80, Protocol: "web"},
+		{LocalPort: 3000, RemotePort: 3000, Protocol: "app"},
 	}
+
+	if len(forwards) == 0 {
+		content = append(content, labelStyle.Render("No port forwards configured"))
+	} else {
+		header := fmt.Sprintf("%-12s %-15s %s", "Label", "Local→Remote", "Status")
+		content = append(content, lipgloss.NewStyle().Bold(true).Foreground(colors.Text).Render(header))
+		for _, f := range forwards {
+			line := fmt.Sprintf("%-12s %d→%-11d %s", f.Protocol, f.LocalPort, f.RemotePort, "active")
+			content = append(content, lipgloss.NewStyle().Foreground(colors.Text).Render(line))
+		}
+	}
+
+	content = append(content, "")
+	content = append(content, lipgloss.NewStyle().Foreground(colors.TextMuted).Render("a add • r remove • Esc back"))
 
 	body := lipgloss.NewStyle().
 		Padding(design.SpaceMD).
