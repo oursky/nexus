@@ -10,10 +10,10 @@ import (
 
 // CreateWizardConfig holds configuration for rendering the create workspace wizard.
 type CreateWizardConfig struct {
-	Width   int
-	NameTI  textinput.Model
-	RepoTI  textinput.Model
-	RefTI   textinput.Model
+	Width  int
+	NameTI textinput.Model
+	RepoTI textinput.Model
+	RefTI  textinput.Model
 }
 
 // RenderCreateWizard renders the create workspace wizard.

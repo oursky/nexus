@@ -112,8 +112,8 @@ func ParseSSHHostPort(hostPort string) (string, int, error) {
 
 // ConnectPanelConfig holds configuration for rendering the connect panel.
 type ConnectPanelConfig struct {
-	Width  int
-	Info   ConnectInstructions
+	Width int
+	Info  ConnectInstructions
 }
 
 // RenderConnectPanel renders the SSH/editor connect instructions panel.

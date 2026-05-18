@@ -24,12 +24,12 @@ const (
 )
 
 const (
-	PromptNone              = ""
-	PromptSpotPort          = "spot_port"
-	PromptSidebarSpotPort   = "sidebar_spot_port"
-	PromptSyncLocal         = "sync_local"
-	PromptSyncDir           = "sync_dir"
-	PromptForkChild         = "fork_child"
+	PromptNone            = ""
+	PromptSpotPort        = "spot_port"
+	PromptSidebarSpotPort = "sidebar_spot_port"
+	PromptSyncLocal       = "sync_local"
+	PromptSyncDir         = "sync_dir"
+	PromptForkChild       = "fork_child"
 )
 
 type LayoutPane int
@@ -55,20 +55,20 @@ type Model struct {
 	Mux    *rpc.MuxConn
 	Detail *workspace.Workspace
 
-	PtyPane       PtyPaneInterface
-	PtyWsID       string
-	PtyFocused    bool
-	PtyDataCh     <-chan json.RawMessage
-	CancelPTY     func()
-	DaemonOK      bool
-	Quitting      bool
-	StatusLine    string
-	ConfirmDelete bool
+	PtyPane         PtyPaneInterface
+	PtyWsID         string
+	PtyFocused      bool
+	PtyDataCh       <-chan json.RawMessage
+	CancelPTY       func()
+	DaemonOK        bool
+	Quitting        bool
+	StatusLine      string
+	ConfirmDelete   bool
 	PendingDeleteID string
-	Width         int
-	Height        int
-	ListWidth     int
-	ListHeight    int
+	Width           int
+	Height          int
+	ListWidth       int
+	ListHeight      int
 
 	ProjectsByID map[string]string
 
@@ -116,12 +116,12 @@ type Model struct {
 	SidebarFwds       []*spotlight.Forward
 	SidebarDiscovered []workspace.DiscoveredPort
 
-	SidebarTunnel      *sshtunnel.MultiTunnel
-	SidebarLocalProxy  *sshtunnel.LocalProxy
-	SidebarTunnelLive  bool
-	SidebarTunnelWsID  string
-	SidebarTunnelLocal bool
-	SidebarTunnelErr   string
+	SidebarTunnel        *sshtunnel.MultiTunnel
+	SidebarLocalProxy    *sshtunnel.LocalProxy
+	SidebarTunnelLive    bool
+	SidebarTunnelWsID    string
+	SidebarTunnelLocal   bool
+	SidebarTunnelErr     string
 	SidebarConfirmRemove bool
 
 	LeftPaneRight       int

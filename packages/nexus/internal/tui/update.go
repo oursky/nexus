@@ -52,29 +52,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case messages.ConnErr:
-		m.daemonOK = false
-		errStr := msg.Err.Error()
-		if strings.Contains(errStr, "no daemon profile configured") {
-			// First-run: no profile at all — check if a local daemon is already
-			// running before showing the no-profile menu.
-			m.showNoProfile = true
-			m.noProfileChecking = true
-			m.noProfileSel = 0
-			m.noProfileErr = ""
-			return m, tea.Batch(checkLocalDaemonCmd(m.localPort), noProfileSpinTick())
-		}
-		if strings.Contains(errStr, "connect to local daemon") && strings.Contains(errStr, "connection refused") {
-			// A localhost profile exists but the daemon isn't running.
-			// Treat exactly like no-profile: show the start/connect menu.
-			m.showNoProfile = true
-			m.noProfileChecking = false
-			m.noProfileBusy = false
-			m.noProfileSel = 0
-			m.noProfileErr = ""
-			return m, nil
-		}
-		m.statusLine = errStr
-		return m, nil
+		return m.handleConnErrMsg(msg)
 
 	case localCheckMsg:
 		m.noProfileChecking = false
@@ -122,79 +100,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case messages.Workspaces:
-		m.daemonOK = true
-		if msg.ProjectsByID != nil {
-			m.projectsByID = msg.ProjectsByID
-		}
-		sel := selectedWorkspaceID(m.list.SelectedItem())
-		m.list.SetItems(workspacesToItems(msg.Workspaces, m.projectsByID))
-		if sel != "" {
-			reselectByID(&m.list, sel)
-		}
-		if m.detail != nil {
-			id := m.detail.ID
-			for _, w := range msg.Workspaces {
-				if w.ID == id {
-					wcopy := w
-					m.detail = &wcopy
-					break
-				}
-			}
-		}
-		// Auto-attach to last active workspace on first load (--auto-attach only).
-		if m.autoAttach && !m.autoAttachDone && m.activeTabWS != "" {
-			m.autoAttachDone = true
-			for _, w := range msg.Workspaces {
-				if w.ID == m.activeTabWS && w.State == workspace.StateRunning {
-					return m, m.shellExecCmd(m.activeTabWS)
-				}
-			}
-		}
-		m, ptyCmd := m.maybeSwitchPTY()
-		var sideCmd tea.Cmd
-		if m.isThreePaneMode() && m.mux != nil {
-			sideCmd = tea.Batch(m.loadSidebarSpotCmd(), m.loadSidebarDiscoveredCmd())
-		}
-		return m, tea.Batch(ptyCmd, sideCmd)
+		return m.handleWorkspacesMsg(msg)
 
 	// PTY split-pane messages.
 	case pty.PtyOpenedMsg:
-		if msg.WsID != m.ptyWsID {
-			// Selection changed while pty.create was in-flight; discard.
-			msg.CancelFn()
-			if m.mux != nil {
-				mux := m.mux
-				sid := msg.SessionID
-				go func() { _ = mux.Send("pty.close", map[string]any{"sessionId": sid}) }()
-			}
-			return m, nil
-		}
-		cols, rows := m.ptyPaneDimensions()
-		m.ptyPane = pty.NewPtyPane(msg.WsID, msg.SessionID, cols, rows)
-		m.ptyDataCh = msg.DataCh
-		m.cancelPTY = msg.CancelFn
-		return m, pty.ListenPTYCmd(msg.DataCh, msg.SessionID)
+		return m.handlePtyOpenedMsg(msg)
 
 	case pty.PtyDataMsg:
-		if m.ptyPane != nil && msg.SessionID == m.ptyPane.SessionID() {
-			m.ptyPane.Write(msg.Data)
-		}
-		if m.ptyDataCh != nil {
-			return m, pty.ListenPTYCmd(m.ptyDataCh, msg.SessionID)
-		}
-		return m, nil
+		return m.handlePtyDataMsg(msg)
 
 	case pty.PtyClosedMsg:
-		if m.ptyPane != nil && msg.SessionID == m.ptyPane.SessionID() {
-			prevFocused := m.ptyFocused
-			m.ptyPane = nil
-			m.ptyWsID = ""
-			m.cancelPTY = nil
-			m.ptyDataCh = nil
-			m.ptyFocused = false
-			return m, ptyMouseModeCmd(prevFocused, false)
-		}
-		return m, nil
+		return m.handlePtyClosedMsg(msg)
 
 	case pty.PtyErrMsg:
 		if msg.Err != nil {
@@ -228,22 +144,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case messages.MutationDone:
-		if msg.Err != nil {
-			m.statusLine = msg.Err.Error()
-			return m, nil
-		}
-		m.statusLine = ""
-		if m.panel == panelSpotlight && m.detail != nil {
-			return m, m.loadSpotlightsCmd(m.detail.ID)
-		}
-		if m.panel == panelSync && m.detail != nil {
-			return m, m.loadSyncListCmd(m.detail.ID)
-		}
-		cmds := []tea.Cmd{m.refreshCmd()}
-		if m.isThreePaneMode() && m.mux != nil {
-			cmds = append(cmds, m.loadSidebarSpotCmd())
-		}
-		return m, tea.Batch(cmds...)
+		return m.handleMutationDoneMsg(msg)
 
 	case messages.SpotlightsData:
 		if msg.Err != nil {
@@ -278,89 +179,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshCmd()
 
 	case messages.ForkDone:
-		m.prompt = promptNone
-		m.promptInput.Blur()
-		if msg.Err != nil {
-			m.statusLine = msg.Err.Error()
-			return m, nil
-		}
-		m.statusLine = "fork created"
-		pid := ""
-		if m.detail != nil {
-			pid = m.detail.ID
-		}
-		if pid != "" {
-			return m, tea.Batch(m.refreshCmd(), m.loadDetailCmd(pid))
-		}
-		return m, m.refreshCmd()
+		return m.handleForkDoneMsg(msg)
 
 	case messages.ShellReturned:
-		if msg.Err != nil && msg.Err.Error() != "" && msg.Err.Error() != "exit status 0" {
-			// ExecProcess may pass non-nil for exit code !=0; still refresh.
-			m.statusLine = msg.Err.Error()
-		}
-		// Record in session tabs (addTab is idempotent).
-		if msg.WsID != "" {
-			m.tabs = addTab(m.tabs, msg.WsID)
-			m.activeTabWS = msg.WsID
-			m.updateListSize()
-			saveSessionState(sessionState{Tabs: m.tabs, Active: msg.WsID})
-		}
-		return m, m.refreshCmd()
+		return m.handleShellReturnedMsg(msg)
 
 	case messages.SidebarSpot:
-		if msg.Err != nil {
-			return m, nil
-		}
-		m.sidebarFwds = msg.Forwards
-		if m.sidebarSel >= len(m.sidebarFwds) {
-			m.sidebarSel = max(0, len(m.sidebarFwds)-1)
-		}
-
-		selWS := m.selectedWorkspace()
-		selWsID := ""
-		if selWS != nil {
-			selWsID = selWS.ID
-		}
-
-		// Stop the tunnel if the workspace changed.
-		if m.sidebarTunnelWsID != "" && m.sidebarTunnelWsID != selWsID {
-			m.closeSidebarTunnel()
-		}
-
-		// Count active forwards for the current workspace.
-		activeCount := 0
-		for _, f := range m.sidebarFwds {
-			if f != nil && f.State == spotlight.ForwardStateActive {
-				activeCount++
-			}
-		}
-
-		var tunnelCmd tea.Cmd
-		if activeCount > 0 && selWsID != "" {
-			// Tunnel needs (re)start if: never started, SSH process died, or
-			// a local proxy was expected but is no longer present.
-			tunnelNeedsStart := !m.sidebarTunnelLive ||
-				(m.sidebarTunnel != nil && m.sidebarTunnel.PID() <= 0)
-			if tunnelNeedsStart {
-				// Close any dead tunnel or proxy handle before starting a fresh one.
-				if m.sidebarTunnel != nil {
-					_ = m.sidebarTunnel.Close()
-					m.sidebarTunnel = nil
-				}
-				if m.sidebarLocalProxy != nil {
-					_ = m.sidebarLocalProxy.Close()
-					m.sidebarLocalProxy = nil
-				}
-				m.sidebarTunnelLive = false
-				m.sidebarTunnelWsID = selWsID
-				tunnelCmd = startSidebarTunnelCmd(selWsID, m.sidebarFwds)
-			}
-		} else if activeCount == 0 {
-			m.closeSidebarTunnel()
-		}
-
-		return m, tunnelCmd
+		return m.handleSidebarSpotMsg(msg)
 
 	case messages.SidebarDiscovered:
 		if msg.Err == nil {
@@ -369,49 +194,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case messages.TunnelStarted:
-		if msg.WsID != m.sidebarTunnelWsID {
-			// Workspace changed while tunnel was starting; discard and close.
-			if msg.Tunnel != nil {
-				_ = msg.Tunnel.Close()
-			}
-			if msg.LocalProxy != nil {
-				_ = msg.LocalProxy.Close()
-			}
-			return m, nil
-		}
-		if msg.Err != nil {
-			m.statusLine = "spotlight tunnel: " + msg.Err.Error()
-			m.sidebarTunnelLive = false
-			m.sidebarTunnelErr = msg.Err.Error()
-			return m, nil
-		}
-		m.sidebarTunnelErr = "" // clear on success
-		if msg.Local {
-			// Local daemon path. Close any previous local proxy before storing new one.
-			if m.sidebarLocalProxy != nil {
-				_ = m.sidebarLocalProxy.Close()
-				m.sidebarLocalProxy = nil
-			}
-			if msg.LocalProxy != nil {
-				// libkrun VM workspace: local proxy bound on user-facing ports.
-				m.sidebarLocalProxy = msg.LocalProxy
-			}
-			m.sidebarTunnelLive = true
-			m.sidebarTunnelLocal = true
-			return m, nil
-		}
-		if msg.Tunnel == nil {
-			// No active forwards to tunnel; leave live=false.
-			return m, nil
-		}
-		// New SSH tunnel is up; replace any existing one.
-		if m.sidebarTunnel != nil {
-			_ = m.sidebarTunnel.Close()
-		}
-		m.sidebarTunnel = msg.Tunnel
-		m.sidebarTunnelLive = true
-		m.sidebarTunnelLocal = false
-		return m, nil
+		return m.handleTunnelStartedMsg(msg)
 
 	case messages.SidebarSpotTick:
 		if m.quitting {
@@ -1247,4 +1030,271 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// After any navigation, re-evaluate which PTY session to show.
 	m, ptyCmd := m.maybeSwitchPTY()
 	return m, tea.Batch(listCmd, ptyCmd)
+}
+
+// handleWorkspacesMsg handles the Workspaces message from the daemon.
+func (m Model) handleWorkspacesMsg(msg messages.Workspaces) (Model, tea.Cmd) {
+	m.daemonOK = true
+	if msg.ProjectsByID != nil {
+		m.projectsByID = msg.ProjectsByID
+	}
+	sel := selectedWorkspaceID(m.list.SelectedItem())
+	m.list.SetItems(workspacesToItems(msg.Workspaces, m.projectsByID))
+	if sel != "" {
+		reselectByID(&m.list, sel)
+	}
+	if m.detail != nil {
+		id := m.detail.ID
+		for _, w := range msg.Workspaces {
+			if w.ID == id {
+				wcopy := w
+				m.detail = &wcopy
+				break
+			}
+		}
+	}
+	// Auto-attach to last active workspace on first load (--auto-attach only).
+	if m.autoAttach && !m.autoAttachDone && m.activeTabWS != "" {
+		m.autoAttachDone = true
+		for _, w := range msg.Workspaces {
+			if w.ID == m.activeTabWS && w.State == workspace.StateRunning {
+				return m, m.shellExecCmd(m.activeTabWS)
+			}
+		}
+	}
+	m, ptyCmd := m.maybeSwitchPTY()
+	var sideCmd tea.Cmd
+	if m.isThreePaneMode() && m.mux != nil {
+		sideCmd = tea.Batch(m.loadSidebarSpotCmd(), m.loadSidebarDiscoveredCmd())
+	}
+	return m, tea.Batch(ptyCmd, sideCmd)
+}
+
+// handleSidebarSpotMsg handles the SidebarSpot message from the daemon.
+func (m Model) handleSidebarSpotMsg(msg messages.SidebarSpot) (Model, tea.Cmd) {
+	if msg.Err != nil {
+		return m, nil
+	}
+	m.sidebarFwds = msg.Forwards
+	if m.sidebarSel >= len(m.sidebarFwds) {
+		m.sidebarSel = max(0, len(m.sidebarFwds)-1)
+	}
+
+	selWS := m.selectedWorkspace()
+	selWsID := ""
+	if selWS != nil {
+		selWsID = selWS.ID
+	}
+
+	// Stop the tunnel if the workspace changed.
+	if m.sidebarTunnelWsID != "" && m.sidebarTunnelWsID != selWsID {
+		m.closeSidebarTunnel()
+	}
+
+	// Count active forwards for the current workspace.
+	activeCount := 0
+	for _, f := range m.sidebarFwds {
+		if f != nil && f.State == spotlight.ForwardStateActive {
+			activeCount++
+		}
+	}
+
+	var tunnelCmd tea.Cmd
+	if activeCount > 0 && selWsID != "" {
+		// Tunnel needs (re)start if: never started, SSH process died, or
+		// a local proxy was expected but is no longer present.
+		tunnelNeedsStart := !m.sidebarTunnelLive ||
+			(m.sidebarTunnel != nil && m.sidebarTunnel.PID() <= 0)
+		if tunnelNeedsStart {
+			// Close any dead tunnel or proxy handle before starting a fresh one.
+			if m.sidebarTunnel != nil {
+				_ = m.sidebarTunnel.Close()
+				m.sidebarTunnel = nil
+			}
+			if m.sidebarLocalProxy != nil {
+				_ = m.sidebarLocalProxy.Close()
+				m.sidebarLocalProxy = nil
+			}
+			m.sidebarTunnelLive = false
+			m.sidebarTunnelWsID = selWsID
+			tunnelCmd = startSidebarTunnelCmd(selWsID, m.sidebarFwds)
+		}
+	} else if activeCount == 0 {
+		m.closeSidebarTunnel()
+	}
+
+	return m, tunnelCmd
+}
+
+// handleTunnelStartedMsg handles the TunnelStarted message.
+func (m Model) handleTunnelStartedMsg(msg messages.TunnelStarted) (Model, tea.Cmd) {
+	if msg.WsID != m.sidebarTunnelWsID {
+		// Workspace changed while tunnel was starting; discard and close.
+		if msg.Tunnel != nil {
+			_ = msg.Tunnel.Close()
+		}
+		if msg.LocalProxy != nil {
+			_ = msg.LocalProxy.Close()
+		}
+		return m, nil
+	}
+	if msg.Err != nil {
+		m.statusLine = "spotlight tunnel: " + msg.Err.Error()
+		m.sidebarTunnelLive = false
+		m.sidebarTunnelErr = msg.Err.Error()
+		return m, nil
+	}
+	m.sidebarTunnelErr = "" // clear on success
+	if msg.Local {
+		// Local daemon path. Close any previous local proxy before storing new one.
+		if m.sidebarLocalProxy != nil {
+			_ = m.sidebarLocalProxy.Close()
+			m.sidebarLocalProxy = nil
+		}
+		if msg.LocalProxy != nil {
+			// libkrun VM workspace: local proxy bound on user-facing ports.
+			m.sidebarLocalProxy = msg.LocalProxy
+		}
+		m.sidebarTunnelLive = true
+		m.sidebarTunnelLocal = true
+		return m, nil
+	}
+	if msg.Tunnel == nil {
+		// No active forwards to tunnel; leave live=false.
+		return m, nil
+	}
+	// New SSH tunnel is up; replace any existing one.
+	if m.sidebarTunnel != nil {
+		_ = m.sidebarTunnel.Close()
+	}
+	m.sidebarTunnel = msg.Tunnel
+	m.sidebarTunnelLive = true
+	m.sidebarTunnelLocal = false
+	return m, nil
+}
+
+// handleConnErrMsg handles connection errors from the daemon.
+func (m Model) handleConnErrMsg(msg messages.ConnErr) (Model, tea.Cmd) {
+	m.daemonOK = false
+	errStr := msg.Err.Error()
+	if strings.Contains(errStr, "no daemon profile configured") {
+		// First-run: no profile at all — check if a local daemon is already
+		// running before showing the no-profile menu.
+		m.showNoProfile = true
+		m.noProfileChecking = true
+		m.noProfileSel = 0
+		m.noProfileErr = ""
+		return m, tea.Batch(checkLocalDaemonCmd(m.localPort), noProfileSpinTick())
+	}
+	if strings.Contains(errStr, "connect to local daemon") && strings.Contains(errStr, "connection refused") {
+		// A localhost profile exists but the daemon isn't running.
+		// Treat exactly like no-profile: show the start/connect menu.
+		m.showNoProfile = true
+		m.noProfileChecking = false
+		m.noProfileBusy = false
+		m.noProfileSel = 0
+		m.noProfileErr = ""
+		return m, nil
+	}
+	m.statusLine = errStr
+	return m, nil
+}
+
+// handlePtyOpenedMsg handles the PTY opened message.
+func (m Model) handlePtyOpenedMsg(msg pty.PtyOpenedMsg) (Model, tea.Cmd) {
+	if msg.WsID != m.ptyWsID {
+		// Selection changed while pty.create was in-flight; discard.
+		msg.CancelFn()
+		if m.mux != nil {
+			mux := m.mux
+			sid := msg.SessionID
+			go func() { _ = mux.Send("pty.close", map[string]any{"sessionId": sid}) }()
+		}
+		return m, nil
+	}
+	cols, rows := m.ptyPaneDimensions()
+	m.ptyPane = pty.NewPtyPane(msg.WsID, msg.SessionID, cols, rows)
+	m.ptyDataCh = msg.DataCh
+	m.cancelPTY = msg.CancelFn
+	return m, pty.ListenPTYCmd(msg.DataCh, msg.SessionID)
+}
+
+// handlePtyDataMsg handles PTY data messages.
+func (m Model) handlePtyDataMsg(msg pty.PtyDataMsg) (Model, tea.Cmd) {
+	if m.ptyPane != nil && msg.SessionID == m.ptyPane.SessionID() {
+		m.ptyPane.Write(msg.Data)
+	}
+	if m.ptyDataCh != nil {
+		return m, pty.ListenPTYCmd(m.ptyDataCh, msg.SessionID)
+	}
+	return m, nil
+}
+
+// handlePtyClosedMsg handles PTY closed messages.
+func (m Model) handlePtyClosedMsg(msg pty.PtyClosedMsg) (Model, tea.Cmd) {
+	if m.ptyPane != nil && msg.SessionID == m.ptyPane.SessionID() {
+		prevFocused := m.ptyFocused
+		m.ptyPane = nil
+		m.ptyWsID = ""
+		m.cancelPTY = nil
+		m.ptyDataCh = nil
+		m.ptyFocused = false
+		return m, ptyMouseModeCmd(prevFocused, false)
+	}
+	return m, nil
+}
+
+// handleMutationDoneMsg handles mutation completion messages.
+func (m Model) handleMutationDoneMsg(msg messages.MutationDone) (Model, tea.Cmd) {
+	if msg.Err != nil {
+		m.statusLine = msg.Err.Error()
+		return m, nil
+	}
+	m.statusLine = ""
+	if m.panel == panelSpotlight && m.detail != nil {
+		return m, m.loadSpotlightsCmd(m.detail.ID)
+	}
+	if m.panel == panelSync && m.detail != nil {
+		return m, m.loadSyncListCmd(m.detail.ID)
+	}
+	cmds := []tea.Cmd{m.refreshCmd()}
+	if m.isThreePaneMode() && m.mux != nil {
+		cmds = append(cmds, m.loadSidebarSpotCmd())
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// handleForkDoneMsg handles fork completion messages.
+func (m Model) handleForkDoneMsg(msg messages.ForkDone) (Model, tea.Cmd) {
+	m.prompt = promptNone
+	m.promptInput.Blur()
+	if msg.Err != nil {
+		m.statusLine = msg.Err.Error()
+		return m, nil
+	}
+	m.statusLine = "fork created"
+	pid := ""
+	if m.detail != nil {
+		pid = m.detail.ID
+	}
+	if pid != "" {
+		return m, tea.Batch(m.refreshCmd(), m.loadDetailCmd(pid))
+	}
+	return m, m.refreshCmd()
+}
+
+// handleShellReturnedMsg handles shell execution completion messages.
+func (m Model) handleShellReturnedMsg(msg messages.ShellReturned) (Model, tea.Cmd) {
+	if msg.Err != nil && msg.Err.Error() != "" && msg.Err.Error() != "exit status 0" {
+		// ExecProcess may pass non-nil for exit code !=0; still refresh.
+		m.statusLine = msg.Err.Error()
+	}
+	// Record in session tabs (addTab is idempotent).
+	if msg.WsID != "" {
+		m.tabs = addTab(m.tabs, msg.WsID)
+		m.activeTabWS = msg.WsID
+		m.updateListSize()
+		saveSessionState(sessionState{Tabs: m.tabs, Active: msg.WsID})
+	}
+	return m, m.refreshCmd()
 }

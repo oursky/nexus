@@ -18,9 +18,9 @@ type DetailView struct {
 
 // Styles for detail view rendering.
 var (
-	detailKeyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	detailValStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
-	titleStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("229"))
+	detailKeyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	detailValStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+	titleStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("229"))
 )
 
 // Render displays the workspace detail view.

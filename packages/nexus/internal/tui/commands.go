@@ -8,7 +8,6 @@ import (
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/spotlight"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
-	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/commands"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/messages"
 )
@@ -81,12 +80,6 @@ func (m *Model) closeSidebarTunnel() {
 	m.sidebarTunnelLive = false
 	m.sidebarTunnelWsID = ""
 	m.sidebarTunnelLocal = false
-}
-
-// isSidebarTunnelLocal returns true when the active profile is a local daemon
-// (no SSH tunnel needed for spotlight port forwarding).
-func isSidebarTunnelLocal(p *profile.Profile) bool {
-	return commands.IsSidebarTunnelLocal(p)
 }
 
 // startSidebarTunnelCmd starts port forwarding for all active spotlight

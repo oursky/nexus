@@ -9,18 +9,18 @@ import (
 
 // SyncRow represents a single sync session row in the sync panel.
 type SyncRow struct {
-	SessionID string
-	Status    string
-	Direction string
-	LocalPath string
+	SessionID   string
+	Status      string
+	Direction   string
+	LocalPath   string
 	WorkspaceID string
 }
 
 // SyncPanelConfig holds configuration for rendering the sync panel.
 type SyncPanelConfig struct {
-	Width  int
-	Rows   []SyncRow
-	Sel    int
+	Width int
+	Rows  []SyncRow
+	Sel   int
 }
 
 // RenderSyncPanel renders the volume sync panel.
