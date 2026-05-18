@@ -1,19 +1,13 @@
 package tuicmd
 
 import (
-	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	nexustui "github.com/oursky/nexus/packages/nexus/internal/tui"
 	"github.com/spf13/cobra"
 )
 
 // RunDefault launches the TUI with the same defaults as `nexus tui` (no flags).
 func RunDefault() error {
-	mux, err := rpc.EnsureMux()
-	if err != nil {
-		return err
-	}
-	defer mux.Close()
-	return nexustui.Run(mux)
+	return nexustui.Run()
 }
 
 func Command() *cobra.Command {
@@ -24,14 +18,11 @@ func Command() *cobra.Command {
 
 The workspace table is the home base — always visible. Use 't' to attach
 a terminal to the selected workspace (nexus workspace shell). Session tabs
-appear in a persistent bar after the first attachment.`,
+appear in a persistent bar after the first attachment.
+
+If no daemon profile exists, a connect wizard will guide you through setup.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mux, err := rpc.EnsureMux()
-			if err != nil {
-				return err
-			}
-			defer mux.Close()
-			return nexustui.Run(mux)
+			return nexustui.Run()
 		},
 	}
 

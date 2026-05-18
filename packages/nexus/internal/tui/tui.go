@@ -24,6 +24,7 @@ type renderer struct {
 	create    *views.CreateView
 	help      *views.HelpView
 	connect   *views.ConnectView
+	onramp    *views.OnrampView
 	connected bool
 }
 
@@ -31,6 +32,18 @@ type renderer struct {
 func (r *renderer) Render(m *model.AppModel) string {
 	header := r.renderHeader(m)
 	footer := r.renderFooter(m)
+
+	// Show onramp wizard if not connected
+	if !m.Connected() {
+		body := r.onramp.View(m)
+		// Force each layer to full width for consistent layout
+		fullWidth := lipgloss.NewStyle().Width(m.Width())
+		return lipgloss.JoinVertical(lipgloss.Left,
+			fullWidth.Render(header),
+			fullWidth.Render(body),
+			fullWidth.Render(footer),
+		)
+	}
 
 	var body string
 	if m.PTYPane() != nil && m.ActiveTab() >= 0 {
@@ -57,7 +70,15 @@ func (r *renderer) Render(m *model.AppModel) string {
 	}
 
 	tabBar := r.renderTabBar(m)
-	base := lipgloss.JoinVertical(lipgloss.Left, header, tabBar, body, footer)
+	// Force full width for each layout layer
+	fullWidth := lipgloss.NewStyle().Width(m.Width())
+	layers := []string{
+		fullWidth.Render(header),
+		fullWidth.Render(tabBar),
+		fullWidth.Render(body),
+		fullWidth.Render(footer),
+	}
+	base := lipgloss.JoinVertical(lipgloss.Left, layers...)
 
 	toasts := r.renderToasts(m)
 	if toasts != "" {
@@ -131,14 +152,25 @@ func (r *renderer) renderToasts(m *model.AppModel) string {
 func (r *renderer) renderHeader(m *model.AppModel) string {
 	colors := design.ActiveTheme.Colors
 	statusDot := "●"
-	statusText := "connected"
+
+	var statusText string
+	var dotColor lipgloss.TerminalColor
+	if m.Connected() {
+		statusText = "connected"
+		dotColor = colors.Success
+	} else {
+		statusText = "disconnected"
+		dotColor = colors.Error
+	}
+
 	style := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), false, false, true, false).
 		BorderForeground(colors.Border).
 		Foreground(colors.Text).
-		Bold(true)
+		Bold(true).
+		Width(m.Width()) // Fill full terminal width
 
-	dotStyle := lipgloss.NewStyle().Foreground(colors.Success)
+	dotStyle := lipgloss.NewStyle().Foreground(dotColor)
 	textStyle := lipgloss.NewStyle().Foreground(colors.TextMuted)
 
 	content := "nexus " + dotStyle.Render(statusDot) + " " + textStyle.Render(statusText)
@@ -217,22 +249,24 @@ func (r *renderer) renderFooter(m *model.AppModel) string {
 
 	barStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), true, false, false, false).
-		BorderForeground(colors.Border)
+		BorderForeground(colors.Border).
+		Width(m.Width()) // Fill full terminal width
 
 	return barStyle.Render(footer)
 }
 
-// daemonStatus returns a human-readable daemon connection status.
-func daemonStatus(m *model.AppModel) string {
-	if m.Mux() != nil {
-		return "connected"
-	}
-	return "disconnected"
-}
-
 // Run starts the TUI application.
-func Run(mux *rpc.MuxConn) error {
-	appModel := model.NewAppModel(mux)
+// It attempts to connect to the daemon via stored profile.
+// If connection fails, the onramp/connect wizard is shown.
+func Run() error {
+	// Try connecting with existing profile
+	var initialMux *rpc.MuxConn
+	ws, err := rpc.EnsureDaemon()
+	if err == nil {
+		initialMux = rpc.NewMuxConn(ws)
+	}
+
+	appModel := model.NewAppModel(initialMux)
 
 	dash := views.NewDashboardView(appModel.Width(), appModel.Height())
 	spot := views.NewSpotlightView()
@@ -240,24 +274,30 @@ func Run(mux *rpc.MuxConn) error {
 	create := views.NewCreateView()
 	help := views.NewHelpView()
 	connect := views.NewConnectView()
+	onramp := views.NewOnrampView(appModel.Width(), appModel.Height())
 
-	appModel.SetRenderer(&renderer{
+	r := &renderer{
 		dashboard: dash,
 		spotlight: spot,
 		sync:      syncV,
 		create:    create,
 		help:      help,
 		connect:   connect,
-	})
+		onramp:    onramp,
+	}
+	appModel.SetRenderer(r)
 
+	// Update router
 	appModel.SetUpdateRouter(func(m *model.AppModel, msg tea.Msg) (tea.Model, tea.Cmd) {
 		return update.Router(m, msg)
 	})
 
-	// Wire polling command factory (breaks model↔commands cycle)
-	appModel.SetPollCmd(func() tea.Cmd {
-		return commands.PollWorkspacesCmd(mux)
-	})
+	// Wire polling command factory
+	if initialMux != nil {
+		appModel.SetPollCmd(func() tea.Cmd {
+			return commands.PollWorkspacesCmd(initialMux)
+		})
+	}
 
 	p := tea.NewProgram(
 		appModel,
@@ -265,6 +305,6 @@ func Run(mux *rpc.MuxConn) error {
 		tea.WithMouseCellMotion(),
 	)
 
-	_, err := p.Run()
+	_, err = p.Run()
 	return err
 }

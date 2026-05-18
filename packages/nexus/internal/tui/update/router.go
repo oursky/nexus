@@ -1,10 +1,15 @@
 package update
 
 import (
+	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
+	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/infra/cli/profile"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/commands"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/messages"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/model"
@@ -51,6 +56,85 @@ func Router(m *model.AppModel, msg tea.Msg) (tea.Model, tea.Cmd) {
 		result, cmd = HandleConnectionStatus(m, msg)
 		m = result.(*model.AppModel)
 		cmds = append(cmds, cmd)
+
+	// Connection wizard messages
+	case messages.ConnReadyMsg:
+		// Connection established from wizard — store mux, start fetching workspaces
+		m.SetMux(msg.Mux)
+		m.SetConnected(true)
+		m.SetCurrentView(model.ViewDashboard)
+		// Re-initialize poll command with new mux
+		var cmds []tea.Cmd
+		cmds = append(cmds, func() tea.Msg {
+			var result struct {
+				Workspaces []workspace.Workspace `json:"workspaces"`
+			}
+			if err := msg.Mux.Call("workspace.list", map[string]any{}, &result); err != nil {
+				return messages.DaemonDisconnected{Error: err}
+			}
+			items := make([]messages.WorkspaceItem, len(result.Workspaces))
+			for i, ws := range result.Workspaces {
+				items[i] = messages.WorkspaceItem{
+					ID:    ws.ID,
+					Name:  ws.WorkspaceName,
+					Repo:  ws.Repo,
+					State: string(ws.State),
+				}
+			}
+			return messages.WorkspaceListReceived{Workspaces: items}
+		})
+		return m, tea.Batch(cmds...)
+
+	case messages.ConnFailedMsg:
+		// Connection failed from wizard — show error in wizard
+		wizard := m.Wizard()
+		wizard.Busy = false
+		wizard.Err = msg.Error.Error()
+		m.SetWizard(wizard)
+		m.SetCurrentView(model.ViewOnramp)
+		return m, nil
+
+	case messages.WizardSubmitMsg:
+		// Wizard submitted — try to connect
+		host := msg.Host
+		if host == "" {
+			host = "localhost"
+		}
+		port := 7777
+		if p, err := strconv.Atoi(msg.Port); err == nil {
+			port = p
+		}
+		key := msg.Key
+		if key == "" {
+			key = "" // empty = default SSH key
+		}
+
+		return m, func() tea.Msg {
+			// Save profile
+			p := &profile.Profile{
+				Name:            host,
+				Host:            host,
+				Port:            port,
+				SSHIdentityFile: key,
+			}
+			if rpc.IsLoopbackHost(host) {
+				// Local: try to get token from daemon
+				p.Token = "" // will use local token
+			} else {
+				// Remote: fetch token via SSH
+				p.Token = "" // TODO: implement SSH token fetch
+			}
+			if err := profile.SaveDefault(p); err != nil {
+				return messages.ConnFailedMsg{Error: fmt.Errorf("save profile: %w", err)}
+			}
+			// Try connecting
+			ws, err := rpc.EnsureDaemon()
+			if err != nil {
+				return messages.ConnFailedMsg{Error: fmt.Errorf("connect: %w", err)}
+			}
+			mux := rpc.NewMuxConn(ws)
+			return messages.ConnReadyMsg{Mux: mux}
+		}
 
 	// Workspace messages
 	case messages.WorkspaceListReceived:
@@ -341,4 +425,13 @@ func HandleToastShown(m *model.AppModel, msg messages.ToastShown) (tea.Model, te
 	})
 
 	return m, dismissCmd
+}
+
+// isLocalhost checks if the host is a local address.
+func isLocalhost(host string) bool {
+	switch host {
+	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
+		return true
+	}
+	return false
 }

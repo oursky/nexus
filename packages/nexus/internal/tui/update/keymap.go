@@ -46,12 +46,6 @@ func HandleKeyMsg(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return handleConfirmModalKeys(m, msg)
 	}
 
-	// Handle toast dismissal with any key
-	if len(m.Toasts()) > 0 {
-		m.ClearToasts()
-		return m, nil
-	}
-
 	currentView := m.CurrentView()
 
 	// View-specific shortcuts
@@ -142,6 +136,10 @@ func handleDashboardKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		case "c":
 			m.SetCurrentView(model.ViewCreate)
 			return m, nil
+		case "C", "O":
+			// Open connect wizard to manage connection / switch daemon
+			m.SetCurrentView(model.ViewOnramp)
+			return m, nil
 		case "t":
 			if len(m.Workspaces()) > 0 {
 				idx := wsList.Index()
@@ -183,14 +181,86 @@ func handleConfirmModalKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.C
 	return m, nil
 }
 
-// handleOnrampKeys handles key bindings in onramp view.
+// handleOnrampKeys handles key bindings in onramp/connect wizard view.
 func handleOnrampKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	wizard := m.Wizard()
+
 	switch msg.Type {
-	case tea.KeyEsc, tea.KeyCtrlC:
-		m.SetCurrentView(model.ViewDashboard)
+	case tea.KeyTab:
+		wizard.Step = (wizard.Step + 1) % 3
+		focusWizardStep(&wizard)
+		m.SetWizard(wizard)
 		return m, nil
+
+	case tea.KeyShiftTab:
+		wizard.Step = (wizard.Step + 2) % 3
+		focusWizardStep(&wizard)
+		m.SetWizard(wizard)
+		return m, nil
+
+	case tea.KeyEnter:
+		if wizard.Step < 2 {
+			// Advance to next field
+			wizard.Step++
+			focusWizardStep(&wizard)
+			m.SetWizard(wizard)
+			return m, nil
+		}
+		// Submit on last field
+		wizard.Busy = true
+		wizard.Err = ""
+		m.SetWizard(wizard)
+		return m, func() tea.Msg {
+			return messages.WizardSubmitMsg{
+				Host: wizard.HostInput.Value(),
+				Port: wizard.PortInput.Value(),
+				Key:  wizard.KeyInput.Value(),
+			}
+		}
+
+	case tea.KeyEsc:
+		// Skip to localhost default
+		wizard.HostInput.SetValue("localhost")
+		wizard.PortInput.SetValue("7777")
+		wizard.Busy = true
+		wizard.Err = ""
+		m.SetWizard(wizard)
+		return m, func() tea.Msg {
+			return messages.WizardSubmitMsg{
+				Host: "localhost",
+				Port: "7777",
+				Key:  "",
+			}
+		}
 	}
-	return m, nil
+
+	// Pass printable keys to the active text input
+	var cmd tea.Cmd
+	switch wizard.Step {
+	case 0:
+		wizard.HostInput, cmd = wizard.HostInput.Update(msg)
+	case 1:
+		wizard.PortInput, cmd = wizard.PortInput.Update(msg)
+	case 2:
+		wizard.KeyInput, cmd = wizard.KeyInput.Update(msg)
+	}
+	m.SetWizard(wizard)
+	return m, cmd
+}
+
+// focusWizardStep focuses the input at the given wizard step and blurs others.
+func focusWizardStep(w *model.WizardState) {
+	w.HostInput.Blur()
+	w.PortInput.Blur()
+	w.KeyInput.Blur()
+	switch w.Step {
+	case 0:
+		w.HostInput.Focus()
+	case 1:
+		w.PortInput.Focus()
+	case 2:
+		w.KeyInput.Focus()
+	}
 }
 
 // handleDetailKeys handles key bindings in detail view.

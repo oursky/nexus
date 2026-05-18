@@ -55,6 +55,10 @@ type AppModel struct {
 	// Create form state
 	createForm CreateForm
 
+	// Connect wizard state
+	connected bool
+	wizard    WizardState
+
 	// Dimensions
 	width  int
 	height int
@@ -152,6 +156,36 @@ type CreateForm struct {
 	Err   string
 }
 
+// WizardState holds the state for the connect wizard (onramp view).
+type WizardState struct {
+	HostInput textinput.Model
+	PortInput textinput.Model
+	KeyInput  textinput.Model
+	Step      int // 0=host, 1=port, 2=sshkey
+	Err       string
+	Busy      bool
+}
+
+// NewWizardState creates a new WizardState with default inputs.
+func NewWizardState() WizardState {
+	hostInput := textinput.New()
+	hostInput.Placeholder = "localhost"
+	hostInput.Focus()
+
+	portInput := textinput.New()
+	portInput.Placeholder = "7777"
+
+	keyInput := textinput.New()
+	keyInput.Placeholder = "~/.ssh/id_ed25519"
+
+	return WizardState{
+		HostInput: hostInput,
+		PortInput: portInput,
+		KeyInput:  keyInput,
+		Step:      0,
+	}
+}
+
 // NewAppModel creates a new AppModel.
 func NewAppModel(mux *rpc.MuxConn) *AppModel {
 	// Initialize workspace list with design tokens
@@ -190,6 +224,8 @@ func NewAppModel(mux *rpc.MuxConn) *AppModel {
 		activeTab:     -1,
 		currentView:   ViewDashboard,
 		searchInput:   searchInput,
+		connected:     mux != nil,
+		wizard:        NewWizardState(),
 		width:         80,
 		height:        24,
 	}
@@ -197,6 +233,12 @@ func NewAppModel(mux *rpc.MuxConn) *AppModel {
 
 // Init initializes the model and returns initial commands.
 func (m *AppModel) Init() tea.Cmd {
+	// If no mux connection, show wizard
+	if m.mux == nil {
+		m.SetCurrentView(ViewOnramp)
+		return nil
+	}
+
 	cmds := []tea.Cmd{
 		// Initial workspace fetch
 		func() tea.Msg {
@@ -460,6 +502,31 @@ func (m *AppModel) CreateForm() CreateForm {
 // SetCreateForm sets the create form state.
 func (m *AppModel) SetCreateForm(f CreateForm) {
 	m.createForm = f
+}
+
+// Wizard returns the current wizard state.
+func (m *AppModel) Wizard() WizardState {
+	return m.wizard
+}
+
+// SetWizard sets the wizard state.
+func (m *AppModel) SetWizard(w WizardState) {
+	m.wizard = w
+}
+
+// Connected returns whether the app is connected to a daemon.
+func (m *AppModel) Connected() bool {
+	return m.connected
+}
+
+// SetConnected sets the connected state.
+func (m *AppModel) SetConnected(v bool) {
+	m.connected = v
+}
+
+// SetMux sets the RPC multiplexed connection.
+func (m *AppModel) SetMux(mux *rpc.MuxConn) {
+	m.mux = mux
 }
 
 // UpdateStyles rebuilds styles for the current dimensions.

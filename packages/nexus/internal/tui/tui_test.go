@@ -1,6 +1,7 @@
 package tui_test
 
 import (
+	"fmt"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -27,6 +28,8 @@ func newTestModel() *model.AppModel {
 	})
 	m.SetWidth(120)
 	m.SetHeight(40)
+	// Default to dashboard for most tests; wizard tests explicitly set ViewOnramp
+	m.SetCurrentView(model.ViewDashboard)
 	return m
 }
 
@@ -749,5 +752,175 @@ func TestPortForwardRemoved(t *testing.T) {
 	}
 	if am.Forwards()[0].ID != "fwd-2" {
 		t.Errorf("expected fwd-2 to remain, got %s", am.Forwards()[0].ID)
+	}
+}
+
+func TestWizardShowsOnNilMux(t *testing.T) {
+	m := model.NewAppModel(nil)
+	// Simulate Init() behavior
+	if m.Mux() == nil {
+		m.SetCurrentView(model.ViewOnramp)
+	}
+	if m.Connected() {
+		t.Error("expected Connected()=false with nil mux")
+	}
+	if m.CurrentView() != model.ViewOnramp {
+		t.Errorf("expected ViewOnramp, got %d", m.CurrentView())
+	}
+}
+
+func newWizardTestModel() *model.AppModel {
+	m := newTestModel()
+	m.SetCurrentView(model.ViewOnramp)
+	return m
+}
+
+func TestWizardTabNavigation(t *testing.T) {
+	m := newWizardTestModel()
+	wizard := m.Wizard()
+	if wizard.Step != 0 {
+		t.Errorf("expected initial step 0 (host), got %d", wizard.Step)
+	}
+
+	// Tab advances to port (step 1)
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = result.(*model.AppModel)
+	wizard = m.Wizard()
+	if wizard.Step != 1 {
+		t.Errorf("expected step 1 (port) after Tab, got %d", wizard.Step)
+	}
+
+	// Tab advances to sshkey (step 2)
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = result.(*model.AppModel)
+	wizard = m.Wizard()
+	if wizard.Step != 2 {
+		t.Errorf("expected step 2 (sshkey) after Tab, got %d", wizard.Step)
+	}
+
+	// Tab wraps back to host (step 0)
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = result.(*model.AppModel)
+	wizard = m.Wizard()
+	if wizard.Step != 0 {
+		t.Errorf("expected step 0 (host) after Tab wrap, got %d", wizard.Step)
+	}
+}
+
+func TestWizardShiftTabNavigation(t *testing.T) {
+	m := newWizardTestModel()
+
+	// Shift+Tab goes backward: host(0) → sshkey(2)
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = result.(*model.AppModel)
+	wizard := m.Wizard()
+	if wizard.Step != 2 {
+		t.Errorf("expected step 2 (sshkey) after Shift+Tab, got %d", wizard.Step)
+	}
+}
+
+func TestWizardEnterAdvances(t *testing.T) {
+	m := newWizardTestModel()
+
+	// Enter on step 0 advances to step 1
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = result.(*model.AppModel)
+	wizard := m.Wizard()
+	if wizard.Step != 1 {
+		t.Errorf("expected step 1 (port) after Enter, got %d", wizard.Step)
+	}
+
+	// Enter on step 1 advances to step 2
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = result.(*model.AppModel)
+	wizard = m.Wizard()
+	if wizard.Step != 2 {
+		t.Errorf("expected step 2 (sshkey) after Enter, got %d", wizard.Step)
+	}
+}
+
+func TestWizardSubmitOnLastField(t *testing.T) {
+	m := newWizardTestModel()
+
+	// Type into host field
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m', 'y', 'h', 'o', 's', 't'}})
+	m = result.(*model.AppModel)
+
+	// Tab to port
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = result.(*model.AppModel)
+
+	// Tab to sshkey (skip port)
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = result.(*model.AppModel)
+
+	// Enter on step 2 should submit
+	result, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = result.(*model.AppModel)
+	wizard := m.Wizard()
+	if !wizard.Busy {
+		t.Error("expected wizard.Busy=true after submit")
+	}
+	if cmd == nil {
+		t.Error("expected non-nil cmd after submit")
+	}
+}
+
+func TestWizardEscSubmitsDefault(t *testing.T) {
+	m := newWizardTestModel()
+
+	// Esc should submit localhost default
+	result, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = result.(*model.AppModel)
+	wizard := m.Wizard()
+	if !wizard.Busy {
+		t.Error("expected wizard.Busy=true after Esc")
+	}
+	if wizard.HostInput.Value() != "localhost" {
+		t.Errorf("expected host 'localhost', got '%s'", wizard.HostInput.Value())
+	}
+	if wizard.PortInput.Value() != "7777" {
+		t.Errorf("expected port '7777', got '%s'", wizard.PortInput.Value())
+	}
+	if cmd == nil {
+		t.Error("expected non-nil cmd after Esc")
+	}
+}
+
+func TestWizardTextInput(t *testing.T) {
+	m := newWizardTestModel()
+
+	// Type 'h' into host field (step 0)
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = result.(*model.AppModel)
+	wizard := m.Wizard()
+	if wizard.HostInput.Value() != "h" {
+		t.Errorf("expected host input 'h', got '%s'", wizard.HostInput.Value())
+	}
+
+	// Type 'o' into host field
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	m = result.(*model.AppModel)
+	wizard = m.Wizard()
+	if wizard.HostInput.Value() != "ho" {
+		t.Errorf("expected host input 'ho', got '%s'", wizard.HostInput.Value())
+	}
+}
+
+func TestWizardConnFailed(t *testing.T) {
+	m := newWizardTestModel()
+
+	// Simulate connection failure
+	result, _ := m.Update(messages.ConnFailedMsg{Error: fmt.Errorf("connection refused")})
+	m = result.(*model.AppModel)
+	wizard := m.Wizard()
+	if wizard.Busy {
+		t.Error("expected Busy=false after failure")
+	}
+	if wizard.Err != "connection refused" {
+		t.Errorf("expected error message, got '%s'", wizard.Err)
+	}
+	if m.CurrentView() != model.ViewOnramp {
+		t.Error("expected ViewOnramp after connection failure")
 	}
 }
