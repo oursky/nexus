@@ -23,6 +23,7 @@ type renderer struct {
 	sync      *views.SyncView
 	create    *views.CreateView
 	help      *views.HelpView
+	connect   *views.ConnectView
 	connected bool
 }
 
@@ -46,6 +47,8 @@ func (r *renderer) Render(m *model.AppModel) string {
 			body = r.create.View(m)
 		case model.ViewHelp:
 			body = r.help.View(m)
+		case model.ViewConnect:
+			body = r.connect.View(m)
 		case model.ViewDashboard:
 			body = r.dashboard.View(m)
 		default:
@@ -236,6 +239,7 @@ func Run(mux *rpc.MuxConn) error {
 	syncV := views.NewSyncView()
 	create := views.NewCreateView()
 	help := views.NewHelpView()
+	connect := views.NewConnectView()
 
 	appModel.SetRenderer(&renderer{
 		dashboard: dash,
@@ -243,6 +247,7 @@ func Run(mux *rpc.MuxConn) error {
 		sync:      syncV,
 		create:    create,
 		help:      help,
+		connect:   connect,
 	})
 
 	appModel.SetUpdateRouter(func(m *model.AppModel, msg tea.Msg) (tea.Model, tea.Cmd) {

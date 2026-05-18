@@ -1,6 +1,8 @@
 package update
 
 import (
+	"fmt"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/commands"
@@ -233,6 +235,9 @@ func handleDetailKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				return messages.SpotlightRequested{}
 			}
+		case "c":
+			m.SetCurrentView(model.ViewConnect)
+			return m, nil
 		case "y":
 			return m, func() tea.Msg {
 				return messages.SyncRequested{}
@@ -247,23 +252,71 @@ func handleDetailKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleSpotlightKeys handles key bindings in spotlight view.
 func handleSpotlightKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc:
-		return m, func() tea.Msg {
-			return messages.SpotlightClosed{}
+	switch string(msg.Runes) {
+	case "a":
+		// Add port forward — for now, show toast with hint
+		wsID := m.SelectedWS()
+		var wsName string
+		for _, ws := range m.Workspaces() {
+			if ws.ID == wsID {
+				wsName = ws.Name
+				break
+			}
 		}
+		m.AddToast(model.Toast{
+			Kind:    messages.ToastInfo,
+			Message: fmt.Sprintf("Add forward: use CLI — nexus port-forward %s --local <port> --remote <port>", wsName),
+		})
+		return m, nil
+	case "r":
+		// Remove selected forward
+		forwards := m.Forwards()
+		if len(forwards) > 0 {
+			fwd := forwards[0] // TODO: track selected forward index
+			m.AddToast(model.Toast{
+				Kind:    messages.ToastInfo,
+				Message: fmt.Sprintf("Removing forward %s...", fwd.Label),
+			})
+			return m, commands.RemoveForward(m.Mux(), m.SelectedWS(), fwd.ID)
+		}
+		return m, nil
 	}
+	// Default: Esc goes back
+	m.SetCurrentView(model.ViewDetail)
 	return m, nil
 }
 
 // handleSyncKeys handles key bindings in sync view.
 func handleSyncKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc:
-		return m, func() tea.Msg {
-			return messages.SyncClosed{}
+	wsID := m.SelectedWS()
+	switch string(msg.Runes) {
+	case "s":
+		// Start sync — fetch sessions first, then if none, start one
+		m.AddToast(model.Toast{
+			Kind:    messages.ToastInfo,
+			Message: "Starting sync...",
+		})
+		return m, tea.Batch(
+			commands.StartSync(m.Mux(), wsID, ""),
+			commands.FetchSyncSessions(m.Mux(), wsID),
+		)
+	case "p":
+		sessions := m.SyncSessions()
+		if len(sessions) > 0 {
+			return m, commands.PauseSync(m.Mux(), sessions[0].ID)
 		}
+		return m, nil
+	case "r":
+		sessions := m.SyncSessions()
+		if len(sessions) > 0 {
+			return m, commands.ResumeSync(m.Mux(), sessions[0].ID)
+		}
+		return m, nil
+	case "x":
+		return m, commands.StopSync(m.Mux(), wsID)
 	}
+	// Default: Esc goes back
+	m.SetCurrentView(model.ViewDetail)
 	return m, nil
 }
 

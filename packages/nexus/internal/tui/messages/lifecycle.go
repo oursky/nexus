@@ -21,6 +21,7 @@ const (
     ViewSpotlight
     ViewSync
     ViewHelp
+    ViewConnect
 )
 
 // HelpRequested is sent when user requests help.

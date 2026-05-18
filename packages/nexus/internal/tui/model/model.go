@@ -77,6 +77,7 @@ const (
 	ViewSpotlight
 	ViewSync
 	ViewHelp
+	ViewConnect
 )
 
 // Workspace represents a workspace in the UI.
