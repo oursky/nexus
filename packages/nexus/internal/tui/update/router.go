@@ -76,6 +76,43 @@ func Router(m *model.AppModel, msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = result.(*model.AppModel)
 		cmds = append(cmds, cmd)
 
+	// Spotlight messages
+	case messages.SpotlightRefreshed:
+		m.SetForwards(msg.Items)
+		return m, nil
+
+	case messages.PortForwardAdded:
+		m.SetForwards(append(m.Forwards(), messages.PortForwardItem{
+			ID:         msg.ForwardID,
+			LocalPort:  msg.LocalPort,
+			RemotePort: msg.RemotePort,
+			Label:      msg.Label,
+			Status:     "active",
+		}))
+		return m, nil
+
+	case messages.PortForwardRemoved:
+		var remaining []messages.PortForwardItem
+		for _, f := range m.Forwards() {
+			if f.ID != msg.ForwardID {
+				remaining = append(remaining, f)
+			}
+		}
+		m.SetForwards(remaining)
+		return m, nil
+
+	// Sync messages
+	case messages.SyncListReceived:
+		m.SetSyncSessions(msg.Sessions)
+		return m, nil
+
+	case messages.SyncStatusReceived:
+		m.AddToast(model.Toast{
+			Message: "Sync: " + msg.Status,
+			Kind:    messages.ToastSuccess,
+		})
+		return m, nil
+
 	// PTY messages
 	case pty.PtyOpenedMsg:
 		var result tea.Model

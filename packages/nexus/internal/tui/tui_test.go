@@ -9,7 +9,7 @@ import (
 	"github.com/oursky/nexus/packages/nexus/internal/tui/update"
 )
 
-// testRenderer is a minimal renderer for testing.
+//testRenderer is a minimal renderer for testing.
 type testRenderer struct{}
 
 func (r *testRenderer) Render(m *model.AppModel) string {
@@ -18,7 +18,7 @@ func (r *testRenderer) Render(m *model.AppModel) string {
 	return "test-view"
 }
 
-// newTestModel creates an AppModel suitable for testing (no real mux).
+//newTestModel creates an AppModel suitable for testing (no real mux).
 func newTestModel() *model.AppModel {
 	m := model.NewAppModel(nil) // nil mux for testing
 	m.SetRenderer(&testRenderer{})
@@ -30,14 +30,14 @@ func newTestModel() *model.AppModel {
 	return m
 }
 
-// sendMsg sends a message to the model and returns the updated model and command.
-// sendMsg sends a message to the model and returns the updated model.
+//sendMsg sends a message to the model and returns the updated model and command.
+//sendMsg sends a message to the model and returns the updated model.
 func sendMsg(m *model.AppModel, msg tea.Msg) (*model.AppModel, tea.Cmd) {
 	result, cmd := m.Update(msg)
 	return result.(*model.AppModel), cmd
 }
 
-// execCmd executes a tea.Cmd and returns the resulting message, if any.
+//execCmd executes a tea.Cmd and returns the resulting message, if any.
 func execCmd(cmd tea.Cmd) tea.Msg {
 	if cmd == nil {
 		return nil
@@ -45,7 +45,7 @@ func execCmd(cmd tea.Cmd) tea.Msg {
 	return cmd()
 }
 
-// TestDashboardShowsNoItems tests that the dashboard initially shows no items.
+//TestDashboardShowsNoItems tests that the dashboard initially shows no items.
 func TestDashboardShowsNoItems(t *testing.T) {
 	m := newTestModel()
 	view := m.View()
@@ -54,7 +54,7 @@ func TestDashboardShowsNoItems(t *testing.T) {
 	}
 }
 
-// TestWorkspaceListPopulates tests that workspace list populates from RPC response.
+//TestWorkspaceListPopulates tests that workspace list populates from RPC response.
 func TestWorkspaceListPopulates(t *testing.T) {
 	m := newTestModel()
 
@@ -77,7 +77,7 @@ func TestWorkspaceListPopulates(t *testing.T) {
 	}
 }
 
-// TestEnterKeyShowsDetail tests that Enter key navigates to detail view.
+//TestEnterKeyShowsDetail tests that Enter key navigates to detail view.
 func TestEnterKeyShowsDetail(t *testing.T) {
 	m := newTestModel()
 
@@ -102,7 +102,7 @@ func TestEnterKeyShowsDetail(t *testing.T) {
 	}
 }
 
-// TestEscapeKeyReturnsToDashboard tests Escape key from detail view.
+//TestEscapeKeyReturnsToDashboard tests Escape key from detail view.
 func TestEscapeKeyReturnsToDashboard(t *testing.T) {
 	m := newTestModel()
 
@@ -122,7 +122,7 @@ func TestEscapeKeyReturnsToDashboard(t *testing.T) {
 	}
 }
 
-// TestQuitKey tests that q key quits the program.
+//TestQuitKey tests that q key quits the program.
 func TestQuitKey(t *testing.T) {
 	m := newTestModel()
 
@@ -130,7 +130,7 @@ func TestQuitKey(t *testing.T) {
 	_ = cmd // quit command may vary based on state
 }
 
-// TestVimNavigation tests that j/k keys navigate the list.
+//TestVimNavigation tests that j/k keys navigate the list.
 func TestVimNavigation(t *testing.T) {
 	m := newTestModel()
 
@@ -163,7 +163,7 @@ func TestVimNavigation(t *testing.T) {
 	}
 }
 
-// TestDeleteConfirmModal tests delete confirmation flow.
+//TestDeleteConfirmModal tests delete confirmation flow.
 func TestDeleteConfirmModal(t *testing.T) {
 	m := newTestModel()
 
@@ -202,7 +202,7 @@ func TestDeleteConfirmModal(t *testing.T) {
 	}
 }
 
-// TestToastSystem tests toast notifications.
+//TestToastSystem tests toast notifications.
 func TestToastSystem(t *testing.T) {
 	m := newTestModel()
 
@@ -219,7 +219,7 @@ func TestToastSystem(t *testing.T) {
 	}
 }
 
-// TestMaxToasts tests that toast queue is limited to 3.
+//TestMaxToasts tests that toast queue is limited to 3.
 func TestMaxToasts(t *testing.T) {
 	m := newTestModel()
 
@@ -232,7 +232,7 @@ func TestMaxToasts(t *testing.T) {
 	}
 }
 
-// TestViewHelpNavigation tests help view navigation.
+//TestViewHelpNavigation tests help view navigation.
 func TestViewHelpNavigation(t *testing.T) {
 	m := newTestModel()
 
@@ -251,7 +251,7 @@ func TestViewHelpNavigation(t *testing.T) {
 	}
 }
 
-// TestViewCreateNavigation tests create view navigation.
+//TestViewCreateNavigation tests create view navigation.
 func TestViewCreateNavigation(t *testing.T) {
 	m := newTestModel()
 
@@ -270,7 +270,7 @@ func TestViewCreateNavigation(t *testing.T) {
 	}
 }
 
-// TestWorkspaceStateChanged tests state change detection.
+//TestWorkspaceStateChanged tests state change detection.
 func TestWorkspaceStateChanged(t *testing.T) {
 	m := newTestModel()
 
@@ -294,7 +294,7 @@ func TestWorkspaceStateChanged(t *testing.T) {
 	}
 }
 
-// TestWindowSizeResize tests terminal resize handling.
+//TestWindowSizeResize tests terminal resize handling.
 func TestWindowSizeResize(t *testing.T) {
 	m := newTestModel()
 
@@ -308,7 +308,7 @@ func TestWindowSizeResize(t *testing.T) {
 	}
 }
 
-// TestWorkspaceStartRPC tests that pressing 's' in detail view triggers a start command.
+//TestWorkspaceStartRPC tests that pressing 's' in detail view triggers a start command.
 func TestWorkspaceStartRPC(t *testing.T) {
 	m := newTestModel()
 
@@ -330,7 +330,7 @@ func TestWorkspaceStartRPC(t *testing.T) {
 	}
 }
 
-// TestWorkspaceStopRPC tests that pressing 'x' in detail view triggers a stop command.
+//TestWorkspaceStopRPC tests that pressing 'x' in detail view triggers a stop command.
 func TestWorkspaceStopRPC(t *testing.T) {
 	m := newTestModel()
 
@@ -352,7 +352,7 @@ func TestWorkspaceStopRPC(t *testing.T) {
 	}
 }
 
-// TestSpotlightNavigation tests that 'l' key in detail view sends a SpotlightRequested command.
+//TestSpotlightNavigation tests that 'l' key in detail view sends a SpotlightRequested command.
 func TestSpotlightNavigation(t *testing.T) {
 	m := newTestModel()
 
@@ -378,7 +378,7 @@ func TestSpotlightNavigation(t *testing.T) {
 	}
 }
 
-// TestSyncNavigation tests that 'y' key in detail view sends a SyncRequested command.
+//TestSyncNavigation tests that 'y' key in detail view sends a SyncRequested command.
 func TestSyncNavigation(t *testing.T) {
 	m := newTestModel()
 
@@ -401,7 +401,7 @@ func TestSyncNavigation(t *testing.T) {
 	}
 }
 
-// TestCreateNavigation tests that 'c' key navigates to create view from dashboard.
+//TestCreateNavigation tests that 'c' key navigates to create view from dashboard.
 func TestCreateNavigation(t *testing.T) {
 	m := newTestModel()
 
@@ -412,7 +412,7 @@ func TestCreateNavigation(t *testing.T) {
 	}
 }
 
-// TestFilterWorkspaces tests that '/' key sets filter mode and typing filters the list.
+//TestFilterWorkspaces tests that '/' key sets filter mode and typing filters the list.
 func TestFilterWorkspaces(t *testing.T) {
 	m := newTestModel()
 
@@ -434,7 +434,7 @@ func TestFilterWorkspaces(t *testing.T) {
 	}
 }
 
-// TestMultipleWorkspaces tests creating 3 workspaces, verifying all appear and selection cycles through them.
+//TestMultipleWorkspaces tests creating 3 workspaces, verifying all appear and selection cycles through them.
 func TestMultipleWorkspaces(t *testing.T) {
 	m := newTestModel()
 
@@ -483,7 +483,7 @@ func TestMultipleWorkspaces(t *testing.T) {
 	}
 }
 
-// TestWorkspaceStatePolling tests simulating WorkspaceListReceived updating state from stopped to running.
+//TestWorkspaceStatePolling tests simulating WorkspaceListReceived updating state from stopped to running.
 func TestWorkspaceStatePolling(t *testing.T) {
 	m := newTestModel()
 
@@ -504,7 +504,7 @@ func TestWorkspaceStatePolling(t *testing.T) {
 	}
 }
 
-// TestDeleteWithConfirm tests that 'd' shows confirm modal, 'y' deletes, 'n' cancels.
+//TestDeleteWithConfirm tests that 'd' shows confirm modal, 'y' deletes, 'n' cancels.
 func TestDeleteWithConfirm(t *testing.T) {
 	m := newTestModel()
 
@@ -563,7 +563,7 @@ func TestDeleteWithConfirm(t *testing.T) {
 	}
 }
 
-// TestToastAutoExpiry tests that toasts older than 5 seconds are cleared on next update.
+//TestToastAutoExpiry tests that toasts older than 5 seconds are cleared on next update.
 func TestToastAutoExpiry(t *testing.T) {
 	m := newTestModel()
 
@@ -579,7 +579,7 @@ func TestToastAutoExpiry(t *testing.T) {
 	}
 }
 
-// TestVimNavigationJ tests that 'j' moves selection down in workspace list.
+//TestVimNavigationJ tests that 'j' moves selection down in workspace list.
 func TestVimNavigationJ(t *testing.T) {
 	m := newTestModel()
 
@@ -602,7 +602,7 @@ func TestVimNavigationJ(t *testing.T) {
 	}
 }
 
-// TestVimNavigationK tests that 'k' moves selection up in workspace list.
+//TestVimNavigationK tests that 'k' moves selection up in workspace list.
 func TestVimNavigationK(t *testing.T) {
 	m := newTestModel()
 
@@ -628,7 +628,7 @@ func TestVimNavigationK(t *testing.T) {
 	}
 }
 
-// TestHelpFromDashboard tests that '?' from dashboard navigates to help view.
+//TestHelpFromDashboard tests that '?' from dashboard navigates to help view.
 func TestHelpFromDashboard(t *testing.T) {
 	m := newTestModel()
 
@@ -643,7 +643,7 @@ func TestHelpFromDashboard(t *testing.T) {
 	}
 }
 
-// TestCreateViewRenders tests that create view renders with "Create Workspace" title.
+//TestCreateViewRenders tests that create view renders with "Create Workspace" title.
 func TestCreateViewRenders(t *testing.T) {
 	m := newTestModel()
 
@@ -660,7 +660,7 @@ func TestCreateViewRenders(t *testing.T) {
 	}
 }
 
-// TestSpotlightViewRenders tests that spotlight view renders with "Spotlight" text.
+//TestSpotlightViewRenders tests that spotlight view renders with "Spotlight" text.
 func TestSpotlightViewRenders(t *testing.T) {
 	m := newTestModel()
 
@@ -672,5 +672,82 @@ func TestSpotlightViewRenders(t *testing.T) {
 	}
 	if m.CurrentView() != model.ViewSpotlight {
 		t.Errorf("expected ViewSpotlight, got %d", m.CurrentView())
+	}
+}
+
+
+func TestSpotlightRefreshedUpdatesForwards(t *testing.T) {
+	m := newTestModel()
+	m, _ = sendMsg(m, messages.WorkspaceListReceived{
+		Workspaces: []messages.WorkspaceItem{
+			{ID: "ws-0", Name: "base", Repo: "/home/user/project", State: "stopped"},
+		},
+	})
+
+	// Simulate receiving forwards from RPC
+	result, _ := m.Update(messages.SpotlightRefreshed{
+		Items: []messages.PortForwardItem{
+			{ID: "fwd-1", LocalPort: 8080, RemotePort: 80, Label: "web", Status: "active"},
+			{ID: "fwd-2", LocalPort: 3000, RemotePort: 3000, Label: "api", Status: "active"},
+		},
+	})
+	am := result.(*model.AppModel)
+	if len(am.Forwards()) != 2 {
+		t.Errorf("expected 2 forwards, got %d", len(am.Forwards()))
+	}
+	if am.Forwards()[0].Label != "web" {
+		t.Errorf("expected first forward label 'web', got %s", am.Forwards()[0].Label)
+	}
+}
+
+
+func TestSyncListReceivedUpdatesSessions(t *testing.T) {
+	m := newTestModel()
+	m, _ = sendMsg(m, messages.WorkspaceListReceived{
+		Workspaces: []messages.WorkspaceItem{
+			{ID: "ws-0", Name: "base", Repo: "/home/user/project", State: "stopped"},
+		},
+	})
+
+	result, _ := m.Update(messages.SyncListReceived{
+		Sessions: []messages.SyncSessionItem{
+			{ID: "sync-1", WorkspaceID: "ws-0", Status: "running", Direction: "bidirectional"},
+		},
+	})
+	am := result.(*model.AppModel)
+	if len(am.SyncSessions()) != 1 {
+		t.Errorf("expected 1 sync session, got %d", len(am.SyncSessions()))
+	}
+	if am.SyncSessions()[0].Status != "running" {
+		t.Errorf("expected running status, got %s", am.SyncSessions()[0].Status)
+	}
+}
+
+
+func TestPortForwardRemoved(t *testing.T) {
+	m := newTestModel()
+	m, _ = sendMsg(m, messages.WorkspaceListReceived{
+		Workspaces: []messages.WorkspaceItem{
+			{ID: "ws-0", Name: "base", Repo: "/home/user/project", State: "stopped"},
+		},
+	})
+
+	// First add forwards
+	result, _ := m.Update(messages.SpotlightRefreshed{
+		Items: []messages.PortForwardItem{
+			{ID: "fwd-1", LocalPort: 8080, Label: "web", Status: "active"},
+			{ID: "fwd-2", LocalPort: 3000, Label: "api", Status: "active"},
+		},
+	})
+	m = result.(*model.AppModel)
+
+	// Remove one forward
+	result, _ = m.Update(messages.PortForwardRemoved{ForwardID: "fwd-1"})
+	am := result.(*model.AppModel)
+	if len(am.Forwards()) != 1 {
+		t.Errorf("expected 1 forward after removal, got %d", len(am.Forwards()))
+	}
+	if am.Forwards()[0].ID != "fwd-2" {
+		t.Errorf("expected fwd-2 to remain, got %s", am.Forwards()[0].ID)
 	}
 }

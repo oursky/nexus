@@ -39,11 +39,7 @@ func (v *SpotlightView) View(m *model.AppModel) string {
 	content = append(content, labelStyle.Render("Workspace: ")+valueStyle.Render(wsName))
 	content = append(content, "")
 
-	// TODO: replace with real forwards from model once SpotlightRefreshed is wired in update handlers
-	forwards := []model.PortForward{
-		{LocalPort: 8080, RemotePort: 80, Protocol: "web"},
-		{LocalPort: 3000, RemotePort: 3000, Protocol: "app"},
-	}
+	forwards := m.Forwards()
 
 	if len(forwards) == 0 {
 		content = append(content, labelStyle.Render("No port forwards configured"))
@@ -51,7 +47,7 @@ func (v *SpotlightView) View(m *model.AppModel) string {
 		header := fmt.Sprintf("%-12s %-15s %s", "Label", "Local→Remote", "Status")
 		content = append(content, lipgloss.NewStyle().Bold(true).Foreground(colors.Text).Render(header))
 		for _, f := range forwards {
-			line := fmt.Sprintf("%-12s %d→%-11d %s", f.Protocol, f.LocalPort, f.RemotePort, "active")
+			line := fmt.Sprintf("%-12s %d→%-11d %s", f.Label, f.LocalPort, f.RemotePort, f.Status)
 			content = append(content, lipgloss.NewStyle().Foreground(colors.Text).Render(line))
 		}
 	}

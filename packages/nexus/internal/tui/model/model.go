@@ -48,6 +48,10 @@ type AppModel struct {
 	// Modal
 	modal ModalState
 
+	// Spotlight data
+	forwards     []messages.PortForwardItem
+	syncSessions []messages.SyncSessionItem
+
 	// Dimensions
 	width  int
 	height int
@@ -408,6 +412,26 @@ func (m *AppModel) Filter() string {
 // SetFilterText sets the filter text.
 func (m *AppModel) SetFilterText(text string) {
 	m.filter = text
+}
+
+// Forwards returns the port forwards slice.
+func (m *AppModel) Forwards() []messages.PortForwardItem {
+	return m.forwards
+}
+
+// SetForwards sets the port forwards slice.
+func (m *AppModel) SetForwards(f []messages.PortForwardItem) {
+	m.forwards = f
+}
+
+// SyncSessions returns the sync sessions slice.
+func (m *AppModel) SyncSessions() []messages.SyncSessionItem {
+	return m.syncSessions
+}
+
+// SetSyncSessions sets the sync sessions slice.
+func (m *AppModel) SetSyncSessions(s []messages.SyncSessionItem) {
+	m.syncSessions = s
 }
 
 // Mux returns the RPC multiplexed connection.

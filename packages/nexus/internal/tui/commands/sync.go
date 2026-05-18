@@ -49,39 +49,37 @@ func StopSync(mux *rpc.MuxConn, workspaceID string) tea.Cmd {
 }
 
 // PauseSync pauses a sync session.
-func PauseSync(mux *rpc.MuxConn, workspaceID string) tea.Cmd {
+func PauseSync(mux *rpc.MuxConn, sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		var result struct {
 			Success bool `json:"success"`
 		}
 		err := mux.Call("workspace.sync-pause", map[string]any{
-			"sessionId": workspaceID,
+			"sessionId": sessionID,
 		}, &result)
 		if err != nil {
 			return messages.DaemonDisconnected{Error: err}
 		}
 		return messages.SyncStatusReceived{
-			WorkspaceID: workspaceID,
-			Status:      "paused",
+			Status: "paused",
 		}
 	}
 }
 
 // ResumeSync resumes a sync session.
-func ResumeSync(mux *rpc.MuxConn, workspaceID string) tea.Cmd {
+func ResumeSync(mux *rpc.MuxConn, sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		var result struct {
 			Success bool `json:"success"`
 		}
 		err := mux.Call("workspace.sync-resume", map[string]any{
-			"sessionId": workspaceID,
+			"sessionId": sessionID,
 		}, &result)
 		if err != nil {
 			return messages.DaemonDisconnected{Error: err}
 		}
 		return messages.SyncStatusReceived{
-			WorkspaceID: workspaceID,
-			Status:      "running",
+			Status: "running",
 		}
 	}
 }
