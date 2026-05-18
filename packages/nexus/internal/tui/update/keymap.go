@@ -46,6 +46,12 @@ func HandleKeyMsg(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return handleConfirmModalKeys(m, msg)
 	}
 
+	// No-profile panel: handle its own keys before view-specific dispatch
+	if m.ShowNoProfile() {
+		result, c := handleNoProfileKeys(m, msg)
+		return result.(*model.AppModel), c
+	}
+
 	currentView := m.CurrentView()
 
 	// View-specific shortcuts
@@ -183,6 +189,16 @@ func handleConfirmModalKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.C
 
 // handleOnrampKeys handles key bindings in onramp/connect wizard view.
 func handleOnrampKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Global keys that always work, even in wizard
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyRunes:
+		if msg.String() == "q" {
+			return m, tea.Quit
+		}
+	}
+
 	wizard := m.Wizard()
 
 	switch msg.Type {
@@ -473,6 +489,48 @@ func handleHelpKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	return m, nil
+}
+
+// handleNoProfileKeys handles keys for the no-profile panel.
+func handleNoProfileKeys(m *model.AppModel, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q", "esc":
+		return m, tea.Quit
+	}
+
+	noProfile := m.NoProfile()
+	if noProfile.Busy || noProfile.Checking {
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "up", "k":
+		if noProfile.Sel > 0 {
+			noProfile.Sel--
+		}
+	case "down", "j":
+		if noProfile.Sel < 1 {
+			noProfile.Sel++
+		}
+	case "enter", " ":
+		switch noProfile.Sel {
+		case 0:
+			// Start local daemon
+			noProfile.Busy = true
+			noProfile.Err = ""
+			m.SetNoProfile(noProfile)
+			return m, tea.Batch(commands.StartLocalDaemonCmd(7777), commands.NoProfileSpinTick())
+		case 1:
+			// Connect to remote — show wizard
+			m.SetShowNoProfile(false)
+			m.SetCurrentView(model.ViewOnramp)
+			w := model.NewWizardState()
+			m.SetWizard(w)
+			return m, w.HostInput.Focus()
+		}
+	}
+	m.SetNoProfile(noProfile)
 	return m, nil
 }
 

@@ -25,6 +25,7 @@ type renderer struct {
 	help      *views.HelpView
 	connect   *views.ConnectView
 	onramp    *views.OnrampView
+	noProfile *views.NoProfileView
 	connected bool
 }
 
@@ -35,7 +36,12 @@ func (r *renderer) Render(m *model.AppModel) string {
 
 	// Show onramp wizard if not connected
 	if !m.Connected() {
-		body := r.onramp.View(m)
+		var body string
+		if m.ShowNoProfile() {
+			body = r.noProfile.View(m)
+		} else {
+			body = r.onramp.View(m)
+		}
 		// Force each layer to full width for consistent layout
 		fullWidth := lipgloss.NewStyle().Width(m.Width())
 		return lipgloss.JoinVertical(lipgloss.Left,
@@ -275,6 +281,7 @@ func Run() error {
 	help := views.NewHelpView()
 	connect := views.NewConnectView()
 	onramp := views.NewOnrampView(appModel.Width(), appModel.Height())
+	noProfile := views.NewNoProfileView()
 
 	r := &renderer{
 		dashboard: dash,
@@ -284,6 +291,7 @@ func Run() error {
 		help:      help,
 		connect:   connect,
 		onramp:    onramp,
+		noProfile: noProfile,
 	}
 	appModel.SetRenderer(r)
 

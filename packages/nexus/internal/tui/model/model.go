@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/oursky/nexus/packages/nexus/cmd/nexus/commands/rpc"
 	"github.com/oursky/nexus/packages/nexus/internal/domain/workspace"
+	"github.com/oursky/nexus/packages/nexus/internal/tui/commands"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/design"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/messages"
 	"github.com/oursky/nexus/packages/nexus/internal/tui/pty"
@@ -58,6 +59,13 @@ type AppModel struct {
 	// Connect wizard state
 	connected bool
 	wizard    WizardState
+
+	// No-profile panel state (shown before wizard on first connect)
+	showNoProfile bool
+	noProfile     NoProfileState
+
+	// Status line text
+	statusLine string
 
 	// Dimensions
 	width  int
@@ -166,6 +174,15 @@ type WizardState struct {
 	Busy      bool
 }
 
+// NoProfileState holds the state for the no-profile startup panel.
+type NoProfileState struct {
+	Sel      int    // 0=start local daemon, 1=connect remote
+	Busy     bool   // spinning while starting daemon
+	Checking bool   // waiting for local daemon check result
+	Err      string // error message
+	SpinIdx  int    // spinner animation frame index
+}
+
 // NewWizardState creates a new WizardState with default inputs.
 func NewWizardState() WizardState {
 	hostInput := textinput.New()
@@ -233,10 +250,18 @@ func NewAppModel(mux *rpc.MuxConn) *AppModel {
 
 // Init initializes the model and returns initial commands.
 func (m *AppModel) Init() tea.Cmd {
-	// If no mux connection, show wizard
+	// If no mux connection, show the no-profile panel with a local daemon check
 	if m.mux == nil {
 		m.SetCurrentView(ViewOnramp)
-		return nil
+		m.SetShowNoProfile(true)
+		m.SetNoProfile(NoProfileState{
+			Sel:      0,
+			Checking: true,
+		})
+		return tea.Batch(
+			commands.CheckLocalDaemonCmd(7777),
+			commands.NoProfileSpinTick(),
+		)
 	}
 
 	cmds := []tea.Cmd{
@@ -522,6 +547,36 @@ func (m *AppModel) Connected() bool {
 // SetConnected sets the connected state.
 func (m *AppModel) SetConnected(v bool) {
 	m.connected = v
+}
+
+// NoProfile returns the no-profile panel state.
+func (m *AppModel) NoProfile() NoProfileState {
+	return m.noProfile
+}
+
+// SetNoProfile sets the no-profile panel state.
+func (m *AppModel) SetNoProfile(np NoProfileState) {
+	m.noProfile = np
+}
+
+// ShowNoProfile returns whether the no-profile panel is shown.
+func (m *AppModel) ShowNoProfile() bool {
+	return m.showNoProfile
+}
+
+// SetShowNoProfile sets whether the no-profile panel is shown.
+func (m *AppModel) SetShowNoProfile(v bool) {
+	m.showNoProfile = v
+}
+
+// StatusLine returns the current status line text.
+func (m *AppModel) StatusLine() string {
+	return m.statusLine
+}
+
+// SetStatusLine sets the status line text.
+func (m *AppModel) SetStatusLine(s string) {
+	m.statusLine = s
 }
 
 // SetMux sets the RPC multiplexed connection.

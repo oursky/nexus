@@ -34,3 +34,12 @@ type WizardSubmitMsg struct {
     Port string
     Key  string
 }
+
+// NoProfileMsg is sent after probing whether a local daemon is alive.
+type LocalCheckMsg struct{ Alive bool }
+
+// DaemonStartDoneMsg is sent when the background daemon-start completes.
+type DaemonStartDoneMsg struct{ Err error }
+
+// NoProfileSpinTickMsg drives the spinner animation.
+type NoProfileSpinTickMsg struct{}
